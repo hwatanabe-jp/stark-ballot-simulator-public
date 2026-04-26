@@ -1,0 +1,17 @@
+[package]
+name = "benchmarks"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[[bin]]
+name = "bench-minimal"
+path = "src/bench_minimal.rs"
+
+[dependencies]
+methods-minimal = { path = "../methods-minimal" }
+risc0-zkvm = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+csv = { workspace = true }
+chrono = { workspace = true }

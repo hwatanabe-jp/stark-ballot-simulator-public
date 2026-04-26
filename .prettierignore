@@ -1,0 +1,6 @@
+# mdBook build output
+public-book/book/
+
+# Vendored libraries
+public-book/fzf.umd.js
+public-book/mermaid.min.js

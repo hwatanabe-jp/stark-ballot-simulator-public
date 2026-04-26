@@ -1,0 +1,64 @@
+# 全体像
+
+`STARK Ballot Simulator` は、投票の完全性を段階的に検証するための PoC です。
+
+```mermaid
+flowchart LR
+  A[Cast-as-Intended] --> B[Recorded-as-Cast]
+  B --> C[Counted-as-Recorded]
+  C --> D[STARK Verification]
+```
+
+## データフロー概観
+
+```mermaid
+sequenceDiagram
+  participant V as 投票者
+  participant S as サーバー
+  participant B as 掲示板
+  participant Z as zkVM
+  participant VS as 検証サービス
+
+  V->>S: 投票意図（選択肢・乱数）+ コミットメント
+  S->>B: 掲示板に追記
+  S-->>V: 投票レシート
+  Note over S: ボット投票を自動追加
+  S->>Z: 全投票 + Merkle パス
+  Z-->>S: STARK レシート + ジャーナル
+  S->>VS: STARK レシート検証
+  VS-->>S: 検証レポート
+  S-->>V: 検証結果
+```
+
+## コアコンセプト
+
+- 投票コミットメントと投票レシートにより Cast-as-Intended を検証
+- RFC 6962 / CT スタイルの掲示板で Recorded-as-Cast を検証
+- zkVM ジャーナル、入力整合、ビットマップ証明により Counted-as-Recorded を検証
+- RISC Zero レシート検証で STARK 実行の正当性を検証
+- AWS クラウド費用の目標月額を 1 USD（デプロイなし、アプリのアクセスなし時）
+
+## プロジェクト規模
+
+概算（tracked files ベース、生成物を除く）。
+
+| 区分                                        | 行数              |
+| ------------------------------------------- | ----------------- |
+| TypeScript / React（アプリ本体）            | 約 55,000 行      |
+| TypeScript（テストコード）                  | 約 66,000 行      |
+| Rust（zkVM ゲスト + ホスト + 検証サービス） | 約 5,000 行       |
+| Terraform / Shell / 補助スクリプト          | 約 7,000 行       |
+| **合計**                                    | **約 133,000 行** |
+
+## 各章への案内
+
+| 部                                           | 内容                                                                                 |
+| -------------------------------------------- | ------------------------------------------------------------------------------------ |
+| [暗号プロトコル](protocol/index.md)          | コミットメント、CT Merkle、入力コミットメント、STH ダイジェスト、ビットマップ Merkle |
+| [zkVM 設計](zkvm/index.md)                   | ゲストプログラム、ホスト・証明生成、検証サービス、Image ID                           |
+| [検証パイプライン](verification/index.md)    | 4 段階モデル、チェック一覧、バンドル構造、ゲーティングロジック                       |
+| [改ざんシナリオ](tamper/index.md)            | S0〜S5 シナリオ、検出メカニズム                                                      |
+| [AWS アーキテクチャ](aws/index.md)           | トポロジー、非同期プローバー、イメージ署名、Terraform                                |
+| [API リファレンス](api/index.md)             | エンドポイント一覧、セッションライフサイクル                                         |
+| [第三者検証ガイド](reproducibility/index.md) | 検証ページで取得した `bundle.zip` を使う Ubuntu 向けローカル検証手順                 |
+| [設計判断](decisions/index.md)               | PoC の意図的な制約、設計ふりかえり                                                   |

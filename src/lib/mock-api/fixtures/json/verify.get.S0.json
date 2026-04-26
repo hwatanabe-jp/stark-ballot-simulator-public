@@ -1,0 +1,108 @@
+{
+  "data": {
+    "electionId": "550e8400-e29b-41d4-a716-446655440000",
+    "electionConfigHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "logId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "tally": {
+      "counts": {
+        "A": 13,
+        "B": 12,
+        "C": 14,
+        "D": 11,
+        "E": 14
+      },
+      "totalVotes": 64,
+      "tamperedCount": 0
+    },
+    "bulletinRoot": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "scenarioId": "S0",
+    "verificationStatus": "not_run",
+    "verificationReport": {
+      "status": "not_run",
+      "duration_ms": 0,
+      "errors": []
+    },
+    "verificationSteps": [
+      {
+        "id": "cast_as_intended",
+        "status": "success",
+        "inputs": ["electionId", "user.choice", "user.random", "user.commitment", "user.voteId"]
+      },
+      {
+        "id": "recorded_as_cast",
+        "status": "success",
+        "inputs": ["user.voteReceipt", "user.merklePath", "bulletinRoot", "treeSize"]
+      },
+      {
+        "id": "counted_as_recorded",
+        "status": "success",
+        "inputs": ["tally.counts", "tally.totalVotes", "sthDigest", "includedBitmapRoot", "inputCommitment"]
+      },
+      {
+        "id": "stark_verification",
+        "status": "not_run",
+        "inputs": ["imageId", "proofBundleStatus"]
+      }
+    ],
+    "verificationChecks": [
+      {
+        "id": "recorded_commitment_in_bulletin",
+        "status": "success",
+        "evidence": "public",
+        "inputs": ["user.commitment", "user.merklePath", "bulletinRoot", "treeSize"],
+        "derivedFrom": "recorded_inclusion_proof"
+      },
+      {
+        "id": "stark_receipt_verify",
+        "status": "not_run",
+        "evidence": "zk",
+        "inputs": ["proofBundleStatus"]
+      }
+    ],
+    "imageId": "0x4444444444444444444444444444444444444444444444444444444444444444",
+    "tamperDetected": false,
+    "verifiedTally": [13, 12, 14, 11, 14],
+    "totalExpected": 64,
+    "treeSize": 64,
+    "missingSlots": 0,
+    "invalidPresentedSlots": 0,
+    "rejectedRecords": 0,
+    "excludedSlots": 0,
+    "sthDigest": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "seenBitmapRoot": "0x5555555555555555555555555555555555555555555555555555555555555555",
+    "includedBitmapRoot": "0x2222222222222222222222222222222222222222222222222222222222222222",
+    "inputCommitment": "0x3333333333333333333333333333333333333333333333333333333333333333",
+    "seenIndicesCount": 64,
+    "journalStatus": "omitted",
+    "voteReceipt": {
+      "voteId": "00000000-0000-4000-8000-000000000001",
+      "commitment": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "bulletinIndex": 0,
+      "bulletinRootAtCast": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "timestamp": 1730000000000,
+      "inputCommitment": "0x3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "userVote": {
+      "vote": "A",
+      "commitment": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "random": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "voteId": "00000000-0000-4000-8000-000000000001",
+      "proof": {
+        "leafIndex": 0,
+        "treeSize": 64,
+        "merklePath": [
+          "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "0x2222222222222222222222222222222222222222222222222222222222222222"
+        ],
+        "bulletinRootAtCast": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    "verificationExecutionId": "mock-verification-001",
+    "tamperSummary": {
+      "ignoredVotes": 0,
+      "recountedVotes": 0,
+      "userRecountedTo": null,
+      "affectedBotIds": []
+    }
+  }
+}

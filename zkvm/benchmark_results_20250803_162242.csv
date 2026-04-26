@@ -1,0 +1,4 @@
+timestamp,vote_count,dev_mode,proof_time_ms,execution_time_ms,total_time_ms
+2025-08-03 16:22:42,1,true,16,0,16
+2025-08-03 16:22:42,10,true,16,0,16
+2025-08-03 16:22:42,100,true,16,0,16

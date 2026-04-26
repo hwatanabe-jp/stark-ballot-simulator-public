@@ -1,0 +1,46 @@
+name: Public CLI Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'scripts/tests/**'
+      - 'scripts/test-data/**'
+      - 'scripts/verification/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/public-cli-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24'
+  SESSION_CAPABILITY_SECRET: public-ci-session-capability-${{ github.run_id }}-${{ github.run_attempt }}-0123456789abcdef
+
+jobs:
+  mock-cli:
+    name: Mock CLI S0
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Run mock CLI flow
+        env:
+          TURNSTILE_BYPASS: '1'
+          RUNTIME_DEPLOYMENT_ENV: 'develop'
+        run: pnpm test:cli:mock

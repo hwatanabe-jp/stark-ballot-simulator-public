@@ -1,0 +1,107 @@
+{
+  "mappings": {
+    "12": {
+      "methodVersion": 12,
+      "expectedImageID": "0xfa42cd07e70484a943d40f530b9b001392f215a0404398d63c710cef9b30f4b4",
+      "expectedImageID_x86_64": "0x090ad73dbc6d3504b947ab5d41e7327f10d8bbcd649df141c47cfa1bb1610db6",
+      "description": "v1.2 slot/record count contract cleanup - ARM64 AWS deployment confirmed, x86_64 local build differs",
+      "compiledAt": "2026-03-29T04:02:46Z",
+      "rustVersion": "1.91.1",
+      "risc0Version": "3.0.5",
+      "guestToolchain": "r0.1.91.1",
+      "features": [
+        "STH digest binding",
+        "CT leaf usage tags",
+        "Input commitment sorting",
+        "Slot/record count split",
+        "Rejected record accounting",
+        "Seen bitmap root explainability",
+        "Domain-separated commitments",
+        "RFC 6962 inclusion proofs",
+        "Bitmap-based individual verification"
+      ]
+    },
+    "11": {
+      "methodVersion": 11,
+      "expectedImageID": "0x162a81431144e2863c39f98ef4e9fae1c5e916d12ea173377a3c6b0fa748840f",
+      "expectedImageID_x86_64": "0x554b4727c8bd3dd22129e51c2ca40de2cc1407cf517bedf32fc57fd7473ceadb",
+      "description": "v1.1 implementation - methodVersion 11 (ARM64 AWS deployment confirmed, x86_64 local build differs)",
+      "compiledAt": "2026-03-25T08:22:13Z",
+      "rustVersion": "1.91.1",
+      "risc0Version": "3.0.5",
+      "guestToolchain": "r0.1.91.1",
+      "features": [
+        "STH digest binding",
+        "CT leaf usage tags",
+        "Input commitment sorting",
+        "Three-way exclusion display",
+        "Seen bitmap root explainability",
+        "Domain-separated commitments",
+        "RFC 6962 inclusion proofs",
+        "Bitmap-based individual verification"
+      ]
+    },
+    "10": {
+      "methodVersion": 10,
+      "expectedImageID": "0x98465a16a6776bd5fc35299e06dfea5886f87d2f94aac5fd79353af50caa01f4",
+      "expectedImageID_x86_64": "0x05bdfcc6ac09548b6270f1d797b0b8516bd041566c2b195b24fa5d1855ccc805",
+      "description": "v1.0 implementation - methodVersion 10 (ARM64 AWS-native build, x86_64 local build)",
+      "compiledAt": "2026-03-21T07:51:11Z",
+      "rustVersion": "1.91.1",
+      "risc0Version": "3.0.5",
+      "guestToolchain": "r0.1.91.1",
+      "features": [
+        "STH digest binding",
+        "CT leaf usage tags",
+        "Input commitment sorting",
+        "Three-way exclusion display",
+        "Domain-separated commitments",
+        "RFC 6962 inclusion proofs",
+        "Bitmap-based individual verification"
+      ]
+    },
+    "9": {
+      "methodVersion": 9,
+      "expectedImageID": "0xa53a308eab57ccfe32eb3e423d7f7aaa1eda35128f159f3e1e7084e1d8724969",
+      "description": "legacy build (pre-rebrand) - RISC Zero 3.0.4 upgrade",
+      "compiledAt": "2026-01-02T16:30:00Z",
+      "rustVersion": "1.91.1",
+      "risc0Version": "3.0.4",
+      "guestToolchain": "r0.1.91.1",
+      "features": [
+        "STH digest binding",
+        "CT leaf usage tags",
+        "Input commitment sorting",
+        "Three-way exclusion display",
+        "Domain-separated commitments",
+        "RFC 6962 inclusion proofs",
+        "Bitmap-based individual verification"
+      ]
+    },
+    "8": {
+      "methodVersion": 8,
+      "expectedImageID": "0xaf58015bd28c8c3ef32ce62625cdb2e2559c5982de2f5f9ada4c0e5022fdc8b7",
+      "description": "legacy build (pre-rebrand) - final zkVM build before rename",
+      "compiledAt": "2025-10-12T11:36:42Z",
+      "rustVersion": "1.90.0",
+      "risc0Version": "3.0.3",
+      "features": [
+        "STH digest binding",
+        "CT leaf usage tags",
+        "Input commitment sorting",
+        "Three-way exclusion display",
+        "Domain-separated commitments",
+        "RFC 6962 inclusion proofs",
+        "Bitmap-based individual verification"
+      ]
+    }
+  },
+  "current": "12",
+  "deprecated": ["8", "9", "10", "11"],
+  "metadata": {
+    "lastUpdated": "2026-03-29T04:11:18Z",
+    "format": "v1.0",
+    "purpose": "ImageID to methodVersion mapping for STARK Ballot Simulator",
+    "notes": "This file must be secured with GPG signatures and served from multiple sources (CDN, IPFS, Git) for security."
+  }
+}

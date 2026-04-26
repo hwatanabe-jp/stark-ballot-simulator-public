@@ -1,0 +1,52 @@
+# Terraform 変数設定例
+# 公開向けの sanitized 例です。実運用値は .env.local から *.local.tfvars に生成してください。
+#
+# 使い方:
+#   pnpm terraform:backend
+#   pnpm terraform:tfvars:develop
+#   terraform init -backend-config="backend.local.hcl"
+#   terraform plan -var-file="develop.local.tfvars"
+#   terraform apply -var-file="develop.local.tfvars"
+#
+# Note:
+#   develop.tfvars / main.tfvars も placeholder として追跡します。
+#   concrete な account ID / ARN / domain / digest は tracked ファイルに戻さないでください。
+
+# AWS 基本設定
+aws_region  = "ap-northeast-1"
+aws_profile = "terraform-admin"
+
+# 環境設定
+environment = "develop" # または "main"
+
+# プロジェクト名
+project_name              = "stark-ballot-simulator"
+codebuild_source_location = "https://github.com/hwatanabe-jp/<REPO_NAME>.git"
+
+# ECS 設定
+# ecs_image_uri は署名済みイメージの digest を固定すること。:latest や commit SHA の tag 指定は不可。
+ecs_image_uri = "<AWS_ACCOUNT_ID>.dkr.ecr.ap-northeast-1.amazonaws.com/stark-ballot-simulator/zkvm-prover-develop@sha256:<64_HEX_DIGEST>"
+ecs_cpu       = 16384 # 16 vCPU
+ecs_memory    = 32768 # 32 GB
+
+# ECR managed signing (AWS Signer profile ARN)
+ecr_signing_profile_arn = "arn:aws:signer:ap-northeast-1:<AWS_ACCOUNT_ID>:/signing-profiles/<SIGNING_PROFILE_NAME>"
+
+# Callback Lambda（Amplify で作成された ARN を指定）
+finalize_callback_lambda_arn = "arn:aws:lambda:ap-northeast-1:<AWS_ACCOUNT_ID>:function:<AMPLIFY_FINALIZE_CALLBACK_FUNCTION>"
+
+# GitHub access for CodeBuild
+codestar_connection_arn = "arn:aws:codestar-connections:ap-northeast-1:<AWS_ACCOUNT_ID>:connection/<CONNECTION_ID>"
+
+# RISC Zero toolchain (base image)
+# ECR repository name: ${project_name}/risc0-toolchain (自動生成)
+risc0_toolchain_codebuild_name        = "stark-ballot-simulator-risc0-toolchain-builder"
+risc0_toolchain_source_version        = "refs/heads/main"
+risc0_version                         = "3.0.5"
+risc0_commit                          = "8eb06ab020a92dc5b63ba6dd0836d432aba6d890"
+risc0_rust_version                    = "1.91.1"
+risc0_rust_toolchain_tag              = "r0.1.91.1"
+risc0_toolchain_image_retention_count = 5
+
+# S3 CORS（Proof bundle のダウンロード許可 Origin）
+s3_cors_allowed_origins = ["https://develop.<AMPLIFY_DOMAIN>.amplifyapp.com"]

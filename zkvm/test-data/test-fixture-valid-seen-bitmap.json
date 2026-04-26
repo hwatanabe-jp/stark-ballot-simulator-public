@@ -1,0 +1,7 @@
+{
+  "schema": "stark-ballot.seen_bitmap",
+  "version": "1.0",
+  "treeSize": 8,
+  "seenBitmapRoot": "0x1083183711c53d707d79933dc1c3161808f692c63ef1ebf0769bfa0daa2e5307",
+  "seenBitmap": [true, true, true, true, true, true, true, true]
+}

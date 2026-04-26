@@ -1,0 +1,18 @@
+# Root-level ignore to shrink build context for docker/Dockerfile.fargate-prover
+node_modules
+.next
+coverage
+target
+zkvm/target
+verifier-service/target
+pnpm-lock.yaml
+.git
+.gitignore
+.tmp
+.tmp/
+.env*
+amplify_outputs
+dist
+playwright-report
+output
+aws

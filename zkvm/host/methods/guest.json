@@ -1,0 +1,4 @@
+{
+  "name": "guest",
+  "elf": "../../target/riscv-guest/riscv32im-risc0-zkvm-elf/release/guest"
+}

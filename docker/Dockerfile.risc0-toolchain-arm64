@@ -1,0 +1,181 @@
+# syntax=docker/dockerfile:1.6
+#
+# RISC Zero Toolchain Base Image for ARM64 Linux
+#
+# Purpose: Pre-build RISC Zero toolchain for faster CI/CD builds
+# Architecture: linux/arm64 (aarch64)
+# Build time:
+#   - CodeBuild ARM_CONTAINER (ARM64 native): 100-120 minutes (Build #33 実績, v3.0.4)
+#   - Local (x86_64 + QEMU emulation): ⚠️ NOT RECOMMENDED (>12 hours, 10-20x slower)
+#   - Recommendation: Use CodeBuild for all base image builds
+# Usage: Base image for docker/Dockerfile.fargate-prover
+#
+# Maintenance:
+# - Update when RISC Zero releases new versions (typically 1-2 times/year)
+# - Rebuild for Debian security patches (quarterly recommended)
+# - See docs/current/guides/3-deployment/risc0-base-image.md for update procedures
+#
+# Multi-stage build strategy:
+# - Stage 1 (build): Build RISC Zero toolchain with all build dependencies
+# - Stage 2 (final): Copy only runtime artifacts to minimize image size
+#
+
+FROM debian:bookworm-slim AS build
+
+ARG RUST_VERSION=1.91.1
+ARG RISC0_VERSION=3.0.5
+ARG RISC0_GIT_TAG=v3.0.5
+ARG RISC0_COMMIT=8eb06ab020a92dc5b63ba6dd0836d432aba6d890
+ARG RUST_TOOLCHAIN_TAG=r0.1.91.1
+ARG SOURCE_REPOSITORY="https://github.com/hwatanabe-jp/<REPO_NAME>"
+
+# Version pinning for reproducibility
+ENV RUST_VERSION=${RUST_VERSION} \
+    RISC0_VERSION=${RISC0_VERSION} \
+    RISC0_GIT_TAG=${RISC0_GIT_TAG} \
+    RISC0_COMMIT=${RISC0_COMMIT} \
+    RUST_TOOLCHAIN_TAG=${RUST_TOOLCHAIN_TAG} \
+    CARGO_HOME=/root/.cargo \
+    RUSTUP_HOME=/root/.rustup \
+    PATH="/root/.cargo/bin:/root/.risc0/bin:$PATH"
+
+# Image metadata
+LABEL org.opencontainers.image.title="RISC Zero Toolchain ARM64" \
+      org.opencontainers.image.description="RISC Zero zkVM toolchain for ARM64 Linux" \
+      org.opencontainers.image.version="${RISC0_VERSION}" \
+      org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
+      risc0.version="${RISC0_VERSION}" \
+      rust.version="${RUST_VERSION}"
+
+WORKDIR /tmp/risc0-build
+
+# Install build dependencies
+# ninja-build, cmake: Required by rzup build rust
+# git, curl, ca-certificates: For fetching sources
+# build-essential, clang, pkg-config: C/C++ toolchain
+# libssl-dev: OpenSSL development headers
+# python3: Build script dependencies
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        clang \
+        cmake \
+        pkg-config \
+        git \
+        curl \
+        ca-certificates \
+        ninja-build \
+        libssl-dev \
+        python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust toolchain (pinned version)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain ${RUST_VERSION} --profile minimal \
+    && . "$CARGO_HOME/env" \
+    && rustc --version \
+    && cargo --version
+
+# Clone RISC Zero at the specific release tag and verify the pinned commit.
+# Use git fetch --tags to ensure tags are available even with shallow clones
+# Cleanup: Remove .git directory after checkout to save space
+RUN git clone https://github.com/risc0/risc0.git . \
+    && git fetch --tags \
+    && git checkout ${RISC0_GIT_TAG} \
+    && ACTUAL_COMMIT="$(git rev-parse HEAD)" \
+    && test "$ACTUAL_COMMIT" = "$RISC0_COMMIT" \
+    && git log -1 --oneline \
+    && rm -rf .git
+
+# Manual ARM64 Linux installation
+# Step 1: Install rzup (RISC Zero toolchain manager)
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    cargo install --path rzup --locked \
+    && rzup --version
+
+# Step 2: Build Rust toolchain for RISC Zero
+# This step takes 20-40 minutes and requires cmake + ninja
+# Use the official RISC Zero rust toolchain tag for the selected release.
+# Cleanup: Remove temporary build artifacts in same layer
+RUN --mount=type=cache,target=/tmp/risc0 \
+    rzup build --tag-or-commit ${RUST_TOOLCHAIN_TAG} rust \
+    && rm -rf /root/.risc0/tmp \
+    && find /root/.risc0 -maxdepth 2 -type d -name 'build-*' -exec rm -rf {} + \
+    && ls -lh /root/.risc0/
+
+# Step 3: Install cargo-risczero (includes r0vm binary)
+# Note: cargo registry/git are mounted as cache, not persisted in layer
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    cargo install --path risc0/cargo-risczero --locked \
+    && cargo risczero --version \
+    && r0vm --version
+
+# Cleanup: Remove RISC Zero source tree (no longer needed after installation)
+RUN rm -rf /tmp/risc0-build
+
+# ============================================================
+# Stage 2: Final runtime image (minimal footprint)
+# ============================================================
+FROM debian:bookworm-slim AS final
+
+ARG RUST_VERSION=1.91.1
+ARG RISC0_VERSION=3.0.5
+ARG SOURCE_REPOSITORY="https://github.com/hwatanabe-jp/<REPO_NAME>"
+
+# Version pinning for reproducibility (match build stage)
+ENV RUST_VERSION=${RUST_VERSION} \
+    RISC0_VERSION=${RISC0_VERSION} \
+    CARGO_HOME=/root/.cargo \
+    RUSTUP_HOME=/root/.rustup \
+    PATH="/root/.cargo/bin:/root/.risc0/bin:$PATH"
+
+# Image metadata
+LABEL org.opencontainers.image.title="RISC Zero Toolchain ARM64" \
+      org.opencontainers.image.description="RISC Zero zkVM toolchain for ARM64 Linux" \
+      org.opencontainers.image.version="${RISC0_VERSION}" \
+      org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
+      risc0.version="${RISC0_VERSION}" \
+      rust.version="${RUST_VERSION}"
+
+# Install runtime dependencies + minimal build tools
+# Runtime dependencies:
+# - libssl3: OpenSSL runtime library (required by Rust binaries)
+# - ca-certificates: SSL certificate verification
+# Build dependencies (for application builds using this base image):
+# - gcc: C compiler/linker (required by cargo for linking)
+# - libc6-dev: C standard library headers
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libssl3 \
+        ca-certificates \
+        gcc \
+        libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only essential artifacts from build stage
+# This excludes: git history, cargo caches, build artifacts, temp files
+COPY --from=build /root/.cargo/bin /root/.cargo/bin
+COPY --from=build /root/.rustup /root/.rustup
+COPY --from=build /root/.risc0 /root/.risc0
+
+# Set working directory for downstream Dockerfiles
+WORKDIR /build
+
+# Document installed versions for reproducibility
+RUN echo "=== RISC Zero Toolchain ARM64 ===" > /root/.risc0/VERSION.txt \
+    && echo "Build date: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /root/.risc0/VERSION.txt \
+    && echo "Rust: ${RUST_VERSION}" >> /root/.risc0/VERSION.txt \
+    && echo "RISC Zero: ${RISC0_VERSION}" >> /root/.risc0/VERSION.txt \
+    && echo "Debian: $(cat /etc/debian_version)" >> /root/.risc0/VERSION.txt \
+    && echo "" >> /root/.risc0/VERSION.txt \
+    && echo "Installed tools:" >> /root/.risc0/VERSION.txt \
+    && echo "- rustc: $(rustc --version)" >> /root/.risc0/VERSION.txt \
+    && echo "- cargo: $(cargo --version)" >> /root/.risc0/VERSION.txt \
+    && echo "- cargo-risczero: $(cargo-risczero --version)" >> /root/.risc0/VERSION.txt \
+    && echo "- r0vm: $(r0vm --version)" >> /root/.risc0/VERSION.txt \
+    && echo "- rzup: $(rzup --version)" >> /root/.risc0/VERSION.txt \
+    && cat /root/.risc0/VERSION.txt
+
+CMD ["/bin/bash"]

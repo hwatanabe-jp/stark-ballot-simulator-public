@@ -1,0 +1,120 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Production
+/build/
+/dist/
+
+# Misc
+.DS_Store
+*.pem
+
+# Debug
+pnpm-debug.log*
+
+# Local env files
+.env*.local
+.env.sandbox
+.env.production
+
+# RISC Zero
+target/
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# zkVM generated files
+output/
+zkvm/*-output.json
+zkvm/*-receipt.json
+zkvm/test-data/test-integration.json
+
+# zkVM temporary files
+.zkvm-temp/
+.verifier-bundles/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Package manager logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# zkVM test outputs in test-data directory
+zkvm/test-data/*-output.json
+zkvm/test-data/*-receipt.json
+zkvm/test-data/*-tampered-*.json
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
+
+# Amplify sandbox artifacts (keep source files under amplify/*)
+.amplify/
+amplify/.ampxrc
+amplify/amplify.meta.json
+amplify/outputs.json
+amplify/outputs/
+amplify_outputs*
+
+# Editor directories and AI tool artifacts
+.vscode/
+.idea/
+.codex
+*.swp
+*.swo
+*~
+
+# Claude Code local settings (not shared)
+.claude/settings.local.json
+
+# OS specific
+Thumbs.db
+
+# Experiments and external repositories
+experiments/zkverify-poc/risc0-verifier/
+experiments/zkverify-poc/risc0-wasm-wrapper/pkg/
+experiments/zkverify-poc/risc0-wasm-wrapper/target/
+
+# Cargo.lock files in experiments
+experiments/**/Cargo.lock
+
+# wasm-pack generated files
+experiments/**/pkg/
+# Playwright test results
+playwright-report/
+test-results/
+
+# Documentation backups
+*.old
+
+# License inventory artifacts (regenerate as needed)
+docs/licenses/*.json
+docs/licenses/*.csv
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+terraform/*.local.tfvars
+terraform/*.local.json
+terraform/*.local.hcl
+terraform.*.tfvars
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.pdf

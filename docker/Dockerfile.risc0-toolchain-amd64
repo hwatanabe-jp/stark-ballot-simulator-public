@@ -1,0 +1,136 @@
+# syntax=docker/dockerfile:1.6
+#
+# RISC Zero Toolchain Base Image for AMD64 Linux
+#
+# Purpose: Pre-build RISC Zero toolchain for faster CI builds on x86_64
+# Architecture: linux/amd64
+#
+# This image uses upstream prebuilt amd64 artifacts for rust and
+# cargo-risczero/r0vm, while pinning rzup itself from the matching release tag.
+#
+
+FROM debian:bookworm-slim AS build
+
+ARG RUST_VERSION=1.91.1
+ARG RISC0_VERSION=3.0.5
+ARG RISC0_GIT_TAG=v3.0.5
+ARG SOURCE_REPOSITORY="https://github.com/hwatanabe-jp/<REPO_NAME>"
+
+# Version pinning for reproducibility
+ENV RUST_VERSION=${RUST_VERSION} \
+    RISC0_VERSION=${RISC0_VERSION} \
+    CARGO_HOME=/root/.cargo \
+    RUSTUP_HOME=/root/.rustup \
+    RISC0_HOME=/root/.risc0 \
+    PATH="/root/.cargo/bin:/root/.risc0/bin:$PATH"
+
+# Image metadata
+LABEL org.opencontainers.image.title="RISC Zero Toolchain AMD64" \
+      org.opencontainers.image.description="RISC Zero zkVM toolchain for AMD64 Linux" \
+      org.opencontainers.image.version="${RISC0_VERSION}" \
+      org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
+      risc0.version="${RISC0_VERSION}" \
+      rust.version="${RUST_VERSION}"
+
+WORKDIR /tmp/risc0-build
+
+# Install dependencies
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        clang \
+        cmake \
+        pkg-config \
+        git \
+        curl \
+        ca-certificates \
+        libssl-dev \
+        python3 \
+        xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust toolchain (pinned version)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain ${RUST_VERSION} --profile minimal \
+    && . "$CARGO_HOME/env" \
+    && rustc --version \
+    && cargo --version
+
+# Install pinned rzup from the matching upstream release tag.
+RUN git clone https://github.com/risc0/risc0.git . \
+    && git fetch --tags \
+    && git checkout ${RISC0_GIT_TAG} \
+    && git log -1 --oneline \
+    && cargo install --path rzup --locked \
+    && rzup --version
+
+# Install pinned RISC Zero components.
+# Upstream CI guidance installs `r0vm` and `cargo-risczero` separately even on
+# amd64, so we mirror that flow instead of assuming `cargo-risczero` alone will
+# place `r0vm` on PATH.
+RUN /root/.cargo/bin/rzup install rust ${RUST_VERSION} \
+    && /root/.cargo/bin/rzup install r0vm ${RISC0_VERSION} \
+    && /root/.cargo/bin/rzup install cargo-risczero ${RISC0_VERSION} \
+    && cargo risczero --version \
+    && r0vm --version
+
+# Cleanup build workspace
+RUN rm -rf /tmp/risc0-build
+
+# ============================================================
+# Stage 2: Final runtime image (minimal footprint)
+# ============================================================
+FROM debian:bookworm-slim AS final
+
+ARG RUST_VERSION=1.91.1
+ARG RISC0_VERSION=3.0.5
+ARG SOURCE_REPOSITORY="https://github.com/hwatanabe-jp/<REPO_NAME>"
+
+# Version pinning for reproducibility (match build stage)
+ENV RUST_VERSION=${RUST_VERSION} \
+    RISC0_VERSION=${RISC0_VERSION} \
+    CARGO_HOME=/root/.cargo \
+    RUSTUP_HOME=/root/.rustup \
+    RISC0_HOME=/root/.risc0 \
+    PATH="/root/.cargo/bin:/root/.risc0/bin:$PATH"
+
+# Image metadata
+LABEL org.opencontainers.image.title="RISC Zero Toolchain AMD64" \
+      org.opencontainers.image.description="RISC Zero zkVM toolchain for AMD64 Linux" \
+      org.opencontainers.image.version="${RISC0_VERSION}" \
+      org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
+      risc0.version="${RISC0_VERSION}" \
+      rust.version="${RUST_VERSION}"
+
+# Runtime dependencies + minimal build tools for downstream builds
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libssl3 \
+        ca-certificates \
+        gcc \
+        libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only essential artifacts from build stage
+COPY --from=build /root/.cargo/bin /root/.cargo/bin
+COPY --from=build /root/.rustup /root/.rustup
+COPY --from=build /root/.risc0 /root/.risc0
+
+WORKDIR /build
+
+# Document installed versions for reproducibility
+RUN echo "=== RISC Zero Toolchain AMD64 ===" > /root/.risc0/VERSION.txt \
+    && echo "Build date: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /root/.risc0/VERSION.txt \
+    && echo "Rust: ${RUST_VERSION}" >> /root/.risc0/VERSION.txt \
+    && echo "RISC Zero: ${RISC0_VERSION}" >> /root/.risc0/VERSION.txt \
+    && echo "Debian: $(cat /etc/debian_version)" >> /root/.risc0/VERSION.txt \
+    && echo "" >> /root/.risc0/VERSION.txt \
+    && echo "Installed tools:" >> /root/.risc0/VERSION.txt \
+    && echo "- rustc: $(rustc --version)" >> /root/.risc0/VERSION.txt \
+    && echo "- cargo: $(cargo --version)" >> /root/.risc0/VERSION.txt \
+    && echo "- cargo-risczero: $(cargo-risczero --version)" >> /root/.risc0/VERSION.txt \
+    && echo "- r0vm: $(r0vm --version)" >> /root/.risc0/VERSION.txt \
+    && echo "- rzup: $(rzup --version)" >> /root/.risc0/VERSION.txt \
+    && cat /root/.risc0/VERSION.txt
+
+CMD ["/bin/bash"]

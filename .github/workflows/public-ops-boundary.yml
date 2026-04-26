@@ -1,0 +1,34 @@
+name: Public Ops Boundary
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  private-ops-disabled:
+    name: Private operations are disabled
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Explain public repository operations boundary
+        run: |
+          {
+            echo "## Public repository operations boundary"
+            echo ""
+            echo "This generated repository keeps the code, tests, docs, and showcase-safe CI visible."
+            echo ""
+            echo "Private repository operations are intentionally unavailable here:"
+            echo ""
+            echo "- Public snapshot generation"
+            echo "- AWS monitoring and credentialed runbooks"
+            echo "- Terraform state mutation"
+            echo "- Container image publishing"
+            echo ""
+            echo "Operational changes should be made in the private source repository and exported again."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,26 @@
+{
+  "sessionId": "2b9efb8c-7fb1-41e5-9fc9-0026054eeda6",
+  "finalizationState": {
+    "status": "running",
+    "executionId": "mock-execution-001",
+    "queuedAt": 1730000000000,
+    "startedAt": 1730000005000
+  },
+  "queue": {
+    "position": 0,
+    "depth": 1,
+    "concurrencyLimit": 2,
+    "estimatedStartAt": 1730000005000,
+    "estimatedDurationMs": 360000,
+    "estimatedCompletionAt": 1730000365000
+  },
+  "progress": {
+    "phase": "running",
+    "source": "derived",
+    "percent": 12,
+    "updatedAt": 1730000009000
+  },
+  "finalizationResult": null,
+  "stepFunctions": null,
+  "asyncFinalizationMode": "enabled"
+}

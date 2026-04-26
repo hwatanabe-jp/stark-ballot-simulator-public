@@ -1,0 +1,30 @@
+NOTICE
+
+This product includes third-party software components. A full inventory of
+third-party licenses is provided in THIRD_PARTY_NOTICES.md.
+
+Notable attributions and special-license components:
+
+1. CC-BY-4.0
+   - caniuse-lite (Copyright Ben Briggs)
+     Source: https://github.com/browserslist/caniuse-lite
+     License: https://creativecommons.org/licenses/by/4.0/
+
+2. LGPL-3.0-or-later
+   - @img/sharp-libvips-linux-x64
+   - @img/sharp-libvips-linuxmusl-x64
+     Source: https://sharp.pixelplumbing.com/
+     License: https://www.gnu.org/licenses/lgpl-3.0.en.html
+
+3. MPL-2.0 (dev / tooling)
+   - option-ext (Rust)
+   - axe-core, @axe-core/playwright (Node dev)
+   - lightningcss and related platform packages (Node dev)
+     License: https://www.mozilla.org/MPL/2.0/
+
+4. Brand assets (usage per trademark/brand guidelines)
+   - GitHub Invertocat Mark (SVG)
+     Source: https://github.com/logos
+
+If you redistribute this product, ensure you comply with the licenses of
+all included third-party components.

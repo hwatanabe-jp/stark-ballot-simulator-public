@@ -1,0 +1,103 @@
+name: Public UI Mock E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/e2e/**'
+      - 'playwright.config.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/public-ui-mock-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24'
+  SESSION_CAPABILITY_SECRET: public-ci-session-capability-${{ github.run_id }}-${{ github.run_attempt }}-0123456789abcdef
+
+jobs:
+  playwright-axe:
+    name: Playwright Axe Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps
+
+      - name: Run Playwright axe smoke suite
+        env:
+          CI: 'true'
+        run: pnpm test:e2e:axe
+
+      - name: Upload Playwright axe report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-axe-report
+          path: playwright-report
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload Playwright axe traces
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-axe-traces
+          path: test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  playwright-mock:
+    name: Playwright Mock E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps
+
+      - name: Run Playwright mock suite
+        env:
+          CI: 'true'
+        run: pnpm test:e2e:mock --grep @smoke --reporter=list
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: playwright-report
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload Playwright traces
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-traces
+          path: test-results
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "sourceSha": "7b17d450faff3cd4ac87834c6ea11ceb890cc6f1",
+  "generatedAt": "2026-04-26T09:10:10.200Z",
+  "copiedFileCount": 857,
+  "generatedFiles": [
+    ".github/workflows/public-cli-tests.yml",
+    ".github/workflows/public-core-checks.yml",
+    ".github/workflows/public-docs-checks.yml",
+    ".github/workflows/public-ops-boundary.yml",
+    ".github/workflows/public-rust-checks.yml",
+    ".github/workflows/public-security-scan.yml",
+    ".github/workflows/public-ui-mock-e2e.yml",
+    ".public-export-manifest.json",
+    ".public-repository",
+    "docs/PUBLIC_REPOSITORY.md"
+  ],
+  "strippedPaths": [
+    ".env* except .env.local.example and scripts/tests/.env.test.defaults",
+    ".github/workflows/* from the private repository",
+    "docs/archive/",
+    "docs/current/internal/",
+    "docs/current/monitoring/",
+    "docs/current/guides/3-deployment/public-repository-release.md",
+    "scripts/aws/",
+    "scripts/monitoring/",
+    "scripts/public/",
+    "terraform/main.tfvars",
+    "terraform/develop.tfvars",
+    "input.json",
+    "verification.json",
+    "included-bitmap.json",
+    "seen-bitmap.json"
+  ]
+}

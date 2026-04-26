@@ -1,0 +1,80 @@
+# syntax=docker/dockerfile:1.6
+
+##############################################
+# Builder image: compile zkVM host for ARM64 #
+##############################################
+# Use pre-built RISC Zero toolchain base image for faster builds
+# Pass a digest-pinned RISC0_TOOLCHAIN_IMAGE build arg for reproducibility.
+# Resolve local build arg: AWS_ACCOUNT_ID=<account-id> ./scripts/update-risc0-digest.sh --write-env .tmp/risc0-toolchain-image.env
+# See: docs/current/guides/3-deployment/risc0-base-image.md
+# Build #2: r0.1.91.1 toolchain, RISC Zero v3.0.5
+ARG RISC0_TOOLCHAIN_IMAGE
+FROM ${RISC0_TOOLCHAIN_IMAGE} AS build
+
+# RISC Zero toolchain already installed in base image:
+# - Rust 1.91.1
+# - RISC Zero v3.0.5 (cargo-risczero, r0vm, rzup)
+# - Build dependencies (cmake, ninja, clang, etc.)
+
+# Copy source and build release binary
+COPY zkvm ./zkvm
+COPY rust-toolchain.toml ./
+
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/build/zkvm/target \
+    cd zkvm \
+    && cargo build --release --bin host \
+    && mkdir -p /build/dist \
+    && cp target/release/host /build/dist/host \
+    && rm -rf /root/.risc0/tmp/*
+
+#################################################
+# Runtime image: minimal dependencies + host bin #
+#################################################
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS runtime
+
+ENV PATH="/opt/zkvm/bin:/root/.cargo/bin:/root/.risc0/bin:/usr/local/bin:/usr/bin:/bin" \
+    RUST_LOG=info \
+    AWS_REGION=ap-northeast-1
+
+RUN dnf update -y \
+    && dnf install -y --setopt=install_weak_deps=0 jq unzip zip ca-certificates python3.11 \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf /var/cache/yum
+
+# Install AWS CLI v2 using official installer (AL2023 doesn't provide awscli2 via dnf)
+# Version pinned for reproducibility
+ARG AWSCLI_VERSION=2.15.0
+RUN curl -fSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip" \
+    && unzip -q awscliv2.zip \
+    && ./aws/install \
+    && rm -rf awscliv2.zip aws \
+    && aws --version
+
+WORKDIR /var/task
+
+# Copy RISC Zero runtime essentials from base image
+# - r0vm: zkVM executor binary (99 MB)
+# - .risc0/settings.toml: RISC Zero configuration
+# Note: toolchains (1.4 GB) excluded - guest code already embedded in host binary
+# Note: .rustup (2.3 GB) excluded - compile-time only
+COPY --from=build /root/.cargo/bin/r0vm /root/.cargo/bin/r0vm
+COPY --from=build /root/.risc0/settings.toml /root/.risc0/settings.toml
+
+# Copy host binary (test-data excluded for production, input from S3)
+COPY --from=build /build/dist/host /opt/zkvm/bin/host
+
+# Provide entrypoint script for orchestration
+COPY docker/entrypoint.sh /opt/zkvm/bin/entrypoint.sh
+RUN chmod +x /opt/zkvm/bin/entrypoint.sh /opt/zkvm/bin/host
+
+ENV HOST_BIN=/opt/zkvm/bin/host \
+    INPUT_PATH= \
+    INPUT_S3_BUCKET= \
+    INPUT_S3_KEY= \
+    OUTPUT_DIR=/var/task/output \
+    OUTPUT_S3_BUCKET= \
+    OUTPUT_S3_PREFIX=
+
+ENTRYPOINT ["/opt/zkvm/bin/entrypoint.sh"]

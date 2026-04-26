@@ -1,0 +1,98 @@
+{
+  "data": {
+    "electionId": "550e8400-e29b-41d4-a716-446655440000",
+    "electionConfigHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "logId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "tally": {
+      "counts": {
+        "A": 14,
+        "B": 12,
+        "C": 14,
+        "D": 11,
+        "E": 13
+      },
+      "totalVotes": 64,
+      "tamperedCount": 1
+    },
+    "bulletinRoot": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "scenarioId": "S4",
+    "verificationStatus": "not_run",
+    "verificationReport": {
+      "status": "not_run",
+      "duration_ms": 0,
+      "errors": []
+    },
+    "verificationSteps": [
+      {
+        "id": "cast_as_intended",
+        "status": "success",
+        "inputs": ["electionId", "user.choice", "user.random", "user.commitment", "user.voteId"]
+      },
+      {
+        "id": "recorded_as_cast",
+        "status": "success",
+        "inputs": ["user.voteReceipt", "user.merklePath", "bulletinRoot", "treeSize"]
+      },
+      {
+        "id": "counted_as_recorded",
+        "status": "failed",
+        "error": "Claimed tally mismatch",
+        "inputs": ["tally.counts", "tally.totalVotes", "sthDigest", "includedBitmapRoot", "inputCommitment"]
+      },
+      {
+        "id": "stark_verification",
+        "status": "not_run",
+        "inputs": ["imageId", "proofBundleStatus"]
+      }
+    ],
+    "imageId": "0x4444444444444444444444444444444444444444444444444444444444444444",
+    "tamperDetected": true,
+    "verifiedTally": [13, 12, 14, 11, 14],
+    "totalExpected": 64,
+    "treeSize": 64,
+    "missingSlots": 0,
+    "invalidPresentedSlots": 0,
+    "rejectedRecords": 0,
+    "excludedSlots": 0,
+    "sthDigest": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "includedBitmapRoot": "0x2222222222222222222222222222222222222222222222222222222222222222",
+    "inputCommitment": "0x3333333333333333333333333333333333333333333333333333333333333333",
+    "seenIndicesCount": 64,
+    "journalStatus": "omitted",
+    "voteReceipt": {
+      "voteId": "00000000-0000-4000-8000-000000000001",
+      "commitment": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "bulletinIndex": 0,
+      "bulletinRootAtCast": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "timestamp": 1730000000000,
+      "inputCommitment": "0x3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "userVote": {
+      "vote": "A",
+      "commitment": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "random": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "voteId": "00000000-0000-4000-8000-000000000001",
+      "proof": {
+        "leafIndex": 0,
+        "treeSize": 64,
+        "merklePath": [
+          "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "0x2222222222222222222222222222222222222222222222222222222222222222"
+        ],
+        "bulletinRootAtCast": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    "botVotesSummary": {
+      "total": 63,
+      "affectedBotIds": [4],
+      "source": "scenario_simulation"
+    },
+    "verificationExecutionId": "mock-verification-001",
+    "tamperSummary": {
+      "ignoredVotes": 0,
+      "recountedVotes": 1,
+      "userRecountedTo": null,
+      "affectedBotIds": [4]
+    }
+  }
+}

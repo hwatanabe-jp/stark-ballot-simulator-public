@@ -1,0 +1,49 @@
+name: Public Docs Checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'public-book/**'
+      - 'scripts/docs/**'
+      - '.github/workflows/public-docs-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.91.1'
+
+      - name: Install mdBook
+        run: cargo install --locked mdbook --version 0.5.2
+
+      - name: Install mdBook Mermaid
+        run: cargo install --locked mdbook-mermaid --version 0.17.0
+
+      - name: Build public book
+        run: mdbook build public-book
+
+      - name: Create README.html aliases
+        run: ./scripts/docs/create-mdbook-readme-aliases.sh
+
+      - name: Harden generated HTML
+        run: ./scripts/docs/harden-mdbook-output.sh
+
+      - name: Check generated security tags
+        run: ./scripts/docs/check-mdbook-security-tags.sh

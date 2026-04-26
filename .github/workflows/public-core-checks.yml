@@ -1,0 +1,46 @@
+name: Public Core Checks
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24'
+  SESSION_CAPABILITY_SECRET: public-ci-session-capability-${{ github.run_id }}-${{ github.run_attempt }}-0123456789abcdef
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm type-check
+
+      - name: Public Vitest subset
+        env:
+          CI: 'true'
+        run: pnpm test:public
+
+      - name: Build (Next.js only)
+        env:
+          NEXT_PUBLIC_TURNSTILE_BYPASS: '1'
+        run: pnpm build:ci

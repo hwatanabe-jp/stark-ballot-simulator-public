@@ -1,0 +1,26 @@
+[package]
+name = "guest"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[features]
+default = []
+profiling = []
+
+[[bin]]
+name = "guest"
+path = "src/main.rs"
+
+[lib]
+doctest = false
+
+[dependencies]
+contract-core = { path = "../../contract-core" }
+risc0-zkvm = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+hex = "0.4"
+proptest = "1.6"

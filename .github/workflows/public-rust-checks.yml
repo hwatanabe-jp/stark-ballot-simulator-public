@@ -1,0 +1,80 @@
+name: Public Rust Checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'verifier-service/**'
+      - 'zkvm/contract-core/**'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/public-rust-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_VERSION: '1.91.1'
+
+jobs:
+  verifier-service:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            verifier-service -> verifier-service/target
+
+      - name: Format check
+        run: cargo fmt --all --manifest-path verifier-service/Cargo.toml --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path verifier-service/Cargo.toml --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path verifier-service/Cargo.toml
+
+  contract-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            zkvm -> zkvm/target
+
+      - name: Format check
+        run: cargo fmt --all --manifest-path zkvm/contract-core/Cargo.toml --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path zkvm/contract-core/Cargo.toml --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path zkvm/contract-core/Cargo.toml

@@ -1,0 +1,19 @@
+{
+  "data": {
+    "count": 0,
+    "total": 63,
+    "completed": false,
+    "userVoted": true,
+    "finalized": false,
+    "distribution": {
+      "A": 0,
+      "B": 0,
+      "C": 0,
+      "D": 0,
+      "E": 0
+    },
+    "distributionKind": "simulated",
+    "updatedAt": 1730000000000,
+    "animationSeed": "0xcccccccccccccccc"
+  }
+}

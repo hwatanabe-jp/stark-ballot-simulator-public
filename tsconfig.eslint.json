@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": [
+    ".amplify",
+    "amplify",
+    "node_modules",
+    ".next",
+    "amplify_outputs",
+    "coverage",
+    "dist",
+    "output",
+    "playwright-report",
+    "smoke-output",
+    "test-results",
+    "tmp",
+    "target",
+    "terraform/.terraform"
+  ]
+}

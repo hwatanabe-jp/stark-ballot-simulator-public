@@ -1,0 +1,1124 @@
+/**
+ * STARK Ballot Simulator - 「透明な信頼」デザインシステム
+ *
+ * Tailwind CSS v4 CSS-first configuration
+ * - @theme ディレクティブでデザイントークンを定義
+ * - --color-* 名前空間でユーティリティクラスを自動生成
+ *
+ * デザインコンセプト:
+ * 日本の行政モダニズムと「見える化」。和紙テクスチャ、印鑑（ハンコ）、
+ * 活版印刷をメタファーとした、精緻で温かみのあるUI。
+ *
+ * Reference: docs/current/ui-redesign/design-spec-transparent-trust.md
+ */
+
+@import 'tailwindcss';
+
+@theme {
+  /* ============================================
+   * 1. カラーシステム
+   * ============================================ */
+
+  /* 1.1 プライマリカラー（墨色 / Ink）
+   * 公式文書のインク、印鑑の色を想起させる深い藍色系 */
+  --color-ink-950: #0f1229;
+  --color-ink-900: #1a1f4d;
+  --color-ink-800: #232a5e;
+  --color-ink-700: #2d3875;
+  --color-ink-600: #3a4789;
+  --color-ink-500: #4a5399;
+  --color-ink-400: #6b74b3;
+  --color-ink-300: #9ba3c9;
+  --color-ink-200: #c5cadf;
+  --color-ink-100: #e8eaf3;
+  --color-ink-50: #f4f5fa;
+
+  /* 1.2 アクセントカラー（朱色 / Vermillion）
+   * 印鑑の朱肉を想起。アクション、検証完了、重要な確認 */
+  --color-vermillion-700: #a63232;
+  --color-vermillion-600: #c73d3d;
+  --color-vermillion-500: #e04848;
+  --color-vermillion-400: #e86b6b;
+  --color-vermillion-300: #f09a9a;
+  --color-vermillion-200: #f8c4c4;
+  --color-vermillion-100: #fce8e8;
+  --color-vermillion-50: #fef5f5;
+
+  /* 1.3 ニュートラルカラー（紙色 / Paper）
+   * 和紙の温かみを表現。純白ではなく、わずかにクリームがかった色調 */
+  --color-paper-white: #fffffe;
+  --color-paper-warm: #faf9f7;
+  --color-paper-cream: #f7f6f3;
+  --color-paper-cool: #f4f5f8;
+  --color-paper-border: #e5e3df;
+  --color-paper-border-dark: #d4d1cb;
+
+  /* 1.4 テキストカラー */
+  --color-text-primary: #1a1f4d;
+  --color-text-secondary: #4a5399;
+  --color-text-muted: #686d8a; /* Darkened from #7a7f9a for WCAG AA (4.5:1) */
+  --color-text-disabled: #b0b3c5;
+
+  /* 1.5 セマンティックカラー - 検証成功（落ち着いた青緑） */
+  --color-verified-700: #1f5c50;
+  --color-verified-600: #2a7a6a;
+  --color-verified-500: #2d7d6f;
+  --color-verified-100: #e0f2ed;
+  --color-verified-50: #f0faf7;
+
+  /* 1.6 セマンティックカラー - 警告（山吹色） */
+  --color-warning-700: #8a6508;
+  --color-warning-600: #a67a0a;
+  --color-warning-500: #b8860b;
+  --color-warning-100: #fef3d6;
+  --color-warning-50: #fffbeb;
+
+  /* 1.7 セマンティックカラー - エラー（深い赤） */
+  --color-error-700: #7f2d2d;
+  --color-error-600: #963636;
+  --color-error-500: #a63d3d;
+  --color-error-100: #fce8e8;
+  --color-error-50: #fef5f5;
+
+  /* 1.8 セマンティックカラー - 情報（薄い藍） */
+  --color-info-600: #3a6b8a;
+  --color-info-500: #4a7fa3;
+  --color-info-100: #e3eff6;
+  --color-info-50: #f0f7fb;
+
+  /* 1.9 知識パネル専用カラー */
+  --color-knowledge-bg: #fffef5;
+  --color-knowledge-bg-alt: #fdfcf4;
+  --color-knowledge-border: #d4c9a8;
+  --color-knowledge-border-light: #e8e0c8;
+  --color-knowledge-accent: #7a6448; /* Darkened from #8b7355 for WCAG AA (4.5:1) */
+  --color-knowledge-highlight: #f5f0e0;
+
+  /* レガシー互換 (background/foreground) */
+  --color-background: #faf9f7;
+  --color-foreground: #1a1f4d;
+
+  /* ============================================
+   * 2. タイポグラフィ
+   * ============================================ */
+
+  /* 2.1 フォントファミリー */
+  --font-primary: var(--font-noto-serif-jp), 'Noto Serif JP', 'Yu Mincho', serif;
+  --font-secondary: var(--font-noto-sans-jp), 'Noto Sans JP', 'Hiragino Kaku Gothic ProN', sans-serif;
+  --font-mono: var(--font-ibm-plex-mono), 'IBM Plex Mono', 'Source Code Pro', monospace;
+  --font-display: var(--font-shippori-mincho), 'Shippori Mincho', var(--font-noto-serif-jp), 'Noto Serif JP', serif;
+
+  /* 2.2 フォントサイズ */
+  --text-display: 2.5rem;
+  --text-h1: 1.875rem;
+  --text-h2: 1.5rem;
+  --text-h3: 1.25rem;
+  --text-body: 1rem;
+  --text-small: 0.875rem;
+  --text-caption: 0.8125rem;
+  --text-mono: 0.8125rem;
+
+  /* 2.3 行間 */
+  --leading-display: 1.2;
+  --leading-h1: 1.25;
+  --leading-h2: 1.3;
+  --leading-h3: 1.4;
+  --leading-body: 1.7;
+  --leading-small: 1.5;
+  --leading-caption: 1.5;
+  --leading-mono: 1.6;
+
+  /* 2.4 字間 */
+  --tracking-display: -0.02em;
+  --tracking-h1: -0.01em;
+  --tracking-mono: 0.02em;
+
+  /* 2.5 フォントウェイト */
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  /* ============================================
+   * 3. スペーシング（8px基準）
+   * ============================================ */
+  --space-0: 0;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-20: 5rem;
+
+  /* コンポーネントスペーシング */
+  --card-padding: var(--space-6);
+  --card-padding-sm: var(--space-4);
+  --section-gap: var(--space-10);
+  --element-gap: var(--space-4);
+  --element-gap-sm: var(--space-2);
+  --inline-gap: var(--space-2);
+
+  /* ============================================
+   * 3.1 レイアウト
+   * ============================================ */
+  --layout-content-max-width: 42rem;
+  --layout-content-max-width-wide: 56rem;
+  --layout-padding-x: 1rem;
+  --layout-padding-x-lg: 2rem;
+  --header-height: 57px;
+  --step-bar-height: 56px;
+  --sticky-offset: calc(var(--header-height) + var(--step-bar-height));
+
+  /* ============================================
+   * 4. ボーダーと角丸
+   * ============================================ */
+  --radius-none: 0;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-full: 9999px;
+
+  --border-width: 1px;
+  --border-width-2: 2px;
+
+  /* ============================================
+   * 5. シャドウ
+   * ============================================ */
+  --shadow-sm: 0 1px 2px rgba(26, 31, 77, 0.04);
+  --shadow-md: 0 2px 4px rgba(26, 31, 77, 0.06), 0 1px 2px rgba(26, 31, 77, 0.04);
+  --shadow-lg: 0 4px 8px rgba(26, 31, 77, 0.08), 0 2px 4px rgba(26, 31, 77, 0.04);
+  --shadow-inset: inset 0 1px 2px rgba(26, 31, 77, 0.08);
+  --shadow-inset-deep: inset 0 2px 4px rgba(26, 31, 77, 0.12);
+  --shadow-stamp: 0 0 0 2px var(--color-vermillion-500), 0 2px 8px rgba(199, 61, 61, 0.25);
+
+  /* ============================================
+   * 6. トランジション
+   * ============================================ */
+  --transition-fast: 150ms ease;
+  --transition-base: 200ms ease;
+  --transition-slow: 300ms ease;
+  --transition-slower: 500ms ease;
+
+  /* ============================================
+   * 7. レスポンシブブレークポイント
+   * ============================================ */
+  --breakpoint-sm: 640px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 1024px;
+  --breakpoint-xl: 1280px;
+}
+
+/* ============================================
+ * 7.1 ルートフォントサイズ（レスポンシブ）
+ * ============================================
+ * モバイル: 16px（ブラウザデフォルト）
+ * タブレット横向き〜デスクトップ: 18px（高解像度環境での可読性向上）
+ */
+html {
+  font-size: 16px;
+}
+
+@media (min-width: 768px) {
+  html {
+    font-size: 18px;
+  }
+}
+
+/* ============================================
+ * 7.2 小さな文字の可読性向上
+ * ============================================
+ * 高解像度環境で細い文字が読みにくくなるため、
+ * 小さなフォントサイズには少し太めのウェイトを適用
+ */
+.text-sm,
+.text-xs,
+.text-caption,
+.text-mono {
+  font-weight: 500;
+}
+
+/* ============================================
+ * 8. アニメーション（Keyframes）
+ * ============================================ */
+
+/* 8.1 印鑑押下アニメーション */
+@keyframes stamp-press {
+  0% {
+    transform: scale(1.5) rotate(-10deg);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(0.95) rotate(-3deg);
+    opacity: 1;
+  }
+  70% {
+    transform: scale(1.02) rotate(-5deg);
+  }
+  100% {
+    transform: scale(1) rotate(-5deg);
+  }
+}
+
+/* 8.2 チェックマーク描画アニメーション */
+@keyframes draw-check {
+  0% {
+    stroke-dashoffset: 24;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* 8.3 ステップ進行アニメーション */
+@keyframes step-complete {
+  0% {
+    background: var(--color-ink-700);
+  }
+  50% {
+    transform: scale(1.1);
+    background: var(--color-vermillion-400);
+  }
+  100% {
+    transform: scale(1);
+    background: var(--color-vermillion-500);
+  }
+}
+
+@keyframes step-complete-subtle {
+  0% {
+    background: var(--color-vermillion-500);
+  }
+  50% {
+    transform: scale(1.02);
+    background: var(--color-vermillion-400);
+  }
+  100% {
+    transform: scale(1);
+    background: var(--color-vermillion-500);
+  }
+}
+
+/* 8.4 墨の滲みアニメーション（新規項目追加時） */
+@keyframes ink-spread {
+  0% {
+    opacity: 0;
+    filter: blur(4px);
+    transform: translateY(-4px);
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+/* 8.5 フェードイン */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 8.6 スライドイン（下から） */
+@keyframes slide-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 8.6.1 微かな浮上（法務ページ等の控えめなページ遷移用）
+ * 「指摘されないとわからない」レベルの些細なアニメーション */
+@keyframes subtle-rise {
+  from {
+    opacity: 0.85;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 8.7 グループ通知アニメーション（ピコン）
+ * 新規項目がグループに追加された瞬間のフィードバック
+ * 墨汁が落ちて波紋が広がるイメージ */
+@keyframes group-notify {
+  0% {
+    background-color: var(--color-knowledge-bg-alt);
+  }
+  20% {
+    background-color: var(--color-verified-100);
+    box-shadow: inset 0 0 0 1px var(--color-verified-300);
+  }
+  100% {
+    background-color: var(--color-knowledge-bg-alt);
+    box-shadow: none;
+  }
+}
+
+/* 8.8 NEW ドットフェードアウト
+ * 新規項目インジケーターのフェードアウト（2秒間表示後に消える） */
+@keyframes new-dot-fade {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* 8.9 インクドロップアニメーション
+ * ボット投票中のローディングインジケーター用
+ * 墨汁が紙に染み込む波紋のイメージ */
+@keyframes ink-drop {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 1;
+  }
+}
+
+/* 8.10 インクプール成長アニメーション
+ * 棒グラフの有機的な成長エフェクト */
+@keyframes ink-pool-glow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 8px rgba(58, 71, 137, 0.1),
+      inset 0 1px 2px rgba(26, 31, 77, 0.08);
+  }
+  50% {
+    box-shadow:
+      0 0 16px rgba(58, 71, 137, 0.18),
+      inset 0 1px 2px rgba(26, 31, 77, 0.1);
+  }
+}
+
+/* 8.11 スケルトンシマーアニメーション
+ * 和紙の繊維が光を反射するような温かみのあるシマー効果
+ * 検証準備中（2秒間）の表示に使用 */
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* 8.12 知識パネル連動ハイライト
+ * 印鑑を押した瞬間の朱肉の広がり → 徐々に落ち着く
+ * 検証小項目クリック時に対応する知識キーをハイライト（2.5秒フェードアウト） */
+@keyframes knowledge-highlight-pulse {
+  0% {
+    box-shadow:
+      0 0 0 0 var(--color-vermillion-300),
+      inset 0 0 0 2px var(--color-vermillion-400);
+    background-color: var(--color-vermillion-100);
+  }
+  20% {
+    box-shadow:
+      0 0 0 4px var(--color-vermillion-200),
+      inset 0 0 0 2px var(--color-vermillion-400);
+  }
+  40% {
+    box-shadow:
+      0 0 0 6px transparent,
+      inset 0 0 0 2px var(--color-vermillion-300);
+  }
+  100% {
+    box-shadow:
+      0 0 0 0 transparent,
+      inset 0 0 0 0 transparent;
+    background-color: var(--color-knowledge-highlight);
+  }
+}
+
+/* 8.13 小項目カスケード出現
+ * 筆で書き下ろすような、上から順の流れ */
+@keyframes detail-cascade-in {
+  0% {
+    opacity: 0;
+    transform: translateX(-8px);
+    filter: blur(2px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+    filter: blur(0);
+  }
+}
+
+/* 8.14 ステータスアイコン変形
+ * 印鑑の押下感を小さなアイコンで表現 */
+@keyframes status-icon-morph {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(0.7);
+  }
+  60% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ============================================
+ * 9. ユーティリティクラス
+ * ============================================ */
+
+/* Tailwind v4 memo:
+ * - px/py/mx/my are already emitted as logical properties.
+ * - Keep w-/h- sizing as project baseline unless vertical writing-mode support is required.
+ */
+
+/* 9.1 フォントファミリー */
+.font-primary {
+  font-family: var(--font-primary);
+}
+
+.font-secondary {
+  font-family: var(--font-secondary);
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+/* 9.1.1 ハッシュ/数値表示の合字を無効化 */
+.font-features-none {
+  font-variant-ligatures: none;
+  font-feature-settings:
+    'liga' 0,
+    'clig' 0,
+    'calt' 0;
+}
+
+/* 9.2 アニメーションクラス */
+.animate-stamp {
+  animation: stamp-press 400ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.animate-ink-spread {
+  animation: ink-spread 400ms ease-out;
+}
+
+.animate-check path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  animation: draw-check 300ms ease-out forwards;
+  animation-delay: 200ms;
+}
+
+.animate-check-subtle path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  animation: draw-check 150ms ease-out forwards;
+}
+
+.animate-step-complete {
+  animation: step-complete 400ms ease-out;
+}
+
+.animate-step-complete-subtle {
+  animation: step-complete-subtle 180ms ease-out;
+}
+
+.animate-fade-in {
+  animation: fade-in 200ms ease-out;
+}
+
+.animate-slide-in-up {
+  animation: slide-in-up 300ms ease-out;
+}
+
+.animate-subtle-rise {
+  animation: subtle-rise 300ms ease-out both;
+}
+
+.animate-group-notify {
+  animation: group-notify 600ms ease-out;
+}
+
+.animate-new-dot-fade {
+  animation: new-dot-fade 500ms ease-out forwards;
+  animation-delay: 1500ms;
+}
+
+.animate-ink-drop {
+  animation: ink-drop 1.2s ease-in-out infinite;
+}
+
+.animate-ink-pool-glow {
+  animation: ink-pool-glow 3s ease-in-out infinite;
+}
+
+/* 9.2.1 検証ステップ詳細用アニメーション */
+
+/* スケルトンシマー（検証準備中） */
+.animate-skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-paper-cream) 0%,
+    var(--color-paper-warm) 20%,
+    var(--color-ink-100) 40%,
+    var(--color-paper-warm) 60%,
+    var(--color-paper-cream) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+}
+
+/* 知識パネル連動ハイライト（2.5秒フェードアウト） */
+.animate-knowledge-highlight-pulse {
+  animation: knowledge-highlight-pulse 2.5s ease-out forwards;
+}
+
+/* 小項目カスケード出現 */
+.animate-detail-cascade-in {
+  animation: detail-cascade-in 0.3s ease-out both;
+}
+
+/* カスケード遅延: 各項目 80ms ずらし（最大20項目） */
+.animate-detail-cascade-in:nth-child(1) {
+  animation-delay: 0ms;
+}
+.animate-detail-cascade-in:nth-child(2) {
+  animation-delay: 80ms;
+}
+.animate-detail-cascade-in:nth-child(3) {
+  animation-delay: 160ms;
+}
+.animate-detail-cascade-in:nth-child(4) {
+  animation-delay: 240ms;
+}
+.animate-detail-cascade-in:nth-child(5) {
+  animation-delay: 320ms;
+}
+.animate-detail-cascade-in:nth-child(6) {
+  animation-delay: 400ms;
+}
+.animate-detail-cascade-in:nth-child(7) {
+  animation-delay: 480ms;
+}
+.animate-detail-cascade-in:nth-child(8) {
+  animation-delay: 560ms;
+}
+.animate-detail-cascade-in:nth-child(9) {
+  animation-delay: 640ms;
+}
+.animate-detail-cascade-in:nth-child(10) {
+  animation-delay: 720ms;
+}
+.animate-detail-cascade-in:nth-child(11) {
+  animation-delay: 800ms;
+}
+.animate-detail-cascade-in:nth-child(12) {
+  animation-delay: 880ms;
+}
+.animate-detail-cascade-in:nth-child(13) {
+  animation-delay: 960ms;
+}
+.animate-detail-cascade-in:nth-child(14) {
+  animation-delay: 1040ms;
+}
+.animate-detail-cascade-in:nth-child(15) {
+  animation-delay: 1120ms;
+}
+.animate-detail-cascade-in:nth-child(16) {
+  animation-delay: 1200ms;
+}
+.animate-detail-cascade-in:nth-child(17) {
+  animation-delay: 1280ms;
+}
+.animate-detail-cascade-in:nth-child(18) {
+  animation-delay: 1360ms;
+}
+.animate-detail-cascade-in:nth-child(19) {
+  animation-delay: 1440ms;
+}
+.animate-detail-cascade-in:nth-child(20) {
+  animation-delay: 1520ms;
+}
+
+/* ステータスアイコン変形（0.25秒） */
+.animate-status-icon-morph {
+  animation: status-icon-morph 0.25s ease-out;
+}
+
+/* 9.3 フォーカス表示 */
+:focus-visible {
+  outline: 2px solid var(--color-ink-500);
+  outline-offset: 2px;
+}
+
+/* 9.4 紙テクスチャ背景（CSSパターン） */
+.bg-paper-texture {
+  background-color: var(--color-paper-cream);
+  background-image: url('/textures/paper-noise.png');
+  background-repeat: repeat;
+  background-size: 128px 128px;
+  background-blend-mode: overlay;
+}
+
+/* 9.5 知識パネル左ボーダー（紗綾形パターン） */
+.border-sayagata {
+  position: relative;
+}
+
+.border-sayagata::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: var(--space-4);
+  bottom: var(--space-4);
+  width: 4px;
+  background: url('/patterns/sayagata.svg') repeat-y;
+  background-size: 4px auto;
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* 9.6 カード下部グラデーションライン */
+.card-bottom-line::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: var(--space-6);
+  right: var(--space-6);
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--color-ink-200) 20%,
+    var(--color-ink-200) 80%,
+    transparent 100%
+  );
+}
+
+/* 9.7 印鑑テクスチャオーバーレイ */
+.stamp-texture::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url('/textures/stamp-texture.png');
+  background-repeat: repeat;
+  background-size: 128px 128px;
+  opacity: 0.1;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* 9.8 ステップナビ接続線（点線） */
+.step-connector::after {
+  content: '';
+  position: absolute;
+  left: 22px;
+  top: 40px;
+  width: 2px;
+  height: calc(100% - 8px);
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--color-ink-300) 0px,
+    var(--color-ink-300) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+}
+
+/* 9.9 ステップインジケーター（横型） */
+.step-indicator-horizontal {
+  position: sticky;
+  top: var(--header-height);
+  z-index: 40;
+  background: var(--color-paper-warm);
+  border-bottom: 1px solid var(--color-paper-border);
+  padding: var(--space-3) var(--space-4);
+}
+
+.step-list {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 0;
+  max-width: var(--layout-content-max-width);
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+}
+
+.step-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  flex: 1;
+  max-width: 120px;
+}
+
+.step-item:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: calc(50% + 14px);
+  right: calc(-50% + 14px);
+  height: 2px;
+  background: var(--color-ink-300);
+  z-index: 0;
+}
+
+.step-item.completed:not(:last-child)::after {
+  background: var(--color-vermillion-500);
+}
+
+.step-link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.step-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-caption);
+  font-weight: var(--font-medium);
+  z-index: 1;
+  transition: all 200ms ease;
+}
+
+.step-dot.pending {
+  background: var(--color-paper-cream);
+  border: 2px solid var(--color-ink-300);
+  color: var(--color-text-muted);
+}
+
+.step-dot.active {
+  background: var(--color-ink-700);
+  color: var(--color-paper-white);
+  box-shadow: 0 0 0 4px var(--color-ink-100);
+}
+
+.step-dot.completed {
+  background: var(--color-vermillion-500);
+  color: var(--color-paper-white);
+}
+
+.step-label {
+  margin-top: var(--space-2);
+  font-family: var(--font-secondary);
+  font-size: var(--text-caption);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.step-item.active .step-label {
+  color: var(--color-ink-900);
+  font-weight: var(--font-medium);
+}
+
+/* Mobile (< 640px) */
+@media (max-width: 639px) {
+  .step-indicator-horizontal {
+    padding: var(--space-2) var(--space-2);
+  }
+
+  .step-list {
+    gap: 0;
+    justify-content: space-between;
+    max-width: 100%;
+  }
+
+  .step-item {
+    flex: 1;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .step-dot {
+    width: 24px;
+    height: 24px;
+    font-size: 0.75rem;
+  }
+
+  .step-label {
+    font-size: 0.625rem;
+    max-width: 56px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* 接続線を細くする */
+  .step-item:not(:last-child)::after {
+    top: 12px;
+    left: calc(50% + 12px);
+    right: calc(-50% + 12px);
+    height: 1px;
+  }
+}
+
+/* Extra small screens (< 400px) */
+@media (max-width: 399px) {
+  .step-indicator-horizontal {
+    padding: var(--space-1) var(--space-1);
+  }
+
+  .step-dot {
+    width: 20px;
+    height: 20px;
+    font-size: 0.625rem;
+  }
+
+  .step-label {
+    font-size: 0.5625rem; /* 9px */
+    max-width: 44px;
+    line-height: 1.2;
+  }
+
+  .step-item:not(:last-child)::after {
+    top: 10px;
+    left: calc(50% + 10px);
+    right: calc(-50% + 10px);
+  }
+}
+
+/* ============================================
+ * 10. 知識パネル専用スタイル
+ * ============================================ */
+
+/* 10.1 アイテムレベルの NEW ドット（展開時に表示） */
+.knowledge-item-new-dot {
+  position: absolute;
+  left: var(--space-1);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--color-verified-500);
+}
+
+/* 10.2 パネルタイトル切替（私 / ボット） */
+.knowledge-panel-title-wrapper {
+  position: relative;
+  height: 1.5em;
+  overflow: hidden;
+  margin-bottom: var(--space-4);
+  padding-left: var(--space-3);
+}
+
+.knowledge-panel-title {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-primary);
+  font-size: var(--text-small);
+  font-weight: var(--font-semibold);
+  transition:
+    opacity var(--transition-base),
+    transform var(--transition-base);
+}
+
+.knowledge-panel-title.my-knowledge {
+  color: var(--color-knowledge-accent);
+}
+
+.knowledge-panel-title.bot-knowledge {
+  color: var(--color-ink-600);
+}
+
+.knowledge-panel-title.active {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.knowledge-panel-title.inactive {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+.knowledge-panel-title-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* ============================================
+ * 11. ドッキング浮遊パネル
+ * ============================================ */
+
+/* 11.1 浮遊状態（画面下部に固定） */
+.knowledge-floating {
+  /* 浮遊感を演出するシャドウ */
+  box-shadow:
+    0 -4px 20px rgba(26, 31, 77, 0.1),
+    0 -1px 4px rgba(26, 31, 77, 0.05);
+  display: flex;
+  flex-direction: column;
+  /* 最大高さ制限（超過時は内部スクロール） */
+  max-height: 30vh;
+  overflow: hidden;
+  /* トランジション */
+  transition:
+    box-shadow var(--transition-base),
+    max-height var(--transition-base);
+}
+
+/* 浮遊時のコンテンツコンテナ */
+.knowledge-floating .knowledge-items-container {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* スクロールバーのスタイリング */
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-ink-200) transparent;
+}
+
+.knowledge-floating .knowledge-items-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.knowledge-floating .knowledge-items-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.knowledge-floating .knowledge-items-container::-webkit-scrollbar-thumb {
+  background: var(--color-ink-200);
+  border-radius: var(--radius-full);
+}
+
+.knowledge-floating .knowledge-items-container::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-300);
+}
+
+/* 11.2 ドッキング状態（ドキュメントフローに合流） */
+.knowledge-docked {
+  /* シャドウなし（浮遊していない） */
+  box-shadow: none;
+  /* 高さ制限なし（全コンテンツ表示） */
+  max-height: none;
+  /* トランジション */
+  transition: box-shadow var(--transition-base);
+}
+
+.knowledge-docked .knowledge-items-container {
+  max-height: none;
+  overflow-y: visible;
+}
+
+/* 11.3 浮遊コンテナ（LayoutProviderから適用） */
+.knowledge-floating-container {
+  /* safe-area + 余白分だけ下端からオフセット */
+  bottom: calc(env(safe-area-inset-bottom, 0px) + var(--knowledge-floating-offset, 0px));
+}
+
+/* ============================================
+ * 12. 検証ステップ詳細アイテム
+ * ============================================ */
+
+/* 12.1 小項目ステータス遷移
+ * 墨が紙に染み込むような滑らかな状態変化（0.2秒） */
+.verification-detail-item {
+  transition:
+    background-color var(--transition-base),
+    border-color var(--transition-base),
+    box-shadow var(--transition-base);
+  border-left: 3px solid transparent;
+}
+
+/* pending: 未処理（透明左ボーダー） */
+.verification-detail-item[data-status='pending'] {
+  background-color: transparent;
+  border-left-color: var(--color-paper-border);
+}
+
+/* running: 墨汁が動き出す */
+.verification-detail-item[data-status='running'] {
+  background-color: var(--color-ink-50);
+  border-left-color: var(--color-ink-500);
+  box-shadow: inset 2px 0 8px -4px var(--color-ink-300);
+}
+
+/* success: 朱肉の押印 */
+.verification-detail-item[data-status='success'] {
+  background-color: var(--color-verified-50);
+  border-left-color: var(--color-verified-500);
+}
+
+/* failed: 朱墨の警告 */
+.verification-detail-item[data-status='failed'] {
+  background-color: var(--color-error-50);
+  border-left-color: var(--color-error-500);
+}
+
+/* ============================================
+ * 13. アクセシビリティ: prefers-reduced-motion
+ * ============================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  /* アニメーションを無効化 */
+  .animate-stamp,
+  .animate-ink-spread,
+  .animate-check path,
+  .animate-step-complete,
+  .animate-fade-in,
+  .animate-slide-in-up,
+  .animate-subtle-rise,
+  .animate-group-notify,
+  .animate-new-dot-fade,
+  .animate-ink-drop,
+  .animate-ink-pool-glow,
+  .animate-skeleton-shimmer,
+  .animate-knowledge-highlight-pulse,
+  .animate-detail-cascade-in,
+  .animate-status-icon-morph {
+    animation: none !important;
+  }
+
+  /* トランジションを短縮 */
+  .verification-detail-item,
+  .knowledge-panel-title,
+  .knowledge-floating,
+  .knowledge-docked,
+  .step-dot {
+    transition-duration: 0.01ms !important;
+  }
+
+  /* スケルトンシマーは静的な背景色に */
+  .animate-skeleton-shimmer {
+    background: var(--color-paper-cream) !important;
+    background-size: unset !important;
+  }
+}

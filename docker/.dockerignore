@@ -1,0 +1,13 @@
+# Exclude large local artifacts from Docker build context
+node_modules
+.next
+coverage
+target
+zkvm/target
+verifier-service/target
+pnpm-lock.yaml
+.tmp
+.env*
+aws
+amplify_outputs
+playwright-report
