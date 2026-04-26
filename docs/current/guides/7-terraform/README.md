@@ -158,8 +158,6 @@ terraform/
 ├── variables.tf                    # 入力変数
 ├── outputs.tf                      # Amplify 連携に使う outputs
 ├── terraform.tfvars.example        # 公開向けの sanitized tfvars 例
-├── develop.tfvars                  # develop 用 placeholder
-├── main.tfvars                     # main 用 placeholder
 ├── backend.local.hcl               # backend 実運用値（git 管理外、render-backend-config.sh で生成）
 ├── *.local.tfvars                  # 実運用値（git 管理外、render-local-tfvars.sh で生成）
 ├── *.local.json                    # IAM 初期設定用 JSON（git 管理外、render-admin-iam-docs.sh で生成）
@@ -180,7 +178,6 @@ terraform/
 
 注:
 
-- `develop.tfvars` / `main.tfvars` は公開可能な placeholder ファイルとしてコミットします。
 - 実運用値は `.env.local` またはシェル環境に置き、`pnpm terraform:backend` と `pnpm terraform:tfvars:develop` / `pnpm terraform:tfvars:main` で `terraform/*.local.*` を生成します。
 - `terraform/*.local.hcl`、`terraform/*.local.tfvars`、`terraform/*.local.json` は git 管理外です。アカウント ID、ARN、実ドメイン、digest-pinned image URI、state bucket 名を tracked ファイルに戻さないでください。
 
@@ -241,8 +238,6 @@ aws-vault exec terraform-admin -- terraform -chdir=terraform plan -var-file="mai
 | `risc0_toolchain_*`            | 任意                                 | shared toolchain builder の pin 設定           |
 
 ### `terraform.tfvars.example`
-
-公開向けに値を伏せたサンプルです。`develop.tfvars` / `main.tfvars` も placeholder として扱い、実 apply には使いません。実運用では `.env.local` に concrete 値を置いて `terraform/<env>.local.tfvars` を生成してください。
 
 ```hcl
 aws_region  = "ap-northeast-1"

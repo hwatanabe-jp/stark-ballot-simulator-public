@@ -899,6 +899,20 @@ upload_outputs() {
   done
 }
 
+run_host_with_timeout() {
+  local timeout_seconds="${ZKVM_TIMEOUT_SECONDS:-900}"
+  log INFO "Running host with payload $(basename "$WORK_INPUT") (timeout: ${timeout_seconds}s)"
+  if timeout "$timeout_seconds" "$HOST_BIN" "$WORK_INPUT"; then
+    return 0
+  else
+    local exit_code=$?
+    if (( exit_code == 124 )); then
+      fatal "zkVM execution timed out after ${timeout_seconds}s"
+    fi
+    fatal "zkVM execution failed with exit code ${exit_code}"
+  fi
+}
+
 main() {
   ensure_host_binary
 
@@ -911,15 +925,7 @@ main() {
   resolve_input_file
   validate_input_json
 
-  local timeout_seconds="${ZKVM_TIMEOUT_SECONDS:-900}"
-  log INFO "Running host with payload $(basename "$WORK_INPUT") (timeout: ${timeout_seconds}s)"
-  if ! timeout "$timeout_seconds" "$HOST_BIN" "$WORK_INPUT"; then
-    local exit_code=$?
-    if (( exit_code == 124 )); then
-      fatal "zkVM execution timed out after ${timeout_seconds}s"
-    fi
-    fatal "zkVM execution failed with exit code ${exit_code}"
-  fi
+  run_host_with_timeout
 
   stage_outputs
   if [[ -n "$OUTPUT_S3_BUCKET" ]]; then

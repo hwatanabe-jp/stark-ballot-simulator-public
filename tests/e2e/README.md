@@ -55,12 +55,11 @@ pnpm test:cli:real-prod:s0
 
 ## CI の現状
 
-- 自動実行の本流は `.github/workflows/core-checks.yml` です。
+- 公開 snapshot の自動実行は `.github/workflows/public-ui-mock-e2e.yml` です。
 - ここで `pnpm test:e2e:axe` と `pnpm test:e2e:mock --grep @smoke --reporter=list` を実行します。
 - `pnpm test:e2e:axe` は現在 `/vote`, `/aggregate`, `/privacy`, `/terms` の high-impact (`serious` / `critical`) axe violation を確認する smoke です。
 - この smoke セットは現在 S0 と S2 で、正常系と「proof は正しいが claimed tally は壊れている」系の両方をカバーします。
-- `.github/workflows/ui-mock-e2e.yml` は手動再実行用の standalone workflow です。
-- CI では prebuilt な Next.js artifact を再利用するため、`SKIP_NEXT_BUILD=1` を渡す job があります。
+- 公開 CI は生成済み public workflow だけを使い、private repository の build artifact には依存しません。
 
 ## Playwright 設定の前提
 

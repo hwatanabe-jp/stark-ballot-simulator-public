@@ -19,8 +19,7 @@ the behavior in code first.
 - `verification/` - implementation-oriented verification notes
 - `ui-redesign/` - current UI vocabulary and design contracts
 - `zkvm-contract/` - current zkVM contract planning and cleanup notes
-- `runbooks/` and `monitoring/` - operational procedures and queries
+- `runbooks/` - public operational procedures; private monitoring query catalogs are stripped from generated public snapshots
 - `tests/` - test and CLI runbooks
-- `internal/` - current operational notes that are account-specific or not public-facing
 
-Historical context belongs in `../archive/`.
+Historical context is kept in the private source repository and stripped from generated public snapshots.

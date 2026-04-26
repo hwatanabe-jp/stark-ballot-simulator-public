@@ -142,6 +142,12 @@ export function validateEnv(): void {
   const useMockStore = process.env.USE_MOCK_STORE === 'true' || process.env.NODE_ENV === 'test';
   const rateLimitStore = process.env.RATE_LIMIT_STORE?.trim().toLowerCase();
 
+  if (!useMockStore && process.env.USE_AMPLIFY_DATA === 'false') {
+    throw new Error(
+      'USE_AMPLIFY_DATA=false is incompatible with USE_MOCK_STORE=false. Set USE_MOCK_STORE=true to use a mock store explicitly.',
+    );
+  }
+
   if (!useMockStore && !parseVoteSecretKey(process.env.VOTE_SECRET_ENCRYPTION_KEY)) {
     throw new Error('VOTE_SECRET_ENCRYPTION_KEY must be set to a valid 32-byte key (hex or base64).');
   }

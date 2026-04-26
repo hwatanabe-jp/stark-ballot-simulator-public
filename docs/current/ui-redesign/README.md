@@ -1,8 +1,7 @@
 # UI/UX Redesign
 
 This directory keeps the maintained UI/UX references for the current
-Transparent Trust interface. Historical planning notes were moved to
-`docs/archive/notes/ui-redesign/`.
+Transparent Trust interface. Historical planning notes are kept in the private source repository and stripped from generated public snapshots.
 
 ## Maintained References
 
@@ -18,8 +17,6 @@ Transparent Trust interface. Historical planning notes were moved to
 
 ## Archived Notes
 
-The original to-be UX sketch, technical challenge list, implementation
-plan, Phase 4.2 notes, and old verification-steps plan are archived under
-`docs/archive/notes/ui-redesign/`.
+The original to-be UX sketch, technical challenge list, implementation plan, Phase 4.2 notes, and old verification-steps plan are retained in private source history.
 
 When a maintained UI doc and code disagree, current code wins.

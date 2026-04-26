@@ -74,7 +74,7 @@ aws logs describe-log-groups \
   --output json
 ```
 
-CloudWatch Logs Insights のクエリは `docs/current/monitoring/cloudwatch-insights.md` を参照してください。
+CloudWatch Logs Insights のクエリ集と週次監視手順は private operations notes 側で管理します。public snapshot では、この Runbook のロググループ discovery 例を一次切り分けの入口にしてください。
 
 ## 2. S3 bundle / presigned URL 障害
 
@@ -210,5 +210,4 @@ curl -X POST "${BASE_URL%/}/api/finalize/cancel" \
 ## 5. 参照先
 
 - Terraform / Amplify env 連携: `docs/current/guides/7-terraform/README.md`
-- CloudWatch Logs Insights: `docs/current/monitoring/cloudwatch-insights.md`
-- 週次監視: `docs/current/monitoring/automated-monitoring-guidelines.md`
+- CloudWatch Logs Insights query catalogs and weekly monitoring runbooks are private operations notes stripped from the generated public snapshot.

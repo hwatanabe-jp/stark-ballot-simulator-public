@@ -1,10 +1,10 @@
-# Third-Party Notices (Template)
+# Third-Party Notices
 
-Last updated: 2026-04-25
+Last updated: 2026-04-26
 
-This repository is intended to be published as source. The notices below summarize
-known third-party licenses used by this codebase. Update this file when dependencies
-change or when preparing a public release.
+This repository is published as source. The notices below summarize known
+third-party licenses used by this codebase and by vendored documentation assets.
+Update this file when dependencies or vendored assets change.
 
 ## Scope (public repo)
 
@@ -45,11 +45,28 @@ Use these tracked files for current package-level license data:
 The Terraform image-signature Lambda has its own `package-lock.json`; inspect it
 directly when `terraform/lambda/check-image-signature/` dependencies change.
 
+## Vendored public-book browser assets
+
+The mdBook source includes small browser assets that are committed directly so
+the generated Public Specs can build without a network fetch:
+
+- `public-book/mermaid.min.js`
+  - Mermaid v11.6.0
+  - License: MIT
+  - Source: <https://github.com/mermaid-js/mermaid>
+  - Header notice: "MIT Licensed. Copyright (c) 2014 - 2022 Knut Sveidqvist"
+- `public-book/fzf.umd.js`
+  - fzf v0.5.2
+  - License: BSD-3-Clause
+  - Source: <https://github.com/ajitid/fzf-for-js>
+  - Header notice: "Copyright (c) 2021 Ajit"
+
 ## Special obligations / attention
 
 LGPL-3.0-or-later (Node prod):
 
 - `@img/sharp-libvips-linux-x64`
+- `@img/sharp-libvips-linuxmusl-x64`
 
 CC-BY-4.0 (Node prod):
 

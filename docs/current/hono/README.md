@@ -2,8 +2,7 @@
 
 This directory keeps the maintained Hono API separation note.
 Deployment-specific values should be represented as placeholders here;
-operational evidence belongs in `docs/current/internal/`, and historical
-planning notes belong in `docs/archive/notes/hono/`.
+operational evidence and historical planning notes are kept in the private source repository and stripped from generated public snapshots.
 
 ## Maintained Reference
 

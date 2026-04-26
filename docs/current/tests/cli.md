@@ -7,8 +7,7 @@ launching a browser: session creation, user and bot votes, tamper scenarios, fin
 execution, bundle download, and receipt verification. Use it as the fastest local sanity check for
 end-to-end behavior.
 
-This guide is the current operating guide. Historical run notes and retained local evidence live in
-[`docs/archive/notes/tests/cli-evidence-log.md`](../../archive/notes/tests/cli-evidence-log.md).
+This guide is the current operating guide.
 
 ## Source of Truth
 
@@ -20,7 +19,7 @@ When this guide and implementation disagree, current code wins. Check these file
 - `src/lib/testing/cli-voting-flow-helpers.ts` and `src/lib/testing/*` for CLI assertions and helper
   behavior.
 - `src/server/api/handlers/verificationBundles.ts` for authenticated bundle/report delivery.
-- `.github/workflows/cli-tests.yml` and `.github/workflows/core-checks.yml` for CI usage.
+- `.github/workflows/public-cli-tests.yml` and `.github/workflows/public-core-checks.yml` for public CI usage.
 - `public/imageId-mapping.json` for the current method version and expected ImageID values.
 
 Last code audit: 2026-04-26 against the PR91 worktree.
@@ -243,10 +242,8 @@ Verifier-service behavior:
 
 ## CI Usage
 
-- `.github/workflows/cli-tests.yml` runs `pnpm test:cli:mock` for mock S0 from a fresh checkout.
-- `.github/workflows/core-checks.yml` reuses the downloaded Next.js build artifact and runs
-  `pnpm test:cli:mock -- --skip-build`.
-
+- `.github/workflows/public-cli-tests.yml` runs `pnpm test:cli:mock` for mock S0 from a fresh checkout.
+- `.github/workflows/public-core-checks.yml` runs the public Vitest subset, type-check, lint, and Next.js-only build.
 ## Troubleshooting
 
 - Session creation fails before voting: confirm the server environment has a non-placeholder
@@ -265,8 +262,7 @@ Verifier-service behavior:
 ## Maintenance Policy
 
 - Keep this file focused on current behavior, current commands, and current contracts.
-- Move dated local run notes, retained `.tmp` artifacts, and past failure history to
-  [`docs/archive/notes/tests/cli-evidence-log.md`](../../archive/notes/tests/cli-evidence-log.md).
+- Keep dated local run notes, retained `.tmp` artifacts, and past failure history out of the generated public snapshot.
 - Mark unverified commands as **Pending** with an absolute date and a source-code reference.
 - Prefer source-code references over prose when behavior is uncertain.
 - Re-audit this guide after guest-image changes, ImageID mapping updates, bundle-auth refactors, CLI

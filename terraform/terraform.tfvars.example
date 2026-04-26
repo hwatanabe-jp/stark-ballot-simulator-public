@@ -9,7 +9,7 @@
 #   terraform apply -var-file="develop.local.tfvars"
 #
 # Note:
-#   develop.tfvars / main.tfvars も placeholder として追跡します。
+#   Environment-specific concrete tfvars are generated as terraform/*.local.tfvars and are not tracked in the public snapshot.
 #   concrete な account ID / ARN / domain / digest は tracked ファイルに戻さないでください。
 
 # AWS 基本設定

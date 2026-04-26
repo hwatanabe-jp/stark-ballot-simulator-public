@@ -582,7 +582,7 @@ Use the expected ImageID that matches the build you are verifying.
 ## Related Documentation
 
 - `docs/current/guides/6-zkvm_design/final_design.md`
-- `docs/current/internal/guides/3-deployment/fargate-prover-deployment.md`
+- `docs/current/runbooks/aws-hybrid.md`
 - `docs/current/tests/cli.md`
 - `verifier-service/README.md`
 - <https://dev.risczero.com>

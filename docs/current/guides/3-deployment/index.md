@@ -12,7 +12,6 @@ Last reviewed: **2026-01-21** (async finalize + callbacks in place; security/qua
 | 🧱 [RISC Zero Base Image](./risc0-base-image.md)                                                       | Build reusable ARM64 toolchain image                                                      | ✅ Baseline             | One-time toolchain build and digest pinning              |
 | 🧭 [Terraform Guide](../7-terraform/README.md)                                                         | Terraform-managed async prover infrastructure and Amplify handoff                         | ✅ Current              | Rebuild or review the public infrastructure contract     |
 | 🛠️ [AWS Hybrid Runbook](../../runbooks/aws-hybrid.md)                                                  | Operational flow for async finalize, S3 bundles, Step Functions, ECS, and troubleshooting | ✅ Current              | Operate or diagnose the deployed hybrid AWS path         |
-| 🧪 [Phase 9.4 Manual Testing Log](../../../archive/guides/3-deployment/phase9.4-manual-testing-log.md) | Hands-on CLI/Fargate execution logs (dev/prod/64 votes, quota tests)                      | 🗄️ Archive (historical) | Replay historical test plans and inspect timing evidence |
 
 Internal deployment notes for Amplify Data, CodeBuild/ECR, Fargate, and SQS/Step Functions are
 intentionally omitted from this public index.
@@ -63,7 +62,7 @@ Amplify Data (status)
    - Provision SQS → Step Functions → ECS resources (security group, log groups, IAM roles).
    - Register a task definition (16 vCPU / 32 GB) and validate with dev/prod test payloads.
 4. **Manual Verification**
-   - Use the archived [manual testing log](../../../archive/guides/3-deployment/phase9.4-manual-testing-log.md) steps to run dev mode (~20 s) and 64-vote prod (~4.5 min) tasks.
+   - Use current CLI and Terraform runbooks for fresh verification. Historical manual timing logs are retained in private source history.
    - Capture CloudWatch metrics (CPU, memory) and ensure S3 outputs match expectations.
 5. **Operations Preparation**
    - Document NAT/private-subnet migration (if required).

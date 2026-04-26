@@ -235,6 +235,8 @@ with open(input_path, "w", encoding="utf-8") as handle:
     )
 PY
 
+# create_bundle_archive reads WORK_INPUT as a sourced-entrypoint global.
+# shellcheck disable=SC2034
 WORK_INPUT="$input_json"
 create_bundle_archive "$output_dir"
 
@@ -541,5 +543,23 @@ fi
 
 if build_public_input "$input_json" "$legacy_output_json" "${tmp_dir}/legacy-public-input.json"; then
   echo "build_public_input should reject legacy snake_case output"
+  exit 1
+fi
+
+timeout_probe="${tmp_dir}/timeout-probe.sh"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'sleep 2' \
+  >"$timeout_probe"
+chmod +x "$timeout_probe"
+
+if timeout_output="$(HOST_BIN="$timeout_probe" WORK_INPUT="$input_json" ZKVM_TIMEOUT_SECONDS=1 run_host_with_timeout 2>&1)"; then
+  echo "run_host_with_timeout should fail on timeout"
+  exit 1
+fi
+
+if ! grep -q "zkVM execution timed out after 1s" <<<"$timeout_output"; then
+  echo "run_host_with_timeout should report timeout distinctly"
+  echo "$timeout_output"
   exit 1
 fi

@@ -90,6 +90,19 @@ describe('validateEnv', () => {
     expect(() => validateEnv()).toThrow('VOTE_SECRET_ENCRYPTION_KEY must be set to a valid 32-byte key');
   });
 
+  it('rejects USE_AMPLIFY_DATA=false outside mock store', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    process.env.USE_MOCK_STORE = 'false';
+    process.env.USE_AMPLIFY_DATA = 'false';
+    process.env.RATE_LIMIT_STORE = 'memory';
+    process.env.AMPLIFY_DATA_ENDPOINT = 'https://example.appsync-api.ap-northeast-1.amazonaws.com/graphql';
+    process.env.AMPLIFY_DATA_API_ID = 'example-api-id';
+    process.env.VOTE_SECRET_ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    process.env.SESSION_CAPABILITY_SECRET = VALID_SESSION_CAPABILITY_SECRET;
+
+    expect(() => validateEnv()).toThrow('USE_AMPLIFY_DATA=false is incompatible with USE_MOCK_STORE=false');
+  });
+
   it('rejects startup when SESSION_CAPABILITY_SECRET is missing', () => {
     vi.stubEnv('NODE_ENV', 'development');
     delete process.env.SESSION_CAPABILITY_SECRET;

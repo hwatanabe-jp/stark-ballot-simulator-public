@@ -1,0 +1,153 @@
+version: 0.2
+
+# AWS CodeBuild buildspec for ARM64 Fargate prover Docker image
+# This file orchestrates the build and push of the zkVM prover container to ECR
+#
+# Build Strategy:
+# - Uses a pre-built RISC Zero toolchain base image when one is supplied
+# - Base image contains: Rust 1.91.1, pinned RISC Zero toolchain, build dependencies
+# - Build time: 5-10 minutes (vs 70-90 minutes without base image)
+# - See: docs/current/guides/3-deployment/risc0-base-image.md
+
+env:
+  variables:
+    AWS_DEFAULT_REGION: ap-northeast-1
+  # AWS_ACCOUNT_ID is injected via CodeBuild environment variables
+
+phases:
+  pre_build:
+    commands:
+      - echo "Logging in to Amazon ECR..."
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+
+      - echo "Resolving RISC Zero toolchain base image..."
+      - |
+        if [ -z "${RISC0_TOOLCHAIN_REPO_NAME:-}" ]; then
+          RISC0_TOOLCHAIN_REPO_NAME="stark-ballot-simulator/risc0-toolchain"
+          echo "RISC0_TOOLCHAIN_REPO_NAME not set - defaulting to $RISC0_TOOLCHAIN_REPO_NAME"
+        else
+          echo "Using RISC0_TOOLCHAIN_REPO_NAME from environment: $RISC0_TOOLCHAIN_REPO_NAME"
+        fi
+      - |
+        if [ -z "${RISC0_TOOLCHAIN_IMAGE:-}" ]; then
+          RISC0_TOOLCHAIN_IMAGE_TAG="${RISC0_TOOLCHAIN_IMAGE_TAG:-${RISC0_VERSION:-3.0.5}-arm64}"
+          echo "RISC0_TOOLCHAIN_IMAGE not set - resolving $RISC0_TOOLCHAIN_REPO_NAME:$RISC0_TOOLCHAIN_IMAGE_TAG"
+          RISC0_TOOLCHAIN_DIGEST=$(aws ecr describe-images \
+            --repository-name "$RISC0_TOOLCHAIN_REPO_NAME" \
+            --image-ids imageTag="$RISC0_TOOLCHAIN_IMAGE_TAG" \
+            --region "$AWS_DEFAULT_REGION" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+          if [ -z "$RISC0_TOOLCHAIN_DIGEST" ] || [ "$RISC0_TOOLCHAIN_DIGEST" = "None" ]; then
+            echo "RISC Zero toolchain image not found: $RISC0_TOOLCHAIN_REPO_NAME:$RISC0_TOOLCHAIN_IMAGE_TAG" >&2
+            exit 1
+          fi
+          export RISC0_TOOLCHAIN_IMAGE="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$RISC0_TOOLCHAIN_REPO_NAME@$RISC0_TOOLCHAIN_DIGEST"
+        else
+          echo "Using RISC0_TOOLCHAIN_IMAGE from environment."
+        fi
+        if ! printf '%s' "$RISC0_TOOLCHAIN_IMAGE" | grep -Eq '@sha256:[0-9a-f]{64}$'; then
+          echo "RISC0_TOOLCHAIN_IMAGE must be digest-pinned with @sha256:<64 lowercase hex chars>." >&2
+          exit 1
+        fi
+        RISC0_TOOLCHAIN_IMAGE_TAG="${RISC0_TOOLCHAIN_IMAGE_TAG:-${RISC0_VERSION:-3.0.5}-arm64}"
+        printf '%s' "$RISC0_TOOLCHAIN_IMAGE" > /tmp/risc0-toolchain-image
+        printf '%s' "$RISC0_TOOLCHAIN_IMAGE_TAG" > /tmp/risc0-toolchain-image-tag
+
+      - echo "Determining image tags..."
+      - |
+        if [ -z "$IMAGE_REPO_NAME" ]; then
+          IMAGE_REPO_NAME="stark-ballot-simulator/zkvm-prover"
+          echo "IMAGE_REPO_NAME not set - defaulting to $IMAGE_REPO_NAME"
+        else
+          echo "Using IMAGE_REPO_NAME from environment: $IMAGE_REPO_NAME"
+        fi
+      # Image Tag Strategy (Semantic Versioning):
+      # - Manual builds: Override IMAGE_TAG via environment variables (e.g., IMAGE_TAG=v1.1.0)
+      # - Automatic fallback: Use commit SHA if IMAGE_TAG is not set
+      # - Latest tag: Only updated for main branch builds
+      # - See: docs/current/guides/7-terraform/README.md (運用フロー)
+      - |
+        if [ -n "$IMAGE_TAG" ]; then
+          echo "Using provided IMAGE_TAG: $IMAGE_TAG"
+        else
+          IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION}
+          echo "No IMAGE_TAG provided, using commit SHA: $IMAGE_TAG"
+        fi
+      - IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+      - echo "Image URI will be $IMAGE_URI"
+
+      - |
+        if [ "$CODEBUILD_WEBHOOK_TRIGGER" = "branch/main" ] || [ "$CODEBUILD_SOURCE_VERSION" = "refs/heads/main" ]; then
+          LATEST_TAG=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:latest
+          if [ "${PUSH_LATEST:-0}" = "1" ]; then
+            echo "Main branch detected and PUSH_LATEST=1 - will also tag as latest"
+          else
+            echo "Main branch detected but PUSH_LATEST!=1 - skipping latest tag"
+            unset LATEST_TAG
+          fi
+        fi
+
+  build:
+    commands:
+      - echo "Building ARM64 Docker image..."
+      - echo "Build started on $(date)"
+      - RISC0_TOOLCHAIN_IMAGE="$(cat /tmp/risc0-toolchain-image)"
+      - docker build --build-arg RISC0_TOOLCHAIN_IMAGE="$RISC0_TOOLCHAIN_IMAGE" -t $IMAGE_URI -f docker/Dockerfile.fargate-prover .
+
+      - |
+        if [ -n "$LATEST_TAG" ]; then
+          echo "Tagging image as latest..."
+          docker tag $IMAGE_URI $LATEST_TAG
+        fi
+
+  post_build:
+    commands:
+      - echo "Pushing Docker image to ECR..."
+      - docker push $IMAGE_URI
+
+      - |
+        if [ -n "$LATEST_TAG" ]; then
+          echo "Pushing latest tag..."
+          docker push $LATEST_TAG
+        fi
+
+      - echo "Build completed on $(date)"
+      - echo "Waiting for ECR to register image scan (10s delay)..."
+      - sleep 10
+      - echo "Waiting for ECR image scan to complete..."
+      - aws ecr wait image-scan-complete --repository-name "$IMAGE_REPO_NAME" --image-id imageTag="$IMAGE_TAG"
+      - |
+        CRITICAL_HIGH_COUNT=$(aws ecr describe-image-scan-findings \
+          --repository-name "$IMAGE_REPO_NAME" \
+          --image-id imageTag="$IMAGE_TAG" \
+          --query 'length(imageScanFindings.findings[?severity==`CRITICAL` || severity==`HIGH`])' \
+          --output text)
+        if [ "$CRITICAL_HIGH_COUNT" -gt 0 ]; then
+          echo "ECR scan found $CRITICAL_HIGH_COUNT HIGH/CRITICAL findings. Failing build."
+          exit 1
+        fi
+        echo "ECR scan passed with no HIGH/CRITICAL findings."
+      - echo "Writing image metadata..."
+      - |
+        RISC0_TOOLCHAIN_IMAGE="$(cat /tmp/risc0-toolchain-image)"
+        RISC0_TOOLCHAIN_IMAGE_TAG="$(cat /tmp/risc0-toolchain-image-tag)"
+        IMAGE_DIGEST=$(aws ecr describe-images \
+          --repository-name "$IMAGE_REPO_NAME" \
+          --image-ids imageTag="$IMAGE_TAG" \
+          --query 'imageDetails[0].imageDigest' \
+          --output text)
+        printf '{"image":"%s","tag":"%s","digest":"%s","sha":"%s","risc0ToolchainImage":"%s","risc0ToolchainTag":"%s","timestamp":"%s"}' \
+          "$IMAGE_URI" "$IMAGE_TAG" "$IMAGE_DIGEST" "$CODEBUILD_RESOLVED_SOURCE_VERSION" "$RISC0_TOOLCHAIN_IMAGE" "$RISC0_TOOLCHAIN_IMAGE_TAG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          > image-metadata.json
+      - cat image-metadata.json
+
+artifacts:
+  files:
+    - image-metadata.json
+  name: fargate-prover-image-$(date +%Y%m%d-%H%M%S)
+
+cache:
+  paths:
+    - '/root/.cargo/**/*'
+    - 'zkvm/target/**/*'

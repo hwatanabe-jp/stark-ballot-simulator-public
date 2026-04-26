@@ -22,9 +22,11 @@ Notable attributions and special-license components:
    - lightningcss and related platform packages (Node dev)
      License: https://www.mozilla.org/MPL/2.0/
 
-4. Brand assets (usage per trademark/brand guidelines)
-   - GitHub Invertocat Mark (SVG)
-     Source: https://github.com/logos
+4. Vendored public-book browser assets
+   - Mermaid v11.6.0, MIT
+     Source: https://github.com/mermaid-js/mermaid
+   - fzf v0.5.2, BSD-3-Clause
+     Source: https://github.com/ajitid/fzf-for-js
 
 If you redistribute this product, ensure you comply with the licenses of
 all included third-party components.

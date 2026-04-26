@@ -2,9 +2,9 @@
 
 This repository is a generated public portfolio snapshot of STARK Ballot Simulator.
 
-- Source commit: `7b17d450faff3cd4ac87834c6ea11ceb890cc6f1`
-- Generated at: `2026-04-26T09:10:10.200Z`
-- Copied source files: `857`
+- Source commit: `14188df7b185a26a58b9ee09c816280cd86fcbdb`
+- Generated at: `2026-04-26T14:49:58.970Z`
+- Copied source files: `860`
 
 The private repository remains the source of truth. Public-repository changes
 should normally be made in the private repository and released again as a new

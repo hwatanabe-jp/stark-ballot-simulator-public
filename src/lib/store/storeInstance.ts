@@ -27,18 +27,20 @@ export function getGlobalStore(): VoteStore {
         global.__globalStoreInstance = new MockSessionStore();
       }
     } else {
+      if (process.env.USE_AMPLIFY_DATA === 'false') {
+        throw new Error(
+          'USE_AMPLIFY_DATA=false is incompatible with USE_MOCK_STORE=false. Set USE_MOCK_STORE=true to use a mock store explicitly.',
+        );
+      }
+
       try {
-        const useAmplify = process.env.USE_AMPLIFY_DATA !== 'false';
-        if (useAmplify) {
-          logger.info('[Store] Creating new AmplifySessionStore (singleton)');
-          global.__globalStoreInstance = new AmplifySessionStore();
-        } else {
-          logger.info('[Store] USE_AMPLIFY_DATA explicitly false; using MockSessionStore');
-          global.__globalStoreInstance = new MockSessionStore();
-        }
+        logger.info('[Store] Creating new AmplifySessionStore (singleton)');
+        global.__globalStoreInstance = new AmplifySessionStore();
       } catch (error) {
-        logger.warn('[Store] Failed to initialize AmplifySessionStore, falling back to MockSessionStore:', error);
-        global.__globalStoreInstance = new MockSessionStore();
+        throw new Error(
+          'Failed to initialize AmplifySessionStore. Set USE_MOCK_STORE=true to use a mock store explicitly.',
+          { cause: error },
+        );
       }
     }
   } else {

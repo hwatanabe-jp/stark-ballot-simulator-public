@@ -1,0 +1,114 @@
+version: 0.2
+
+# RISC Zero Toolchain Base Image Builder
+# Purpose: Build ARM64 toolchain image for faster CI/CD builds
+# Build time: 100-120 minutes (one-time setup)
+# See: docs/current/guides/3-deployment/risc0-base-image.md
+
+env:
+  variables:
+    AWS_DEFAULT_REGION: ap-northeast-1
+
+phases:
+  pre_build:
+    commands:
+      - echo "Logging in to Amazon ECR..."
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - |
+        if [ -z "$IMAGE_REPO_NAME" ]; then
+          IMAGE_REPO_NAME="stark-ballot-simulator/risc0-toolchain"
+          echo "IMAGE_REPO_NAME not set - defaulting to $IMAGE_REPO_NAME"
+        else
+          echo "Using IMAGE_REPO_NAME from environment: $IMAGE_REPO_NAME"
+        fi
+      - |
+        if [ -z "$RISC0_VERSION" ]; then
+          RISC0_VERSION="3.0.5"
+          echo "RISC0_VERSION not set - defaulting to $RISC0_VERSION"
+        else
+          echo "Using RISC0_VERSION from environment: $RISC0_VERSION"
+        fi
+      - |
+        if [ -z "$RUST_VERSION" ]; then
+          RUST_VERSION="1.91.1"
+          echo "RUST_VERSION not set - defaulting to $RUST_VERSION"
+        else
+          echo "Using RUST_VERSION from environment: $RUST_VERSION"
+        fi
+      - |
+        if [ -z "$RUST_TOOLCHAIN_TAG" ]; then
+          RUST_TOOLCHAIN_TAG="r0.1.91.1"
+          echo "RUST_TOOLCHAIN_TAG not set - defaulting to $RUST_TOOLCHAIN_TAG"
+        else
+          echo "Using RUST_TOOLCHAIN_TAG from environment: $RUST_TOOLCHAIN_TAG"
+        fi
+      - |
+        if [ -z "$RISC0_COMMIT" ]; then
+          RISC0_COMMIT="8eb06ab020a92dc5b63ba6dd0836d432aba6d890"
+          echo "RISC0_COMMIT not set - defaulting to $RISC0_COMMIT"
+        else
+          echo "Using RISC0_COMMIT from environment: $RISC0_COMMIT"
+        fi
+      - RISC0_GIT_TAG="v${RISC0_VERSION}"
+      - SOURCE_REPOSITORY="${CODEBUILD_SOURCE_REPO_URL:-https://github.com/hwatanabe-jp/<REPO_NAME>}"
+      - IMAGE_TAG="${RISC0_VERSION}-arm64"
+      - IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+      - echo "Building RISC Zero toolchain v${RISC0_VERSION} for ARM64 with guest toolchain ${RUST_TOOLCHAIN_TAG}..."
+
+  build:
+    commands:
+      - echo "Building RISC Zero toolchain ARM64 image (this takes 100-120 minutes)..."
+      - |
+        docker build \
+          --build-arg RUST_VERSION=$RUST_VERSION \
+          --build-arg RISC0_VERSION=$RISC0_VERSION \
+          --build-arg RISC0_GIT_TAG=$RISC0_GIT_TAG \
+          --build-arg RISC0_COMMIT=$RISC0_COMMIT \
+          --build-arg RUST_TOOLCHAIN_TAG=$RUST_TOOLCHAIN_TAG \
+          --build-arg SOURCE_REPOSITORY="$SOURCE_REPOSITORY" \
+          -t $IMAGE_URI \
+          -f docker/Dockerfile.risc0-toolchain-arm64 .
+      - echo "Smoke testing RISC Zero toolchain ARM64 image..."
+      - docker run --rm $IMAGE_URI rustc --version
+      - docker run --rm $IMAGE_URI cargo risczero --version
+      - docker run --rm $IMAGE_URI r0vm --version
+      - docker run --rm $IMAGE_URI rzup --version
+      - docker tag $IMAGE_URI $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:latest
+
+  post_build:
+    commands:
+      - echo "Pushing toolchain image to ECR..."
+      - docker push $IMAGE_URI
+      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:latest
+      - echo "Waiting for ECR to register image scan (10s delay)..."
+      - sleep 10
+      - echo "Waiting for ECR image scan to complete..."
+      - aws ecr wait image-scan-complete --repository-name "$IMAGE_REPO_NAME" --image-id imageTag="$IMAGE_TAG"
+      - |
+        CRITICAL_HIGH_COUNT=$(aws ecr describe-image-scan-findings \
+          --repository-name "$IMAGE_REPO_NAME" \
+          --image-id imageTag="$IMAGE_TAG" \
+          --query 'length(imageScanFindings.findings[?severity==`CRITICAL` || severity==`HIGH`])' \
+          --output text)
+        if [ "$CRITICAL_HIGH_COUNT" -gt 0 ]; then
+          echo "⚠️  ECR scan found $CRITICAL_HIGH_COUNT HIGH/CRITICAL findings."
+          echo "Review vulnerabilities before using this base image in production."
+          # Note: Not failing build for base image - vulnerabilities are tracked in docs/current/runbooks/security.md
+        else
+          echo "✅ ECR scan passed with no HIGH/CRITICAL findings."
+        fi
+      - echo "Extracting image digest..."
+      - |
+        DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $IMAGE_URI | cut -d'@' -f2)
+        echo "Image pushed with digest: $DIGEST"
+        printf '{ "imageTag": "%s", "imageDigest": "%s", "imageUri": "%s", "risc0Version": "%s", "rustVersion": "%s", "rustToolchainTag": "%s" }\n' \
+          "$IMAGE_TAG" "$DIGEST" "$IMAGE_URI" "$RISC0_VERSION" "$RUST_VERSION" "$RUST_TOOLCHAIN_TAG" \
+          > /tmp/image-info.json
+        cat /tmp/image-info.json
+        echo "✅ RISC Zero toolchain base image build completed successfully"
+        echo "Next step: Resolve a digest-pinned build arg for local builds if needed"
+        echo "Run: AWS_ACCOUNT_ID=<account-id> ./scripts/update-risc0-digest.sh --write-env .tmp/risc0-toolchain-image.env"
+
+artifacts:
+  files:
+    - /tmp/image-info.json

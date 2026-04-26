@@ -3,7 +3,7 @@
 zkVM architecture and implementation documentation.
 
 Forward-looking work is tracked in `docs/current/roadmap/README.md`.
-Historical phase notes live in `docs/archive/progress/`.
+Historical phase notes are kept in the private source repository and stripped from generated public snapshots.
 
 ## Available Guides
 

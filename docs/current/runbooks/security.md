@@ -84,7 +84,7 @@ curl -I https://<id>.execute-api.ap-northeast-1.amazonaws.com/api/session
 - **CloudWatch Logs Insights**: create saved queries for `CAPTCHA_FAILED`, `GLOBAL_LIMIT_EXCEEDED`, and rate-limit responses (503 for GLOBAL_LIMIT_EXCEEDED, 429 for ZKVM_RATE_LIMIT_EXCEEDED)
 - **Metrics**: publish counts of 403 (CAPTCHA) / 503 (GLOBAL_LIMIT_EXCEEDED) / 429 (ZKVM_RATE_LIMIT_EXCEEDED) to CloudWatch; alert if >100 events/hour or sustained growth >3× baseline
 - **Challenge Page**: watch Cloudflare Security Analytics for spikes; adjust Security Level or enable JS challenges when anomalies occur
-- **Auth / AppSync IAM 監視**: 週次レポート（毎週月曜 09:00 JST）で AWS 認証・署名・権限エラーを確認（詳細: `docs/current/monitoring/automated-monitoring-guidelines.md`）
+- **Auth / AppSync IAM 監視**: 週次レポートで AWS 認証・署名・権限エラーを確認します。具体的な監視クエリと運用メモは private operations notes 側で管理します。
 
 ## Testing Checklist
 
