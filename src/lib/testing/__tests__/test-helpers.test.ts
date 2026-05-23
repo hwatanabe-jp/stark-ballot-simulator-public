@@ -1,6 +1,6 @@
 /**
  * Tests for v2 test helpers
- * Following t-wada's TDD approach: Red-Green-Refactor
+ * Verifies shared test helper behavior.
  */
 
 import {

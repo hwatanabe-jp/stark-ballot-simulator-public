@@ -5,6 +5,7 @@ import {
   resolveCurrentContractGeneration,
   resolveSessionFinalizationArtifactState,
 } from '@/lib/contract';
+import { CURRENT_METHOD_VERSION } from '@/lib/zkvm/types';
 
 describe('currentArtifact boundary helpers', () => {
   it('returns null when a live session has no persisted finalization branch', () => {
@@ -87,7 +88,7 @@ describe('currentArtifact boundary helpers', () => {
           completedAt: 3,
         },
         finalizationResult: {
-          journal: { methodVersion: 12 },
+          journal: { methodVersion: CURRENT_METHOD_VERSION },
           verificationResult: {
             status: 'success',
             executionId: 'exec-1',
@@ -111,7 +112,7 @@ describe('currentArtifact boundary helpers', () => {
           completedAt: 3,
         },
         finalizationResult: {
-          journal: { methodVersion: 12 },
+          journal: { methodVersion: CURRENT_METHOD_VERSION },
           verificationExecutionId: '../exec-1',
           verificationResult: {
             status: 'success',

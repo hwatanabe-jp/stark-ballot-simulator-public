@@ -1,7 +1,7 @@
 /**
  * Tests for ZkVMJournal v2 output specification
  * Following final_design.md §1.3 specifications
- * t-wada's approach: RED Phase - Comprehensive test cases
+ * Verifies the implemented journal contract.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';

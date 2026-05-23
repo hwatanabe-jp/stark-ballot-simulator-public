@@ -93,7 +93,9 @@ CloudWatch Logs Insights のクエリ集と週次監視手順は private operati
 2. 対象 branch の実効 env を確認する
    - `S3_PROOF_BUCKET`
    - `S3_PROOF_PREFIX`
-   - `USE_S3`（`/api/verification/run` 後に `verifier-service-runner` が再 upload する経路では `true` が必要）
+   - `USE_S3`
+     - hosted Lambda では Lambda runtime 判定でも S3 upload / redirect 経路が有効になる
+     - ローカルや非 Lambda runtime で S3 経路を再現する場合は `USE_S3=true` が必要
 3. `hono-api` の Lambda 実行ロールに、proof bundle bucket への `s3:GetObject` / `s3:GetObjectVersion` / `s3:ListBucket` があることを確認する
 4. bundle 自体が存在しない、または初回アップロードが失敗している場合は、Step Functions と ECS prover のログを先に確認する
    - 初回の `bundle.zip` 生成と S3 upload は ECS prover task の責務
@@ -183,7 +185,7 @@ curl -X POST "${BASE_URL%/}/api/finalize/cancel" \
   - 反映漏れや設定差分の復旧は Amplify backend 再デプロイを第一候補にする
 - Terraform 管理:
   - VPC、ECS、Step Functions、SQS、S3、ECR、CloudWatch Logs、ECS task role / Step Functions role など
-  - 反映漏れや設定差分の復旧は Terraform で行う。`terraform workspace show` で対象環境を確認してから `plan` / `apply` を実行する
+  - 反映漏れや設定差分の復旧は Terraform で行う。`terraform workspace show` で対象環境を確認してから、guarded flow（`pnpm terraform:plan:<env>` / `pnpm terraform:apply:<env>`、または `scripts/terraform/terraform-guarded.sh`）で実行する
 
 ### 症状別メモ
 
@@ -205,7 +207,7 @@ curl -X POST "${BASE_URL%/}/api/finalize/cancel" \
   - hosted UI / API 障害の一次確認先ではない
   - Amplify branch deploy の通常運用では必須前提にしない
 
-設定差分や認可反映漏れが疑われる場合は、まず対象リソースが Amplify 管理か Terraform 管理かを確定します。Amplify 管理の差分なら対象 branch の Amplify backend を再デプロイし、Terraform 管理の差分なら `terraform workspace show` で環境を確認したうえで `plan` / `apply` で反映状態を揃えます。
+設定差分や認可反映漏れが疑われる場合は、まず対象リソースが Amplify 管理か Terraform 管理かを確定します。Amplify 管理の差分なら対象 branch の Amplify backend を再デプロイし、Terraform 管理の差分なら `terraform workspace show` で環境を確認したうえで、`pnpm terraform:plan:<env>` / `pnpm terraform:apply:<env>` または `scripts/terraform/terraform-guarded.sh <env> ...` で反映状態を揃えます。
 
 ## 5. 参照先
 

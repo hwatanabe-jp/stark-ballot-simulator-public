@@ -27,7 +27,6 @@ describe('ImageID Mapping', () => {
 
   describe('File Existence and Structure', () => {
     it('should have imageId-mapping.json in public directory', async () => {
-      // This test will fail initially (RED phase)
       const exists = await fs
         .access(MAPPING_PATH)
         .then(() => true)
@@ -37,145 +36,101 @@ describe('ImageID Mapping', () => {
     });
 
     it('should have valid JSON structure', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const mapping = await readMapping('structure');
+      const mapping = await readMapping('structure');
 
-        // Check required fields
-        expect(mapping).toHaveProperty('mappings');
-        expect(mapping).toHaveProperty('current');
-        expect(getRecordProperty(mapping, 'mappings')).toBeTypeOf('object');
-        expect(getStringProperty(mapping, 'current')).toBeTypeOf('string');
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeUndefined();
-      }
+      expect(mapping).toHaveProperty('mappings');
+      expect(mapping).toHaveProperty('current');
+      expect(getRecordProperty(mapping, 'mappings')).toBeTypeOf('object');
+      expect(getStringProperty(mapping, 'current')).toBeTypeOf('string');
     });
 
     it(`should contain mapping for current methodVersion ${CURRENT_METHOD_VERSION}`, async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const mapping = await readMapping('current version');
-        const mappings = getRecordProperty(mapping, 'mappings');
+      const mapping = await readMapping('current version');
+      const mappings = getRecordProperty(mapping, 'mappings');
 
-        expect(mappings).toBeDefined();
-        if (!mappings) {
-          throw new Error('mappings missing');
-        }
-        expect(mappings).toHaveProperty('10');
-        expect(mappings).toHaveProperty(String(CURRENT_METHOD_VERSION));
-        const currentMapping = getRecordProperty(mappings, String(CURRENT_METHOD_VERSION));
-        expect(currentMapping).toBeDefined();
-        if (!currentMapping) {
-          throw new Error(`mapping for version ${CURRENT_METHOD_VERSION} missing`);
-        }
-        expect(getNumberProperty(currentMapping, 'methodVersion')).toBe(CURRENT_METHOD_VERSION);
-        expect(getStringProperty(currentMapping, 'description')).toBeDefined();
-        expect(getStringProperty(currentMapping, 'compiledAt')).toBeDefined();
-
-        const imageId =
-          getStringProperty(currentMapping, 'expectedImageID') ??
-          getStringProperty(currentMapping, 'expectedImageID_x86_64');
-        expect(imageId).toBeDefined();
-        expect(imageId).toMatch(/^0x[0-9a-f]{64}$/i);
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeUndefined();
+      expect(mappings).toBeDefined();
+      if (!mappings) {
+        throw new Error('mappings missing');
       }
+      expect(mappings).toHaveProperty('10');
+      expect(mappings).toHaveProperty(String(CURRENT_METHOD_VERSION));
+      const currentMapping = getRecordProperty(mappings, String(CURRENT_METHOD_VERSION));
+      expect(currentMapping).toBeDefined();
+      if (!currentMapping) {
+        throw new Error(`mapping for version ${CURRENT_METHOD_VERSION} missing`);
+      }
+      expect(getNumberProperty(currentMapping, 'methodVersion')).toBe(CURRENT_METHOD_VERSION);
+      expect(getStringProperty(currentMapping, 'description')).toBeDefined();
+      expect(getStringProperty(currentMapping, 'compiledAt')).toBeDefined();
+
+      const imageId =
+        getStringProperty(currentMapping, 'expectedImageID') ??
+        getStringProperty(currentMapping, 'expectedImageID_x86_64');
+      expect(imageId).toBeDefined();
+      expect(imageId).toMatch(/^0x[0-9a-f]{64}$/i);
     });
   });
 
   describe('Current Version Retrieval', () => {
     it('should retrieve the current methodVersion', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const mapping = await readMapping('current');
+      const mapping = await readMapping('current');
 
-        const currentKey = getStringProperty(mapping, 'current');
-        expect(currentKey).toBeTypeOf('string');
-        const mappings = getRecordProperty(mapping, 'mappings');
-        const currentMapping =
-          mappings && currentKey && isRecord(mappings) ? getRecordProperty(mappings, currentKey) : null;
-        expect(currentMapping).toBeDefined();
-        expect(getNumberProperty(currentMapping, 'methodVersion')).toBe(Number(currentKey));
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeUndefined();
-      }
+      const currentKey = getStringProperty(mapping, 'current');
+      expect(currentKey).toBeTypeOf('string');
+      const mappings = getRecordProperty(mapping, 'mappings');
+      const currentMapping =
+        mappings && currentKey && isRecord(mappings) ? getRecordProperty(mappings, currentKey) : null;
+      expect(currentMapping).toBeDefined();
+      expect(getNumberProperty(currentMapping, 'methodVersion')).toBe(Number(currentKey));
     });
 
     it('should retrieve ImageID for current version', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const mapping = await readMapping('current image id');
-        const mappings = getRecordProperty(mapping, 'mappings');
-        const currentKey = getStringProperty(mapping, 'current');
-        const currentMapping =
-          mappings && currentKey && isRecord(mappings) ? getRecordProperty(mappings, currentKey) : null;
-        const currentImageId =
-          getStringProperty(currentMapping, 'expectedImageID') ??
-          getStringProperty(currentMapping, 'expectedImageID_x86_64');
-        expect(currentImageId).toBeDefined();
-        expect(currentImageId).toBeTypeOf('string');
-        expect(currentImageId?.length ?? 0).toBeGreaterThan(0);
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeUndefined();
-      }
+      const mapping = await readMapping('current image id');
+      const mappings = getRecordProperty(mapping, 'mappings');
+      const currentKey = getStringProperty(mapping, 'current');
+      const currentMapping =
+        mappings && currentKey && isRecord(mappings) ? getRecordProperty(mappings, currentKey) : null;
+      const currentImageId =
+        getStringProperty(currentMapping, 'expectedImageID') ??
+        getStringProperty(currentMapping, 'expectedImageID_x86_64');
+      expect(currentImageId).toBeDefined();
+      expect(currentImageId).toBeTypeOf('string');
+      expect(currentImageId?.length ?? 0).toBeGreaterThan(0);
     });
   });
 
   describe('Security Features', () => {
     it('should have features array documenting capabilities', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const mapping = await readMapping('features');
-        const mappings = getRecordProperty(mapping, 'mappings');
-        const currentKey = getStringProperty(mapping, 'current');
-        const currentMapping =
-          mappings && currentKey && isRecord(mappings) ? getRecordProperty(mappings, currentKey) : null;
-        const features =
-          currentMapping && isRecord(currentMapping) && Array.isArray(currentMapping.features)
-            ? currentMapping.features
-            : [];
-        expect(features).toBeInstanceOf(Array);
-        expect(features).toContain('STH digest binding');
-        expect(features).toContain('CT leaf usage tags');
-        expect(features).toContain('Input commitment sorting');
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeUndefined();
-      }
+      const mapping = await readMapping('features');
+      const mappings = getRecordProperty(mapping, 'mappings');
+      const currentKey = getStringProperty(mapping, 'current');
+      const currentMapping =
+        mappings && currentKey && isRecord(mappings) ? getRecordProperty(mappings, currentKey) : null;
+      const features =
+        currentMapping && isRecord(currentMapping) && Array.isArray(currentMapping.features)
+          ? currentMapping.features
+          : [];
+      expect(features).toBeInstanceOf(Array);
+      expect(features).toContain('STH digest binding');
+      expect(features).toContain('CT leaf usage tags');
+      expect(features).toContain('Input commitment sorting');
     });
 
     it('should have Rust and RISC Zero version information', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const mapping = await readMapping('versions');
-        const mappings = getRecordProperty(mapping, 'mappings');
-        const currentKey = getStringProperty(mapping, 'current');
-        const currentMapping =
-          mappings && currentKey && isRecord(mappings) ? getRecordProperty(mappings, currentKey) : null;
-        expect(getStringProperty(currentMapping, 'rustVersion')).toMatch(/^\d+\.\d+\.\d+$/);
-        expect(getStringProperty(currentMapping, 'risc0Version')).toMatch(/^\d+\.\d+\.\d+$/);
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeUndefined();
-      }
+      const mapping = await readMapping('versions');
+      const mappings = getRecordProperty(mapping, 'mappings');
+      const currentKey = getStringProperty(mapping, 'current');
+      const currentMapping =
+        mappings && currentKey && isRecord(mappings) ? getRecordProperty(mappings, currentKey) : null;
+      expect(getStringProperty(currentMapping, 'rustVersion')).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(getStringProperty(currentMapping, 'risc0Version')).toMatch(/^\d+\.\d+\.\d+$/);
     });
 
     it('should have deprecated versions list', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const mapping = await readMapping('deprecated');
-        const deprecated = isRecord(mapping) && Array.isArray(mapping.deprecated) ? mapping.deprecated : undefined;
-        expect(mapping).toHaveProperty('deprecated');
-        expect(deprecated).toBeInstanceOf(Array);
-        // Initially empty, but structure should exist
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeUndefined();
-      }
+      const mapping = await readMapping('deprecated');
+      const deprecated = isRecord(mapping) && Array.isArray(mapping.deprecated) ? mapping.deprecated : undefined;
+      expect(mapping).toHaveProperty('deprecated');
+      expect(deprecated).toBeInstanceOf(Array);
     });
   });
 
@@ -198,7 +153,7 @@ describe('ImageID Mapping', () => {
             mappings.push(payload);
           }
         } catch {
-          // Expected to fail in RED phase
+          // Optional mirror sources may be unavailable in this local test.
         }
       }
 
@@ -215,19 +170,11 @@ describe('ImageID Mapping', () => {
     });
 
     it('should verify file integrity with hash', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const content = await fs.readFile(MAPPING_PATH, 'utf-8');
-        const hash = crypto.createHash('sha256').update(content).digest('hex');
+      const content = await fs.readFile(MAPPING_PATH, 'utf-8');
+      const hash = crypto.createHash('sha256').update(content).digest('hex');
 
-        // In production, this hash would be stored securely
-        // and verified against a known good value
-        expect(hash).toBeDefined();
-        expect(hash.length).toBe(64); // SHA-256 produces 64 hex chars
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeUndefined();
-      }
+      expect(hash).toBeDefined();
+      expect(hash.length).toBe(64);
     });
   });
 });

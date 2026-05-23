@@ -2,8 +2,6 @@
 
 zkVM 入力のうち公開検証に使うフィールドを正準エンコーディングで束縛し、ジャーナルから再計算できる入力コミットメントを定義する章です。
 
-入力コミットメントが束縛するのは zkVM 入力全体ではなく、現行実装で公開検証に使うフィールド群です。
-
 入力コミットメントにより、「証明されたデータセット」と「主張されたデータセット」の一致を検証可能にします。バイトレベルの正準化により、TypeScript と Rust の間で決定的な一致を保証します。
 
 ## 概要
@@ -96,8 +94,6 @@ vote_entry =
 - `schema`・`version`・`contractGeneration` → `public-input.json` の互換性マーカーとして artifact 採用時に検証
 - `methodVersion` → `public-input.json` 採用時に journal と照合。Image ID 解決では正規化済み journal 値を使用
 
-したがって、`counted_input_commitment_match` は公開パラメータ照合の中核ですが、唯一のクロスチェックではありません。残りのパラメータは上記チェックで補完的に検証されます。
-
 ## 正準化規則
 
 エンコーディングの決定性を保証するために、以下の規則が厳守されます。
@@ -106,7 +102,7 @@ vote_entry =
 
 投票はエンコーディング前にインデックスの昇順にソートします。各投票の `index` は一意であることが前提であり、これにより同じ投票集合から常に同一のバイト列が生成されます。この規則に違反すると、TypeScript と Rust で異なるハッシュ値が計算され、検証が失敗します。
 
-> **異常系の補助**: 重複インデックスはプロトコル違反であり、正常系の対象外です。実装上は、TS/Rust 双方が決定性のために追加の tie-break（`commitment` と `merklePath`）を行いますが、これは異常系のための保険であり、正常系仕様（`index` 昇順）を変更するものではありません。
+> **異常系の補助**: 重複インデックスはプロトコル違反です。TS/Rust 双方は決定性のために `commitment` / `merklePath` で tie-break しますが、正常系仕様は `index` 昇順のままです。
 
 ### エンディアン規則
 
@@ -155,18 +151,18 @@ flowchart LR
 
 入力コミットメントは、Counted-as-Recorded 段階での検証チェック `counted_input_commitment_match` として使用されます。
 
-現行の Counted-as-Recorded 段階では、これに加えて `counted_election_manifest_consistent` と `counted_close_statement_consistent` も必須チェックとして動作します（対象フィールドと対応関係は[上記](#public-inputjson-と公開監査アーティファクトとの関係)を参照）。
-
 | チェック ID                      | 検証内容                                                                         |
 | -------------------------------- | -------------------------------------------------------------------------------- |
 | `counted_input_commitment_match` | 公開可能な検証データから再計算した入力コミットメントがジャーナルの値と一致するか |
 
-このチェックが失敗する場合、zkVM が処理した入力データと公開可能な検証データから再構成される入力コミットメント対象フィールドが異なることを意味し、結果の信頼性が根本的に損なわれます。
+このチェックが失敗すると、zkVM が処理した入力データと公開可能な検証データから再構成される対象フィールドが食い違うことを意味し、結果の信頼性が根本的に損なわれます。なお対象外フィールドは `counted_election_manifest_consistent` と `counted_close_statement_consistent` で補完的に検証されます（対応関係は[上記](#public-inputjson-と公開監査アーティファクトとの関係)を参照）。
 
 各チェックの判定ロジックは [チェック一覧 > Counted-as-Recorded](../verification/checks-catalog.md#counted-as-recorded10-チェック) を参照してください。
 
 ## 注意事項
 
 入力コミットメントには投票者の秘密データ（選択肢や乱数）は含まれません。したがって、入力コミットメントの公開は投票の秘密性を損ないません。
+
+入力順序に依存しない正準エンコーディングは、[Property-based Testing](../quality/property-based-testing.md) の permutation invariance と、[Lean による形式化](../quality/lean-formalization.md) の input-commitment vectors で検査します。
 
 <!-- source: src/lib/zkvm/types.ts:computeInputCommitmentFromPublicInput, src/lib/verification/public-input-contract.ts, zkvm/contract-core/src/encoding.rs, src/lib/verification/verification-checks.ts, src/lib/verification/engine/evaluate-checks.ts, src/lib/verification/verification-bundle.ts -->

@@ -1,13 +1,26 @@
 use contract_core::{
     compute_bitmap_merkle_root, compute_commitment, verify_inclusion_proof_rfc6962,
-    AggregatorInput, VerificationOutput, VoteWithProof,
+    AggregatorInput, VerificationOutput, VoteWithProof, CURRENT_METHOD_VERSION,
 };
 use risc0_zkvm::{default_prover, ExecutorEnv};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::BufReader;
+use std::io::{self, Write};
 
 use methods::{GUEST_ELF, GUEST_ID};
+
+#[derive(Debug, PartialEq, Eq)]
+enum HostCommand {
+    PrintImageId { format: ImageIdOutputFormat },
+    Prove { input_path: String },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ImageIdOutputFormat {
+    Plain,
+    Json,
+}
 
 // JSON-friendly input structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,19 +95,106 @@ struct ExactBitmaps {
     included_bitmap: Vec<bool>,
 }
 
+fn parse_command(args: &[String]) -> Result<HostCommand, String> {
+    if args.len() < 2 {
+        return Err("Input file required".to_string());
+    }
+
+    let mut print_image_id = false;
+    let mut format = ImageIdOutputFormat::Plain;
+    let mut input_path: Option<String> = None;
+
+    for arg in args.iter().skip(1) {
+        match arg.as_str() {
+            "--print-image-id" => {
+                print_image_id = true;
+            }
+            "--json" => {
+                format = ImageIdOutputFormat::Json;
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("Unknown option: {value}"));
+            }
+            value => {
+                if input_path.is_some() {
+                    return Err(format!("Unexpected argument: {value}"));
+                }
+                input_path = Some(value.to_string());
+            }
+        }
+    }
+
+    if print_image_id {
+        if input_path.is_some() {
+            return Err("--print-image-id does not accept an input file".to_string());
+        }
+        return Ok(HostCommand::PrintImageId { format });
+    }
+
+    if format == ImageIdOutputFormat::Json {
+        return Err("--json requires --print-image-id".to_string());
+    }
+
+    input_path
+        .map(|input_path| HostCommand::Prove { input_path })
+        .ok_or_else(|| "Input file required".to_string())
+}
+
+fn current_guest_image_id() -> String {
+    let guest_id_bytes: Vec<u8> = GUEST_ID
+        .iter()
+        .flat_map(|&word| word.to_le_bytes())
+        .collect();
+    format!("0x{}", hex::encode(&guest_id_bytes))
+}
+
+fn write_image_id(
+    writer: &mut impl Write,
+    format: ImageIdOutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let image_id = current_guest_image_id();
+
+    match format {
+        ImageIdOutputFormat::Plain => {
+            writeln!(writer, "{image_id}")?;
+        }
+        ImageIdOutputFormat::Json => {
+            let payload = serde_json::json!({
+                "imageId": image_id,
+                "methodVersion": CURRENT_METHOD_VERSION,
+            });
+            writeln!(writer, "{}", serde_json::to_string(&payload)?)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command line arguments
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: {} <input-json-file>", args[0]);
-        return Err("Input file required".into());
+    let command = parse_command(&args).map_err(|message| {
+        let program = args.first().map(String::as_str).unwrap_or("host");
+        eprintln!("Usage: {program} <input-json-file>");
+        eprintln!("       {program} --print-image-id [--json]");
+        io::Error::new(io::ErrorKind::InvalidInput, message)
+    })?;
+
+    if let HostCommand::PrintImageId { format } = command {
+        write_image_id(&mut io::stdout(), format)?;
+        return Ok(());
     }
 
+    let input_path = match command {
+        HostCommand::Prove { input_path } => input_path,
+        HostCommand::PrintImageId { .. } => unreachable!("handled above"),
+    };
+
     println!("RISC Zero Host Program v2");
-    println!("Loading input from: {}", args[1]);
+    println!("Loading input from: {}", input_path);
 
     // Read input file and parse as JSON
-    let input_file = File::open(&args[1])?;
+    let input_file = File::open(&input_path)?;
     let reader = BufReader::new(input_file);
     let json_input: JsonInput = serde_json::from_reader(reader)?;
 
@@ -170,11 +270,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get the ImageID of the guest program
     // GUEST_ID is [u32; 8], convert to bytes
-    let guest_id_bytes: Vec<u8> = GUEST_ID
-        .iter()
-        .flat_map(|&word| word.to_le_bytes())
-        .collect();
-    let image_id = format!("0x{}", hex::encode(&guest_id_bytes));
+    let image_id = current_guest_image_id();
     println!("\nGuest Program ImageID: {}", image_id);
 
     // Convert output to JSON format
@@ -202,7 +298,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Save output as JSON
-    let output_file = args[1].replace(".json", "-output.json");
+    let output_file = input_path.replace(".json", "-output.json");
     let output_json = serde_json::to_string_pretty(&json_output)?;
     std::fs::write(&output_file, output_json)?;
     println!("\nOutput saved to: {}", output_file);
@@ -213,8 +309,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } = build_exact_bitmaps(&aggregator_input);
     let computed_seen_bitmap_root = compute_bitmap_merkle_root(&seen_bitmap);
     let computed_included_bitmap_root = compute_bitmap_merkle_root(&included_bitmap);
-    let seen_bitmap_file = args[1].replace(".json", "-seen-bitmap.json");
-    let bitmap_file = args[1].replace(".json", "-bitmap.json");
+    let seen_bitmap_file = input_path.replace(".json", "-seen-bitmap.json");
+    let bitmap_file = input_path.replace(".json", "-bitmap.json");
     std::fs::remove_file(&seen_bitmap_file).ok();
     std::fs::remove_file(&bitmap_file).ok();
     if computed_seen_bitmap_root == output.seen_bitmap_root {
@@ -255,7 +351,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Save receipt to file with ImageID included
-    let receipt_file = args[1].replace(".json", "-receipt.json");
+    let receipt_file = input_path.replace(".json", "-receipt.json");
 
     // Create a custom structure for the receipt with ImageID
     #[derive(Debug, Clone, Serialize)]
@@ -437,22 +533,30 @@ mod tests {
 
     #[test]
     fn test_receipt_contains_image_id() {
-        // Testing that the receipt output contains ImageID
-        // Now that GUEST_ID is imported, we can test it
-
-        // GUEST_ID should be available and non-empty
         assert_eq!(GUEST_ID.len(), 8, "GUEST_ID should be [u32; 8]");
 
-        // Convert GUEST_ID to hex string format
-        let guest_id_bytes: Vec<u8> = GUEST_ID
-            .iter()
-            .flat_map(|&word| word.to_le_bytes())
-            .collect();
-        let image_id = format!("0x{}", hex::encode(&guest_id_bytes));
+        let image_id = current_guest_image_id();
 
-        // ImageID should be a valid hex string
         assert!(image_id.starts_with("0x"));
-        assert!(image_id.len() > 2);
+        assert_eq!(image_id.len(), 66);
+    }
+
+    #[test]
+    fn test_parse_image_id_only_mode() {
+        let args = vec![
+            String::from("host"),
+            String::from("--print-image-id"),
+            String::from("--json"),
+        ];
+
+        let command = parse_command(&args).expect("image ID command should parse");
+
+        assert!(matches!(
+            command,
+            HostCommand::PrintImageId {
+                format: ImageIdOutputFormat::Json
+            }
+        ));
     }
 
     #[test]
@@ -476,7 +580,7 @@ mod tests {
             included_bitmap_root: vec![5u8; 32],
             excluded_slots: 0,
             input_commitment: vec![6u8; 32],
-            method_version: 12,
+            method_version: CURRENT_METHOD_VERSION,
             image_id: String::from(
                 "0x7a1fe95465f1511edf5aa9e1a85ec7fcf0e0d06dcc079680c408a13b45096db2",
             ),

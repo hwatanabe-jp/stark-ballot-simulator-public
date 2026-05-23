@@ -2,7 +2,7 @@
  * Tests for client-side bitmap verification
  * Following final_design.md §2.6.1 specifications
  *
- * TDD RED phase: Writing tests before implementation
+ * Verifies client-side bitmap proof handling after implementation.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';

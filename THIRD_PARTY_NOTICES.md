@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Last updated: 2026-04-26
+Last updated: 2026-05-12
 
 This repository is published as source. The notices below summarize known
 third-party licenses used by this codebase and by vendored documentation assets.
@@ -14,6 +14,7 @@ This summary assumes the public repository includes the full codebase, including
 - zkVM workspace under `zkvm/`
 - verifier-service under `verifier-service/`
 - Terraform lambda under `terraform/lambda/check-image-signature/`
+- Lean formal models under `formal/` (current Lake metadata lists no external packages)
 - Docs, scripts, and tests
 
 ## How to regenerate
@@ -26,7 +27,7 @@ pnpm licenses:regen
 
 The script runs `pnpm licenses list --json`, `cargo metadata` for `zkvm/` and
 `verifier-service/`, replaces local absolute paths with `<REPO_ROOT>` and
-`<CARGO_HOME>`, writes `docs/current/licenses/*.{json,csv}`, and finishes with
+`<CARGO_HOME>` / `<HOME>`, writes `docs/current/licenses/*.{json,csv}`, and finishes with
 `pnpm public-safety:scan`.
 
 ## Generated metadata source of truth
@@ -42,8 +43,8 @@ Use these tracked files for current package-level license data:
 - `docs/current/licenses/cargo-metadata-zkvm.json`
 - `docs/current/licenses/cargo-metadata-verifier.json`
 
-The Terraform image-signature Lambda has its own `package-lock.json`; inspect it
-directly when `terraform/lambda/check-image-signature/` dependencies change.
+The Terraform image-signature Lambda is bundled from the root pnpm dependency
+graph; regenerate this metadata when its bundled dependencies change.
 
 ## Vendored public-book browser assets
 
@@ -55,6 +56,10 @@ the generated Public Specs can build without a network fetch:
   - License: MIT
   - Source: <https://github.com/mermaid-js/mermaid>
   - Header notice: "MIT Licensed. Copyright (c) 2014 - 2022 Knut Sveidqvist"
+  - Embedded bundled license block includes notices for DOMPurify
+    (Apache-2.0 / MPL-2.0), js-yaml (MIT), lodash-es (MIT), and
+    cytoscape-related MIT components; inspect the committed file before
+    redistributing generated Public Specs assets.
 - `public-book/fzf.umd.js`
   - fzf v0.5.2
   - License: BSD-3-Clause
@@ -66,7 +71,6 @@ the generated Public Specs can build without a network fetch:
 LGPL-3.0-or-later (Node prod):
 
 - `@img/sharp-libvips-linux-x64`
-- `@img/sharp-libvips-linuxmusl-x64`
 
 CC-BY-4.0 (Node prod):
 

@@ -2,7 +2,7 @@
  * Tests for bitmap Merkle tree proof generation
  * Following final_design.md §2.6 specifications
  *
- * TDD RED phase: Writing tests before implementation
+ * Verifies bitmap Merkle proof generation after implementation.
  */
 
 import { describe, expect, it } from 'vitest';

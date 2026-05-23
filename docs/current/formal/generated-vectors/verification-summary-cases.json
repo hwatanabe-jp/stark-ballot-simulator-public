@@ -1,0 +1,216 @@
+[
+  {
+    "name": "all-required-and-optional-success",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": {},
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "fully_verified",
+    "expectedTone": "verified"
+  },
+  {
+    "name": "missing-required-check",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": {},
+    "omitChecks": ["cast_receipt_present"],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "missing_evidence",
+    "expectedTone": "warning"
+  },
+  {
+    "name": "required-pending",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": { "counted_input_sanity": "pending" },
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "in_progress",
+    "expectedTone": "warning"
+  },
+  {
+    "name": "unknown-check",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": {},
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [
+      {
+        "id": "future_check",
+        "status": "success"
+      }
+    ],
+    "expectedStatus": "missing_evidence",
+    "expectedTone": "warning"
+  },
+  {
+    "name": "proof-verification-failed",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": { "stark_receipt_verify": "failed" },
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "proof_verification_failed",
+    "expectedTone": "failed"
+  },
+  {
+    "name": "recorded-integrity-failed",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": { "recorded_consistency_proof": "failed" },
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "recorded_integrity_failed",
+    "expectedTone": "failed"
+  },
+  {
+    "name": "user-vote-excluded",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": { "counted_missing_indices_zero": "failed", "counted_my_vote_included": "failed" },
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "user_vote_excluded",
+    "expectedTone": "failed"
+  },
+  {
+    "name": "votes-excluded",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": { "counted_missing_indices_zero": "failed" },
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "votes_excluded",
+    "expectedTone": "failed"
+  },
+  {
+    "name": "published-tally-mismatch",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": { "counted_tally_consistent": "failed" },
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "published_tally_mismatch",
+    "expectedTone": "failed"
+  },
+  {
+    "name": "counted-integrity-failed",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": { "counted_input_sanity": "failed" },
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "counted_integrity_failed",
+    "expectedTone": "failed"
+  },
+  {
+    "name": "cast-integrity-failed",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": { "cast_commitment_match": "failed" },
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "cast_integrity_failed",
+    "expectedTone": "failed"
+  },
+  {
+    "name": "optional-not-run-limits-verification",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": { "recorded_sth_third_party": "not_run" },
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "verified_with_limitations",
+    "expectedTone": "warning"
+  },
+  {
+    "name": "optional-failed-limits-verification",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": { "recorded_sth_third_party": "failed" },
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "verified_with_limitations",
+    "expectedTone": "warning"
+  },
+  {
+    "name": "optional-pending-does-not-limit-summary",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": { "recorded_sth_third_party": "pending" },
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "fully_verified",
+    "expectedTone": "verified"
+  },
+  {
+    "name": "optional-running-does-not-limit-summary",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": { "recorded_sth_third_party": "running" },
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "fully_verified",
+    "expectedTone": "verified"
+  },
+  {
+    "name": "duplicate-check-id-uses-worst-status",
+    "context": {
+      "sthSourcesConfigured": false
+    },
+    "checkStatuses": {},
+    "omitChecks": [],
+    "extraKnownChecks": [
+      {
+        "id": "stark_receipt_verify",
+        "status": "failed"
+      }
+    ],
+    "extraUnknownChecks": [],
+    "expectedStatus": "proof_verification_failed",
+    "expectedTone": "failed"
+  },
+  {
+    "name": "sth-configured-promotes-third-party-check",
+    "context": {
+      "sthSourcesConfigured": true
+    },
+    "checkStatuses": { "recorded_sth_third_party": "not_run" },
+    "omitChecks": [],
+    "extraKnownChecks": [],
+    "extraUnknownChecks": [],
+    "expectedStatus": "missing_evidence",
+    "expectedTone": "warning"
+  }
+]

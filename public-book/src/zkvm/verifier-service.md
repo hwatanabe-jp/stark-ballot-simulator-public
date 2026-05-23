@@ -49,9 +49,9 @@ flowchart TD
   VERIFY -->|失敗（その他）| FAIL2[failed]
 ```
 
-### 1. レシートの読み込みとパース
+### 入力形式の解決
 
-検証サービスは単一のレシートファイル（フラット JSON またはレシートラッパー JSON）だけでなく、レシートを含むバンドルディレクトリや ZIP にも対応しています。
+検証サービスは単一のレシートファイルだけでなく、レシートを含むバンドルディレクトリや ZIP にも対応しています。`image_id` はラッパーの top-level フィールドで、レシート本体の内部フィールドではありません。同期ファイナライズ経路では proof bundle ディレクトリ全体を渡し、その中の `receipt.json` を解決させる実装になっています。
 
 | 形式           | 説明                                                           |
 | -------------- | -------------------------------------------------------------- |
@@ -60,27 +60,19 @@ flowchart TD
 | ディレクトリ   | `receipt.json` または `*-receipt.json` を探索して読み込む      |
 | ZIP アーカイブ | エントリ名の末尾が `receipt.json` のファイルを探索して読み込む |
 
-`image_id` はラッパーの top-level フィールドであり、レシート本体の内部フィールドではありません。
+### Image ID 照合と Fake receipt の扱い
 
-同期ファイナライズ経路では、proof bundle ディレクトリ全体を verifier-service に渡し、その中の `receipt.json` を解決させる実装になっています。
+ラッパーの `image_id` を期待値と照合し、不一致なら `failed` として即時拒否します。Image ID の管理は [Image ID](image-id.md) を参照してください。
 
-### 2. 開発モードの検出
+レシートの内部構造（`InnerReceipt`）が `Fake` 型の場合は開発モードで生成されたレシートですが、即 `dev_mode` にはなりません。Image ID 不一致なら `failed`、Image ID 一致時のみ `Receipt::verify` の結果に応じて `dev_mode` に振り分けられます。
 
-レシートの内部構造（`InnerReceipt`）が `Fake` 型の場合、開発モードで生成されたレシートです。ただし即 `dev_mode` にはならず、Image ID 照合を経て最終ステータスが決まります。分岐の詳細は上のフローチャートを参照してください。
+### STARK 検証の実行
 
-### 3. Image ID の照合
+Image ID 照合に成功した後、RISC Zero SDK の `Receipt::verify(expected_image_id)` で STARK 証明を検証します。検証成功は次を保証します。
 
-ラッパーの `image_id` を期待値と照合し、不一致なら `failed` として即時拒否します。Image ID の管理については [Image ID](image-id.md) を参照してください。
-
-### 4. STARK 検証の実行
-
-Image ID の照合に成功した後、RISC Zero SDK の `Receipt::verify(expected_image_id)` メソッドを使用して STARK 証明の暗号学的検証を行います。
-
-この検証は以下のことを証明します:
-
-- レシートに含まれる seal（証明データ）が有効である
-- ジャーナルの内容が、指定された Image ID のゲストプログラムの正当な実行結果である
-- 証明の生成時にデータの改ざんが行われていない
+- レシートに含まれる seal（証明データ）が有効
+- ジャーナルが指定 Image ID のゲスト実行結果である
+- 証明生成後にレシートが改ざんされていない
 
 ## 検証レポート
 
@@ -95,32 +87,22 @@ Image ID の照合に成功した後、RISC Zero SDK の `Receipt::verify(expect
 
 呼び出し側は exit code とレポートの両方を見ます。`--quiet` を指定すると stdout 出力は抑制されるので、その場合は `--output` も併せて指定してレポートを保存します。
 
-| フィールド        | 型       | 説明                                             |
-| ----------------- | -------- | ------------------------------------------------ |
-| status            | 列挙型   | `success` / `failed` / `dev_mode`                |
-| verifier_version  | 文字列   | `verifier-service` のバージョン                  |
-| verified_at       | 文字列   | RFC 3339 形式の検証完了時刻                      |
-| duration_ms       | 数値     | 検証処理時間（ミリ秒）                           |
-| expected_image_id | 文字列   | 検証に使用した期待 Image ID                      |
-| receipt_image_id  | 文字列?  | 入力 JSON の top-level `image_id` から抽出した値 |
-| bundle_path       | 文字列   | 入力 bundle パスの basename のみ                 |
-| receipt_path      | 文字列   | 解決されたレシートファイル名の basename のみ     |
-| dev_mode_receipt  | 真偽値   | フェイクレシートであるか                         |
-| errors            | 文字列[] | 診断文字列の配列。空の場合は省略される           |
-
-### ステータスの判定基準
-
-```mermaid
-flowchart TD
-  S{検証結果}
-  S -->|"metadata image_id 不一致"| F1["failed<br/>errors: 不一致の診断文字列"]
-  S -->|"Receipt::verify(expected_image_id) 成功 + 非 Fake"| OK["success"]
-  S -->|"Receipt::verify(expected_image_id) 成功 + Fake"| DM["dev_mode"]
-  S -->|"Receipt::verify(expected_image_id) 失敗 + Fake + InvalidProof"| DM2["dev_mode"]
-  S -->|"Receipt::verify(expected_image_id) 失敗（その他）"| F2["failed<br/>errors: 検証失敗の診断文字列"]
-```
+| フィールド        | 型       | 説明                                                                                               |
+| ----------------- | -------- | -------------------------------------------------------------------------------------------------- |
+| status            | 列挙型   | `success` / `failed` / `dev_mode`                                                                  |
+| verifier_version  | 文字列   | `verifier-service` のバージョン                                                                    |
+| verified_at       | 文字列   | RFC 3339 形式の検証完了時刻                                                                        |
+| duration_ms       | 数値     | 検証処理時間（ミリ秒）                                                                             |
+| expected_image_id | 文字列   | 検証に使用した期待 Image ID                                                                        |
+| receipt_image_id  | 文字列?  | 入力 JSON の top-level `image_id` から抽出した値                                                   |
+| bundle_path       | 文字列   | 入力 bundle パスの basename のみ                                                                   |
+| receipt_path      | 文字列   | 解決されたレシートファイル名の basename のみ                                                       |
+| dev_mode_receipt  | 真偽値   | `Fake` receipt なら `true`。`status` 単独では `success` と `dev_mode` を区別できないため判定に併用 |
+| errors            | 文字列[] | 診断文字列の配列。空の場合は省略される                                                             |
 
 `errors` は固定のエラーコード一覧ではなく、実装が積む自由形式の診断文字列です。
+
+### ステータスの意味づけ
 
 | ステータス | 意味                                 | UI への影響               |
 | ---------- | ------------------------------------ | ------------------------- |
@@ -181,7 +163,7 @@ sequenceDiagram
 | `stark_image_id_match` | レシートに記録された Image ID が期待値と一致するか |
 | `stark_receipt_verify` | STARK 証明が暗号学的に有効であるか                 |
 
-`stark_image_id_match` は verifier report の `expected_image_id` と `receipt_image_id` の一致を主に検証します。検証フロー側では、これに加えて claimed / comparison 側の Image ID との整合も確認します。
+`stark_image_id_match` は verifier report の `expected_image_id` と `receipt_image_id` が一致することを検証します。検証パイプラインはさらに claimed / comparison 側の Image ID とも整合することを確認します。
 
 これらのチェックが両方成功した場合に限り、「STARK Verified」のステータスが付与されます。詳細は [4 段階検証モデル](../verification/four-stage-model.md) を参照してください。
 

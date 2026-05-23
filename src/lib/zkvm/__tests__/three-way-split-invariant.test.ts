@@ -1,6 +1,6 @@
 /**
  * Tests for the current slot/record split semantics in ZkVMJournal.
- * Following t-wada's approach: RED Phase - Write failing tests first.
+ * Verifies the implemented slot/record split invariants.
  *
  * The canonical count vocabulary is slot/record based:
  * - `missingSlots` counts unpresented bulletin slots

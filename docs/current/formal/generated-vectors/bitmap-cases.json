@@ -1,0 +1,220 @@
+[
+  {
+    "name": "zero-bits",
+    "bitLength": 0,
+    "trueIndices": [],
+    "expectedPackedByteLength": 0,
+    "expectedPackedBytesHex": "",
+    "probes": []
+  },
+  {
+    "name": "one-bit-set",
+    "bitLength": 1,
+    "trueIndices": [0],
+    "expectedPackedByteLength": 1,
+    "expectedPackedBytesHex": "01",
+    "probes": [
+      {
+        "bitIndex": 0,
+        "byteIndex": 0,
+        "bitIndexInByte": 0,
+        "expectedValue": true
+      }
+    ]
+  },
+  {
+    "name": "seven-bits-edge",
+    "bitLength": 7,
+    "trueIndices": [0, 6],
+    "expectedPackedByteLength": 1,
+    "expectedPackedBytesHex": "41",
+    "probes": [
+      {
+        "bitIndex": 0,
+        "byteIndex": 0,
+        "bitIndexInByte": 0,
+        "expectedValue": true
+      },
+      {
+        "bitIndex": 1,
+        "byteIndex": 0,
+        "bitIndexInByte": 1,
+        "expectedValue": false
+      },
+      {
+        "bitIndex": 6,
+        "byteIndex": 0,
+        "bitIndexInByte": 6,
+        "expectedValue": true
+      }
+    ]
+  },
+  {
+    "name": "eight-bits-full-byte",
+    "bitLength": 8,
+    "trueIndices": [0, 2, 7],
+    "expectedPackedByteLength": 1,
+    "expectedPackedBytesHex": "85",
+    "probes": [
+      {
+        "bitIndex": 0,
+        "byteIndex": 0,
+        "bitIndexInByte": 0,
+        "expectedValue": true
+      },
+      {
+        "bitIndex": 2,
+        "byteIndex": 0,
+        "bitIndexInByte": 2,
+        "expectedValue": true
+      },
+      {
+        "bitIndex": 7,
+        "byteIndex": 0,
+        "bitIndexInByte": 7,
+        "expectedValue": true
+      }
+    ]
+  },
+  {
+    "name": "nine-bits-cross-byte",
+    "bitLength": 9,
+    "trueIndices": [0, 8],
+    "expectedPackedByteLength": 2,
+    "expectedPackedBytesHex": "0101",
+    "probes": [
+      {
+        "bitIndex": 0,
+        "byteIndex": 0,
+        "bitIndexInByte": 0,
+        "expectedValue": true
+      },
+      {
+        "bitIndex": 7,
+        "byteIndex": 0,
+        "bitIndexInByte": 7,
+        "expectedValue": false
+      },
+      {
+        "bitIndex": 8,
+        "byteIndex": 1,
+        "bitIndexInByte": 0,
+        "expectedValue": true
+      }
+    ]
+  },
+  {
+    "name": "thirty-one-bits",
+    "bitLength": 31,
+    "trueIndices": [0, 7, 8, 30],
+    "expectedPackedByteLength": 4,
+    "expectedPackedBytesHex": "81010040",
+    "probes": [
+      {
+        "bitIndex": 0,
+        "byteIndex": 0,
+        "bitIndexInByte": 0,
+        "expectedValue": true
+      },
+      {
+        "bitIndex": 7,
+        "byteIndex": 0,
+        "bitIndexInByte": 7,
+        "expectedValue": true
+      },
+      {
+        "bitIndex": 8,
+        "byteIndex": 1,
+        "bitIndexInByte": 0,
+        "expectedValue": true
+      },
+      {
+        "bitIndex": 30,
+        "byteIndex": 3,
+        "bitIndexInByte": 6,
+        "expectedValue": true
+      }
+    ]
+  },
+  {
+    "name": "thirty-two-bits",
+    "bitLength": 32,
+    "trueIndices": [0, 31],
+    "expectedPackedByteLength": 4,
+    "expectedPackedBytesHex": "01000080",
+    "probes": [
+      {
+        "bitIndex": 0,
+        "byteIndex": 0,
+        "bitIndexInByte": 0,
+        "expectedValue": true
+      },
+      {
+        "bitIndex": 31,
+        "byteIndex": 3,
+        "bitIndexInByte": 7,
+        "expectedValue": true
+      }
+    ]
+  },
+  {
+    "name": "thirty-three-bits",
+    "bitLength": 33,
+    "trueIndices": [0, 32],
+    "expectedPackedByteLength": 5,
+    "expectedPackedBytesHex": "0100000001",
+    "probes": [
+      {
+        "bitIndex": 0,
+        "byteIndex": 0,
+        "bitIndexInByte": 0,
+        "expectedValue": true
+      },
+      {
+        "bitIndex": 31,
+        "byteIndex": 3,
+        "bitIndexInByte": 7,
+        "expectedValue": false
+      },
+      {
+        "bitIndex": 32,
+        "byteIndex": 4,
+        "bitIndexInByte": 0,
+        "expectedValue": true
+      }
+    ]
+  },
+  {
+    "name": "two-hundred-fifty-seven-bits",
+    "bitLength": 257,
+    "trueIndices": [0, 255, 256],
+    "expectedPackedByteLength": 33,
+    "expectedPackedBytesHex": "010000000000000000000000000000000000000000000000000000000000008001",
+    "probes": [
+      {
+        "bitIndex": 0,
+        "byteIndex": 0,
+        "bitIndexInByte": 0,
+        "expectedValue": true
+      },
+      {
+        "bitIndex": 254,
+        "byteIndex": 31,
+        "bitIndexInByte": 6,
+        "expectedValue": false
+      },
+      {
+        "bitIndex": 255,
+        "byteIndex": 31,
+        "bitIndexInByte": 7,
+        "expectedValue": true
+      },
+      {
+        "bitIndex": 256,
+        "byteIndex": 32,
+        "bitIndexInByte": 0,
+        "expectedValue": true
+      }
+    ]
+  }
+]

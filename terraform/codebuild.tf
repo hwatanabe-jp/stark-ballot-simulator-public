@@ -39,6 +39,21 @@ resource "aws_codebuild_project" "zkvm_prover" {
       name  = "RISC0_VERSION"
       value = var.risc0_version
     }
+
+    environment_variable {
+      name  = "PROVER_IMAGE_METADATA_BUCKET"
+      value = aws_s3_bucket.prover_image_metadata.bucket
+    }
+
+    environment_variable {
+      name  = "PROVER_IMAGE_METADATA_PREFIX"
+      value = local.prover_image_metadata_prefix
+    }
+
+    environment_variable {
+      name  = "PROVER_CURRENT_IMAGE_METADATA_PARAMETER"
+      value = aws_ssm_parameter.prover_current_image_metadata.name
+    }
   }
 
   logs_config {

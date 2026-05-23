@@ -1,0 +1,178 @@
+[
+  {
+    "id": "cast_receipt_present",
+    "category": "cast_as_intended",
+    "role": "cast_receipt_integrity",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "cast_choice_range",
+    "category": "cast_as_intended",
+    "role": "cast_receipt_integrity",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "cast_random_format",
+    "category": "cast_as_intended",
+    "role": "cast_receipt_integrity",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "cast_commitment_match",
+    "category": "cast_as_intended",
+    "role": "cast_receipt_integrity",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "recorded_commitment_in_bulletin",
+    "category": "recorded_as_cast",
+    "role": "recorded_inclusion",
+    "criticality": "optional",
+    "requiredWhenSthSourcesConfigured": false,
+    "requiredWhenSthSourcesNotConfigured": false
+  },
+  {
+    "id": "recorded_index_in_range",
+    "category": "recorded_as_cast",
+    "role": "recorded_inclusion",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "recorded_root_at_cast_consistent",
+    "category": "recorded_as_cast",
+    "role": "recorded_append_only",
+    "criticality": "optional",
+    "requiredWhenSthSourcesConfigured": false,
+    "requiredWhenSthSourcesNotConfigured": false
+  },
+  {
+    "id": "recorded_inclusion_proof",
+    "category": "recorded_as_cast",
+    "role": "recorded_inclusion",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "recorded_consistency_proof",
+    "category": "recorded_as_cast",
+    "role": "recorded_append_only",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "recorded_sth_third_party",
+    "category": "recorded_as_cast",
+    "role": "optional_external_audit",
+    "criticality": "optional",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": false
+  },
+  {
+    "id": "counted_input_sanity",
+    "category": "counted_as_recorded",
+    "role": "tally_input_integrity",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "counted_unique_indices",
+    "category": "counted_as_recorded",
+    "role": "tally_input_integrity",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "counted_unique_commitments",
+    "category": "counted_as_recorded",
+    "role": "tally_input_integrity",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "counted_tally_consistent",
+    "category": "counted_as_recorded",
+    "role": "tally_consistency",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "counted_missing_indices_zero",
+    "category": "counted_as_recorded",
+    "role": "tally_completeness",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "counted_expected_vs_tree_size",
+    "category": "counted_as_recorded",
+    "role": "tally_input_integrity",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "counted_election_manifest_consistent",
+    "category": "counted_as_recorded",
+    "role": "tally_input_integrity",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "counted_close_statement_consistent",
+    "category": "counted_as_recorded",
+    "role": "tally_input_integrity",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "counted_my_vote_included",
+    "category": "counted_as_recorded",
+    "role": "user_inclusion",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "counted_input_commitment_match",
+    "category": "counted_as_recorded",
+    "role": "tally_input_integrity",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "stark_image_id_match",
+    "category": "stark_verification",
+    "role": "proof_verification",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  },
+  {
+    "id": "stark_receipt_verify",
+    "category": "stark_verification",
+    "role": "proof_verification",
+    "criticality": "required",
+    "requiredWhenSthSourcesConfigured": true,
+    "requiredWhenSthSourcesNotConfigured": true
+  }
+]

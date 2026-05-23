@@ -16,54 +16,27 @@
 
 ### ステータスの判定順序
 
-| 優先順 | 判定条件                                                                                                           | 最終ステータス                                     |
-| ------ | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- |
-| 1      | required チェックに `pending` / `running` がある                                                                   | `Warning` (`in_progress`)                          |
-| 2      | STARK 証明系ロールが `failed`                                                                                      | `Verification Failed`                              |
-| 3      | completeness ロールが `failed`（`user_vote_excluded` / `votes_excluded` / `votes_excluded_unknown`）               | `Verification Failed`                              |
-| 4      | Recorded-as-Cast の required チェックが `failed`                                                                   | `Verification Failed`                              |
-| 5      | tally consistency だけが失敗し、proof / completeness / user inclusion / input integrity / Recorded required が成功 | `Verification Failed` (`published_tally_mismatch`) |
-| 6      | Counted-as-Recorded または Cast-as-Intended の required チェックが `failed`                                        | `Verification Failed`                              |
-| 7      | (a) required に `not_run` がある (b) 必須ロール不足 (c) 未知チェック (d) required 定義の未解決 のいずれか          | `Warning` (`missing_evidence`)                     |
-| 8      | optional チェックに `failed` / `not_run` がある                                                                    | `Warning` (`verified_with_limitations`)            |
-| 9      | 上記いずれにも該当しない                                                                                           | `Verified`                                         |
+| 優先順 | 判定条件                                                                                                                        | 最終ステータス                                     |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| 1      | required チェックに `pending` / `running` がある                                                                                | `Warning` (`in_progress`)                          |
+| 2      | STARK 証明系ロールが `failed`                                                                                                   | `Verification Failed`                              |
+| 3      | completeness ロールが `failed`（`user_vote_excluded` / `votes_excluded` / `votes_excluded_unknown`）                            | `Verification Failed`                              |
+| 4      | Recorded-as-Cast の required チェックが `failed`                                                                                | `Verification Failed`                              |
+| 5      | tally consistency だけが失敗し、proof / completeness / user inclusion / input integrity / Recorded required が成功              | `Verification Failed` (`published_tally_mismatch`) |
+| 6      | Counted-as-Recorded または Cast-as-Intended の required チェックが `failed`                                                     | `Verification Failed`                              |
+| 7      | (a) required に `not_run` がある (b) 必須ロール不足 (c) 既知チェックと混在する未知チェック (d) required 定義の未解決 のいずれか | `Warning` (`missing_evidence`)                     |
+| 8      | optional チェックに `failed` / `not_run` がある                                                                                 | `Warning` (`verified_with_limitations`)            |
+| 9      | 上記いずれにも該当しない                                                                                                        | `Verified`                                         |
 
-この表は `deriveVerificationSummary` の集約結果です。shipped `/verify` ページでは、`pending` / `running` のチェックが残っている間は最終サマリー自体を表示せず、ステップ表示が完了したあとに summary を表示します。
+この表は `deriveVerificationSummary` の集約結果です。チェックが空、または未知チェックだけで既知チェックが 1 件も解決できない場合、summary は `null` になり、Verified ではなく最終サマリー未表示として扱われます。
+
+現行 `/verify` ページでは、`pending` / `running` のチェックが残っている間は最終サマリー自体を表示せず、ステップ表示が完了したあとに summary を表示します。UI レベルの最終表示は (1) 明示的なサーバー失敗、(2) hard-failure fallback、(3) summary、(4) pending warning の順で解決されます。
 
 ---
 
-## 補助判定のゲーティング（historical helper: `validateVotingIntegrity`）
+## 補助判定のゲーティング（`validateVotingIntegrity`）
 
-以下は historical helper の挙動です。最終 verdict は前節の `deriveVerificationSummary` で決まります（shipped `/verify` ページは WS3.5 以降この helper を verdict path から外しています）。同関数は 5 つのゲートを順に評価し、いずれかが失敗した時点で `canShowVerified = false` を返します。
-
-### ゲート 1: 整合性証明
-
-RFC 6962 の整合性証明により、掲示板が追記専用であることを検証します。
-
-| 条件                           | 結果                                                      |
-| ------------------------------ | --------------------------------------------------------- |
-| 整合性証明が暗号学的に検証成功 | 通過                                                      |
-| 証明の検証失敗                 | `canShowVerified = false`（スプリットビュー攻撃の可能性） |
-| ルートの不一致（old/new）      | `canShowVerified = false`                                 |
-| API エラーで証明を取得できない | `canShowVerified = false`                                 |
-
-### ゲート 2: 完全性（Completeness）
-
-zkVM の集計に全投票が含まれたことを検証します。`validateVotingIntegrity` はジャーナルの `excludedSlots` を直接評価します。`counted_missing_indices_zero` の主経路と legacy aliases による fail-closed 補正経路の使い分けは [チェック一覧](checks-catalog.md#counted_missing_indices_zero) を参照してください。
-
-| 条件                               | 結果                                            |
-| ---------------------------------- | ----------------------------------------------- |
-| 解決済み除外数が 0                 | 通過                                            |
-| 解決済み除外数が 0 より大きい      | `canShowVerified = false`（**最重要不変条件**） |
-| 除外数の解決に必要な値が欠落・不正 | `canShowVerified = false`                       |
-
-解決済みの除外数が 0 より大きい場合は、投票が未提示または提示後に集計から落ちたことを意味します。これは投票システムにおいて最も深刻な不正であり、いかなる場合も「Verified」を表示してはなりません。
-
-### ゲート 3〜5（圧縮）
-
-- **ゲート 3（警告の収集）**: `totalExpected != treeSize` や `rejectedRecords > 0`（提示されたが計上されなかった record の数）を fail-closed 除外数が 0 のとき警告として収集します。`invalidPresentedSlots` は除外数に含まれるためゲート 2 側で扱います。なお `verificationChecks` 側では `counted_expected_vs_tree_size` が必須チェックとして同じ条件を `failed` に倒します。
-- **ゲート 4（第三者 STH 検証）**: STH ソースが設定されている場合のみ評価されます。比較可能な応答群で合意成立かつ `matchingSources >= minMatches` を満たさなければ `canShowVerified = false`。照合条件の詳細は [チェック一覧](checks-catalog.md#recorded_sth_third_party) を参照してください。
-- **ゲート 5（ユーザーインデックスの範囲検証）**: `userIndex < treeSize` を満たさなければ `canShowVerified = false`。
+現行 `/verify` の最終判定では使われない内部 helper ですが、整合性証明・完全性・第三者 STH 合意・ユーザーインデックス範囲を順に評価し、いずれかが失敗すれば `canShowVerified = false` を返します。意味論は [チェック一覧](checks-catalog.md) の `recorded_consistency_proof` / `counted_missing_indices_zero` / `counted_expected_vs_tree_size` / `recorded_sth_third_party` に対応します。
 
 ---
 
@@ -71,13 +44,13 @@ zkVM の集計に全投票が含まれたことを検証します。`validateVot
 
 STARK 検証は整合性検証とは独立に評価されます。
 
-| STARK ステータス | 説明                         | 最終判定への影響                                                     |
-| ---------------- | ---------------------------- | -------------------------------------------------------------------- |
-| `success`        | 暗号学的に検証成功           | 他の必須チェックも `success` なら Verified 可能                      |
-| `failed`         | 検証失敗                     | Verified をブロック                                                  |
-| `dev_mode`       | 開発モードのフェイクレシート | `allowDevModeVerification=true` なら `success`、それ以外は `not_run` |
-| `not_run`        | 未実行                       | `missing_evidence`（Warning）扱い。Verified をブロック               |
-| `running`        | 実行中                       | `in_progress`（Warning）扱い。Verified をブロック                    |
+| STARK ステータス | 説明                         | 最終判定への影響                                                                         |
+| ---------------- | ---------------------------- | ---------------------------------------------------------------------------------------- |
+| `success`        | 暗号学的に検証成功           | 他の必須チェックも `success` なら Verified 可能                                          |
+| `failed`         | 検証失敗                     | Verified をブロック                                                                      |
+| `dev_mode`       | 開発モードのフェイクレシート | core evaluator では `allowDevModeVerification=true` なら `success`、それ以外は `not_run` |
+| `not_run`        | 未実行                       | `missing_evidence`（Warning）扱い。Verified をブロック                                   |
+| `running`        | 実行中                       | `in_progress`（Warning）扱い。Verified をブロック                                        |
 
 STARK が `not_run` のまま最終判定が Verified になる経路はありません（整合性チェックだけでは Verified に到達できません）。
 
@@ -92,7 +65,7 @@ STARK 検証の結果は、Counted-as-Recorded 段階のチェック評価にも
 | `failed`               | `failed`                 |
 | `success`              | ゲートなしで通常評価     |
 
-`dev_mode` は事前に `success` または `not_run` に正規化されてから zkGate に入力されます。
+core evaluator では、`dev_mode` は事前に `success` または `not_run` に正規化されてから zkGate に入力されます。一方、現行 `/api/verify` の表示用ステータス組み立てでは、dev mode が許可されていない場合は [fail-closed](../appendix/glossary.md#fail-closed) の `failed` として反映されます。
 
 ---
 
@@ -167,8 +140,6 @@ sequenceDiagram
   Note over U: 最終判定を表示
 ```
 
-重要な制約として、STARK 検証が完了するまで、ステップの表示シーケンスは開始されません。これは、STARK の結果が Counted チェックの評価（zkGate）に影響するためです。
-
 ---
 
 ## 不変条件のまとめ
@@ -186,4 +157,6 @@ sequenceDiagram
 
 これらの不変条件は、改ざんシナリオ（S0〜S5）の検出を保証する基盤です。各シナリオがどの不変条件によって検出されるかは、[改ざんシナリオ](../tamper/index.md) を参照してください。
 
-<!-- source: src/server/api/handlers/verify.ts, src/app/(routes)/verify/hooks/useVerificationData.ts, src/lib/verification/consistency-verifier.ts:validateVotingIntegrity, src/lib/verification/verification-summary.ts, src/lib/verification/verification-checks.ts, src/lib/verification/engine/evaluate-checks.ts, src/lib/verification/engine/derive-stages.ts -->
+この fail-closed モデルは、[単体・結合・E2E テスト](../quality/unit-integration-e2e.md) で「Verified を誤表示しない」ケースを継続的に検査しています。形式化側では [Lean による形式化](../quality/lean-formalization.md) の verification summary / display vectors を通じて、モデルと実装の対応を確認します。
+
+<!-- source: src/server/api/handlers/verify.ts, src/app/(routes)/verify/hooks/useVerificationData.ts, src/app/(routes)/verify/lib/overall-status.ts, src/lib/verification/consistency-verifier.ts:validateVotingIntegrity, src/lib/verification/verification-summary.ts, src/lib/verification/verification-checks.ts, src/lib/verification/engine/evaluate-checks.ts, src/lib/verification/engine/derive-stages.ts -->

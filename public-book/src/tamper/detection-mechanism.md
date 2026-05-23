@@ -58,7 +58,7 @@
 | STARK Verification  | ✅        | ✅        | ✅        | ✅        | ✅        | ✅        |
 
 この表は「シナリオ適用による典型挙動」を示します。`running` や追加の `not_run` は運用状態や証拠不足により別途発生します。
-なお、ここでの `STARK Verification` は段階別の表示ステータスです。全体の `verificationStatus` は fail-closed ルールにより `failed` になることがあります。
+なお、ここでの `STARK Verification` は段階別の表示ステータスです。全体の `verificationStatus` は [fail-closed](../appendix/glossary.md#fail-closed) ルールにより `failed` になることがあります。
 
 ---
 
@@ -139,5 +139,7 @@ flowchart TB
 - `user_vote_excluded` / `votes_excluded` / `votes_excluded_unknown`: 完全性違反（S1/S3/S5）
 - `published_tally_mismatch`: claimed と verified の不一致（S2/S4）
 - `counted_integrity_failed`: Counted 系必須チェック失敗の一般ケース
+
+これらの検出経路は、[単体・結合・E2E テスト](../quality/unit-integration-e2e.md) の CLI / E2E フローと、[Property-based Testing](../quality/property-based-testing.md) の Merkle / journal 不変条件で補強しています。
 
 <!-- source: src/server/api/handlers/verify.ts, src/lib/verification/engine/evaluate-checks.ts, src/lib/verification/verification-checks.ts, src/lib/verification/verification-summary.ts, src/lib/finalize/usecases/finalize-session.ts, src/lib/finalize/usecases/finalize-sync.ts, src/lib/finalize/finalization-result.ts, amplify/functions/finalize-callback-runner/handler.ts, src/lib/mock-api/fetcher.ts -->

@@ -7,7 +7,7 @@
 
 - [暗号プロトコル](protocol/index.md)
   - [コミットメントスキーム](protocol/commitment.md)
-  - [CT Merkle ツリー](protocol/ct-merkle.md)
+  - [掲示板 (CT Merkle ツリー)](protocol/ct-merkle.md)
   - [入力コミットメント](protocol/input-commitment.md)
   - [STH ダイジェスト](protocol/sth-digest.md)
   - [ビットマップ Merkle](protocol/bitmap-merkle.md)
@@ -30,8 +30,13 @@
   - [シナリオ一覧](tamper/scenarios.md)
   - [検出メカニズム](tamper/detection-mechanism.md)
 
+- [品質保証と形式手法](quality/index.md)
+  - [単体・結合・E2E テスト](quality/unit-integration-e2e.md)
+  - [Property-based Testing](quality/property-based-testing.md)
+  - [Lean による形式化](quality/lean-formalization.md)
+
 - [AWS アーキテクチャ](aws/index.md)
-  - [設計思想とサービス一覧](aws/design-and-services.md)
+  - [現行構成とサービス一覧](aws/design-and-services.md)
   - [トポロジー](aws/topology.md)
   - [非同期プローバー](aws/async-prover.md)
   - [イメージ署名](aws/image-signing.md)

@@ -1,7 +1,29 @@
 packages:
   - '.'
 
+# Nested package.json files are local module or deployment boundaries, not
+# pnpm workspace packages.
 strictDepBuilds: true
+minimumReleaseAge: 1440
+minimumReleaseAgeStrict: true
+trustPolicy: no-downgrade
+trustPolicyExclude:
+  # Reviewed legacy transitive dependencies that predate current npm trust
+  # evidence expectations. Keep these pinned to exact versions so future trust
+  # downgrades still fail closed.
+  - 'chokidar@4.0.3'
+  - 'eslint-import-resolver-typescript@3.10.1'
+  - 'semver@6.3.1'
+  - 'ua-parser-js@1.0.41'
+
+overrides:
+  '@aws-cdk/cloud-assembly-schema': 53.27.0
+  '@smithy/types': 4.14.2
+
+peerDependencyRules:
+  allowedVersions:
+    react: '19'
+    react-dom: '19'
 
 allowBuilds:
   '@parcel/watcher': true

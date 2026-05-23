@@ -233,6 +233,20 @@ resource "aws_iam_role_policy" "codebuild" {
         Resource = "arn:${local.partition}:s3:::codepipeline-*"
       },
       {
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "${aws_s3_bucket.prover_image_metadata.arn}/${local.prover_image_metadata_prefix}/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:PutParameter"
+        ]
+        Resource = [
+          aws_ssm_parameter.prover_current_image_metadata.arn
+        ]
+      },
+      {
         Effect = "Allow"
         Action = [
           "codestar-connections:UseConnection",

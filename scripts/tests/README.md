@@ -212,7 +212,8 @@ Notes:
 
 ### `entrypoint-bundle.test.sh`
 
-Smoke test for the public bundle creation logic exposed by `docker/entrypoint.sh`.
+Smoke test for the public bundle/archive contract and host timeout wrapper exposed by
+`docker/entrypoint.sh`.
 
 Usage:
 
@@ -286,7 +287,7 @@ pnpm vitest run scripts/tests/__tests__
 - generated receipt fixtures for `test-journal-parser.ts` and `tamper-stark-proof.ts`
 - `jq` for `test-zkvm.sh`
 - `tmux` and `nc` for `setup-cli-test.sh`
-- `python3` and `unzip` for `entrypoint-bundle.test.sh`
+- `python3`, `timeout`, and `unzip` for `entrypoint-bundle.test.sh`
 
 ## Current Guidance
 

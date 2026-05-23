@@ -62,3 +62,40 @@ resource "aws_s3_bucket_lifecycle_configuration" "proof_bundles" {
     }
   }
 }
+
+resource "aws_s3_bucket" "prover_image_metadata" {
+  bucket = local.prover_image_metadata_bucket_name
+
+  tags = {
+    Name = local.prover_image_metadata_bucket_name
+  }
+}
+
+resource "aws_s3_bucket_versioning" "prover_image_metadata" {
+  bucket = aws_s3_bucket.prover_image_metadata.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "prover_image_metadata" {
+  bucket = aws_s3_bucket.prover_image_metadata.id
+
+  rule {
+    blocked_encryption_types = ["NONE"]
+    bucket_key_enabled       = false
+
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "prover_image_metadata" {
+  bucket                  = aws_s3_bucket.prover_image_metadata.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}

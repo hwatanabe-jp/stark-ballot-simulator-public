@@ -7,12 +7,11 @@
 - 検証ページから `bundle.zip` をダウンロード済みであること
 - Ubuntu 22.04 / 24.04
 - このリポジトリ（`stark-ballot-simulator`）のソースを取得済みであること
-- （Step 7-8 を実行する場合）Node.js 24 と Corepack 経由の pnpm 10.x が利用可能であること
-- （Step 7-8 を実行する場合）`$REPO_ROOT` で `corepack enable` と `pnpm install --frozen-lockfile` を実行済みであること
+- Node.js 24 と Corepack 経由の pnpm 11.x が利用可能で、`$REPO_ROOT` で `corepack enable` と `pnpm install --frozen-lockfile` を実行済みであること（Step 7–8 のみ必要）
 
 > 手順の前提（ソース取得やビルドが必要なステップ）は、リポジトリが公開されるまで実行できません。詳細は [第三者検証ガイド](index.md) を参照してください。
 
-ここで扱う `public` は「秘密データを含まない配布対象」を指し、無認証取得を意味しません。検証ページからのダウンロードは capability 保護エンドポイント `/api/verification/bundles/:sessionId/:executionId` 経由で行われ、S3 バンドルもこのエンドポイントが短命な presigned URL を発行します。取得経路の詳細は [バンドル構造](../verification/bundle-structure.md) を参照してください。現行レスポンスに含まれない旧 URL フィールド（`s3BundleUrl` / `verificationBundleUrl` など）の扱いは [API エンドポイント一覧](../api/endpoints.md#現行-response-で返さない-legacy-フィールド) を参照してください。
+ここで扱う `public` は「秘密データを含まない配布対象」を指し、無認証取得を意味しません。取得経路（capability エンドポイントと短命な presigned URL）と、現行レスポンスに含まれない旧 URL フィールドの扱いは、それぞれ [バンドル構造](../verification/bundle-structure.md) と [API エンドポイント一覧](../api/endpoints.md#現行-response-で返さない-legacy-フィールド) を参照してください。
 
 以降の手順では、リポジトリルートを `REPO_ROOT` として扱います。実際のクローン先に合わせて先に設定してください。
 
@@ -74,7 +73,7 @@ ls -1 bundle
 
 ## 4. 期待 Image ID を決定
 
-アプリ側の検証フローは `EXPECTED_IMAGE_ID`、または `EXPECTED_IMAGE_ID_VARIANT=default|x86_64` と `methodVersion` から期待 Image ID を決定します。`methodVersion` は `CURRENT_METHOD_VERSION` と一致する必要があり、不一致なら fail-closed で停止します。ここでも同じ前提を確認したうえで、`receipt.json` の `image_id` が `public/imageId-mapping.json` のどの variant に該当するかを判定し、その値を `verifier-service` に渡します。
+Step 4 では `receipt.json` の `image_id` が `public/imageId-mapping.json` のどの variant に該当するかを判定し、`verifier-service` に渡す Image ID を決めます。アプリ側と同様に `methodVersion` が `CURRENT_METHOD_VERSION` と一致しない場合は [fail-closed](../appendix/glossary.md#fail-closed) で停止します（アプリ内では `EXPECTED_IMAGE_ID` または `EXPECTED_IMAGE_ID_VARIANT=default|x86_64` で variant を選択します）。
 
 ```bash
 METHOD_VERSION="$(jq -r '.methodVersion' bundle/journal.json)"
@@ -156,10 +155,10 @@ jq -e '(.verifiedTally | add) == .validVotes' bundle/journal.json >/dev/null \
 
 `public-input.json`、`election-manifest.json`、`close-statement.json` は `bundle.zip` に含まれる Counted 段階の必須チェック対象です。次の 4 点を確認します（フィールド単位の詳細はスクリプト内の `checks` 参照）。
 
-- `public-input.json` が現行 contract に沿っており、vote entry の形式・重複 index/commitment・`journal.json` との各フィールドが矛盾しない
-- `election-manifest.json` の `electionConfigHash` を再計算して自身の宣言値と一致し、`public-input.json` / `journal.json` とも矛盾しない
-- `close-statement.json` から `sthDigest` を再計算して宣言値と一致し、`public-input.json` / `journal.json` とも矛盾しない
-- `journal.json` と `public-input.json` が current journal contract の `methodVersion` を使っている
+- `public-input.json` が現行 contract に沿い、vote entry / 重複 index / commitment / `journal.json` 各フィールドと矛盾しない
+- `election-manifest.json` の `electionConfigHash` 再計算値が宣言値・`public-input.json` / `journal.json` と一致する
+- `close-statement.json` の `sthDigest` 再計算値が宣言値・`public-input.json` / `journal.json` と一致する
+- `journal.json` と `public-input.json` の `methodVersion` が現行 contract と一致する
 
 ```bash
 cd "$REPO_ROOT"
@@ -247,8 +246,7 @@ echo "exit_code=$?"
 
 ## 8. inputCommitment 再計算
 
-`public-input.json` から再計算した値が `journal.json` の `inputCommitment` と一致することを確認します。
-このステップには Node.js / pnpm と、`$REPO_ROOT` での `corepack enable`、`pnpm install --frozen-lockfile` が必要です。
+`public-input.json` から再計算した値が `journal.json` の `inputCommitment` と一致することを確認します。Step 0 の Node.js / pnpm 前提を満たしてから実行してください。
 
 ```bash
 RECALC="$(cd "$REPO_ROOT" && pnpm tsx -e "import fs from 'node:fs'; import { computeInputCommitmentFromPublicInput } from './src/lib/zkvm/types'; const p = JSON.parse(fs.readFileSync(process.argv[1], 'utf-8')); console.log(computeInputCommitmentFromPublicInput(p));" "$AUDIT_ROOT/bundle/public-input.json")"
@@ -260,12 +258,10 @@ echo "journal=$JOURNAL_COMMITMENT"
 [ "${RECALC,,}" = "${JOURNAL_COMMITMENT,,}" ] && echo 'input_commitment=ok' || echo 'input_commitment=ng'
 ```
 
-## 合格条件（各ステップ結果の対応）
+## 合格条件
 
-- Step 4 で `imageId-mapping.json` から選んだ Image ID を使い、Step 5 の `verifier-service` が `status: "success"`
-- Step 6 の integrity カウント・`expected_vs_tree`・`tally_sum` がすべて `ok`
-- Step 7 の全キーが `true`
-- Step 8 の `input_commitment=ok`
+- Step 4 で `EXPECTED_IMAGE_ID` を決定できる
+- Step 5–8 の判定がすべて緑
 
 いずれかが失敗した場合、Counted / STARK 段階の必須チェックを満たしていないため `Verified` にはなりません。範囲外や `bundle.zip` 単体では揃わない検証材料は [第三者検証ガイド](index.md) を参照してください。
 

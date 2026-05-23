@@ -69,6 +69,12 @@ Cross-language golden-vector evidence:
 - `scripts/tests/generate-rfc6962-golden-vectors.ts`
 - `scripts/tests/__tests__/rfc6962-golden-vectors.test.ts`
 
+Formal correspondence vector evidence:
+
+- `docs/current/formal/generated-vectors/input-commitment-cases.json` feeds Rust input-commitment tests in `zkvm/contract-core/src/encoding.rs`
+- `docs/current/formal/generated-vectors/bitmap-cases.json` feeds Rust bitmap tests in `zkvm/contract-core/src/bitmap.rs`
+- `docs/current/formal/generated-vectors/guest-model-cases.json` feeds Rust guest-model tests in `zkvm/methods/guest/src/tally.rs`
+
 Regenerate the checked-in TS-to-Rust RFC6962 fixture from the repository root:
 
 ```bash
@@ -158,11 +164,17 @@ This script is the fastest end-to-end sanity check for the checked-in fixture pa
 
 ```text
 host <INPUT_JSON_PATH>
+host --print-image-id [--json]
 ```
 
 Arguments:
 
 - `<INPUT_JSON_PATH>`: path to the zkVM input JSON file
+
+Options:
+
+- `--print-image-id`: print the guest ImageID compiled into the host binary, then exit without proving or writing artifacts
+- `--json`: with `--print-image-id`, print `{"imageId":"0x...","methodVersion":14}`; this is the shape consumed by CodeBuild image metadata publishing
 
 Environment:
 
@@ -173,6 +185,11 @@ Note: `EXPECTED_IMAGE_ID` is not consumed by the host CLI itself. It is used dow
 ## Input Format
 
 The host reads JSON in the format produced by `serializeZkvmAggregatorInput()` in `src/lib/zkvm/executor.ts`.
+
+The Phase 4 guest correspondence contract is intentionally bounded. The checked
+guest path accepts `tree_size <= 1,000,000`, at most `1,000,000` presented vote
+records, and candidate tally buckets no larger than `1,000,000`; oversized
+inputs fail closed before journal fields are emitted.
 
 Example structure:
 
@@ -243,7 +260,9 @@ should be regenerated from the same build you plan to verify.
 
 ## Output Artifacts
 
-The host always writes `*-output.json` and `*-receipt.json` next to the input file, prints the guest ImageID to stdout, and may also write private bitmap artifacts when it can reconstruct exact bitmaps whose roots match the journal.
+In proof mode, the host writes `*-output.json` and `*-receipt.json` next to the input file, prints the guest ImageID to stdout, and may also write private bitmap artifacts when it can reconstruct exact bitmaps whose roots match the journal.
+
+In ImageID-only mode (`--print-image-id [--json]`), the host prints the compiled guest ImageID and exits without reading an input file or writing artifacts.
 
 ### 1. `*-output.json`
 
@@ -285,7 +304,7 @@ Example structure:
   "inputCommitment": [
     /* 32 bytes */
   ],
-  "methodVersion": 12,
+  "methodVersion": 14,
   "imageId": "0x..."
 }
 ```
@@ -385,6 +404,10 @@ public-input.json, election-manifest.json, close-statement.json, receipt.json, j
 
 Private artifacts such as `included-bitmap.json`, `seen-bitmap.json`, `input.json`, and `verification.json` must stay out of the public archive.
 
+Compatibility note: `docker/entrypoint.sh` validates async host output against
+the current methodVersion. Keep that entrypoint in lockstep with
+`zkvm/contract-core/src/types.rs` before promoting a new async prover image.
+
 That means app-level verification bundles use `receipt.json` and `journal.json`, while the raw host output on disk is still `*-receipt.json`, `*-output.json`, `*-bitmap.json`, and `*-seen-bitmap.json`.
 
 ## ImageID Notes
@@ -394,6 +417,21 @@ The host prints and embeds the guest ImageID that was compiled into the local bi
 ```text
 Guest Program ImageID: 0x...
 ```
+
+For ImageID-only checks, use:
+
+```bash
+./target/release/host --print-image-id
+./target/release/host --print-image-id --json
+```
+
+The JSON form emits:
+
+```json
+{ "imageId": "0x...", "methodVersion": 14 }
+```
+
+CodeBuild uses that JSON output to record the ARM64 guest ImageID and method version in prover image metadata.
 
 The repository source of truth for expected IDs is:
 

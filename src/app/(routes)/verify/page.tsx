@@ -25,12 +25,10 @@ import { resolveConfiguredSthSources } from '@/lib/verification/sth-verifier';
 import { detectTampering } from '@/lib/verification/tamperDetection';
 import type { TamperDetectionResult } from '@/lib/verification/types';
 import type { VerificationCheckId } from '@/lib/verification/verification-checks';
-import { resolveCanonicalFinalizationPayload } from '@/lib/finalize/client-finalization-result';
 import {
   deriveVerificationSummary,
   type VerificationSummaryContext,
   type VerificationSummaryStatus,
-  type VerificationSummaryTone,
 } from '@/lib/verification/verification-summary';
 import {
   isVerificationClientInvalidationError,
@@ -46,6 +44,12 @@ import {
   resolveStarkStatus,
 } from './lib/verification-data';
 import { downloadBundle } from './lib/download';
+import {
+  resolveVerifyPageOverallStatusOverride,
+  resolveVerifyPageRenderedOverallStatus,
+  resolveVerifyPageStatusForSummaryTone,
+  type VerifyPageOverallStatusOverrideSource,
+} from './lib/overall-status';
 import { resolveHighlightedKnowledge } from './lib/verification-highlights';
 import { isStarkTimeoutError } from './lib/stark-timeout';
 
@@ -90,17 +94,13 @@ const SUMMARY_SUB_MESSAGE_KEYS: Partial<Record<VerificationSummaryStatus, string
   proof_verification_failed: 'pages.verify.resultSummary.proofVerificationFailedSub',
 };
 
-const SUMMARY_TONE_CONFIG: Record<VerificationSummaryTone, { status: 'verified' | 'failed' | 'warning' }> = {
-  verified: { status: 'verified' },
-  warning: { status: 'warning' },
-  failed: { status: 'failed' },
-};
-
 export default function VerifyPage(): React.ReactElement {
   const { t } = useTranslation();
   const router = useRouter();
   const verificationStartedRef = useRef(false);
-  const expectedSessionIdentityRef = useRef(captureSessionIdentity(getSessionData()));
+  const [expectedSessionIdentity] = useState(() => captureSessionIdentity(getSessionData()));
+  const expectedSessionIdentityRef = useRef(expectedSessionIdentity);
+  const expectedSessionId = expectedSessionIdentity?.sessionId;
   const [downloadState, setDownloadState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [_tamperResult, setTamperResult] = useState<TamperDetectionResult | null>(null);
@@ -123,11 +123,22 @@ export default function VerifyPage(): React.ReactElement {
     [t],
   );
 
-  const { data, setData, loading, setLoading, serverValidated, error, setError, fetchVerificationRef, triggerFetch } =
-    useVerificationData({
-      t,
-      sessionIdentityRef: expectedSessionIdentityRef,
-    });
+  const {
+    data,
+    setData,
+    loading,
+    setLoading,
+    serverValidated,
+    hasVerificationContinuationAuthority,
+    error,
+    setError,
+    fetchVerificationRef,
+    triggerFetch,
+  } = useVerificationData({
+    t,
+    sessionIdentityRef: expectedSessionIdentityRef,
+    initialSessionIdentity: expectedSessionIdentity,
+  });
 
   const handleFatalVerificationInvalidation = useCallback(
     (error: unknown): void => {
@@ -225,12 +236,8 @@ export default function VerifyPage(): React.ReactElement {
     if (verificationStarted) {
       return false;
     }
-    const session = getExpectedSession();
-    const hasContinuationAuthority =
-      typeof session?.verificationRequestedAt === 'number' &&
-      Boolean(resolveCanonicalFinalizationPayload(session.finalizeResult));
-    return !hasContinuationAuthority && actualStarkStatus === 'not_run';
-  }, [getExpectedSession, loading, error, data, verificationStarted, actualStarkStatus]);
+    return !hasVerificationContinuationAuthority && actualStarkStatus === 'not_run';
+  }, [loading, error, data, verificationStarted, hasVerificationContinuationAuthority, actualStarkStatus]);
 
   useEffect(() => {
     if (loading || error || !data || !serverValidated) {
@@ -343,10 +350,7 @@ export default function VerifyPage(): React.ReactElement {
     };
   }, [data, getExpectedSession]);
 
-  const bundleCandidates = useMemo(
-    () => buildBundleCandidates(data, getExpectedSession()?.sessionId),
-    [data, getExpectedSession],
-  );
+  const bundleCandidates = useMemo(() => buildBundleCandidates(data, expectedSessionId), [data, expectedSessionId]);
   const handleDownload = useCallback(async () => {
     const candidate = bundleCandidates.at(0);
     if (!candidate) {
@@ -501,11 +505,10 @@ export default function VerifyPage(): React.ReactElement {
     if (!summary) {
       return null;
     }
-    const toneConfig = SUMMARY_TONE_CONFIG[summary.tone];
     const mainKey = SUMMARY_MAIN_MESSAGE_KEYS[summary.status];
     const subKey = summary.messageKey ?? SUMMARY_SUB_MESSAGE_KEYS[summary.status];
     return {
-      status: toneConfig.status,
+      status: resolveVerifyPageStatusForSummaryTone(summary.tone),
       message: t(mainKey),
       subMessage: subKey ? t(subKey) : undefined,
     };
@@ -539,45 +542,53 @@ export default function VerifyPage(): React.ReactElement {
   }, [data, explicitProofFailureDetected, starkSequenceFailureMessage, starkTimeoutDetected, t]);
 
   const overallStatusOverride = useMemo<OverallStatusOverride | null>(() => {
-    if (explicitServerFailureOverride) {
-      return explicitServerFailureOverride;
-    }
-    if (summaryOverride) {
-      return summaryOverride;
-    }
-    if (hasVerificationChecks) {
-      if (hardFailureDetected) {
-        return {
-          status: 'failed',
-          message: t('pages.verify.failed'),
-        };
-      }
-      if (hasCheckPending) {
-        return {
-          status: 'warning',
-          message: t('pages.verify.status.partial'),
-        };
-      }
+    const decision = resolveVerifyPageOverallStatusOverride({
+      explicitServerFailureStatus: explicitServerFailureOverride?.status ?? null,
+      summaryStatus: summaryOverride?.status ?? null,
+      hasVerificationChecks,
+      hardFailureDetected,
+      hasCheckPending,
+    });
+    if (!decision) {
       return null;
     }
-    return null;
+
+    const overrides: Record<VerifyPageOverallStatusOverrideSource, () => OverallStatusOverride | null> = {
+      explicit_server_failure: () => explicitServerFailureOverride,
+      summary: () => summaryOverride,
+      hard_failure: () => ({
+        status: 'failed',
+        message: t('pages.verify.failed'),
+      }),
+      pending: () => ({
+        status: 'warning',
+        message: t('pages.verify.status.partial'),
+      }),
+    };
+
+    const override = overrides[decision.source]();
+    if (!override) {
+      return null;
+    }
+    return override.status === decision.status ? override : { ...override, status: decision.status };
   }, [explicitServerFailureOverride, hasCheckPending, hasVerificationChecks, hardFailureDetected, summaryOverride, t]);
 
   const showResults = verificationStarted && sequenceComplete && !hasCheckPending;
+  const renderedOverallStatus = resolveVerifyPageRenderedOverallStatus({
+    verificationStarted,
+    sequenceComplete,
+    hasCheckPending,
+    overrideStatus: overallStatusOverride?.status ?? null,
+  });
   const showBotTab = data?.scenarioId === 'S3' || data?.scenarioId === 'S4';
   const botTabTooltip = t('verification.tabs.botDisabledTooltip');
   const verificationContent = (
     <>
       <UnifiedVerificationCard
         summary={
-          showResults && overallStatusOverride
+          renderedOverallStatus && overallStatusOverride
             ? {
-                status:
-                  overallStatusOverride.status === 'verified'
-                    ? 'verified'
-                    : overallStatusOverride.status === 'warning'
-                      ? 'warning'
-                      : 'failed',
+                status: renderedOverallStatus,
                 message: overallStatusOverride.message,
                 subMessage: overallStatusOverride.subMessage,
               }

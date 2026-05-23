@@ -1,0 +1,321 @@
+{
+  "schema": "stark-ballot:formal-audit|v1",
+  "reportPath": "docs/current/formal/formal-report.json",
+  "proofHygiene": {
+    "scannedLeanFiles": 9,
+    "forbiddenTokens": ["sorry", "axiom", "admit", "unsafe"],
+    "allowedCoreAxioms": ["propext", "Quot.sound", "Classical.choice"],
+    "allowedNativeDecideSources": ["formal/StarkBallotFormal/Bitmap.lean"],
+    "allowedNativeDecideDependencyPrefixes": ["StarkBallotFormal.byteValueAt_get_bit._native.native_decide."]
+  },
+  "theoremStatements": [
+    {
+      "name": "excluded_zero_implies_no_slot_loss",
+      "source": "formal/StarkBallotFormal/JournalCounts.lean",
+      "statementSha256": "1c008a20a7912010ac6ed87bb9e0a6039b1e89c82c425c213c208473821fcf7e"
+    },
+    {
+      "name": "slot_partition_total",
+      "source": "formal/StarkBallotFormal/JournalCounts.lean",
+      "statementSha256": "5ca92e8b9610d840a4b9273c13274ccd0998b56b2337c722c7e9135b8fc4a9f2"
+    },
+    {
+      "name": "fully_verified_implies_all_required_success",
+      "source": "formal/StarkBallotFormal/VerificationSummary.lean",
+      "statementSha256": "56969e28255831a2c0c0079bdaf51bafa6cea3ea408a8b1e3860c9d7bc9d1ea0"
+    },
+    {
+      "name": "fully_verified_implies_no_unknown_checks",
+      "source": "formal/StarkBallotFormal/VerificationSummary.lean",
+      "statementSha256": "0eff43519ee5f6825ee07b8954940d69f8d1b8be5288ae6bd5d35bc311eea2b6"
+    },
+    {
+      "name": "fully_verified_implies_required_roles_success",
+      "source": "formal/StarkBallotFormal/VerificationSummary.lean",
+      "statementSha256": "778ff8dc546910d2e776881bdd57bb6dcc65318345a9c2192146056adefab4d4"
+    },
+    {
+      "name": "canonical_vote_order_total",
+      "source": "formal/StarkBallotFormal/InputCommitment.lean",
+      "statementSha256": "d1a320dc481f70a05c0aebf90d3ff2baa15634fb2c77cd66de39ef8a1a9b7f5a"
+    },
+    {
+      "name": "canonical_encoding_permutation_invariant",
+      "source": "formal/StarkBallotFormal/InputCommitment.lean",
+      "statementSha256": "5f5066cee106752787b3d3a50904e32dadc65864c59d580dbad6f29d96256a38"
+    },
+    {
+      "name": "pack_bits_length",
+      "source": "formal/StarkBallotFormal/Bitmap.lean",
+      "statementSha256": "8c18446e710d0712f41c65f420f15d8088b2fc6d914cfddd5b80b7163df98907"
+    },
+    {
+      "name": "pack_bits_get_bit",
+      "source": "formal/StarkBallotFormal/Bitmap.lean",
+      "statementSha256": "66f281f91f16543983a10cadd6f05142ccc4a85bb264310168bc6b576c360b40"
+    },
+    {
+      "name": "accepted_votes_count_tally",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "statementSha256": "3004ae5a8cb5a3fe3046f7d1ef9e4c20e52de56e20ff10f55b609740aed4c67a"
+    },
+    {
+      "name": "acceptVote_increments_selected_candidate",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "statementSha256": "7487546e16cabfbb1381d419c33ff75d89efab97d15c53de2c5df5ecd1b49460"
+    },
+    {
+      "name": "valid_votes_count_accepted",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "statementSha256": "21f84621951fcb6f557ac4975d3534c8e86fcf669a0f466e3ec5ec465c454933"
+    },
+    {
+      "name": "rejected_records_classification",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "statementSha256": "c752abcc6ab02055f54c309928b87c3dc703b994bcd637a59050489161bf3748"
+    },
+    {
+      "name": "duplicate_index_rejected_before_marking",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "statementSha256": "c740a667be88bdc289d9707485e1629ae42e8eddd652af6acc46b9d8ca5dabdf"
+    },
+    {
+      "name": "invalid_choice_marks_seen_slot",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "statementSha256": "cf02806c13b2f56dde10dc7387e96e4b9b104f5cad7e583eed3cb8910c3dc4ae"
+    },
+    {
+      "name": "invalid_inclusion_reserves_commitment",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "statementSha256": "338f7024bbe4d80bf2c0a235a2aaa82d0c117bc7f0d42429089322ce9fcc397c"
+    },
+    {
+      "name": "processVotes_fold_invariant",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "statementSha256": "8728fb8903465911117288e87df82ea912ef4efa96f57f9d3d41304173f99170"
+    },
+    {
+      "name": "processVotes_seen_indices_length_le_treeSize",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "statementSha256": "1f4d2f0773358755469354021fccb6e904f387bfa265d0886c8f3272c466e064"
+    },
+    {
+      "name": "zero_exclusion_guest_model_complete",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "statementSha256": "4d5246d3566ec84a456c4429c12ebe66d600313fd6c53d935dcdd109543b117f"
+    },
+    {
+      "name": "no_overflow_under_guest_bounds",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "statementSha256": "c1529701d6732cdcbceb04e24d809406dbdc67d492f3f77b1504dfaa6d85a2aa"
+    }
+  ],
+  "theoremDependencies": [
+    {
+      "name": "excluded_zero_implies_no_slot_loss",
+      "source": "formal/StarkBallotFormal/JournalCounts.lean",
+      "qualifiedName": "StarkBallotFormal.excluded_zero_implies_no_slot_loss",
+      "coreAxiomDependencies": ["Classical.choice", "Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "118dbe3070706ccab3cf3c2b619838c8b87613556f4cb9e0b80a8c874e29f1d8"
+    },
+    {
+      "name": "slot_partition_total",
+      "source": "formal/StarkBallotFormal/JournalCounts.lean",
+      "qualifiedName": "StarkBallotFormal.slot_partition_total",
+      "coreAxiomDependencies": ["Classical.choice", "Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "118dbe3070706ccab3cf3c2b619838c8b87613556f4cb9e0b80a8c874e29f1d8"
+    },
+    {
+      "name": "fully_verified_implies_all_required_success",
+      "source": "formal/StarkBallotFormal/VerificationSummary.lean",
+      "qualifiedName": "StarkBallotFormal.fully_verified_implies_all_required_success",
+      "coreAxiomDependencies": ["propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "2fdde033ad6022b1ff24160f2b157bebd2d3d49406f7d6ab0b818ab004b53d76"
+    },
+    {
+      "name": "fully_verified_implies_no_unknown_checks",
+      "source": "formal/StarkBallotFormal/VerificationSummary.lean",
+      "qualifiedName": "StarkBallotFormal.fully_verified_implies_no_unknown_checks",
+      "coreAxiomDependencies": ["propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "2fdde033ad6022b1ff24160f2b157bebd2d3d49406f7d6ab0b818ab004b53d76"
+    },
+    {
+      "name": "fully_verified_implies_required_roles_success",
+      "source": "formal/StarkBallotFormal/VerificationSummary.lean",
+      "qualifiedName": "StarkBallotFormal.fully_verified_implies_required_roles_success",
+      "coreAxiomDependencies": ["propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "2fdde033ad6022b1ff24160f2b157bebd2d3d49406f7d6ab0b818ab004b53d76"
+    },
+    {
+      "name": "canonical_vote_order_total",
+      "source": "formal/StarkBallotFormal/InputCommitment.lean",
+      "qualifiedName": "StarkBallotFormal.canonical_vote_order_total",
+      "coreAxiomDependencies": ["propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "2fdde033ad6022b1ff24160f2b157bebd2d3d49406f7d6ab0b818ab004b53d76"
+    },
+    {
+      "name": "canonical_encoding_permutation_invariant",
+      "source": "formal/StarkBallotFormal/InputCommitment.lean",
+      "qualifiedName": "StarkBallotFormal.canonical_encoding_permutation_invariant",
+      "coreAxiomDependencies": ["Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "a734f8f7a30265275665cc90513488db62255abd95d3cdfc20d0aef0563e3f98"
+    },
+    {
+      "name": "pack_bits_length",
+      "source": "formal/StarkBallotFormal/Bitmap.lean",
+      "qualifiedName": "StarkBallotFormal.pack_bits_length",
+      "coreAxiomDependencies": ["propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "2fdde033ad6022b1ff24160f2b157bebd2d3d49406f7d6ab0b818ab004b53d76"
+    },
+    {
+      "name": "pack_bits_get_bit",
+      "source": "formal/StarkBallotFormal/Bitmap.lean",
+      "qualifiedName": "StarkBallotFormal.pack_bits_get_bit",
+      "coreAxiomDependencies": ["Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 2048,
+      "nativeDecideAxiomSha256": "0c4af8d8563663174dc8614e0122ccd117ac4639acc5eb73ffff45d4524500fc",
+      "dependencySetSha256": "73e8401b5c994e7e49b0a82ea4b5a511090426fab14246322deae54373681662"
+    },
+    {
+      "name": "accepted_votes_count_tally",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "qualifiedName": "StarkBallotFormal.accepted_votes_count_tally",
+      "coreAxiomDependencies": ["Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "a734f8f7a30265275665cc90513488db62255abd95d3cdfc20d0aef0563e3f98"
+    },
+    {
+      "name": "acceptVote_increments_selected_candidate",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "qualifiedName": "StarkBallotFormal.acceptVote_increments_selected_candidate",
+      "coreAxiomDependencies": ["Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "a734f8f7a30265275665cc90513488db62255abd95d3cdfc20d0aef0563e3f98"
+    },
+    {
+      "name": "valid_votes_count_accepted",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "qualifiedName": "StarkBallotFormal.valid_votes_count_accepted",
+      "coreAxiomDependencies": ["Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "a734f8f7a30265275665cc90513488db62255abd95d3cdfc20d0aef0563e3f98"
+    },
+    {
+      "name": "rejected_records_classification",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "qualifiedName": "StarkBallotFormal.rejected_records_classification",
+      "coreAxiomDependencies": ["propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "2fdde033ad6022b1ff24160f2b157bebd2d3d49406f7d6ab0b818ab004b53d76"
+    },
+    {
+      "name": "duplicate_index_rejected_before_marking",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "qualifiedName": "StarkBallotFormal.duplicate_index_rejected_before_marking",
+      "coreAxiomDependencies": ["propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "2fdde033ad6022b1ff24160f2b157bebd2d3d49406f7d6ab0b818ab004b53d76"
+    },
+    {
+      "name": "invalid_choice_marks_seen_slot",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "qualifiedName": "StarkBallotFormal.invalid_choice_marks_seen_slot",
+      "coreAxiomDependencies": ["Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "a734f8f7a30265275665cc90513488db62255abd95d3cdfc20d0aef0563e3f98"
+    },
+    {
+      "name": "invalid_inclusion_reserves_commitment",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "qualifiedName": "StarkBallotFormal.invalid_inclusion_reserves_commitment",
+      "coreAxiomDependencies": ["propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "2fdde033ad6022b1ff24160f2b157bebd2d3d49406f7d6ab0b818ab004b53d76"
+    },
+    {
+      "name": "processVotes_fold_invariant",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "qualifiedName": "StarkBallotFormal.processVotes_fold_invariant",
+      "coreAxiomDependencies": ["Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "a734f8f7a30265275665cc90513488db62255abd95d3cdfc20d0aef0563e3f98"
+    },
+    {
+      "name": "processVotes_seen_indices_length_le_treeSize",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "qualifiedName": "StarkBallotFormal.processVotes_seen_indices_length_le_treeSize",
+      "coreAxiomDependencies": ["Classical.choice", "Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "118dbe3070706ccab3cf3c2b619838c8b87613556f4cb9e0b80a8c874e29f1d8"
+    },
+    {
+      "name": "zero_exclusion_guest_model_complete",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "qualifiedName": "StarkBallotFormal.zero_exclusion_guest_model_complete",
+      "coreAxiomDependencies": ["Classical.choice", "Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "118dbe3070706ccab3cf3c2b619838c8b87613556f4cb9e0b80a8c874e29f1d8"
+    },
+    {
+      "name": "no_overflow_under_guest_bounds",
+      "source": "formal/StarkBallotFormal/GuestModel.lean",
+      "qualifiedName": "StarkBallotFormal.no_overflow_under_guest_bounds",
+      "coreAxiomDependencies": ["Classical.choice", "Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "118dbe3070706ccab3cf3c2b619838c8b87613556f4cb9e0b80a8c874e29f1d8"
+    }
+  ],
+  "generatedVectorArtifacts": [
+    {
+      "path": "docs/current/formal/generated-vectors/verification-summary-cases.json",
+      "sha256": "cc9a3968f6126b4a9bc00893e788bbc133b4b91846e0a21cbf7213bfba477bce"
+    },
+    {
+      "path": "docs/current/formal/generated-vectors/verification-display-cases.json",
+      "sha256": "e54274e455d830fa24373055251dbde4964d3fd3824b279512834b8b29c5531e"
+    },
+    {
+      "path": "docs/current/formal/generated-vectors/check-definitions.json",
+      "sha256": "da3a1fd4aa7dbec5acab34c0eb4416a325ef4065ff790841ab0c29f13015a93d"
+    },
+    {
+      "path": "docs/current/formal/generated-vectors/input-commitment-cases.json",
+      "sha256": "281eecb88cae8adc34c59ad84b9c0c7e8940e060af4ab12e7a88572035a6156b"
+    },
+    {
+      "path": "docs/current/formal/generated-vectors/bitmap-cases.json",
+      "sha256": "90070a50a224673536eaa18a739f39db2ccd13f00388718f0de7b007e516e4eb"
+    },
+    {
+      "path": "docs/current/formal/generated-vectors/guest-model-cases.json",
+      "sha256": "f6a5a052f4a904cdca3ce4a159209b2075839fe6df60c1f0a9f90a249de70d4a"
+    }
+  ]
+}

@@ -6,7 +6,7 @@
  * according to final_design.md §3.2 and §4.8
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ReceiptWithImageId } from '../image-id-types';
 import { CURRENT_METHOD_VERSION } from '@/lib/zkvm/types';
 
@@ -17,71 +17,52 @@ describe('ImageID Verifier', () => {
     verifierModule.resetImageIdVerifierState();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.doUnmock('fs/promises');
+  });
+
   describe('ImageID Mapping Loading', () => {
     it('should load ImageID mapping from public directory', async () => {
-      // This test will fail initially (RED phase)
-      // Import will fail as module doesn't exist yet
-      try {
-        const { loadImageIdMapping } = await import('../image-id-verifier');
-        const mapping = await loadImageIdMapping();
+      const { loadImageIdMapping } = await import('../image-id-verifier');
+      const mapping = await loadImageIdMapping();
 
-        expect(mapping).toBeDefined();
-        expect(mapping.mappings).toBeDefined();
-        expect(mapping.current).toBeTypeOf('string');
-        expect(mapping.mappings).toHaveProperty(mapping.current);
-        expect(mapping.mappings).toHaveProperty(String(CURRENT_METHOD_VERSION));
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      expect(mapping).toBeDefined();
+      expect(mapping.mappings).toBeDefined();
+      expect(mapping.current).toBeTypeOf('string');
+      expect(mapping.mappings).toHaveProperty(mapping.current);
+      expect(mapping.mappings).toHaveProperty(String(CURRENT_METHOD_VERSION));
     });
 
     it('should cache ImageID mapping after first load', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const { loadImageIdMapping } = await import('../image-id-verifier');
+      const { loadImageIdMapping } = await import('../image-id-verifier');
 
-        const mapping1 = await loadImageIdMapping();
-        const mapping2 = await loadImageIdMapping();
+      const mapping1 = await loadImageIdMapping();
+      const mapping2 = await loadImageIdMapping();
 
-        // Should be the same object reference (cached)
-        expect(mapping1).toBe(mapping2);
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      expect(mapping1).toBe(mapping2);
     });
 
     it('should handle missing mapping file gracefully', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const { loadImageIdMapping } = await import('../image-id-verifier');
+      vi.doMock('fs/promises', () => ({
+        readFile: vi.fn().mockRejectedValue(new Error('Not found')),
+      }));
 
-        // Mock fetch to simulate missing file
-        global.fetch = vi.fn().mockRejectedValue(new Error('Not found'));
+      const { loadImageIdMapping, resetImageIdVerifierState } = await import('../image-id-verifier');
+      resetImageIdVerifierState();
 
-        await expect(loadImageIdMapping()).rejects.toThrow('Failed to load ImageID mapping');
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      await expect(loadImageIdMapping()).rejects.toThrow('Failed to load ImageID mapping');
     });
   });
 
   describe('Expected ImageID Retrieval', () => {
     it('should get expected ImageID for current version', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const { getExpectedImageId } = await import('../image-id-verifier');
+      const { getExpectedImageId } = await import('../image-id-verifier');
 
-        const imageId = await getExpectedImageId();
+      const imageId = await getExpectedImageId();
 
-        expect(imageId).toBeDefined();
-        expect(imageId).toMatch(/^0x[0-9a-f]{64}$/i);
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      expect(imageId).toBeDefined();
+      expect(imageId).toMatch(/^0x[0-9a-f]{64}$/i);
     });
 
     it('resolves the default variant unless an explicit variant is requested', async () => {
@@ -125,30 +106,18 @@ describe('ImageID Verifier', () => {
     });
 
     it('should get expected ImageID for specific version', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const { getExpectedImageId } = await import('../image-id-verifier');
+      const { getExpectedImageId } = await import('../image-id-verifier');
 
-        const imageId = await getExpectedImageId(8);
+      const imageId = await getExpectedImageId(8);
 
-        expect(imageId).toBeDefined();
-        expect(imageId).toMatch(/^0x[0-9a-f]{64}$/i);
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      expect(imageId).toBeDefined();
+      expect(imageId).toMatch(/^0x[0-9a-f]{64}$/i);
     });
 
     it('should throw for unknown version', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const { getExpectedImageId } = await import('../image-id-verifier');
+      const { getExpectedImageId } = await import('../image-id-verifier');
 
-        await expect(getExpectedImageId(999)).rejects.toThrow('Unknown method version: 999');
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      await expect(getExpectedImageId(999)).rejects.toThrow('Unknown method version: 999');
     });
   });
 
@@ -160,56 +129,38 @@ describe('ImageID Verifier', () => {
     };
 
     it('should verify receipt with correct ImageID', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const { verifyReceiptWithImageId } = await import('../image-id-verifier');
+      const { verifyReceiptWithImageId } = await import('../image-id-verifier');
 
-        const expectedImageId = '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af';
-        const result = await verifyReceiptWithImageId(mockReceipt, expectedImageId);
+      const expectedImageId = '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af';
+      const result = await verifyReceiptWithImageId(mockReceipt, expectedImageId);
 
-        expect(result.isValid).toBe(true);
-        expect(result.errors).toEqual([]);
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      expect(result.isValid).toBe(true);
+      expect(result.errors).toEqual([]);
     });
 
     it('should reject receipt with incorrect ImageID', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const { verifyReceiptWithImageId } = await import('../image-id-verifier');
+      const { verifyReceiptWithImageId } = await import('../image-id-verifier');
 
-        const wrongImageId = '0x0000000000000000000000000000000000000000000000000000000000000000';
-        const result = await verifyReceiptWithImageId(mockReceipt, wrongImageId);
+      const wrongImageId = '0x0000000000000000000000000000000000000000000000000000000000000000';
+      const result = await verifyReceiptWithImageId(mockReceipt, wrongImageId);
 
-        expect(result.isValid).toBe(false);
-        expect(result.errors).toContain('ImageID mismatch');
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      expect(result.isValid).toBe(false);
+      expect(result.errors).toContain('ImageID mismatch');
     });
 
     it('should reject receipt without ImageID', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const { verifyReceiptWithImageId } = await import('../image-id-verifier');
+      const { verifyReceiptWithImageId } = await import('../image-id-verifier');
 
-        const receiptWithoutId: ReceiptWithImageId = {
-          seal: 'mock-seal-data',
-          journal: 'mock-journal-data',
-        };
+      const receiptWithoutId: ReceiptWithImageId = {
+        seal: 'mock-seal-data',
+        journal: 'mock-journal-data',
+      };
 
-        const expectedImageId = '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af';
-        const result = await verifyReceiptWithImageId(receiptWithoutId, expectedImageId);
+      const expectedImageId = '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af';
+      const result = await verifyReceiptWithImageId(receiptWithoutId, expectedImageId);
 
-        expect(result.isValid).toBe(false);
-        expect(result.errors).toContain('Receipt does not contain ImageID');
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      expect(result.isValid).toBe(false);
+      expect(result.errors).toContain('Receipt does not contain ImageID');
     });
 
     it('should return success metadata for matching ImageID', async () => {
@@ -228,96 +179,75 @@ describe('ImageID Verifier', () => {
 
   describe('Dev/Fake Receipt Detection', () => {
     it('should detect dev mode receipts', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const { isDevModeReceipt } = await import('../image-id-verifier');
+      const { isDevModeReceipt } = await import('../image-id-verifier');
 
-        const devReceipt: ReceiptWithImageId = {
-          seal: 'FAKE_RECEIPT_SEAL',
-          journal: 'mock-journal',
-          imageId: '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af',
-        };
+      const devReceipt: ReceiptWithImageId = {
+        seal: 'FAKE_RECEIPT_SEAL',
+        journal: 'mock-journal',
+        imageId: '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af',
+      };
 
-        const isDev = isDevModeReceipt(devReceipt);
-        expect(isDev).toBe(true);
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      const isDev = isDevModeReceipt(devReceipt);
+      expect(isDev).toBe(true);
     });
 
     it('should detect fake receipts by marker', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const { isDevModeReceipt } = await import('../image-id-verifier');
+      const { isDevModeReceipt } = await import('../image-id-verifier');
 
-        const fakeReceipt: ReceiptWithImageId = {
-          seal: 'mock-seal',
-          journal: 'mock-journal',
-          imageId: '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af',
-          metadata: {
-            isFake: true,
-          },
-        };
+      const fakeReceipt: ReceiptWithImageId = {
+        seal: 'mock-seal',
+        journal: 'mock-journal',
+        imageId: '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af',
+        metadata: {
+          isFake: true,
+        },
+      };
 
-        const isDev = isDevModeReceipt(fakeReceipt);
-        expect(isDev).toBe(true);
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      const isDev = isDevModeReceipt(fakeReceipt);
+      expect(isDev).toBe(true);
     });
 
     it('should not flag production receipts as dev', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const { isDevModeReceipt } = await import('../image-id-verifier');
+      const { isDevModeReceipt } = await import('../image-id-verifier');
 
-        const prodReceipt: ReceiptWithImageId = {
-          seal: 'real-stark-proof-data-base64...',
-          journal: 'real-journal-data',
-          imageId: '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af',
-        };
+      const prodReceipt: ReceiptWithImageId = {
+        seal: 'real-stark-proof-data-base64-' + 'a'.repeat(120),
+        journal: 'real-journal-data',
+        imageId: '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af',
+      };
 
-        const isDev = isDevModeReceipt(prodReceipt);
-        expect(isDev).toBe(false);
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      const isDev = isDevModeReceipt(prodReceipt);
+      expect(isDev).toBe(false);
     });
   });
 
   describe('Multi-Source Verification', () => {
     it('should verify ImageID from multiple sources', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const { verifyFromMultipleSources } = await import('../image-id-verifier');
+      const { loadImageIdMapping, verifyFromMultipleSources } = await import('../image-id-verifier');
+      const mapping = await loadImageIdMapping();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve(mapping),
+        }),
+      );
 
-        const sources = [
-          '/public/imageId-mapping.json',
-          'https://cdn.example.com/imageId-mapping.json',
-          // 'ipfs://QmXXX.../imageId-mapping.json',
-        ];
+      const sources = ['/public/imageId-mapping.json', 'https://cdn.example.com/imageId-mapping.json'];
 
-        const result = await verifyFromMultipleSources(sources);
+      const result = await verifyFromMultipleSources(sources);
 
-        expect(result.verified).toBe(true);
-        expect(result.sourcesChecked).toBeGreaterThanOrEqual(2);
-        expect(result.consensus).toBe(true);
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      expect(result.verified).toBe(true);
+      expect(result.sourcesChecked).toBeGreaterThanOrEqual(2);
+      expect(result.consensus).toBe(true);
     });
 
     it('should detect discrepancies between sources', async () => {
-      // This test will fail initially (RED phase)
-      try {
-        const { verifyFromMultipleSources } = await import('../image-id-verifier');
+      const { verifyFromMultipleSources } = await import('../image-id-verifier');
 
-        // Mock different responses from sources
-        global.fetch = vi
+      vi.stubGlobal(
+        'fetch',
+        vi
           .fn()
           .mockResolvedValueOnce({
             ok: true,
@@ -334,18 +264,15 @@ describe('ImageID Verifier', () => {
                 current: '8',
                 mappings: { '8': { expectedImageID: '0xbbb...' } },
               }),
-          });
+          }),
+      );
 
-        const sources = ['source1', 'source2'];
-        const result = await verifyFromMultipleSources(sources);
+      const sources = ['https://source1.example/imageId-mapping.json', 'https://source2.example/imageId-mapping.json'];
+      const result = await verifyFromMultipleSources(sources);
 
-        expect(result.verified).toBe(false);
-        expect(result.consensus).toBe(false);
-        expect(result.error).toContain('Discrepancy detected');
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      expect(result.verified).toBe(false);
+      expect(result.consensus).toBe(false);
+      expect(result.error).toContain('Discrepancy detected');
     });
   });
 
@@ -353,52 +280,37 @@ describe('ImageID Verifier', () => {
     it('should use Receipt::verify as the only truth', async () => {
       // According to final_design.md line 1051:
       // "Receipt::verify(expectedImageID) is the only truth"
-      // This test will fail initially (RED phase)
-      try {
-        const { verifyReceiptStrict } = await import('../image-id-verifier');
+      const { verifyReceiptStrict } = await import('../image-id-verifier');
 
-        const receipt: ReceiptWithImageId = {
-          seal: 'mock-seal',
-          journal: 'mock-journal',
-          imageId: '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af',
-          metadata: {
-            isFake: false, // This should be ignored
-          },
-        };
+      const receipt: ReceiptWithImageId = {
+        seal: 'mock-seal',
+        journal: 'mock-journal',
+        imageId: '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af',
+        metadata: {
+          isFake: false,
+        },
+      };
 
-        const expectedImageId = '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af';
+      const expectedImageId = '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af';
 
-        // Should only trust Receipt::verify, not metadata
-        const result = await verifyReceiptStrict(receipt, expectedImageId);
+      const result = await verifyReceiptStrict(receipt, expectedImageId);
 
-        // Result depends only on Receipt::verify, not on metadata.isFake
-        expect(result.verificationMethod).toBe('Receipt::verify');
-        expect(result.metadataIgnored).toBe(true);
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      expect(result.verificationMethod).toBe('Receipt::verify');
+      expect(result.metadataIgnored).toBe(true);
     });
 
     it('should explicitly pass expectedImageID to verify', async () => {
       // According to final_design.md:
       // "ImageIDを明示的に渡すことが必須"
-      // This test will fail initially (RED phase)
-      try {
-        const { verifyReceiptStrict } = await import('../image-id-verifier');
+      const { verifyReceiptStrict } = await import('../image-id-verifier');
 
-        const receipt: ReceiptWithImageId = {
-          seal: 'mock-seal',
-          journal: 'mock-journal',
-          imageId: '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af',
-        };
+      const receipt: ReceiptWithImageId = {
+        seal: 'mock-seal',
+        journal: 'mock-journal',
+        imageId: '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af',
+      };
 
-        // Should require explicit ImageID parameter
-        await expect(verifyReceiptStrict(receipt, undefined)).rejects.toThrow('expectedImageID is required');
-      } catch (error) {
-        // Expected to fail in RED phase
-        expect(error).toBeDefined();
-      }
+      await expect(verifyReceiptStrict(receipt, undefined)).rejects.toThrow('expectedImageID is required');
     });
   });
 });

@@ -3,7 +3,7 @@ import { getExpectedImageId } from './image-id-verifier';
 import { logger } from '@/lib/utils/logger';
 import { CURRENT_METHOD_VERSION } from '@/lib/zkvm/types';
 
-export const DEFAULT_POC_IMAGE_ID = '0xfa42cd07e70484a943d40f530b9b001392f215a0404398d63c710cef9b30f4b4';
+export const DEFAULT_POC_IMAGE_ID = '0x08aa256ee9120045bbdbe2152723ff657cf1cd7329cba46715954d183caa84de';
 
 export async function resolveExpectedImageId(
   methodVersion?: number,

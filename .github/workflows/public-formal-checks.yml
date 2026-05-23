@@ -1,0 +1,66 @@
+name: Public Formal Checks
+
+on:
+  push:
+    branches: [main]
+    paths: &formal_paths
+      - 'formal/**'
+      - 'docs/current/formal/**'
+      - 'src/lib/verification/**'
+      - 'src/lib/zkvm/types.ts'
+      - 'src/lib/zkvm/bitmap.ts'
+      - 'src/lib/zkvm/__tests__/formal-*.test.ts'
+      - 'src/lib/merkle/bitmap-merkle-tree.ts'
+      - 'src/lib/merkle/__tests__/formal-*.test.ts'
+      - 'src/app/(routes)/verify/lib/overall-status.ts'
+      - 'src/app/(routes)/verify/lib/overall-status.test.ts'
+      - 'zkvm/contract-core/src/encoding.rs'
+      - 'zkvm/contract-core/src/bitmap.rs'
+      - 'zkvm/methods/guest/src/main.rs'
+      - 'zkvm/methods/guest/src/tally.rs'
+      - 'scripts/formal/**'
+      - 'scripts/__tests__/formal-report.test.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/actions/setup-node-pnpm/**'
+      - '.github/workflows/public-formal-checks.yml'
+  pull_request:
+    branches: [main]
+    paths: *formal_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  formal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build Lean workspace
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: formal
+          auto-config: false
+          build: true
+          test: false
+          lint: false
+          use-mathlib-cache: false
+
+      - name: Verify formal report and generated vectors
+        run: pnpm formal:verify

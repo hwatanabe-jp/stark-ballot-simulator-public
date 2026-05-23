@@ -4,14 +4,19 @@ This directory contains all utility scripts for the STARK Ballot Simulator proje
 
 ## Directory Structure
 
+- \***\*tests**/\*\* - Script-level Vitest coverage
+- **amplify/** - Amplify deployment environment helpers
+- **aws/** - AWS setup helpers
 - **build/** - Build and cleanup scripts
-- **test-data/** - Test data generation scripts
-- **stark-proofs/** - STARK proof generation utilities
-- **verification/** - Legacy/manual receipt inspection helpers
-- **tests/** - Maintained CLI and diagnostic test scripts
+- **docs/** - Documentation and license metadata helpers
+- **monitoring/** - Operational monitoring report helpers
 - **security/** - Public-safety and secret-leak guard scripts
-- **terraform/** - Local Terraform tfvars rendering helpers
-- **docs/** - Documentation files
+- **showcase/** - Public repository showcase automation helpers
+- **stark-proofs/** - STARK proof generation utilities
+- **terraform/** - Local Terraform tfvars rendering and guarded Terraform execution helpers
+- **test-data/** - Test data generation scripts
+- **tests/** - Maintained CLI and diagnostic test scripts
+- **verification/** - Legacy/manual receipt inspection helpers
 
 ## Quick Reference
 
@@ -19,6 +24,7 @@ This directory contains all utility scripts for the STARK Ballot Simulator proje
 
 ```bash
 ./scripts/build/build-zkvm.sh    # Build zkVM binary
+pnpm terraform:build-lambdas     # Build Terraform-managed Lambda bundles
 ./scripts/build/clean-all.sh     # Clean all generated files
 ```
 
@@ -60,6 +66,12 @@ pnpm public-safety:scan          # Scan tracked files
 pnpm public-safety:scan:staged   # Scan staged files, used by pre-commit hook
 ```
 
+### Public Showcase
+
+```bash
+pnpm tsx scripts/showcase/public-weekly-monitor.ts --output .tmp/public-weekly-monitor.md
+```
+
 ### License Metadata
 
 ```bash
@@ -72,6 +84,11 @@ pnpm licenses:regen              # Regenerate sanitized docs/current/licenses me
 pnpm terraform:backend           # Render git-ignored terraform/backend.local.hcl
 pnpm terraform:tfvars:develop    # Render git-ignored terraform/develop.local.tfvars
 pnpm terraform:tfvars:main       # Render git-ignored terraform/main.local.tfvars
+pnpm terraform:build-lambdas     # Build Terraform-managed Lambda bundles
+pnpm terraform:plan:develop      # Guarded Terraform plan for the develop workspace
+pnpm terraform:apply:develop     # Guarded Terraform apply for the develop workspace
+pnpm terraform:plan:main         # Guarded Terraform plan for the main workspace
+pnpm terraform:apply:main        # Guarded Terraform apply for the main workspace
 pnpm terraform:iam-docs          # Render git-ignored Terraform admin IAM JSON
 ```
 

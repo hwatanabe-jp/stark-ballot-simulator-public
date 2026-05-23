@@ -333,7 +333,7 @@ Bot 投票進捗。
     "inputCommitment": "0x...",
     "seenIndicesCount": 64,
     "journal": {
-      "methodVersion": 12,
+      "methodVersion": 14,
       "bulletinRoot": "0x...",
       "treeSize": 64,
       "seenBitmapRoot": "0x...",
@@ -521,7 +521,7 @@ Async 集計のステータス。
   - `available`: `journal` を含む（session data 上で利用可能）
   - `omitted`: `includeJournal` 未指定のため省略
   - `unavailable`: schema 予約値。現行 handler は返さない
-- `journal` の現行 public contract は `methodVersion=12` で、`seenBitmapRoot` を含みうる。
+- `journal` の現行 public contract は `methodVersion=14` で、`seenBitmapRoot` を含みうる。
 - `journal` が canonical な proof-bound payload。`verifiedTally`, `bulletinRoot`, `sthDigest`, `seenIndicesCount`, `missingSlots`, `invalidPresentedSlots`, `rejectedRecords`, `excludedSlots`, `seenBitmapRoot`, `includedBitmapRoot`, `inputCommitment`, `treeSize`, `totalExpected` の top-level 重複項目は、現行では response mirror とみなし、authority は `journal` に置く。
 - persisted な input-side authority は `publicInputArtifact` に置く。検証時にはそこから内部 adapter として `publicInputSummary` を導出することがあるが、現行の public response は top-level `publicInputSummary` を返さない。`electionManifest`, `closeStatement`, `tally`, `tamperDetected`, `tamperSummary`, `scenarios`, `verification*` も journal-derived cache ではなく、authority class が異なるため top-level cache と同列に canonicalize しない。
 - top-level `imageId` は verifier 実行前の host claim。`journal.imageId` は comparison-only metadata。verifier 実行後の proved identity は `verificationReport.receipt_image_id`。
@@ -1017,4 +1017,5 @@ UI ラベルは自由だが、API 送信は以下の ID を利用する。
 - 2026-01-07: `/api/bulletin` の `rootHistory[].bulletinRoot` を正規名化（`root` は廃止）
 - 2026-03-26: `/api/verify` の verification contract を **22 checks / stage-required derivation** に更新
 - 2026-03-26: `/api/verify` の current payload に `seenBitmapRoot` / `journal.methodVersion=12` を反映
+- 2026-04-30: current zkVM methodVersion を 13 に更新
 - 2026-03-26: `/api/bitmap-proof` の `kind=included|seen` と public/private bundle 境界を追記

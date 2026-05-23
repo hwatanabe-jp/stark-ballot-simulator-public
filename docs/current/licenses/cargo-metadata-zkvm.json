@@ -16844,6 +16844,18 @@
           "features": [],
           "target": null,
           "registry": null
+        },
+        {
+          "name": "serde_json",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "req": "^1.0",
+          "kind": "dev",
+          "rename": null,
+          "optional": false,
+          "uses_default_features": true,
+          "features": [],
+          "target": null,
+          "registry": null
         }
       ],
       "targets": [
@@ -69471,6 +69483,7 @@
           "registry+https://github.com/rust-lang/crates.io-index#proptest@1.8.0",
           "registry+https://github.com/rust-lang/crates.io-index#risc0-zkvm@3.0.5",
           "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228",
+          "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.142",
           "registry+https://github.com/rust-lang/crates.io-index#sha2@0.10.9"
         ],
         "deps": [
@@ -69520,6 +69533,16 @@
             "dep_kinds": [
               {
                 "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "name": "serde_json",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.142",
+            "dep_kinds": [
+              {
+                "kind": "dev",
                 "target": null
               }
             ]

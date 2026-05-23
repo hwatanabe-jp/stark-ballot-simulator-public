@@ -1,5 +1,8 @@
 /**
  * Three-stage verification for E2E verifiable voting
+ *
+ * Compatibility helper: current user-facing Verified decisions are assembled
+ * through evaluate-checks.ts and verification-summary.ts.
  */
 
 import type { VoteReceipt } from '@/types/receipt';
@@ -68,7 +71,7 @@ export function verifyRecordedAsCast(
  * Enhanced with completeness checks per final_design.md requirements:
  * - excludedSlots > 0 MUST fail verification
  * - missingSlots / invalidPresentedSlots explain the slot-based exclusion signal
- * - totalExpected vs treeSize mismatches are warned
+ * - totalExpected vs treeSize mismatches MUST fail verification
  */
 export function verifyCountedAsRecorded(
   zkResult: ZkVMJournal & { inputBulletinRoot?: string },

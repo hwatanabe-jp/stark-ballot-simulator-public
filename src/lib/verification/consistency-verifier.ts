@@ -7,7 +7,7 @@
  * Critical requirements from final_design.md:
  * 1. Consistency proof must pass before showing "Verified" status
  * 2. excludedSlots > 0 must always fail closed; missing/invalid refine the explanation
- * 3. Detect and warn about totalExpected vs treeSize mismatches
+ * 3. totalExpected vs treeSize mismatches must fail closed
  */
 
 import type { ConsistencyProofResponse } from '@/lib/types/api/consistency-proof';
@@ -284,6 +284,12 @@ export function checkCompleteness(journal: ZkVMJournal): CompletenessResult {
   if (!isValidCount(invalidPresentedSlots)) {
     invalidFields.push('invalidPresentedSlots');
   }
+  if (!isValidCount(journal.totalExpected)) {
+    invalidFields.push('totalExpected');
+  }
+  if (!isValidCount(journal.treeSize)) {
+    invalidFields.push('treeSize');
+  }
   if (invalidFields.length > 0) {
     result.isComplete = false;
     result.error = `Invalid zkVM journal: ${invalidFields.join(', ')} is missing or invalid.`;
@@ -311,19 +317,17 @@ export function checkCompleteness(journal: ZkVMJournal): CompletenessResult {
   // Check for totalExpected vs treeSize mismatch (silent exclusion detection)
   if (journal.totalExpected !== journal.treeSize) {
     const diff = journal.totalExpected - journal.treeSize;
-    if (diff > 0) {
-      // Expected more votes than actually recorded
-      result.warning =
-        `Expected ${journal.totalExpected} votes but tree only has ${journal.treeSize}. ` +
-        `${diff} votes may be missing or were never cast.`;
-      result.severity = 'warning';
-    } else {
-      // More votes recorded than expected (unusual but not necessarily an error)
-      result.warning =
-        `Tree has ${journal.treeSize} votes but only expected ${journal.totalExpected}. ` +
-        `${Math.abs(diff)} extra votes were recorded.`;
-      result.severity = 'info';
-    }
+    result.isComplete = false;
+    result.severity = 'critical';
+    result.error =
+      diff > 0
+        ? // Expected more votes than actually recorded.
+          `Expected ${journal.totalExpected} votes but tree only has ${journal.treeSize}. ` +
+          `${diff} votes may be missing or were never cast.`
+        : // More votes recorded than expected.
+          `Tree has ${journal.treeSize} votes but only expected ${journal.totalExpected}. ` +
+          `${Math.abs(diff)} extra votes were recorded.`;
+    return result;
   }
 
   // Check for rejected records that do not necessarily add slot-based exclusions

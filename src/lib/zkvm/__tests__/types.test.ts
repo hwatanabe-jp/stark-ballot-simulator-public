@@ -12,6 +12,7 @@ import {
   computeCommitment,
   computeInputCommitment,
   computeInputCommitmentFromPublicInput,
+  CURRENT_METHOD_VERSION,
   computeSTHDigest,
 } from '../types';
 
@@ -279,7 +280,7 @@ describe('ZkVMJournal', () => {
         includedBitmapRoot: '0x' + '4'.repeat(64),
         excludedSlots: 1,
         inputCommitment: '0x' + '5'.repeat(64),
-        methodVersion: 12,
+        methodVersion: CURRENT_METHOD_VERSION,
       };
 
       // All fields should be present
@@ -290,7 +291,7 @@ describe('ZkVMJournal', () => {
       expect(journal.invalidPresentedSlots).toBeDefined();
       expect(journal.rejectedRecords).toBeDefined();
       expect(journal.includedBitmapRoot).toBeDefined();
-      expect(journal.methodVersion).toBe(12); // v1.2
+      expect(journal.methodVersion).toBe(CURRENT_METHOD_VERSION);
     });
 
     it('should NOT have tamperDetected field (removed in v1.0)', () => {
@@ -312,7 +313,7 @@ describe('ZkVMJournal', () => {
         includedBitmapRoot: '0x' + '4'.repeat(64),
         excludedSlots: 0,
         inputCommitment: '0x' + '5'.repeat(64),
-        methodVersion: 12,
+        methodVersion: CURRENT_METHOD_VERSION,
       };
 
       // @ts-expect-error - tamperDetected should not exist
@@ -338,7 +339,7 @@ describe('ZkVMJournal', () => {
         includedBitmapRoot: '0x' + '4'.repeat(64),
         excludedSlots: 14, // missingSlots + invalidPresentedSlots
         inputCommitment: '0x' + '5'.repeat(64),
-        methodVersion: 12,
+        methodVersion: CURRENT_METHOD_VERSION,
       };
 
       expect(journal.missingSlots + journal.invalidPresentedSlots + journal.validVotes).toBe(64);

@@ -1,7 +1,7 @@
 NOTICE
 
-This product includes third-party software components. A full inventory of
-third-party licenses is provided in THIRD_PARTY_NOTICES.md.
+This product includes third-party software components. THIRD_PARTY_NOTICES.md
+summarizes notices and points to generated license metadata.
 
 Notable attributions and special-license components:
 
@@ -27,6 +27,9 @@ Notable attributions and special-license components:
      Source: https://github.com/mermaid-js/mermaid
    - fzf v0.5.2, BSD-3-Clause
      Source: https://github.com/ajitid/fzf-for-js
+   - elasticlunr-fzf.js (local mdBook search patch)
+   - mermaid-init.js, MPL-2.0
+     License: https://www.mozilla.org/MPL/2.0/
 
 If you redistribute this product, ensure you comply with the licenses of
 all included third-party components.

@@ -15,4 +15,4 @@ pub use inclusion_proof::{
     verify_inclusion_proof_rfc6962,
 };
 pub use sha256::{compute_commitment, verify_commitment};
-pub use types::{AggregatorInput, VerificationOutput, VoteWithProof};
+pub use types::{AggregatorInput, VerificationOutput, VoteWithProof, CURRENT_METHOD_VERSION};

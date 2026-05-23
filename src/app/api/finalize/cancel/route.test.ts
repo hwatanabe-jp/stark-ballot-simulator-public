@@ -157,8 +157,7 @@ describe('POST /api/finalize/cancel', () => {
     const payload = await readJsonRecord(response, 'cancel finalize conflict');
     expect(response.status).toBe(409);
     const error = getStringProperty(payload, 'error');
-    expect(error).toBeDefined();
-    expect(error).toContain('cannot be cancelled');
+    expect(error).toBe('Finalization cannot be cancelled in its current state');
   });
 
   it('fails closed for stale running branches before calling the store writer', async () => {

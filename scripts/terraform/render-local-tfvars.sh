@@ -246,8 +246,6 @@ fi
 env_upper="${env_name^^}"
 aws_region="$(first_nonempty "TERRAFORM_AWS_REGION_${env_upper}" TERRAFORM_AWS_REGION AWS_REGION AWS_DEFAULT_REGION || true)"
 aws_region="${aws_region:-ap-northeast-1}"
-aws_profile="$(first_nonempty "TERRAFORM_AWS_PROFILE_${env_upper}" TERRAFORM_AWS_PROFILE AWS_PROFILE || true)"
-aws_profile="${aws_profile:-terraform-admin}"
 project_name="$(first_nonempty "TERRAFORM_PROJECT_NAME_${env_upper}" TERRAFORM_PROJECT_NAME PROJECT_NAME || true)"
 project_name="${project_name:-stark-ballot-simulator}"
 account_id="$(first_nonempty "TERRAFORM_AWS_ACCOUNT_ID_${env_upper}" TERRAFORM_AWS_ACCOUNT_ID AWS_ACCOUNT_ID || true)"
@@ -296,6 +294,9 @@ missing=()
 if [ -z "$ecs_image_uri" ]; then
   missing+=("TERRAFORM_ECS_IMAGE_URI_${env_upper} or TERRAFORM_ZKVM_PROVER_DIGEST_${env_upper}")
 fi
+if [[ ! "$account_id" =~ ^[0-9]{12}$ ]]; then
+  missing+=("TERRAFORM_AWS_ACCOUNT_ID_${env_upper} or TERRAFORM_AWS_ACCOUNT_ID")
+fi
 if [ -z "$ecr_signing_profile_arn" ]; then
   missing+=("TERRAFORM_ECR_SIGNING_PROFILE_ARN or TERRAFORM_ECR_SIGNING_PROFILE_NAME")
 fi
@@ -318,9 +319,10 @@ if [ "${#missing[@]}" -gt 0 ]; then
   exit 2
 fi
 
-for label in aws_region aws_profile project_name ecs_image_uri ecr_signing_profile_arn finalize_callback_lambda_arn codestar_connection_arn codebuild_source_location; do
+for label in aws_region project_name ecs_image_uri ecr_signing_profile_arn finalize_callback_lambda_arn codestar_connection_arn codebuild_source_location; do
   reject_placeholder "$label" "${!label}"
 done
+reject_placeholder "aws_account_id" "$account_id"
 reject_placeholder "s3_cors_allowed_origins" "$s3_cors_allowed_origins"
 require_digest "ecs_image_uri" "$ecs_image_uri"
 validate_codebuild_source_location "codebuild_source_location" "$codebuild_source_location"
@@ -331,11 +333,11 @@ mkdir -p "$(dirname "$output_file")"
   echo "# Generated from $env_source by scripts/terraform/render-local-tfvars.sh."
   echo "# Local deployment values only. Do not commit this file."
   echo
-  printf 'aws_region  = %s\n' "$(hcl_quote "$aws_region")"
-  printf 'aws_profile = %s\n' "$(hcl_quote "$aws_profile")"
-  printf 'environment = %s\n' "$(hcl_quote "$env_name")"
+  printf 'aws_region     = %s\n' "$(hcl_quote "$aws_region")"
+  printf 'aws_account_id = %s\n' "$(hcl_quote "$account_id")"
+  printf 'environment    = %s\n' "$(hcl_quote "$env_name")"
   echo
-  printf 'project_name = %s\n' "$(hcl_quote "$project_name")"
+  printf 'project_name              = %s\n' "$(hcl_quote "$project_name")"
   printf 'codebuild_source_location = %s\n' "$(hcl_quote "$codebuild_source_location")"
   echo
   printf 'ecs_image_uri           = %s\n' "$(hcl_quote "$ecs_image_uri")"

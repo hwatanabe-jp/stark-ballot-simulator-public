@@ -1,9 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Clean all generated files and directories
 # This script removes all build artifacts, test outputs, and temporary files
 
-set -e
+set -euo pipefail
+IFS=$'\n\t'
 
 echo "🧹 Cleaning all generated files..."
 
@@ -39,7 +40,7 @@ rm -f npm-debug.log* yarn-debug.log* yarn-error.log* .pnpm-debug.log* pnpm-debug
 echo "Removing temporary files..."
 find . -name "*.tmp" -delete 2>/dev/null || true
 find . -name "*.temp" -delete 2>/dev/null || true
-rm -rf .tmp .temp
+rm -rf .tmp .temp terraform/.tmp
 
 # Remove editor swap files
 echo "Removing editor swap files..."

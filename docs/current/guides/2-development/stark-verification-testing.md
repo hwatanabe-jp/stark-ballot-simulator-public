@@ -7,6 +7,8 @@
 - `RISC0_DEV_MODE=1` は **Fake receipt** のみ生成します（実証明ではありません）。
 - 実際のSTARK証明は **数分（64票で約6分）** かかります。
 - まずは `pnpm build:zkvm` と `pnpm build:verifier-service` を済ませておくとスムーズです。
+- カスタム host input を使う場合、現行 guest は `tree_size` / `total_expected` / 提示 vote 数 / 各候補 tally を
+  `1,000,000` 以下、各 Merkle path を `u16::MAX` 長以下に制限します。超過入力は journal field を出す前に fail-closed します。
 
 ## 1. 推奨: CLI E2E テスト
 
@@ -67,9 +69,9 @@ pnpm tsx -e "import fs from 'node:fs'; const output = JSON.parse(fs.readFileSync
 > legacy / manual helper です。`test-cli.sh` は意図的に disabled で、`verify-single.js` は fixture 形状確認のみを行います。現行の
 > `{ receipt: ..., image_id: ... }` wrapper、journal layout、receipt 種別、数値、または暗号学的検証の判断には使わないでください。
 
-### 3.2 Journal フォーマット（現行: methodVersion 12）
+### 3.2 Journal フォーマット（現行: methodVersion 14）
 
-`parseJournalBytes` は現行実装で `methodVersion=12` のみ受け付けます。順序・サイズは以下です（272 bytes 固定）：
+`parseJournalBytes` は現行実装で `methodVersion=14` のみ受け付けます。順序・サイズは以下です（272 bytes 固定）：
 
 1. `electionId` (16 bytes)
 2. `electionConfigHash` (32 bytes)
@@ -89,23 +91,24 @@ pnpm tsx -e "import fs from 'node:fs'; const output = JSON.parse(fs.readFileSync
 16. `includedBitmapRoot` (32 bytes)
 17. `excludedSlots` (u32 LE)
 18. `inputCommitment` (32 bytes)
-19. `methodVersion` (u32 LE, 現行は `12`)
+19. `methodVersion` (u32 LE, 現行は `14`)
 
 ## 4. Bundle 検証（verifier-service）
 
 `verifier-service` で bundle を検証できます。bundle は `/verify` ページやCLIの出力URLから取得します。
 
 ```bash
-# Deployed / AWS-native verification
+# default variant: expectedImageID
 export EXPECTED_IMAGE_ID="$(node verifier-service/scripts/read-image-id.mjs public/imageId-mapping.json --variant default)"
 
-# Local x86_64 / WSL verification
+# x86_64 variant: expectedImageID_x86_64
 export EXPECTED_IMAGE_ID="$(node verifier-service/scripts/read-image-id.mjs public/imageId-mapping.json --variant x86_64)"
 
 ./verifier-service/target/release/verifier-service verify /path/to/bundle-or-receipt
 ```
 
-`public/imageId-mapping.json` には `expectedImageID` と `expectedImageID_x86_64` の両方があり、環境に応じて使い分けが必要です。詳細は `verifier-service/README.md` を参照してください。
+`public/imageId-mapping.json` には `expectedImageID` と `expectedImageID_x86_64` の両方があります。現行 methodVersion では値が同じ場合もありますが、
+検証対象 bundle の実際の guest build / deployment と一致する variant を明示して選んでください。詳細は `verifier-service/README.md` を参照してください。
 
 ## トラブルシューティング
 

@@ -38,6 +38,16 @@ sequenceDiagram
 - RISC Zero レシート検証で STARK 実行の正当性を検証
 - AWS クラウド費用の目標月額を 1 USD（デプロイなし、アプリのアクセスなし時）
 
+## バンドル用語の階層
+
+検証で扱うアーティファクト群は階層的な 3 つの用語で呼び分けます。
+
+```text
+証明バンドル ⊃ 配布対象アーカイブ ⊃ bundle.zip（ファイル）
+```
+
+詳細: [バンドル構造](verification/bundle-structure.md)、定義: [用語集 > 証明バンドル](appendix/glossary.md#証明バンドルproof-bundle)。
+
 ## プロジェクト規模
 
 概算（tracked files ベース、生成物を除く）。
@@ -52,13 +62,14 @@ sequenceDiagram
 
 ## 各章への案内
 
-| 部                                           | 内容                                                                                 |
-| -------------------------------------------- | ------------------------------------------------------------------------------------ |
-| [暗号プロトコル](protocol/index.md)          | コミットメント、CT Merkle、入力コミットメント、STH ダイジェスト、ビットマップ Merkle |
-| [zkVM 設計](zkvm/index.md)                   | ゲストプログラム、ホスト・証明生成、検証サービス、Image ID                           |
-| [検証パイプライン](verification/index.md)    | 4 段階モデル、チェック一覧、バンドル構造、ゲーティングロジック                       |
-| [改ざんシナリオ](tamper/index.md)            | S0〜S5 シナリオ、検出メカニズム                                                      |
-| [AWS アーキテクチャ](aws/index.md)           | トポロジー、非同期プローバー、イメージ署名、Terraform                                |
-| [API リファレンス](api/index.md)             | エンドポイント一覧、セッションライフサイクル                                         |
-| [第三者検証ガイド](reproducibility/index.md) | 検証ページで取得した `bundle.zip` を使う Ubuntu 向けローカル検証手順                 |
-| [設計判断](decisions/index.md)               | PoC の意図的な制約、設計ふりかえり                                                   |
+| 部                                           | 内容                                                                                          |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| [暗号プロトコル](protocol/index.md)          | コミットメント、掲示板 (CT Merkle)、入力コミットメント、STH ダイジェスト、ビットマップ Merkle |
+| [zkVM 設計](zkvm/index.md)                   | ゲストプログラム、ホスト・証明生成、検証サービス、Image ID                                    |
+| [検証パイプライン](verification/index.md)    | 4 段階モデル、チェック一覧、バンドル構造、ゲーティングロジック                                |
+| [改ざんシナリオ](tamper/index.md)            | S0〜S5 シナリオ、検出メカニズム                                                               |
+| [品質保証と形式手法](quality/index.md)       | 単体・結合・E2E、Property-based Testing、Lean による形式化                                    |
+| [AWS アーキテクチャ](aws/index.md)           | トポロジー、非同期プローバー、イメージ署名、Terraform                                         |
+| [API リファレンス](api/index.md)             | エンドポイント一覧、セッションライフサイクル                                                  |
+| [第三者検証ガイド](reproducibility/index.md) | 検証ページで取得した `bundle.zip` を使う Ubuntu 向けローカル検証手順                          |
+| [設計判断](decisions/index.md)               | PoC の意図的な制約、設計ふりかえり                                                            |

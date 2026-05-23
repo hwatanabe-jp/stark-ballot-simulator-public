@@ -64,10 +64,14 @@ export function useFinalizationPolling({
   useEffect(() => {
     if (finalizationState && (finalizationState.status === 'pending' || finalizationState.status === 'running')) {
       if (cancelStatus === 'success' || cancelStatus === 'error') {
-        setCancelStatus('idle');
-        setCancelError(null);
+        const timeoutId = window.setTimeout(() => {
+          setCancelStatus('idle');
+          setCancelError(null);
+        }, 0);
+        return () => window.clearTimeout(timeoutId);
       }
     }
+    return undefined;
   }, [finalizationState, cancelStatus]);
 
   useEffect(() => {

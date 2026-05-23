@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseJournalBytes, formatVoteCounts } from './journal-parser';
+import { CURRENT_METHOD_VERSION } from '@/lib/zkvm/types';
 
 const toHex = (value: number): string => value.toString(16).padStart(2, '0');
 
@@ -47,7 +48,7 @@ describe('Journal Parser', () => {
     pushArray(bytes, includedBitmapRootBytes);
     pushU32(bytes, 0); // excluded_slots
     pushArray(bytes, inputCommitmentBytes);
-    pushU32(bytes, 12); // method_version
+    pushU32(bytes, CURRENT_METHOD_VERSION); // method_version
 
     const result = parseJournalBytes(bytes);
 
@@ -77,7 +78,7 @@ describe('Journal Parser', () => {
     expect(result.includedBitmapRoot).toBe(expectedIncludedBitmapRoot);
     expect(result.excludedSlots).toBe(0);
     expect(result.inputCommitment).toBe(expectedInputCommitment);
-    expect(result.methodVersion).toBe(12);
+    expect(result.methodVersion).toBe(CURRENT_METHOD_VERSION);
     expect(result.tamperDetected).toBe(false);
   });
 
@@ -113,7 +114,7 @@ describe('Journal Parser', () => {
     pushArray(bytes, bitmapRootBytes);
     pushU32(bytes, 2); // excluded_slots
     pushArray(bytes, inputCommitmentBytes);
-    pushU32(bytes, 12); // method_version
+    pushU32(bytes, CURRENT_METHOD_VERSION); // method_version
 
     const result = parseJournalBytes(bytes);
 
@@ -158,9 +159,9 @@ describe('Journal Parser', () => {
     pushArray(bytes, Array<number>(32).fill(0x66));
     pushU32(bytes, 0);
     pushArray(bytes, Array<number>(32).fill(0x77));
-    pushU32(bytes, 11);
+    pushU32(bytes, CURRENT_METHOD_VERSION - 1);
 
-    expect(() => parseJournalBytes(bytes)).toThrow('Unsupported journal method version: 11');
+    expect(() => parseJournalBytes(bytes)).toThrow(`Unsupported journal method version: ${CURRENT_METHOD_VERSION - 1}`);
   });
 
   it('should format vote counts correctly', () => {

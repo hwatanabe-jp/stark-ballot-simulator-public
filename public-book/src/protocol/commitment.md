@@ -71,11 +71,9 @@ STH ダイジェストは専用のドメインタグを持たず、ログ ID を
 **前提条件**:
 
 - 乱数は暗号学的に安全な乱数生成器（CSPRNG）から生成される
-- 同じ乱数は決して再利用しない
+- 同じ乱数は決して再利用しない（再利用すると、同じ選択肢で同じコミットメント値が現れて情報が漏洩する）
 
-乱数の再利用は hiding 性を破壊します。同一選挙で同一乱数を使用した場合、同じ選択肢であればコミットメント値が一致してしまい、情報が漏洩します。
-
-**PoC の制約**: 本 PoC は operator に対する完全な秘匿性を目的としていません。現行実装ではクライアントから投票 API に opening（選択肢と乱数）も送信され、サーバー側ストアに保持されうるため、ここでいう hiding は主に公開観測者と公開配布物に対する性質を指します。
+**PoC の制約**: 本 PoC は operator に対する完全な秘匿性を目的としていません。投票 API に送信された opening（選択肢と乱数）はサーバー側ストアに保持されうるため、ここでいう hiding は公開観測者と公開配布物に対する性質を指します。
 
 ### Binding（束縛性）
 
@@ -106,7 +104,7 @@ SHA-256 の原像耐性（preimage resistance）と第二原像耐性（second-p
 | Recorded-as-Cast    | 掲示板上でコミットメントの包含証明を検証し、投票時点のツリー状態に対して正しく記録されたことを確認する                     |
 | Counted-as-Recorded | zkVM ゲストが prover から渡された各 vote opening でコミットメントを再計算し、掲示板上の値と整合する票だけを tally に含める |
 
-> **注意**: Counted-as-Recorded は投票者ローカルの opening ではなく、prover に渡された opening を使います。Cast-as-Intended とは照合対象の出所が異なる点に注意してください。
+> **注意**: Cast-as-Intended と Counted-as-Recorded は同じコミットメント計算式を使いますが、opening の出所が異なります（投票者ローカル / prover に渡された値）。
 
 Recorded-as-Cast は投票時点（cast-time）のツリー状態に対する包含証明を使い、レシートの `bulletinRootAtCast` と整合させます。`rootAtCast` の保存と再導出の詳細は [CT Merkle ツリー](ct-merkle.md) を参照してください。
 
@@ -128,4 +126,4 @@ sequenceDiagram
     Note over Z: ゲストプログラムが<br/>コミットメントを再計算し<br/>掲示板の値と照合
 ```
 
-<!-- source: src/lib/zkvm/types.ts:computeCommitment, zkvm/contract-core/src/sha256.rs, zkvm/methods/guest/src/main.rs, zkvm/host/src/main.rs, src/server/api/handlers/vote.ts, src/lib/store/ct-proof.ts, src/lib/finalize/usecases/user-vote-artifacts.ts -->
+<!-- source: src/lib/zkvm/types.ts:computeCommitment, zkvm/contract-core/src/sha256.rs, zkvm/methods/guest/src/tally.rs, zkvm/host/src/main.rs, src/server/api/handlers/vote.ts, src/lib/store/ct-proof.ts, src/lib/finalize/usecases/user-vote-artifacts.ts -->

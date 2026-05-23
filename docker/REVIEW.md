@@ -50,8 +50,9 @@ The application prover image is built by Terraform-managed CodeBuild projects:
 - `stark-ballot-simulator-fargate-prover-main`
 
 `buildspec.yml` resolves the RISC Zero toolchain image from ECR, requires a
-digest-pinned `@sha256:<64 lowercase hex chars>` reference, and records the resolved
-toolchain image in `image-metadata.json`.
+digest-pinned `@sha256:<64 lowercase hex chars>` reference, extracts the ARM64
+guest ImageID from the built prover image, and records the resolved toolchain image,
+prover digest, methodVersion, and ImageID in `image-metadata.json`.
 
 The shared RISC Zero toolchain base image is built by:
 

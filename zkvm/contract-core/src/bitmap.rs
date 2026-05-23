@@ -44,7 +44,10 @@ fn pack_bits_to_bytes(bits: &[bool]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::String;
+    use alloc::vec::Vec;
     use risc0_zkvm::sha::{Impl, Sha256};
+    use serde::Deserialize;
 
     #[test]
     fn test_pack_bits_to_bytes_lsb_first() {
@@ -117,5 +120,62 @@ mod tests {
         leaves2[2] = [5u8; 32];
         let root2 = compute_merkle_root(&leaves2);
         assert_ne!(root, root2);
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FormalBitmapCase {
+        bit_length: usize,
+        true_indices: Vec<usize>,
+        expected_packed_byte_length: usize,
+        expected_packed_bytes_hex: String,
+        probes: Vec<FormalBitmapProbe>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FormalBitmapProbe {
+        bit_index: usize,
+        byte_index: usize,
+        bit_index_in_byte: usize,
+        expected_value: bool,
+    }
+
+    fn formal_bitmap(case: &FormalBitmapCase) -> Vec<bool> {
+        let mut bitmap = vec![false; case.bit_length];
+        for index in &case.true_indices {
+            bitmap[*index] = true;
+        }
+        bitmap
+    }
+
+    #[test]
+    fn test_formal_bitmap_vectors_lsb_first() {
+        let cases: Vec<FormalBitmapCase> = serde_json::from_str(include_str!(
+            "../../../docs/current/formal/generated-vectors/bitmap-cases.json"
+        ))
+        .expect("formal bitmap vectors should parse");
+
+        for case in cases {
+            let bitmap = formal_bitmap(&case);
+            let packed = pack_bits_to_bytes(&bitmap);
+            let expected_packed = hex::decode(&case.expected_packed_bytes_hex)
+                .expect("expected packed bitmap hex should decode");
+
+            assert_eq!(packed.len(), case.expected_packed_byte_length);
+            assert_eq!(packed, expected_packed);
+
+            for probe in &case.probes {
+                assert_eq!(probe.byte_index, probe.bit_index / 8);
+                assert_eq!(probe.bit_index_in_byte, probe.bit_index % 8);
+                assert_eq!(
+                    (packed[probe.byte_index] & (1 << probe.bit_index_in_byte)) != 0,
+                    probe.expected_value
+                );
+            }
+
+            let root = compute_bitmap_merkle_root(&bitmap);
+            assert_eq!(root.len(), 32);
+        }
     }
 }

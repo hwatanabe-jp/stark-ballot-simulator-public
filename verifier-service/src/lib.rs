@@ -527,7 +527,7 @@ mod tests {
     use serde_json::json;
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::tempdir;
-    use zip::{write::FileOptions, CompressionMethod, ZipWriter};
+    use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
     #[test]
     fn parse_verify_command_requires_bundle_path() {
@@ -655,7 +655,7 @@ mod tests {
         let zip_path = dir.path().join("bundle.zip");
         let file = File::create(&zip_path).expect("create zip bundle");
         let mut zip = ZipWriter::new(file);
-        let options = FileOptions::default().compression_method(CompressionMethod::Deflated);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 
         let receipt_content = serialize_receipt_json(&receipt_json);
         zip.start_file("receipt.json", options)

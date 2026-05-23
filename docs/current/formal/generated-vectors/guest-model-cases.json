@@ -1,0 +1,442 @@
+[
+  {
+    "name": "all-valid",
+    "treeSize": 3,
+    "votes": [
+      {
+        "id": "valid-0",
+        "index": 0,
+        "choice": 0,
+        "randomByte": 10,
+        "commitment": 10,
+        "commitmentOk": true,
+        "inclusionOk": true
+      },
+      {
+        "id": "valid-1",
+        "index": 1,
+        "choice": 1,
+        "randomByte": 11,
+        "commitment": 11,
+        "commitmentOk": true,
+        "inclusionOk": true
+      },
+      {
+        "id": "valid-2",
+        "index": 2,
+        "choice": 4,
+        "randomByte": 12,
+        "commitment": 12,
+        "commitmentOk": true,
+        "inclusionOk": true
+      }
+    ],
+    "expectedOutcomes": [
+      {
+        "accepted": true,
+        "reason": null,
+        "slotSeen": true,
+        "commitmentReserved": true
+      },
+      {
+        "accepted": true,
+        "reason": null,
+        "slotSeen": true,
+        "commitmentReserved": true
+      },
+      {
+        "accepted": true,
+        "reason": null,
+        "slotSeen": true,
+        "commitmentReserved": true
+      }
+    ],
+    "expectedSeenIndicesCount": 3,
+    "expectedMissingSlots": 0,
+    "expectedInvalidPresentedSlots": 0,
+    "expectedRejectedRecords": 0,
+    "expectedRejectionReasons": [],
+    "expectedExcludedSlots": 0,
+    "expectedValidVotes": 3,
+    "expectedTally": [1, 1, 0, 0, 1],
+    "expectedIncludedBitmapTrueIndices": [0, 1, 2]
+  },
+  {
+    "name": "missing-slot",
+    "treeSize": 3,
+    "votes": [
+      {
+        "id": "valid-0",
+        "index": 0,
+        "choice": 0,
+        "randomByte": 20,
+        "commitment": 20,
+        "commitmentOk": true,
+        "inclusionOk": true
+      },
+      {
+        "id": "valid-2",
+        "index": 2,
+        "choice": 2,
+        "randomByte": 22,
+        "commitment": 22,
+        "commitmentOk": true,
+        "inclusionOk": true
+      }
+    ],
+    "expectedOutcomes": [
+      {
+        "accepted": true,
+        "reason": null,
+        "slotSeen": true,
+        "commitmentReserved": true
+      },
+      {
+        "accepted": true,
+        "reason": null,
+        "slotSeen": true,
+        "commitmentReserved": true
+      }
+    ],
+    "expectedSeenIndicesCount": 2,
+    "expectedMissingSlots": 1,
+    "expectedInvalidPresentedSlots": 0,
+    "expectedRejectedRecords": 0,
+    "expectedRejectionReasons": [],
+    "expectedExcludedSlots": 1,
+    "expectedValidVotes": 2,
+    "expectedTally": [1, 0, 1, 0, 0],
+    "expectedIncludedBitmapTrueIndices": [0, 2]
+  },
+  {
+    "name": "out-of-range-index",
+    "treeSize": 2,
+    "votes": [
+      {
+        "id": "out-of-range",
+        "index": 2,
+        "choice": 0,
+        "randomByte": 30,
+        "commitment": 30,
+        "commitmentOk": true,
+        "inclusionOk": false
+      }
+    ],
+    "expectedOutcomes": [
+      {
+        "accepted": false,
+        "reason": "out_of_range_index",
+        "slotSeen": false,
+        "commitmentReserved": false
+      }
+    ],
+    "expectedSeenIndicesCount": 0,
+    "expectedMissingSlots": 2,
+    "expectedInvalidPresentedSlots": 0,
+    "expectedRejectedRecords": 1,
+    "expectedRejectionReasons": ["out_of_range_index"],
+    "expectedExcludedSlots": 2,
+    "expectedValidVotes": 0,
+    "expectedTally": [0, 0, 0, 0, 0],
+    "expectedIncludedBitmapTrueIndices": []
+  },
+  {
+    "name": "duplicate-index",
+    "treeSize": 2,
+    "votes": [
+      {
+        "id": "valid-first",
+        "index": 0,
+        "choice": 0,
+        "randomByte": 40,
+        "commitment": 40,
+        "commitmentOk": true,
+        "inclusionOk": true
+      },
+      {
+        "id": "duplicate-second",
+        "index": 0,
+        "choice": 1,
+        "randomByte": 41,
+        "commitment": 41,
+        "commitmentOk": true,
+        "inclusionOk": true
+      }
+    ],
+    "expectedOutcomes": [
+      {
+        "accepted": true,
+        "reason": null,
+        "slotSeen": true,
+        "commitmentReserved": true
+      },
+      {
+        "accepted": false,
+        "reason": "duplicate_index",
+        "slotSeen": false,
+        "commitmentReserved": false
+      }
+    ],
+    "expectedSeenIndicesCount": 1,
+    "expectedMissingSlots": 1,
+    "expectedInvalidPresentedSlots": 0,
+    "expectedRejectedRecords": 1,
+    "expectedRejectionReasons": ["duplicate_index"],
+    "expectedExcludedSlots": 1,
+    "expectedValidVotes": 1,
+    "expectedTally": [1, 0, 0, 0, 0],
+    "expectedIncludedBitmapTrueIndices": [0]
+  },
+  {
+    "name": "invalid-choice",
+    "treeSize": 1,
+    "votes": [
+      {
+        "id": "invalid-choice",
+        "index": 0,
+        "choice": 5,
+        "randomByte": 50,
+        "commitment": 50,
+        "commitmentOk": true,
+        "inclusionOk": true
+      }
+    ],
+    "expectedOutcomes": [
+      {
+        "accepted": false,
+        "reason": "invalid_choice",
+        "slotSeen": true,
+        "commitmentReserved": false
+      }
+    ],
+    "expectedSeenIndicesCount": 1,
+    "expectedMissingSlots": 0,
+    "expectedInvalidPresentedSlots": 1,
+    "expectedRejectedRecords": 1,
+    "expectedRejectionReasons": ["invalid_choice"],
+    "expectedExcludedSlots": 1,
+    "expectedValidVotes": 0,
+    "expectedTally": [0, 0, 0, 0, 0],
+    "expectedIncludedBitmapTrueIndices": []
+  },
+  {
+    "name": "invalid-commitment",
+    "treeSize": 1,
+    "votes": [
+      {
+        "id": "invalid-commitment",
+        "index": 0,
+        "choice": 0,
+        "randomByte": 60,
+        "commitment": 61,
+        "commitmentOk": false,
+        "inclusionOk": true
+      }
+    ],
+    "expectedOutcomes": [
+      {
+        "accepted": false,
+        "reason": "invalid_commitment",
+        "slotSeen": true,
+        "commitmentReserved": false
+      }
+    ],
+    "expectedSeenIndicesCount": 1,
+    "expectedMissingSlots": 0,
+    "expectedInvalidPresentedSlots": 1,
+    "expectedRejectedRecords": 1,
+    "expectedRejectionReasons": ["invalid_commitment"],
+    "expectedExcludedSlots": 1,
+    "expectedValidVotes": 0,
+    "expectedTally": [0, 0, 0, 0, 0],
+    "expectedIncludedBitmapTrueIndices": []
+  },
+  {
+    "name": "duplicate-commitment",
+    "treeSize": 2,
+    "votes": [
+      {
+        "id": "commitment-owner",
+        "index": 0,
+        "choice": 2,
+        "randomByte": 70,
+        "commitment": 70,
+        "commitmentOk": true,
+        "inclusionOk": true
+      },
+      {
+        "id": "commitment-duplicate",
+        "index": 1,
+        "choice": 2,
+        "randomByte": 70,
+        "commitment": 70,
+        "commitmentOk": true,
+        "inclusionOk": true
+      }
+    ],
+    "expectedOutcomes": [
+      {
+        "accepted": true,
+        "reason": null,
+        "slotSeen": true,
+        "commitmentReserved": true
+      },
+      {
+        "accepted": false,
+        "reason": "duplicate_commitment",
+        "slotSeen": true,
+        "commitmentReserved": false
+      }
+    ],
+    "expectedSeenIndicesCount": 2,
+    "expectedMissingSlots": 0,
+    "expectedInvalidPresentedSlots": 1,
+    "expectedRejectedRecords": 1,
+    "expectedRejectionReasons": ["duplicate_commitment"],
+    "expectedExcludedSlots": 1,
+    "expectedValidVotes": 1,
+    "expectedTally": [0, 0, 1, 0, 0],
+    "expectedIncludedBitmapTrueIndices": [0]
+  },
+  {
+    "name": "invalid-inclusion-proof",
+    "treeSize": 2,
+    "votes": [
+      {
+        "id": "invalid-inclusion",
+        "index": 0,
+        "choice": 3,
+        "randomByte": 80,
+        "commitment": 80,
+        "commitmentOk": true,
+        "inclusionOk": false
+      },
+      {
+        "id": "same-commitment-after-invalid-inclusion",
+        "index": 1,
+        "choice": 3,
+        "randomByte": 80,
+        "commitment": 80,
+        "commitmentOk": true,
+        "inclusionOk": true
+      }
+    ],
+    "expectedOutcomes": [
+      {
+        "accepted": false,
+        "reason": "invalid_inclusion_proof",
+        "slotSeen": true,
+        "commitmentReserved": true
+      },
+      {
+        "accepted": false,
+        "reason": "duplicate_commitment",
+        "slotSeen": true,
+        "commitmentReserved": false
+      }
+    ],
+    "expectedSeenIndicesCount": 2,
+    "expectedMissingSlots": 0,
+    "expectedInvalidPresentedSlots": 2,
+    "expectedRejectedRecords": 2,
+    "expectedRejectionReasons": ["invalid_inclusion_proof", "duplicate_commitment"],
+    "expectedExcludedSlots": 2,
+    "expectedValidVotes": 0,
+    "expectedTally": [0, 0, 0, 0, 0],
+    "expectedIncludedBitmapTrueIndices": []
+  },
+  {
+    "name": "extra-record-beyond-tree-size",
+    "treeSize": 1,
+    "votes": [
+      {
+        "id": "valid-only-slot",
+        "index": 0,
+        "choice": 4,
+        "randomByte": 90,
+        "commitment": 90,
+        "commitmentOk": true,
+        "inclusionOk": true
+      },
+      {
+        "id": "extra-record",
+        "index": 1,
+        "choice": 0,
+        "randomByte": 91,
+        "commitment": 91,
+        "commitmentOk": true,
+        "inclusionOk": false
+      }
+    ],
+    "expectedOutcomes": [
+      {
+        "accepted": true,
+        "reason": null,
+        "slotSeen": true,
+        "commitmentReserved": true
+      },
+      {
+        "accepted": false,
+        "reason": "out_of_range_index",
+        "slotSeen": false,
+        "commitmentReserved": false
+      }
+    ],
+    "expectedSeenIndicesCount": 1,
+    "expectedMissingSlots": 0,
+    "expectedInvalidPresentedSlots": 0,
+    "expectedRejectedRecords": 1,
+    "expectedRejectionReasons": ["out_of_range_index"],
+    "expectedExcludedSlots": 0,
+    "expectedValidVotes": 1,
+    "expectedTally": [0, 0, 0, 0, 1],
+    "expectedIncludedBitmapTrueIndices": [0]
+  },
+  {
+    "name": "zero-exclusion-complete",
+    "treeSize": 2,
+    "votes": [
+      {
+        "id": "complete-0",
+        "index": 0,
+        "choice": 1,
+        "randomByte": 100,
+        "commitment": 100,
+        "commitmentOk": true,
+        "inclusionOk": true
+      },
+      {
+        "id": "complete-1",
+        "index": 1,
+        "choice": 3,
+        "randomByte": 101,
+        "commitment": 101,
+        "commitmentOk": true,
+        "inclusionOk": true
+      }
+    ],
+    "expectedOutcomes": [
+      {
+        "accepted": true,
+        "reason": null,
+        "slotSeen": true,
+        "commitmentReserved": true
+      },
+      {
+        "accepted": true,
+        "reason": null,
+        "slotSeen": true,
+        "commitmentReserved": true
+      }
+    ],
+    "expectedSeenIndicesCount": 2,
+    "expectedMissingSlots": 0,
+    "expectedInvalidPresentedSlots": 0,
+    "expectedRejectedRecords": 0,
+    "expectedRejectionReasons": [],
+    "expectedExcludedSlots": 0,
+    "expectedValidVotes": 2,
+    "expectedTally": [0, 1, 0, 1, 0],
+    "expectedIncludedBitmapTrueIndices": [0, 1]
+  }
+]

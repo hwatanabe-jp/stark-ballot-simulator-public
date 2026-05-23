@@ -3,13 +3,18 @@ name: Public Rust Checks
 on:
   push:
     branches: [main]
-    paths:
+    paths: &rust_paths
       - 'verifier-service/**'
       - 'zkvm/contract-core/**'
+      - 'zkvm/methods/guest/**'
+      - 'docs/current/formal/generated-vectors/**'
       - '**/Cargo.toml'
       - '**/Cargo.lock'
       - 'rust-toolchain.toml'
       - '.github/workflows/public-rust-checks.yml'
+  pull_request:
+    branches: [main]
+    paths: *rust_paths
   workflow_dispatch:
 
 permissions:
@@ -78,3 +83,24 @@ jobs:
 
       - name: Run tests
         run: cargo test --manifest-path zkvm/contract-core/Cargo.toml
+
+  guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            zkvm -> zkvm/target
+
+      - name: Run guest model vector tests
+        run: cargo test --manifest-path zkvm/Cargo.toml -p guest test_formal_guest_model_vectors

@@ -8,13 +8,23 @@ CURRENT_CONTRACT_GENERATION="$(
   sed -n "s/^const DEFAULT_CONTRACT_GENERATION = '\\([^']*\\)';$/\\1/p" \
     "${ROOT_DIR}/src/lib/contract/contractGeneration.ts"
 )"
+CURRENT_METHOD_VERSION="$(
+  sed -n "s/^CURRENT_METHOD_VERSION=\\([0-9][0-9]*\\)$/\\1/p" \
+    "$ENTRYPOINT_PATH"
+)"
 
 if [[ -z "$CURRENT_CONTRACT_GENERATION" ]]; then
   echo "Failed to resolve current contract generation"
   exit 1
 fi
 
+if [[ -z "$CURRENT_METHOD_VERSION" ]]; then
+  echo "Failed to resolve current method version"
+  exit 1
+fi
+
 export CURRENT_CONTRACT_GENERATION
+export CURRENT_METHOD_VERSION
 
 export ENTRYPOINT_SKIP_MAIN=1
 
@@ -44,6 +54,7 @@ import sys
 
 output_path, receipt_path, bitmap_path, seen_bitmap_path, input_path = sys.argv[1:6]
 current_contract_generation = os.environ["CURRENT_CONTRACT_GENERATION"]
+current_method_version = int(os.environ["CURRENT_METHOD_VERSION"])
 
 def hex_bytes(hex_str):
     return list(bytes.fromhex(hex_str))
@@ -175,7 +186,7 @@ output = {
     "includedBitmapRoot": hex_bytes(included_bitmap_root[2:]),
     "excludedSlots": 0,
     "inputCommitment": hex_bytes(input_commitment[2:]),
-    "methodVersion": 12,
+    "methodVersion": current_method_version,
     "imageId": "0x" + "ab" * 32,
 }
 
@@ -273,6 +284,7 @@ import sys
 
 bundle_zip, bitmap_path, seen_bitmap_path = sys.argv[1:4]
 current_contract_generation = os.environ["CURRENT_CONTRACT_GENERATION"]
+current_method_version = int(os.environ["CURRENT_METHOD_VERSION"])
 
 def uint32le(value):
     return value.to_bytes(4, byteorder="little", signed=False)
@@ -389,7 +401,7 @@ assert public_input["treeSize"] == 64
 assert public_input["totalExpected"] == 64
 assert public_input["logId"] == "0x" + "66" * 32
 assert public_input["timestamp"] == 1700000000
-assert public_input["methodVersion"] == 12
+assert public_input["methodVersion"] == current_method_version
 assert public_input["votes"] == [
     {
         "index": 0,
@@ -483,9 +495,11 @@ missing_seen_bitmap_output_json="${output_dir}/missing-seen-bitmap-output.json"
 
 python3 - "$output_json" "$legacy_output_json" "$unsupported_version_output_json" "$missing_seen_bitmap_output_json" <<'PY'
 import json
+import os
 import sys
 
 source_path, legacy_path, unsupported_path, missing_seen_path = sys.argv[1:5]
+current_method_version = int(os.environ["CURRENT_METHOD_VERSION"])
 
 with open(source_path, "r", encoding="utf-8") as handle:
     source = json.load(handle)
@@ -516,7 +530,7 @@ with open(legacy_path, "w", encoding="utf-8") as handle:
     json.dump(legacy, handle)
 
 unsupported = dict(source)
-unsupported["methodVersion"] = 11
+unsupported["methodVersion"] = current_method_version - 1
 with open(unsupported_path, "w", encoding="utf-8") as handle:
     json.dump(unsupported, handle)
 

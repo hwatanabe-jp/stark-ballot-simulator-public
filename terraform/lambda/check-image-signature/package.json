@@ -1,8 +1,0 @@
-{
-  "name": "check-image-signature",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@aws-sdk/client-ecr": "^3.758.0"
-  }
-}

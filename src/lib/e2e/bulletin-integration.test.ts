@@ -1,6 +1,6 @@
 /**
  * Integration tests for SimpleBulletinBoard in API flow
- * t-wada's RED-GREEN-REFACTOR: Cycle 1 - RED phase
+ * Covers the implemented bulletin board integration flow.
  *
  * These tests verify that SimpleBulletinBoard is properly integrated
  * into the voting API flow, ensuring all votes are recorded in the

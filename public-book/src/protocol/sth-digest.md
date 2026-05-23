@@ -1,6 +1,6 @@
 # STH ダイジェスト
 
-Signed Tree Head ダイジェストを第三者と照合することで、分割ビュー攻撃をどう緩和するかを扱う章です。本実装で検証対象になるのは署名ではなく `sthDigest` 自体である点に注意してください。
+Signed Tree Head ダイジェストを第三者と照合することで、分割ビュー攻撃をどう緩和するかを扱う章です。
 
 ログ ID、ツリーサイズ、タイムスタンプ、掲示板ルートを束縛するダイジェストにより、サーバーが異なるクライアントに異なるツリー状態を提示する攻撃を検出可能にします。
 
@@ -29,6 +29,8 @@ flowchart TD
   STH --> CS[close-statement.json に記録]
   STH --> TP[第三者ソースの STH と照合]
 ```
+
+> **本実装での検証対象**: 本章で言う「STH ダイジェスト」は `sthDigest` 自体です。本実装は STH の署名検証は行いません（スコープの詳細は [合意ロジック](#合意ロジック) を参照）。
 
 ## ダイジェストフォーマット
 
@@ -118,7 +120,7 @@ sequenceDiagram
 | 掲示板ルート     | 提供されている場合は一致 |
 | ツリーサイズ     | 提供されている場合は一致 |
 
-第三者ソースの応答は `sthDigest` を中心としたスナップショット情報として扱います。応答に対する署名検証や外部アンカリング検証、および STH の自動公開機能は、本実装の必須契約には含まれません。
+第三者ソースの応答は `sthDigest` を中心としたスナップショット情報として扱います。応答署名の検証、外部アンカリング、STH の自動公開は本実装のスコープ外です。
 
 ## zkVM との連携
 
@@ -137,7 +139,7 @@ STH ダイジェストは 2 つの段階で利用されます。
 | Recorded-as-Cast    | `recorded_sth_third_party`           | 独立ソースから取得した STH ダイジェストがジャーナルの値と一致するか              |
 | Counted-as-Recorded | `counted_close_statement_consistent` | `close-statement.json` の `sthDigest` が公開入力およびジャーナルの値と整合するか |
 
-`recorded_sth_third_party` は既定では任意チェック（optional）ですが、STH ソースが設定されている場合は必須扱いへ昇格します。昇格後は、このチェックが成功以外の状態にある限り「Verified」にはなりません（`failed`・`not_run`・`pending`・`running` のほか、required チェックの欠落も同様にブロックします）。
+`recorded_sth_third_party` は既定では任意チェック（optional）ですが、STH ソースが設定されている場合は必須扱いへ昇格します。昇格後は成功以外の状態にある限り「Verified」になりません（状態区分の扱いは [チェック一覧](../verification/checks-catalog.md) を参照）。
 
 `counted_close_statement_consistent` は常に必須チェック（required）です。`close-statement.json` がジャーナルと整合しない場合、検証は失敗します。
 
@@ -161,11 +163,9 @@ STH ソースが未設定の場合、`recorded_sth_third_party` は `not_run`（
 
 ### same-origin と /api/sth の取り扱い
 
-相対パス（例: `/api/sth`）はリクエスト元のオリジンに対して解決されます。
+**same-origin 解決と認証ヘッダ転送**: 相対パス（例: `/api/sth`）はリクエスト元のオリジンに対して解決されます。`/api/sth` は same-origin の session-scoped 開発用 API で、アクセスにはセッション capability が必要です。検証ロジックはセッション認証ヘッダーを same-origin ソースにのみ転送し、cross-origin ソースへは送りません。独立第三者ソースを absolute URL で構成する場合、それらはセッション認証に依存しない公開 STH エンドポイントである必要があります。
 
-`/api/sth` は same-origin の session-scoped 開発用 API で、アクセスにはセッション capability が必要です。検証ロジックはセッション認証ヘッダーを same-origin ソースにのみ転送し、cross-origin ソースへは送りません。独立第三者ソースを absolute URL で構成する場合、それらはセッション認証に依存しない公開 STH エンドポイントであることが前提です。
-
-`/api/sth` が返す `timestamp` はジャーナル内の canonical な時刻ではなく `session.lastActivity` です。そのため、第三者合意の一致判定で実際に照合するのは、必須の `sthDigest` と、ソースが返した場合の `bulletinRoot` / `treeSize` です。
+**`/api/sth` の timestamp**: `/api/sth` が返す `timestamp` はジャーナル内の canonical な時刻ではなく `session.lastActivity` です。そのため、第三者合意の一致判定で実際に照合するのは必須の `sthDigest` と、ソースが返した場合の `bulletinRoot` / `treeSize` です。
 
 ## PoC における制約
 

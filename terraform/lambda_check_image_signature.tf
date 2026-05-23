@@ -4,7 +4,7 @@ locals {
 
 data "archive_file" "check_image_signature" {
   type        = "zip"
-  source_dir  = "${path.module}/lambda/check-image-signature"
+  source_dir  = "${path.module}/.tmp/check-image-signature"
   output_path = "${path.module}/.tmp/check-image-signature.zip"
 }
 

@@ -1,13 +1,12 @@
 /**
  * Enhanced input validation tests for zkVM v2
- * t-wada's approach: RED Phase - Writing failing tests first
+ * Verifies implemented validation rules.
  * Requirements from final_design.md §1.2 and §2.4
  */
 
 import { type ZkVMInput, type VoteWithProof, createElectionId, computeCommitment } from '../types';
 import { createTestInput, generateElectionConfigHash, generateRandomBytes32 } from '@/lib/testing/test-helpers';
 
-// Import the validator that we'll implement
 import { validateZkVMInputEnhanced } from '../input-validator';
 
 describe('Enhanced ZkVMInput Validation', () => {

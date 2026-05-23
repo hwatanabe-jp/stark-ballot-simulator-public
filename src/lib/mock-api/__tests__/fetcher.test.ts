@@ -222,7 +222,7 @@ describe('mockApiFetch', () => {
     expect(response.status).toBe(200);
   });
 
-  it('returns a canonical v12 journal for /api/verify?includeJournal=1', async () => {
+  it('returns a canonical current journal for /api/verify?includeJournal=1', async () => {
     const { sessionId, capabilityToken } = await createSession();
 
     const response = mockApiFetch('http://localhost/api/verify?includeJournal=1', {
@@ -254,7 +254,7 @@ describe('mockApiFetch', () => {
     expect(payload.data?.journal).not.toHaveProperty('missingIndices');
   });
 
-  it('returns a canonical v12 journal for /api/sessions/mock/finalize', async () => {
+  it('returns a canonical current journal for /api/sessions/mock/finalize', async () => {
     await createSession();
 
     const response = mockApiFetch('http://localhost/api/sessions/mock/finalize', {

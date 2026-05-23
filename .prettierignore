@@ -4,3 +4,6 @@ public-book/book/
 # Vendored libraries
 public-book/fzf.umd.js
 public-book/mermaid.min.js
+
+# Lean/Lake build output
+formal/.lake/

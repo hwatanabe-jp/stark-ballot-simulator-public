@@ -97,7 +97,7 @@ describe('render-local-tfvars.sh', () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('Wrote local Terraform variables');
       expect(result.stderr).toBe('');
-      expect(readFileSync(outputFile, 'utf8')).toContain('environment = "develop"');
+      expect(readFileSync(outputFile, 'utf8')).toMatch(/environment\s+= "develop"/);
     });
   });
 
@@ -130,7 +130,8 @@ describe('render-local-tfvars.sh', () => {
       expect(result.stderr).toBe('');
 
       const rendered = readFileSync(outputFile, 'utf8');
-      expect(rendered).toContain('environment = "develop"');
+      expect(rendered).toContain('aws_account_id = "111122223333"');
+      expect(rendered).toMatch(/environment\s+= "develop"/);
       expect(rendered).toContain(
         'ecs_image_uri           = "111122223333.dkr.ecr.ap-northeast-1.amazonaws.com/stark-ballot-simulator/zkvm-prover-develop@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
       );
@@ -195,6 +196,7 @@ describe('render-local-tfvars.sh', () => {
       writeFileSync(
         envFile,
         [
+          'TERRAFORM_AWS_ACCOUNT_ID=111122223333',
           'TERRAFORM_ECS_IMAGE_URI_MAIN=111122223333.dkr.ecr.ap-northeast-1.amazonaws.com/stark-ballot-simulator/zkvm-prover-main@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
           'TERRAFORM_ECR_SIGNING_PROFILE_ARN=arn:aws:signer:ap-northeast-1:111122223333:/signing-profiles/example',
           'TERRAFORM_FINALIZE_CALLBACK_LAMBDA_ARN_MAIN=arn:aws:lambda:ap-northeast-1:111122223333:function:callback-main',
@@ -211,7 +213,8 @@ describe('render-local-tfvars.sh', () => {
 
       expect(result.status).toBe(0);
       const rendered = readFileSync(outputFile, 'utf8');
-      expect(rendered).toContain('environment = "main"');
+      expect(rendered).toContain('aws_account_id = "111122223333"');
+      expect(rendered).toMatch(/environment\s+= "main"/);
       expect(rendered).toContain('"https://main.example.test"');
       expect(rendered).toContain('"https://example.test"');
     });
@@ -259,6 +262,39 @@ describe('render-local-tfvars.sh', () => {
       expect(result.stderr).toContain('TERRAFORM_ECS_IMAGE_URI_DEVELOP');
       expect(result.stderr).toContain('TERRAFORM_CODEBUILD_SOURCE_LOCATION_DEVELOP');
       expect(result.stderr).toContain('TERRAFORM_S3_CORS_ALLOWED_ORIGINS_DEVELOP');
+      expect(result.stderr).not.toContain('111122223333');
+    });
+  });
+
+  it('does not write ambient AWS profiles into local tfvars', () => {
+    withTempDir((dir) => {
+      const envFile = path.join(dir, '.env.local');
+      const outputFile = path.join(dir, 'develop.local.tfvars');
+      writeFileSync(
+        envFile,
+        [
+          'TERRAFORM_AWS_ACCOUNT_ID=111122223333',
+          'TERRAFORM_AWS_PROFILE=default',
+          'TERRAFORM_ZKVM_PROVER_DIGEST_DEVELOP=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          'TERRAFORM_ECR_SIGNING_PROFILE_NAME=stark_ballot_simulator_ecr_signing',
+          'TERRAFORM_FINALIZE_CALLBACK_FUNCTION_NAME_DEVELOP=amplify-example-de-finalizecallbackrunnerla-ABC123',
+          'TERRAFORM_CODESTAR_CONNECTION_ID=00000000-1111-2222-3333-444444444444',
+          'TERRAFORM_CODEBUILD_SOURCE_LOCATION=https://github.com/example/stark-ballot-simulator.git',
+          'TERRAFORM_S3_CORS_ALLOWED_ORIGINS_DEVELOP=https://develop.example.test',
+        ].join('\n'),
+      );
+
+      const result = spawnSync('bash', [SCRIPT_PATH, 'develop', '--env-file', envFile, '--output', outputFile], {
+        encoding: 'utf8',
+        env: terraformTfvarsTestEnv({
+          AWS_PROFILE: 'default',
+        }),
+      });
+
+      expect(result.status).toBe(0);
+      const rendered = readFileSync(outputFile, 'utf8');
+      expect(rendered).not.toContain('aws_profile');
+      expect(rendered).not.toContain('default');
       expect(result.stderr).not.toContain('111122223333');
     });
   });

@@ -48,10 +48,14 @@ const serverConsoleFiles = [
   'src/lib/verification/expected-image-id.ts',
   'src/lib/errors/errorPayload.ts',
 ];
-const typeCheckedConfigs = tseslint.configs.recommendedTypeChecked.map((config) => ({
-  ...config,
-  files: tsFiles,
-}));
+const typeCheckedConfigs = tseslint.configs.recommendedTypeChecked.map((config) => {
+  const configWithoutPlugins = { ...config };
+  delete configWithoutPlugins.plugins;
+  return {
+    ...configWithoutPlugins,
+    files: tsFiles,
+  };
+});
 
 const rulesCommon = {
   '@next/next/no-assign-module-variable': 'error',

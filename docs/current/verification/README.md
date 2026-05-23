@@ -188,6 +188,7 @@ STARK:   stark_image_id_match, stark_receipt_verify
 - `GET /api/bitmap-proof?i=&kind=included|seen` で `leafChunk` + `auditPath` を返却
 - `kind` 省略時は `included`
 - `included` は「counted された index」、`seen` は「prover に提示された index」を表す
+- bitmap は LSB-first で pack され、bit `i` は byte `i / 8` の bit position `i % 8` に対応する
 - `X-Session-ID` と `X-Session-Capability` を用いて保存済み private bitmap artifact を取得
 - 現行 PoC では、proof source がある場合に検証フローから自動取得されうる。明示同意ゲートは実装していない
 - 取得した `leafChunk` から bit の解釈はクライアント側で実施

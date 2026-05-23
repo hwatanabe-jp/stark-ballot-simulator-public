@@ -67,7 +67,7 @@
 
 #### `cast_commitment_match`
 
-投票時データ（選挙 ID、選択肢、乱数）からコミットメントを再計算し、投票レシートのコミットメント値と照合します。ドメインタグ `"stark-ballot:commit|v1.0"` を含む正準フォーマットに従います。
+投票時データから再計算した投票コミットメントが投票レシートの `commitment` 値と一致することを確認します。再計算規則（ドメインタグ・正準フォーマット）は [コミットメントスキーム](../protocol/commitment.md) を参照してください。
 
 ---
 
@@ -86,7 +86,7 @@
 
 ### 判定ロジックの詳細
 
-`recorded_inclusion_proof` と `recorded_consistency_proof` は [cast-time 証跡](../appendix/glossary.md#cast-time-証跡cast-time-ct-artifact)（`voteReceipt` と `userVote.proof`）の存在を前提とし、まず cast snapshot の一貫性（`leafIndex`、`treeSize`、`bulletinRootAtCast` が receipt と矛盾しないこと）を確認してから個別の検証に進みます。証跡が揃わない場合はどちらも `not_run` となり、全体判定は fail-closed で `missing_evidence` 側へ倒れます。
+`recorded_inclusion_proof` と `recorded_consistency_proof` は [cast-time 証跡](../appendix/glossary.md#cast-time-証跡cast-time-ct-artifact)（`voteReceipt` と `userVote.proof`）の存在を前提とし、まず cast snapshot の一貫性（`leafIndex`、`treeSize`、`bulletinRootAtCast` が receipt と矛盾しないこと）を確認してから個別の検証に進みます。証跡が揃わない場合はどちらも `not_run` となり、全体判定は [fail-closed](../appendix/glossary.md#fail-closed) で `missing_evidence` 側へ倒れます。
 
 #### `recorded_commitment_in_bulletin`
 
@@ -102,23 +102,17 @@
 
 #### `recorded_inclusion_proof`
 
-投票者のコミットメントに対する RFC 6962 包含証明（監査パス）を検証します。リーフハッシュと監査パスから cast 時点のルートを再計算し、receipt の `bulletinRootAtCast` と一致することを確認します。
+投票者のコミットメントに対する RFC 6962 包含証明（監査パス）を検証します。リーフハッシュと監査パスから cast 時点のルートを再計算し、receipt の `bulletinRootAtCast` と一致することを確認します。proof の `treeSize` が `voteReceipt.bulletinIndex + 1` と一致しない場合は `failed` です。
 
 #### `recorded_consistency_proof`
 
-投票時のツリー（oldSize, oldRoot）から最終ツリー（newSize, newRoot）への RFC 6962 整合性証明を検証します。bulletin provider から取得した old/new 両時点の root が期待値と一致することを確認し、投票時ルートが最終ツリーの追記専用プレフィックスであることを保証します。
+投票時のツリー（oldSize, oldRoot）から最終ツリー（newSize, newRoot）への RFC 6962 整合性証明を検証します。bulletin provider から取得した old/new 両時点の root が期待値と一致することを確認し、投票時ルートが最終ツリーの追記専用プレフィックスであることを保証します。`treeSize` チェックは包含証明と同条件です。
 
 #### `recorded_sth_third_party`
 
 設定された STH ソースからスナップショットを取得し、比較可能な応答同士で合意を確認します。判定は `matchingSources >= minMatches`（デフォルト: 2）に加えて、比較対象になった応答間の全会一致（consensus）が必要です。照合対象は STH ダイジェストが必須で、`bulletinRoot` / `treeSize` は各ソースが返した場合に追加で照合されます。STH ソースが未設定の場合は `not_run` になります。
 
-このチェック定義の `criticality` は `optional` ですが、サマリー判定では STH ソースが設定されている場合に実質的な必須条件として扱われます。
-
-### 派生チェックについて
-
-`recorded_commitment_in_bulletin` と `recorded_root_at_cast_consistent` は、それぞれ `recorded_inclusion_proof` と `recorded_consistency_proof` から結果を派生します。これは、包含証明の検証成功がそのまま「コミットメントの存在」の証明となり、整合性証明の検証成功がそのまま「ルートの一貫性」の証明となるためです。
-
-派生チェックの重要度が `optional` であるのは、派生元の `required` チェックが既にカバーしているためです。
+早見表では `optional` ですが、STH ソース設定時は required 相当に昇格します。詳細は [ゲーティングロジック](gating-logic.md#ステップとチェックの対応関係) を参照してください。
 
 ---
 
@@ -159,18 +153,12 @@ zkVM に渡された全投票のコミットメントが重複なく一意であ
 
 #### `counted_missing_indices_zero`
 
-fail-closed（安全側に倒す）な除外数が 0 であることを確認します。除外数の参照経路は 2 つあり、目的が異なります。
+fail-closed（安全側に倒す）な除外数が 0 であることを確認します。除外数は次の優先順で解決し、0 でなければ即座に `failed` とします。
 
-**判定本体（主経路）**: `journal` と slot-based フィールドのみを参照します。除外数は次の優先順で解決します。
-
-1. `journal` がある場合: `journal.excludedSlots` を proof-bound な除外数として使用
+1. `journal` がある場合: `journal.excludedSlots` を proof-bound な除外数として使用。`excludedSlots` / `missingSlots` / `invalidPresentedSlots` / `validVotes` が非負整数であることも先に確認する
 2. `journal` がない場合: `excludedSlots` → `missingSlots + invalidPresentedSlots` の順で探索
 
-`journal` がある場合は、`excludedSlots` / `missingSlots` / `invalidPresentedSlots` / `validVotes` が非負整数であることも先に確認します。`rejectedRecords` は説明用の補助値であり、この判定には使いません。
-
-**legacy aliases の扱い（fail-closed 補正経路）**: 旧フィールド `excludedCount` / `missingIndices` / `invalidIndices` は判定本体では使いません。これらは古い成功ペイロードを失敗側に倒すための fail-closed 補正からだけ読まれます。新しいレスポンスにはこれらのフィールドは含まれません。
-
-解決値が 0 でない場合、または journal 側の値が無効な場合は即座に検証失敗とします。
+`rejectedRecords` は説明用の補助値で、この判定には使いません。旧フィールド (`excludedCount` / `missingIndices` / `invalidIndices`) は fail-closed 補正経路でのみ参照され、本判定では使用しません。
 
 #### `counted_expected_vs_tree_size`
 
@@ -194,7 +182,7 @@ fail-closed（安全側に倒す）な除外数が 0 であることを確認し
 
 #### `counted_input_commitment_match`
 
-公開入力から再構成した入力コミットメント対象フィールドの正準ハッシュを計算し、zkVM ジャーナルに記録された入力コミットメント値と照合します。現行実装で対象となるのは `electionId`、`bulletinRoot`、`treeSize`、`totalExpected`、`votesCount` と、各投票の `index`・`commitment`・`merklePath` です。これは `public-input.json` 全体の単純なハッシュではありません。
+公開入力から再構成した入力コミットメントが、zkVM ジャーナルの値と一致することを確認します。対象フィールドの集合と正準エンコーディングは [入力コミットメント](../protocol/input-commitment.md) を参照してください（`public-input.json` 全体の単純なハッシュではない点に注意）。
 
 ---
 
@@ -211,26 +199,20 @@ STARK 証明の暗号学的正当性を検証するチェック群です。
 
 #### `stark_image_id_match`
 
-STARK status が `running` / `not_run` / `failed` の場合、このチェックもその状態を引き継ぎます。実質的な Image ID 照合に進むのは STARK status が `success` に解決された後です。
-
-照合では以下を検査します。
-
-- `imageId`（ホスト主張値）と `journal.imageId`（比較用メタデータ）が両方ある場合、互いに矛盾しないこと
-- verifier-service の report に `expected_image_id` と `receipt_image_id` が揃っている場合、`receipt_image_id` が存在し `expected_image_id` と一致すること
-- `imageId` / `journal.imageId` が存在する場合、verifier-confirmed な `receipt_image_id` ともすべて一致すること
-
-report 側の Image ID フィールドが揃わないときは、解決済みの STARK status をそのまま返します。
+STARK status が `success` に解決された後で、期待 Image ID・verifier-confirmed Image ID・ホスト主張値が相互に矛盾しないことを確認します。整合条件（report に Image ID フィールドが揃わない場合の挙動を含む）と fail-closed の取り扱いは [Image ID](../zkvm/image-id.md) を参照してください。
 
 期待 Image ID の解決順:
 
-1. `EXPECTED_IMAGE_ID` 環境変数
-2. `public/imageId-mapping.json` の current mapping
+| 優先順 | ソース                                           |
+| ------ | ------------------------------------------------ |
+| 1      | `EXPECTED_IMAGE_ID` 環境変数                     |
+| 2      | `public/imageId-mapping.json` の current mapping |
 
-variant は `EXPECTED_IMAGE_ID_VARIANT`（`default` または `x86_64`）で明示指定します（未指定時は `default`）。未知の method version や未定義 variant、mapping の読み込み失敗はエラーとして扱い、暗黙の fallback で成功扱いにはしません（fail-closed）。
+variant は `EXPECTED_IMAGE_ID_VARIANT`（`default` または `x86_64`）で明示指定します（未指定時は `default`）。
 
 #### `stark_receipt_verify`
 
-サーバー側の Rust 検証サービスが `Receipt::verify(image_id)` を実行し、Seal（STARK 証明）が暗号学的に正当であることを確認します。チェック結果としては `success` / `failed` / `not_run` / `running` が使われ、`dev_mode` は許可設定に応じて `success` または `not_run` に正規化されます。
+サーバー側の Rust 検証サービスが `Receipt::verify(image_id)` を実行し、Seal（STARK 証明）が暗号学的に正当であることを確認します。チェック結果は `success` / `failed` / `not_run` / `running` で表現され、`dev_mode` は [ゲーティングロジック](gating-logic.md#stark-検証のゲーティング) に従って正規化されます。
 
 ---
 

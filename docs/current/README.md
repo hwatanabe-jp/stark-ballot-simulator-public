@@ -7,6 +7,7 @@ the behavior in code first.
 ## Read First
 
 - `verification/README.md` - verification pipeline, hard-failure semantics, and bundle boundaries
+- `formal/README.md` - Lean model scope and generated vector outputs
 - `tests/cli.md` - CLI command matrix, reports, bundles, and real-zkVM notes
 - `runbooks/aws-hybrid.md` - AWS hybrid operational flow
 - `guides/7-terraform/README.md` - Terraform-managed infrastructure

@@ -22,7 +22,7 @@ When this guide and implementation disagree, current code wins. Check these file
 - `.github/workflows/public-cli-tests.yml` and `.github/workflows/public-core-checks.yml` for public CI usage.
 - `public/imageId-mapping.json` for the current method version and expected ImageID values.
 
-Last code audit: 2026-04-26 against the PR91 worktree.
+Last code audit: 2026-05-21 against the PR96 worktree.
 
 ## Recommended Commands
 

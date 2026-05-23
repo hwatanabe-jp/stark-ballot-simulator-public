@@ -27,16 +27,21 @@ locals {
   enable_cloudtrail         = var.environment == "main"
   shared_log_retention_days = local.environment_settings["main"].log_retention_days
 
-  proof_bundle_bucket_name = "stark-ballot-simulator-proof-bundles-${var.environment}"
-  ecs_log_group_name       = "/aws/ecs/${var.project_name}-prover-${var.environment}"
-  sfn_log_group_name       = "/aws/stepfunctions/${var.project_name}-prover-${var.environment}"
+  proof_bundle_bucket_name          = "stark-ballot-simulator-proof-bundles-${var.environment}"
+  prover_image_metadata_bucket_name = "${var.project_name}-prover-metadata-${var.environment}"
+  prover_image_metadata_prefix      = "prover-images/${var.environment}"
+  ecs_log_group_name                = "/aws/ecs/${var.project_name}-prover-${var.environment}"
+  sfn_log_group_name                = "/aws/stepfunctions/${var.project_name}-prover-${var.environment}"
+
+  required_terraform_principal_arn_pattern = "^arn:aws:sts::[0-9]{12}:assumed-role/terraform-admin/.+$"
 }
 
 locals {
-  current_environment_settings = try(local.environment_settings[var.environment], local.environment_settings["develop"])
-  proof_bundle_bucket_arn      = "arn:aws:s3:::${local.proof_bundle_bucket_name}"
-  account_id                   = data.aws_caller_identity.current.account_id
-  partition                    = data.aws_partition.current.partition
+  current_environment_settings      = try(local.environment_settings[var.environment], local.environment_settings["develop"])
+  proof_bundle_bucket_arn           = "arn:aws:s3:::${local.proof_bundle_bucket_name}"
+  prover_current_metadata_parameter = "/${var.project_name}/${var.environment}/prover/metadata/current"
+  account_id                        = data.aws_caller_identity.current.account_id
+  partition                         = data.aws_partition.current.partition
 }
 
 data "aws_caller_identity" "current" {}

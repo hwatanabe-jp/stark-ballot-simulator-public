@@ -74,8 +74,9 @@ export default function AggregatePage(): React.ReactElement {
   const [queuedAt, setQueuedAt] = useState<number | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const navigationTimeoutRef = useRef<number | null>(null);
-  const expectedSessionIdentityRef = useRef(captureSessionIdentity(getSessionData()));
-  const expectedSessionId = expectedSessionIdentityRef.current?.sessionId;
+  const [expectedSessionIdentity] = useState(() => captureSessionIdentity(getSessionData()));
+  const expectedSessionIdentityRef = useRef(expectedSessionIdentity);
+  const expectedSessionId = expectedSessionIdentity?.sessionId;
 
   const getExpectedSession = useCallback(
     () => getSessionDataForIdentity(expectedSessionIdentityRef.current),
@@ -346,16 +347,25 @@ export default function AggregatePage(): React.ReactElement {
       return;
     }
 
-    const sessionData = getExpectedSession();
-    if (!sessionData?.sessionId) {
-      setError(resolveSessionErrorMessage());
-      setPhase('failed');
-      return;
-    }
-
     const controller = new AbortController();
     let timeoutId: number | null = null;
     const isPollingStopped = (): boolean => controller.signal.aborted;
+    const sessionData = getExpectedSession();
+    if (!sessionData?.sessionId) {
+      timeoutId = window.setTimeout(() => {
+        if (isPollingStopped()) {
+          return;
+        }
+        setError(resolveSessionErrorMessage());
+        setPhase('failed');
+      }, 0);
+      return () => {
+        controller.abort();
+        if (timeoutId) {
+          window.clearTimeout(timeoutId);
+        }
+      };
+    }
 
     const poll = async () => {
       if (isPollingStopped()) return;

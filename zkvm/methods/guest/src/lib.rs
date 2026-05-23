@@ -1,4 +1,5 @@
 pub mod sth;
+pub mod tally;
 
 #[cfg(test)]
 mod compatibility_test;

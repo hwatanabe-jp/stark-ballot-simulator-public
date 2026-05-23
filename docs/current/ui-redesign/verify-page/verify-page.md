@@ -157,4 +157,4 @@
 ## 補足
 
 - 知識パネルとフッターは従来通り表示
-- 現行 journal contract は `methodVersion=12` で、`seenBitmapRoot` を含む
+- 現行 journal contract は `methodVersion=14` で、`seenBitmapRoot` を含む

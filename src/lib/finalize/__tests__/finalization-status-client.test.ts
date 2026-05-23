@@ -5,6 +5,7 @@ import {
   parseFinalizationStatusResponse,
   resolveFinalizationStatusErrorCode,
 } from '../finalization-status-client';
+import { CURRENT_METHOD_VERSION } from '@/lib/zkvm/types';
 
 const sessionId = '1f8c6e60-8dec-4a44-b19c-c226bb7de6be';
 
@@ -152,7 +153,7 @@ describe('finalization status client', () => {
       includedBitmapRoot: '0x' + '4'.repeat(64),
       excludedSlots: 0,
       inputCommitment: '0x' + '5'.repeat(64),
-      methodVersion: 12,
+      methodVersion: CURRENT_METHOD_VERSION,
     } as const;
     const responsePayload = {
       sessionId,
@@ -304,7 +305,7 @@ describe('finalization status client', () => {
       includedBitmapRoot: '0x' + '4'.repeat(64),
       excludedSlots: 0,
       inputCommitment: '0x' + '5'.repeat(64),
-      methodVersion: 12,
+      methodVersion: CURRENT_METHOD_VERSION,
     } as const;
     const responsePayload = {
       sessionId,
@@ -448,7 +449,7 @@ describe('finalization status client', () => {
       includedBitmapRoot: '0x' + '4'.repeat(64),
       excludedSlots: 0,
       inputCommitment: '0x' + '5'.repeat(64),
-      methodVersion: 12,
+      methodVersion: CURRENT_METHOD_VERSION,
     } as const;
     const responsePayload = {
       sessionId,

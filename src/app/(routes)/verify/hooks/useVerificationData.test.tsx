@@ -131,6 +131,7 @@ describe('useVerificationData', () => {
       useVerificationData({
         t: (key) => key,
         sessionIdentityRef,
+        initialSessionIdentity: sessionIdentityRef.current,
       }),
     );
 
@@ -174,6 +175,7 @@ describe('useVerificationData', () => {
       useVerificationData({
         t: (key) => key,
         sessionIdentityRef,
+        initialSessionIdentity: sessionIdentityRef.current,
       }),
     );
 
@@ -211,6 +213,7 @@ describe('useVerificationData', () => {
       useVerificationData({
         t: (key) => key,
         sessionIdentityRef,
+        initialSessionIdentity: sessionIdentityRef.current,
       }),
     );
 
@@ -266,6 +269,7 @@ describe('useVerificationData', () => {
       useVerificationData({
         t: (key) => key,
         sessionIdentityRef,
+        initialSessionIdentity: sessionIdentityRef.current,
       }),
     );
 
@@ -306,6 +310,7 @@ describe('useVerificationData', () => {
       useVerificationData({
         t: (key) => key,
         sessionIdentityRef,
+        initialSessionIdentity: sessionIdentityRef.current,
       }),
     );
 
@@ -346,6 +351,7 @@ describe('useVerificationData', () => {
       useVerificationData({
         t: (key) => key,
         sessionIdentityRef,
+        initialSessionIdentity: sessionIdentityRef.current,
       }),
     );
 
@@ -384,6 +390,7 @@ describe('useVerificationData', () => {
       useVerificationData({
         t: (key) => key,
         sessionIdentityRef,
+        initialSessionIdentity: sessionIdentityRef.current,
       }),
     );
 

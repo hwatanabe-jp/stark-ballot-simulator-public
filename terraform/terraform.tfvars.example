@@ -4,17 +4,17 @@
 # 使い方:
 #   pnpm terraform:backend
 #   pnpm terraform:tfvars:develop
-#   terraform init -backend-config="backend.local.hcl"
-#   terraform plan -var-file="develop.local.tfvars"
-#   terraform apply -var-file="develop.local.tfvars"
+#   aws-vault exec terraform-admin -- terraform -chdir=terraform init -backend-config=backend.local.hcl
+#   aws-vault exec terraform-admin -- pnpm terraform:plan:develop
+#   aws-vault exec terraform-admin -- pnpm terraform:apply:develop
 #
 # Note:
 #   Environment-specific concrete tfvars are generated as terraform/*.local.tfvars and are not tracked in the public snapshot.
 #   concrete な account ID / ARN / domain / digest は tracked ファイルに戻さないでください。
 
 # AWS 基本設定
-aws_region  = "ap-northeast-1"
-aws_profile = "terraform-admin"
+aws_region     = "ap-northeast-1"
+aws_account_id = "000000000000"
 
 # 環境設定
 environment = "develop" # または "main"

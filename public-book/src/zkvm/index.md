@@ -15,6 +15,12 @@
 - 想定読者: 集計の正当性を STARK で証明したい実装者・運用者
 - 前提: [暗号プロトコル](../protocol/index.md) の入力コミットメントと Merkle ツリーを把握していること
 
+## 本章で扱わないもの
+
+- RISC Zero SDK の API リファレンスやアップグレード手順
+- STARK / FRI の数学的構成証明（概念のみ [zkVM の基礎](foundations.md) で扱う）
+- ECS Fargate などインフラ側の構成（[AWS アーキテクチャ](../aws/index.md) を参照）
+
 ## 関連する章
 
 - [暗号プロトコル](../protocol/index.md) — ゲストプログラムが入力として受け取るプリミティブ

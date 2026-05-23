@@ -105,7 +105,7 @@ describe('mock api fixtures', () => {
     expect(countedCheck?.status).toBe('failed');
   });
 
-  it('buildVerifyResponse returns a canonical v12 journal when includeJournal is enabled', () => {
+  it('buildVerifyResponse returns a canonical current journal when includeJournal is enabled', () => {
     const payload = buildVerifyResponse(baseState, 1730000000000, { includeJournal: true });
     const parsed = VerifyResponseSchema.parse(payload);
     const data = parsed.data;

@@ -12,6 +12,12 @@
 - 想定読者: ブラウザクライアントや第三者検証ツールから API を呼び出す実装者
 - 前提: HTTP / セッションヘッダーの基本と、本書 [全体像](../overview.md) のフローを把握していること
 
+## 本章で扱わないもの
+
+- 内部運用/デバッグ向け API（`/api/debug/*`、`/api/finalize/callback`）の詳細
+- レート制限・Turnstile・capability TTL などの環境変数チューニング
+- Amplify / Hono / Lambda 側の認可・ルーティング実装
+
 ## 関連する章
 
 - [検証パイプライン](../verification/index.md) — `/api/verify` が返す検証ペイロードの内訳

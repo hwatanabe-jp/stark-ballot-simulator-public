@@ -7,8 +7,8 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { hexToBytesStrict } from '@/lib/crypto/sha256';
 
-export const CURRENT_METHOD_VERSION = 12;
-export const LEGACY_METHOD_VERSION = 11;
+export const CURRENT_METHOD_VERSION = 14;
+export const LEGACY_METHOD_VERSION = 12;
 export const INPUT_COMMITMENT_FORMAT_VERSION = 10;
 
 /**
@@ -103,14 +103,14 @@ export interface ZkVMJournal {
 
   /** Input binding */
   inputCommitment: string; // Domain-separated hash of input
-  methodVersion: number; // 12 for current journal layout
+  methodVersion: number; // 14 for current journal layout
 
   /** Optional metadata from host execution */
   imageId?: string; // Comparison-only host metadata, not canonical proof output
 }
 
 /**
- * Current zkVM journal contract (methodVersion 12).
+ * Current zkVM journal contract (methodVersion 14).
  * This narrows the generic journal shape for helpers that only target the
  * active journal layout and therefore always require seenBitmapRoot.
  */
@@ -122,7 +122,7 @@ export interface CurrentZkVMJournal extends ZkVMJournal {
 const COMMIT_DOMAIN_TAG = utf8ToBytes('stark-ballot:commit|v1.0');
 const INPUT_DOMAIN_TAG = utf8ToBytes('stark-ballot:input|v1.0');
 
-type InputCommitmentVote = {
+export type InputCommitmentVote = {
   index: number;
   commitment: string;
   merklePath: string[];
@@ -138,13 +138,24 @@ const toUuidBytes = (uuid: string): Uint8Array => {
   return hexToBytesStrict(uuid.replace(/-/g, ''));
 };
 
+const UINT16_MAX = 0xffff;
+const UINT32_MAX = 0xffffffff;
+
+const assertUnsignedIntegerInRange = (value: number, max: number, fieldName: string): void => {
+  if (!Number.isInteger(value) || value < 0 || value > max) {
+    throw new Error(`${fieldName} must be an unsigned integer <= ${max}`);
+  }
+};
+
 const uint16LE = (value: number): Uint8Array => {
+  assertUnsignedIntegerInRange(value, UINT16_MAX, 'uint16 value');
   const buffer = new ArrayBuffer(2);
   new DataView(buffer).setUint16(0, value, true);
   return new Uint8Array(buffer);
 };
 
 const uint32LE = (value: number): Uint8Array => {
+  assertUnsignedIntegerInRange(value, UINT32_MAX, 'uint32 value');
   const buffer = new ArrayBuffer(4);
   new DataView(buffer).setUint32(0, value, true);
   return new Uint8Array(buffer);
@@ -185,6 +196,12 @@ const normalizeInputCommitmentVote = (vote: InputCommitmentVote): NormalizedInpu
   merklePathBytes: vote.merklePath.map((node) => hexToBytesStrict(node)),
 });
 
+const toCanonicalInputCommitmentVote = (vote: NormalizedInputCommitmentVote): InputCommitmentVote => ({
+  index: vote.index,
+  commitment: '0x' + bytesToHex(vote.commitmentBytes),
+  merklePath: vote.merklePathBytes.map((node) => '0x' + bytesToHex(node)),
+});
+
 const compareInputCommitmentVotes = (
   left: NormalizedInputCommitmentVote,
   right: NormalizedInputCommitmentVote,
@@ -200,6 +217,88 @@ const compareInputCommitmentVotes = (
 
   return compareMerklePaths(left.merklePathBytes, right.merklePathBytes);
 };
+
+const concatByteArrays = (chunks: Uint8Array[]): Uint8Array => {
+  const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const result = new Uint8Array(length);
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return result;
+};
+
+const validateInputCommitmentPublicFields = (input: {
+  electionId: string;
+  bulletinRoot: string;
+  treeSize: number;
+  totalExpected: number;
+  votes: InputCommitmentVote[];
+}): void => {
+  const electionIdBytes = toUuidBytes(input.electionId);
+  if (electionIdBytes.length !== 16) {
+    throw new Error('electionId must encode exactly 16 bytes');
+  }
+
+  const bulletinRootBytes = hexToBytesStrict(input.bulletinRoot);
+  if (bulletinRootBytes.length !== 32) {
+    throw new Error('bulletinRoot must encode exactly 32 bytes');
+  }
+
+  assertUnsignedIntegerInRange(input.treeSize, UINT32_MAX, 'treeSize');
+  assertUnsignedIntegerInRange(input.totalExpected, UINT32_MAX, 'totalExpected');
+  assertUnsignedIntegerInRange(input.votes.length, UINT32_MAX, 'vote count');
+};
+
+export function canonicalizeInputCommitmentVotesForEncoding(votes: InputCommitmentVote[]): InputCommitmentVote[] {
+  return votes.map(normalizeInputCommitmentVote).sort(compareInputCommitmentVotes).map(toCanonicalInputCommitmentVote);
+}
+
+export function encodeInputCommitmentPreimage(input: {
+  electionId: string;
+  bulletinRoot: string;
+  treeSize: number;
+  totalExpected: number;
+  votes: InputCommitmentVote[];
+}): Uint8Array {
+  validateInputCommitmentPublicFields(input);
+
+  const sortedVotes = input.votes.map(normalizeInputCommitmentVote).sort(compareInputCommitmentVotes);
+  const chunks: Uint8Array[] = [
+    INPUT_DOMAIN_TAG,
+    uint32LE(INPUT_COMMITMENT_FORMAT_VERSION),
+    toUuidBytes(input.electionId),
+    hexToBytesStrict(input.bulletinRoot),
+    uint32LE(input.treeSize),
+    uint32LE(input.totalExpected),
+    uint32LE(sortedVotes.length),
+  ];
+
+  for (const vote of sortedVotes) {
+    assertUnsignedIntegerInRange(vote.index, UINT32_MAX, 'vote index');
+    if (vote.commitmentBytes.length !== 32) {
+      throw new Error('vote commitment must encode exactly 32 bytes');
+    }
+    assertUnsignedIntegerInRange(vote.merklePathBytes.length, UINT16_MAX, 'vote merklePath length');
+
+    chunks.push(uint32LE(vote.index));
+    chunks.push(uint16LE(32));
+    chunks.push(vote.commitmentBytes);
+    chunks.push(uint16LE(vote.merklePathBytes.length));
+
+    for (const node of vote.merklePathBytes) {
+      if (node.length !== 32) {
+        throw new Error('vote merklePath node must encode exactly 32 bytes');
+      }
+      chunks.push(node);
+    }
+  }
+
+  return concatByteArrays(chunks);
+}
 
 /**
  * Create a new election ID (UUID v4)
@@ -268,53 +367,8 @@ export function computeInputCommitmentFromPublicInput(input: {
   totalExpected: number;
   votes: InputCommitmentVote[];
 }): string {
-  // Canonical ordering sorts by index first, then breaks duplicate-index ties
-  // by commitment bytes and Merkle path bytes to stay deterministic across
-  // TypeScript and Rust.
-  const sortedVotes = input.votes.map(normalizeInputCommitmentVote).sort(compareInputCommitmentVotes);
-
   const hash = sha256.create();
-
-  // Domain tag
-  hash.update(INPUT_DOMAIN_TAG);
-
-  // The input commitment format stays at v1.0 because the input encoding has
-  // not changed, even though the journal/method version advanced.
-  hash.update(uint32LE(INPUT_COMMITMENT_FORMAT_VERSION));
-
-  // ElectionId (16 bytes)
-  hash.update(toUuidBytes(input.electionId));
-
-  // BulletinRoot (32 bytes)
-  hash.update(hexToBytesStrict(input.bulletinRoot));
-
-  // TreeSize, TotalExpected (little endian)
-  hash.update(uint32LE(input.treeSize));
-  hash.update(uint32LE(input.totalExpected));
-
-  // VotesCount (little endian)
-  hash.update(uint32LE(sortedVotes.length));
-
-  // Encode each vote (sorted)
-  for (const vote of sortedVotes) {
-    // Index (little endian)
-    hash.update(uint32LE(vote.index));
-
-    // CommitmentLen (32 fixed, little endian)
-    hash.update(uint16LE(32));
-
-    // Commitment (32 bytes)
-    hash.update(vote.commitmentBytes);
-
-    // PathLen (little endian)
-    hash.update(uint16LE(vote.merklePathBytes.length));
-
-    // Path nodes
-    for (const node of vote.merklePathBytes) {
-      hash.update(node);
-    }
-  }
-
+  hash.update(encodeInputCommitmentPreimage(input));
   return '0x' + bytesToHex(hash.digest());
 }
 

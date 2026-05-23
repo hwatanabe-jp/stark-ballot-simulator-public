@@ -86,7 +86,7 @@ function resolveVerifierWorkDir(): string {
     return path.resolve(envDir);
   }
 
-  return path.resolve('.verifier-bundles');
+  return path.join(/* turbopackIgnore: true */ process.cwd(), '.verifier-bundles');
 }
 
 function resolveBundlePath(baseDir: string, sessionId: string, executionId: string): string {

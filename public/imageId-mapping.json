@@ -1,5 +1,50 @@
 {
   "mappings": {
+    "14": {
+      "methodVersion": 14,
+      "expectedImageID": "0x08aa256ee9120045bbdbe2152723ff657cf1cd7329cba46715954d183caa84de",
+      "expectedImageID_x86_64": "0x9d8597046043ce510ac3f61415891fcad3577bda98afd46d43e450c9c6e996c6",
+      "description": "v1.4 Phase 4 formal correspondence hardening - ARM64 AWS deployment confirmed, x86_64 local build differs",
+      "compiledAt": "2026-05-23T02:55:41Z",
+      "rustVersion": "1.91.1",
+      "risc0Version": "3.0.5",
+      "guestToolchain": "r0.1.91.1",
+      "features": [
+        "STH digest binding",
+        "CT leaf usage tags",
+        "Input commitment sorting",
+        "Slot/record count split",
+        "Rejected record accounting",
+        "Seen bitmap root explainability",
+        "Domain-separated commitments",
+        "RFC 6962 inclusion proofs",
+        "Bitmap-based individual verification",
+        "Phase 4 guest model vector correspondence",
+        "Checked guest tally counters",
+        "Formal guest bounds validation"
+      ]
+    },
+    "13": {
+      "methodVersion": 13,
+      "expectedImageID": "0xa7bd99bf5aca572770b0c8670c029ace2352a04f2ddb477d9bc59800601cf537",
+      "expectedImageID_x86_64": "0x64e47f6ce9267f75e8b6681a01496edb01a84d582377f43e638f2d1cd8053bc3",
+      "description": "v1.3 shared methodVersion constant cleanup - ARM64 AWS deployment confirmed, x86_64 local build differs",
+      "compiledAt": "2026-05-12T08:52:59Z",
+      "rustVersion": "1.91.1",
+      "risc0Version": "3.0.5",
+      "guestToolchain": "r0.1.91.1",
+      "features": [
+        "STH digest binding",
+        "CT leaf usage tags",
+        "Input commitment sorting",
+        "Slot/record count split",
+        "Rejected record accounting",
+        "Seen bitmap root explainability",
+        "Domain-separated commitments",
+        "RFC 6962 inclusion proofs",
+        "Bitmap-based individual verification"
+      ]
+    },
     "12": {
       "methodVersion": 12,
       "expectedImageID": "0xfa42cd07e70484a943d40f530b9b001392f215a0404398d63c710cef9b30f4b4",
@@ -96,10 +141,10 @@
       ]
     }
   },
-  "current": "12",
-  "deprecated": ["8", "9", "10", "11"],
+  "current": "14",
+  "deprecated": ["8", "9", "10", "11", "12", "13"],
   "metadata": {
-    "lastUpdated": "2026-03-29T04:11:18Z",
+    "lastUpdated": "2026-05-23T02:55:41Z",
     "format": "v1.0",
     "purpose": "ImageID to methodVersion mapping for STARK Ballot Simulator",
     "notes": "This file must be secured with GPG signatures and served from multiple sources (CDN, IPFS, Git) for security."

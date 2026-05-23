@@ -95,7 +95,7 @@ flowchart TD
 
 ### ホストバイナリの役割
 
-ホストバイナリは Rust で記述された CLI プログラムです。以下の処理を行います:
+ホストバイナリは Rust で記述された CLI プログラムです。証明モードでは以下の処理を行います:
 
 1. JSON 形式の入力ファイルを読み込み
 2. JSON のバイト配列表現を Rust の固定長配列型へ変換（`Vec<u8>` → `[u8; 16/32]`）
@@ -106,11 +106,15 @@ flowchart TD
 
 入力 JSON は TypeScript 側のエグゼキューターが事前に正規化して生成します（UUID/ハッシュ文字列をバイト配列へ変換）。
 
+ImageID の確認だけを行う場合は `host --print-image-id [--json]` を使います。このモードでは入力ファイルを読まず、証明生成やアーティファクト出力も行いません。`--json` 付きでは `imageId` と `methodVersion` を含む JSON を stdout に出力します。
+
+境界に違反する入力が渡された場合、host run は fail-closed で停止し、receipt / journal を出力しません。境界条件の詳細は [処理パイプライン](guest-program.md#処理パイプライン) を参照してください。
+
 非同期モードで S3 に置かれる work input には、host CLI の証明入力に加えて `contractGeneration` と `election_config` も含まれます（コンテナ entrypoint 側で `public-input.json` / `election-manifest.json` を生成・検査するために使う）。
 
 ### 出力ファイル
 
-ホストバイナリは常に 2 つの JSON ファイルを出力し、条件を満たした場合は private bitmap artifact も追加で出力します。
+証明モードのホストバイナリは 2 つの JSON ファイルを出力し、ビットマップ整合性検査を通過した場合は private bitmap artifact も追加で出力します。
 
 | ファイル              | 内容                                                           |
 | --------------------- | -------------------------------------------------------------- |
@@ -192,32 +196,15 @@ sequenceDiagram
   CB->>CB: セッションデータ更新
 ```
 
-### 非同期モードの処理フロー
+### イメージ署名チェック
 
-1. **入力の準備**: ディスパッチ Lambda が入力 JSON を S3 にアップロードし、Step Functions 実行を開始
-2. **イメージ署名チェック**: プローバーコンテナイメージの署名を検証し、承認されたイメージのみ実行を許可
-3. **プローバータスク**: ECS Fargate タスクが起動し、S3 から入力をダウンロードしてホストバイナリを実行
-4. **出力バンドル**: レシート、ジャーナル、`public-input.json`、`election-manifest.json`、`close-statement.json` を生成し、整合性検査を通過したものだけを `bundle.zip` にまとめて S3 にアップロード
-5. **コールバック**: 成功/失敗に応じてコールバック Lambda がセッションデータを更新
+Step Functions はプローバータスク起動前にコンテナイメージの署名を検証し、承認されたイメージ以外の実行を拒否します。署名と digest pin の運用は [イメージ署名](../aws/image-signing.md) を参照してください。
 
 ### 配布対象アーカイブの構築
 
-非同期モードでは、ホストバイナリの出力から秘密データを含まない配布対象アーカイブ `bundle.zip` を構築します。
+非同期モードでは、ホストバイナリの出力のうち秘密データを含まないファイルだけを `bundle.zip` に同梱し、`input.json` などの秘密入力は含めません。同梱対象の一覧、整合性検査ルール、取得経路は [バンドル構造](../verification/bundle-structure.md) を参照してください。`public-input.json` の項目と `inputCommitment` の関係は [入力コミットメント](../protocol/input-commitment.md)。
 
-ここでいう「配布対象」は機密性の分類です。用語の意味と取得経路は [バンドル構造](../verification/bundle-structure.md) を参照してください。
-
-| ファイル               | 内容                                         | 配布対象 |
-| ---------------------- | -------------------------------------------- | -------- |
-| receipt.json           | STARK レシートのラッパー JSON                | Yes      |
-| journal.json           | ジャーナルの正準 JSON 表現                   | Yes      |
-| public-input.json      | 秘密データを含まない検証用レコード           | Yes      |
-| election-manifest.json | 選挙設定の公開監査用スナップショット         | Yes      |
-| close-statement.json   | 集計締切時点のログ境界を表す公開監査レコード | Yes      |
-
-秘密データを含む完全入力は非同期実行時のワーク入力として S3 や一時領域に存在し得ますが、`bundle.zip` には含まれません。
-`public-input.json`、`election-manifest.json`、`close-statement.json` は、`journal.json` と proof-bound data に対する整合性検査を通過した場合にのみバンドルに含まれます。
-
-`public-input.json` の項目と `inputCommitment` の関係は [入力コミットメント](../protocol/input-commitment.md)、配布経路は [バンドル構造](../verification/bundle-structure.md) を参照してください。
+async Docker entrypoint は methodVersion 14 の host output を受け付け、`journal.json` / `public-input.json` / `election-manifest.json` / `close-statement.json` を生成する際に methodVersion と `inputCommitment` の整合性を検査します。methodVersion 14 契約と一致しない host artifact は fail-closed で停止します。
 
 ### 非同期モードの特性
 
@@ -241,21 +228,12 @@ sequenceDiagram
 
 開発モードのレシートは内部的には `InnerReceipt::Fake` 型で、[検証サービス](verifier-service.md) では通常 `dev_mode` 扱い（`image_id` 不一致などの事前条件違反時のみ `Failed`）になります。**`dev_mode` は診断ステータスであり、本番モードの成功検証としては採用されません。**
 
-```mermaid
-flowchart TD
-  ENV{RISC0_DEV_MODE?}
-  ENV -->|"= 1"| DEV["開発モード<br/>フェイクレシート生成<br/>約 100ms"]
-  ENV -->|未設定| PROD["本番モード<br/>STARK 証明生成<br/>約 370 秒"]
-  DEV --> FAKE["InnerReceipt::Fake"]
-  PROD --> REAL["InnerReceipt::Composite<br/>+ seal データ"]
-```
-
 開発モードは以下の用途に限定されます:
 
 - host CLI や verifier 連携を含むローカルの高速フィードバック
 - TypeScript と Rust の契約を短時間で確認する smoke test
 - dev-mode receipt 分岐を明示的に通す CLI / E2E 検証
 
-UI 開発などで使う `USE_MOCK_ZKVM=true` は、TypeScript の mock executor を選ぶ別経路です。この経路はホストバイナリを起動せず、RISC Zero の `InnerReceipt::Fake` を生成するわけではありません。
+UI 開発などで使う `USE_MOCK_ZKVM=true` は、TypeScript の mock executor を選ぶ別経路です。この経路はホストバイナリも RISC Zero SDK も呼ばず、TypeScript 内で完結します。
 
 <!-- source: src/lib/zkvm/input-builder.ts, src/lib/zkvm/executor.ts, zkvm/host/src/main.rs, docker/entrypoint.sh -->

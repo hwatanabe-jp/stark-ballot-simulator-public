@@ -56,7 +56,7 @@
       "includedBitmapRoot": "0x2222222222222222222222222222222222222222222222222222222222222222",
       "excludedSlots": 0,
       "inputCommitment": "0x3333333333333333333333333333333333333333333333333333333333333333",
-      "methodVersion": 12
+      "methodVersion": 14
     },
     "electionManifest": {
       "electionId": "550e8400-e29b-41d4-a716-446655440000",

@@ -2,9 +2,9 @@
 
 This repository is a generated public portfolio snapshot of STARK Ballot Simulator.
 
-- Source commit: `14188df7b185a26a58b9ee09c816280cd86fcbdb`
-- Generated at: `2026-04-26T14:49:58.970Z`
-- Copied source files: `860`
+- Source commit: `7c2fbcc02b364a5256f5a7613e651e5cdc2a09dc`
+- Generated at: `2026-05-23T03:41:22.731Z`
+- Copied source files: `905`
 
 The private repository remains the source of truth. Public-repository changes
 should normally be made in the private repository and released again as a new
@@ -28,8 +28,8 @@ The private source repository intentionally keeps broader working notes than the
 public portfolio snapshot needs. This export preserves that signal while
 publishing only the documentation that is safe and useful for readers.
 
-- Private source docs tracked: `119`
-- Public source docs copied: `53`
+- Private source docs tracked: `128`
+- Public source docs copied: `62`
 - Generated public docs: `1`
 - Source docs stripped: `66`
 
@@ -67,3 +67,8 @@ The public repository runs showcase-safe checks only. The generated workflow
 files keep the CI categories visible while removing private operations. They do
 not assume AWS credentials, publish container packages, mutate Terraform-managed
 infrastructure, or create another public-repository snapshot.
+
+The generated weekly monitor is a public-safe showcase issue poster. It
+summarizes public CI health and public-safety scan results without accessing
+AWS credentials, Terraform state, private artifacts, private monitoring
+queries, or credentialed runbooks.

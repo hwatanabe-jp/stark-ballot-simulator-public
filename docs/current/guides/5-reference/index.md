@@ -10,7 +10,7 @@ This section contains technical reference documentation and detailed analysis of
 **Contents**:
 
 - Receipt structure (Composite vs Fake) and verification contract
-- Journal layout (current methodVersion=12, fixed 272-byte layout)
+- Journal layout (current methodVersion=14, fixed 272-byte layout)
 - Proof size/time characteristics (environment dependent)
 - Scalability notes and operational considerations
 
@@ -64,7 +64,7 @@ This section contains technical reference documentation and detailed analysis of
 
 - **Performance planning**: Use proof size/time ranges, not fixed numbers
 - **Security review**: Understand what is revealed by the journal
-- **Integration**: Align API consumers with the current journal layout (methodVersion=12, `seenBitmapRoot` required)
+- **Integration**: Align API consumers with the current journal layout (methodVersion=14, `seenBitmapRoot` required)
 - **Verification UX**: Separate UI/claimed results from zkVM-verified outputs
 
 ## Related Sections

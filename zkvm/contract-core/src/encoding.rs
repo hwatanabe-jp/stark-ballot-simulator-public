@@ -14,6 +14,26 @@ pub fn compute_input_commitment_v4(
     total_expected: u32,
     votes: &[VoteWithProof],
 ) -> [u8; 32] {
+    let data = encode_input_commitment_preimage(
+        election_id,
+        bulletin_root,
+        tree_size,
+        total_expected,
+        votes,
+    );
+    let digest = Impl::hash_bytes(&data);
+    let mut result = [0u8; 32];
+    result.copy_from_slice(digest.as_bytes());
+    result
+}
+
+fn encode_input_commitment_preimage(
+    election_id: &[u8; 16],
+    bulletin_root: &[u8; 32],
+    tree_size: u32,
+    total_expected: u32,
+    votes: &[VoteWithProof],
+) -> Vec<u8> {
     let mut data = Vec::with_capacity(encoded_prefix_len() + encoded_votes_len(votes));
 
     data.extend_from_slice(INPUT_DOMAIN_TAG);
@@ -22,7 +42,7 @@ pub fn compute_input_commitment_v4(
     data.extend_from_slice(bulletin_root);
     data.extend_from_slice(&tree_size.to_le_bytes());
     data.extend_from_slice(&total_expected.to_le_bytes());
-    data.extend_from_slice(&(votes.len() as u32).to_le_bytes());
+    data.extend_from_slice(&checked_vote_count(votes.len()).to_le_bytes());
 
     let mut sorted_indices: Vec<usize> = (0..votes.len()).collect();
     sorted_indices.sort_by(|&a, &b| compare_votes(&votes[a], &votes[b]));
@@ -32,21 +52,26 @@ pub fn compute_input_commitment_v4(
         encode_vote(&mut data, vote);
     }
 
-    let digest = Impl::hash_bytes(&data);
-    let mut result = [0u8; 32];
-    result.copy_from_slice(digest.as_bytes());
-    result
+    data
 }
 
 fn encode_vote(data: &mut Vec<u8>, vote: &VoteWithProof) {
     data.extend_from_slice(&vote.index.to_le_bytes());
     data.extend_from_slice(&32u16.to_le_bytes());
     data.extend_from_slice(&vote.commitment);
-    data.extend_from_slice(&(vote.merkle_path.len() as u16).to_le_bytes());
+    data.extend_from_slice(&checked_merkle_path_len(vote.merkle_path.len()).to_le_bytes());
 
     for node in &vote.merkle_path {
         data.extend_from_slice(node);
     }
+}
+
+fn checked_vote_count(len: usize) -> u32 {
+    u32::try_from(len).expect("input commitment vote count exceeds u32 encoding")
+}
+
+fn checked_merkle_path_len(len: usize) -> u16 {
+    u16::try_from(len).expect("input commitment merkle path length exceeds u16 encoding")
 }
 
 #[cfg(test)]
@@ -95,7 +120,11 @@ fn encoded_votes_len(votes: &[VoteWithProof]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::String;
     use alloc::vec;
+    use alloc::vec::Vec;
+    use serde::Deserialize;
+    use sha2::{Digest, Sha256};
 
     fn create_test_vote(index: u32, choice: u8) -> VoteWithProof {
         VoteWithProof {
@@ -196,5 +225,121 @@ mod tests {
 
         let unsorted_votes = vec![duplicate_index_second, duplicate_index_first];
         assert!(!is_sorted_by_canonical_ordering(&unsorted_votes));
+    }
+
+    #[test]
+    #[should_panic(expected = "input commitment merkle path length exceeds u16 encoding")]
+    fn test_input_commitment_rejects_u16_path_length_overflow() {
+        checked_merkle_path_len(usize::from(u16::MAX) + 1);
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    #[should_panic(expected = "input commitment vote count exceeds u32 encoding")]
+    fn test_input_commitment_rejects_u32_vote_count_overflow() {
+        checked_vote_count(u32::MAX as usize + 1);
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FormalInputCommitmentCase {
+        election_id: String,
+        bulletin_root: String,
+        tree_size: u32,
+        total_expected: u32,
+        votes: Vec<FormalVote>,
+        expected_canonical_order: Vec<String>,
+        expected_encoded_bytes_hex: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FormalVote {
+        id: String,
+        index: u32,
+        commitment: String,
+        merkle_path: Vec<String>,
+    }
+
+    fn parse_hex<const N: usize>(value: &str) -> [u8; N] {
+        let normalized = value.strip_prefix("0x").unwrap_or(value);
+        let bytes = hex::decode(normalized).expect("formal vector hex should decode");
+        bytes
+            .try_into()
+            .unwrap_or_else(|_| panic!("formal vector hex should be {N} bytes"))
+    }
+
+    fn parse_uuid_bytes(value: &str) -> [u8; 16] {
+        parse_hex(&value.replace('-', ""))
+    }
+
+    fn parse_vote(value: &FormalVote) -> VoteWithProof {
+        VoteWithProof {
+            commitment: parse_hex(&value.commitment),
+            choice: 0,
+            random: [0u8; 32],
+            index: value.index,
+            merkle_path: value
+                .merkle_path
+                .iter()
+                .map(|node| parse_hex(node))
+                .collect(),
+        }
+    }
+
+    fn vote_key(vote: &VoteWithProof) -> (u32, [u8; 32], Vec<[u8; 32]>) {
+        (vote.index, vote.commitment, vote.merkle_path.clone())
+    }
+
+    #[test]
+    fn test_formal_input_commitment_vectors() {
+        let cases: Vec<FormalInputCommitmentCase> = serde_json::from_str(include_str!(
+            "../../../docs/current/formal/generated-vectors/input-commitment-cases.json"
+        ))
+        .expect("formal input commitment vectors should parse");
+
+        for case in cases {
+            let election_id = parse_uuid_bytes(&case.election_id);
+            let bulletin_root = parse_hex(&case.bulletin_root);
+            let votes: Vec<VoteWithProof> = case.votes.iter().map(parse_vote).collect();
+            let expected_encoded_bytes = hex::decode(&case.expected_encoded_bytes_hex)
+                .expect("expected preimage hex should decode");
+
+            let mut sorted_votes = votes.clone();
+            sorted_votes.sort_by(compare_votes);
+            let canonical_ids: Vec<String> = sorted_votes
+                .iter()
+                .map(|sorted_vote| {
+                    case.votes
+                        .iter()
+                        .find(|formal_vote| {
+                            vote_key(&parse_vote(formal_vote)) == vote_key(sorted_vote)
+                        })
+                        .expect("sorted vote should have formal id")
+                        .id
+                        .clone()
+                })
+                .collect();
+
+            let encoded = encode_input_commitment_preimage(
+                &election_id,
+                &bulletin_root,
+                case.tree_size,
+                case.total_expected,
+                &votes,
+            );
+            let commitment = compute_input_commitment_v4(
+                &election_id,
+                &bulletin_root,
+                case.tree_size,
+                case.total_expected,
+                &votes,
+            );
+            let expected_digest: [u8; 32] = Sha256::digest(&expected_encoded_bytes).into();
+
+            assert_eq!(canonical_ids, case.expected_canonical_order);
+            assert_eq!(encoded, expected_encoded_bytes);
+            assert_eq!(commitment, expected_digest);
+        }
     }
 }

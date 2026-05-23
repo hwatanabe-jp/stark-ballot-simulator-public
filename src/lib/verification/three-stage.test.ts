@@ -158,6 +158,15 @@ describe('E2E Three-Stage Verification', () => {
       expect(result.error).toContain('not found in bulletin');
     });
 
+    it('should fail if commitment is present at a different bulletin index', async () => {
+      receipt.bulletinIndex = 1;
+
+      const result = await verifyRecordedAsCast(receipt, bulletin);
+
+      expect(result.passed).toBe(false);
+      expect(result.error).toContain('does not match receipt commitment');
+    });
+
     it('should detect bulletin root mismatch', async () => {
       bulletin.bulletinRoot = '0x' + 'z'.repeat(64); // Different root
       const result = await verifyRecordedAsCast(receipt, bulletin);
@@ -267,13 +276,34 @@ describe('E2E Three-Stage Verification', () => {
       expect(result.details?.severity).toBe('critical');
     });
 
-    it('should warn about totalExpected vs treeSize mismatch', async () => {
+    it('should fail when totalExpected differs from treeSize', async () => {
       zkResult.totalExpected = 100;
       zkResult.treeSize = 90; // 10 fewer than expected
 
       const result = await verifyCountedAsRecorded(zkResult);
-      expect(result.passed).toBe(true); // Not a failure, just a warning
-      expect(result.details?.warnings).toContainEqual(expect.stringContaining('Expected 100 votes but tree has 90'));
+      expect(result.passed).toBe(false);
+      expect(result.error).toContain('Expected 100 votes but tree has 90');
+      expect(result.details?.severity).toBe('critical');
+    });
+
+    it('should fail when totalExpected is missing', async () => {
+      zkResult.totalExpected = undefined as unknown as number;
+
+      const result = await verifyCountedAsRecorded(zkResult);
+
+      expect(result.passed).toBe(false);
+      expect(result.error).toContain('totalExpected');
+      expect(result.details?.severity).toBe('critical');
+    });
+
+    it('should fail when treeSize is invalid', async () => {
+      zkResult.treeSize = -1;
+
+      const result = await verifyCountedAsRecorded(zkResult);
+
+      expect(result.passed).toBe(false);
+      expect(result.error).toContain('treeSize');
+      expect(result.details?.severity).toBe('critical');
     });
 
     it('should fail when invalidPresentedSlots > 0 and update details', async () => {

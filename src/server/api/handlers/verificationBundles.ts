@@ -12,7 +12,7 @@ import {
 } from '@/server/api/utils/currentArtifactAdmission';
 
 function getBundleBaseDir(): string {
-  return process.env.VERIFIER_WORK_DIR ?? path.join(process.cwd(), '.verifier-bundles');
+  return process.env.VERIFIER_WORK_DIR ?? path.join(/* turbopackIgnore: true */ process.cwd(), '.verifier-bundles');
 }
 
 function isSafeSegment(value: string): boolean {

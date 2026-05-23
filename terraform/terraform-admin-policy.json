@@ -56,9 +56,23 @@
       "Resource": [
         "arn:aws:s3:::stark-ballot-simulator-proof-bundles-*",
         "arn:aws:s3:::stark-ballot-simulator-proof-bundles-*/*",
+        "arn:aws:s3:::stark-ballot-simulator-prover-metadata-*",
+        "arn:aws:s3:::stark-ballot-simulator-prover-metadata-*/*",
         "arn:aws:s3:::stark-ballot-simulator-cloudtrail-*",
         "arn:aws:s3:::stark-ballot-simulator-cloudtrail-*/*"
       ]
+    },
+    {
+      "Sid": "InfraServicesSSM",
+      "Effect": "Allow",
+      "Action": ["ssm:*"],
+      "Resource": "arn:aws:ssm:ap-northeast-1:<AWS_ACCOUNT_ID>:parameter/stark-ballot-simulator/*/prover/metadata/*"
+    },
+    {
+      "Sid": "InfraServicesSSMDescribe",
+      "Effect": "Allow",
+      "Action": ["ssm:DescribeParameters"],
+      "Resource": "*"
     },
     {
       "Sid": "InfraServicesCodeBuild",

@@ -112,7 +112,16 @@ export function evaluateRecordedStageStrict(
   sessionId?: string,
 ): StageResult {
   try {
-    if (!bulletin.commitments.includes(receipt.commitment)) {
+    const normalizedReceiptCommitment = normalizeHexString(receipt.commitment);
+    if (!normalizedReceiptCommitment) {
+      return {
+        status: 'failed',
+        error: 'Receipt commitment is malformed.',
+      };
+    }
+
+    const normalizedCommitments = bulletin.commitments.map((commitment) => normalizeHexString(commitment));
+    if (!normalizedCommitments.includes(normalizedReceiptCommitment)) {
       return {
         status: 'failed',
         error: 'Vote commitment not found in bulletin',
@@ -141,10 +150,23 @@ export function evaluateRecordedStageStrict(
       }
     }
 
-    if (receipt.bulletinIndex >= bulletin.commitments.length) {
+    if (
+      !Number.isInteger(receipt.bulletinIndex) ||
+      receipt.bulletinIndex < 0 ||
+      receipt.bulletinIndex >= bulletin.commitments.length
+    ) {
       return {
         status: 'failed',
         error: 'Invalid bulletin index',
+      };
+    }
+
+    const indexedCommitment = bulletin.commitments[receipt.bulletinIndex];
+    const normalizedIndexedCommitment = normalizeHexString(indexedCommitment);
+    if (normalizedIndexedCommitment !== normalizedReceiptCommitment) {
+      return {
+        status: 'failed',
+        error: 'Bulletin commitment at receipt index does not match receipt commitment',
       };
     }
 
@@ -193,6 +215,12 @@ export function evaluateCountedStageStrict(zkResult: ZkVMJournal & { inputBullet
     }
     if (!isValidCount(invalidPresentedSlots)) {
       invalidFields.push('invalidPresentedSlots');
+    }
+    if (!isValidCount(zkResult.totalExpected)) {
+      invalidFields.push('totalExpected');
+    }
+    if (!isValidCount(zkResult.treeSize)) {
+      invalidFields.push('treeSize');
     }
     if (!isValidCount(zkResult.validVotes)) {
       invalidFields.push('validVotes');
@@ -268,17 +296,23 @@ export function evaluateCountedStageStrict(zkResult: ZkVMJournal & { inputBullet
       rejectedRecords,
     };
 
-    const warnings: string[] = [];
-
     if (zkResult.totalExpected !== zkResult.treeSize) {
       const diff = zkResult.totalExpected - zkResult.treeSize;
-      warnings.push(
-        `Expected ${zkResult.totalExpected} votes but tree has ${zkResult.treeSize}. ` +
+      return {
+        status: 'failed',
+        error:
+          `Expected ${zkResult.totalExpected} votes but tree has ${zkResult.treeSize}. ` +
           `${Math.abs(diff)} votes ${diff > 0 ? 'may be missing' : 'were extra'}.`,
-      );
-      details.totalExpected = zkResult.totalExpected;
-      details.treeSize = zkResult.treeSize;
+        details: {
+          ...details,
+          totalExpected: zkResult.totalExpected,
+          treeSize: zkResult.treeSize,
+          severity: 'critical',
+        },
+      };
     }
+
+    const warnings: string[] = [];
 
     if (rejectedRecords > 0) {
       warnings.push(`${rejectedRecords} presented records failed verification.`);

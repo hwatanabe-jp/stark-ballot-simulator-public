@@ -12,10 +12,14 @@ variable "aws_region" {
   }
 }
 
-variable "aws_profile" {
-  description = "AWS CLI profile to use for authentication (aws-vault / shared config)"
+variable "aws_account_id" {
+  description = "Expected AWS account ID. The AWS provider refuses to run against any other account."
   type        = string
-  default     = "terraform-admin"
+
+  validation {
+    condition     = can(regex("^[0-9]{12}$", var.aws_account_id))
+    error_message = "aws_account_id must be a 12-digit AWS account ID."
+  }
 }
 
 variable "environment" {

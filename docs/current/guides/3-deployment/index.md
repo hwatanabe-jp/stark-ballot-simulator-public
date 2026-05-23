@@ -96,8 +96,8 @@ Amplify Data (status)
 
 - Development completed per [Development Guides](../2-development/).
 - Local tests passing (Vitest/CLI/playwright).
-- AWS CLI v2 configured (SSO or access keys; e.g., `aws sso login`).
-- pnpm 10+, Node.js 20+, Docker with buildx (ARM64 capable).
+- AWS CLI v2 configured with `aws login`; plain AWS CLI commands should use the default authenticated context without `--profile`.
+- pnpm 11.x through Corepack, Node.js 24, Docker with buildx (ARM64 capable).
 - Access to required AWS resources (Amplify, S3, Step Functions, ECS, Service Quotas).
 
 ---

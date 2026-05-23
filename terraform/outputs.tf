@@ -28,6 +28,16 @@ output "risc0_toolchain_repository_url" {
   value       = aws_ecr_repository.risc0_toolchain.repository_url
 }
 
+output "prover_image_metadata_bucket_name" {
+  description = "S3 bucket where CodeBuild stores prover image metadata candidates"
+  value       = aws_s3_bucket.prover_image_metadata.bucket
+}
+
+output "prover_current_image_metadata_parameter_name" {
+  description = "SSM parameter name for the current prover image metadata candidate JSON"
+  value       = aws_ssm_parameter.prover_current_image_metadata.name
+}
+
 output "prover_state_machine_arn" {
   description = "Step Functions state machine ARN (PROVER_STATE_MACHINE_ARN)"
   value       = aws_sfn_state_machine.prover_dispatcher.arn

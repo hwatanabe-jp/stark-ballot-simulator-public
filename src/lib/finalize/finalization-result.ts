@@ -79,7 +79,7 @@ function resolveVerifierWorkDirForBundleAuthority(): string {
 
   // Keep the default local bundle location without routing it through
   // realpathSync, which causes Turbopack to glob the whole directory at build time.
-  return path.join(process.cwd(), '.verifier-bundles');
+  return path.join(/* turbopackIgnore: true */ process.cwd(), '.verifier-bundles');
 }
 
 function resolveScopedVerifierBundlePath(sessionId: string, executionId: string): string {

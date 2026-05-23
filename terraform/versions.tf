@@ -10,8 +10,8 @@ terraform {
 }
 
 provider "aws" {
-  region = var.aws_region
-  # profile = var.aws_profile  # aws-vault 経由で実行するため不要
+  region              = var.aws_region
+  allowed_account_ids = [var.aws_account_id]
 
   default_tags {
     tags = {
@@ -23,9 +23,9 @@ provider "aws" {
 }
 
 provider "aws" {
-  alias  = "shared"
-  region = var.aws_region
-  # profile = var.aws_profile  # aws-vault 経由で実行するため不要
+  alias               = "shared"
+  region              = var.aws_region
+  allowed_account_ids = [var.aws_account_id]
 
   default_tags {
     tags = {

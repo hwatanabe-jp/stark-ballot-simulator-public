@@ -24,6 +24,57 @@ describe('deriveVerificationSummary', () => {
     expect(deriveVerificationSummary([])).toBeNull();
   });
 
+  it('returns null when only unknown checks are provided', () => {
+    const checks: VerificationCheck[] = [
+      {
+        id: 'future_check' as VerificationCheckId,
+        status: 'success',
+        evidence: 'demo',
+        inputs: [],
+      },
+    ];
+
+    expect(deriveVerificationSummary(checks)).toBeNull();
+  });
+
+  it('returns non-null warning when optional known and unknown checks are mixed', () => {
+    const definition = VERIFICATION_CHECK_DEFINITIONS.find((candidate) => candidate.id === 'recorded_sth_third_party');
+    expect(definition).toBeDefined();
+
+    const checks: VerificationCheck[] = [
+      {
+        id: 'recorded_sth_third_party',
+        status: 'success',
+        evidence: definition?.evidence ?? 'public',
+        inputs: definition?.inputs ?? [],
+      },
+      {
+        id: 'future_check' as VerificationCheckId,
+        status: 'success',
+        evidence: 'demo',
+        inputs: [],
+      },
+    ];
+
+    expect(deriveVerificationSummary(checks)).toEqual({ status: 'missing_evidence', tone: 'warning' });
+  });
+
+  it('returns non-null warning when known checks include no required known checks', () => {
+    const definition = VERIFICATION_CHECK_DEFINITIONS.find((candidate) => candidate.id === 'recorded_sth_third_party');
+    expect(definition).toBeDefined();
+
+    const checks: VerificationCheck[] = [
+      {
+        id: 'recorded_sth_third_party',
+        status: 'success',
+        evidence: definition?.evidence ?? 'public',
+        inputs: definition?.inputs ?? [],
+      },
+    ];
+
+    expect(deriveVerificationSummary(checks)).toEqual({ status: 'missing_evidence', tone: 'warning' });
+  });
+
   it('returns in_progress when a required check is pending', () => {
     const checks = buildChecks({ cast_receipt_present: 'pending' });
     expect(deriveVerificationSummary(checks)?.status).toBe('in_progress');

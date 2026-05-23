@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getSessionData } from '@/lib/session';
 
 interface UseHasActiveSessionOptions {
@@ -30,11 +30,12 @@ export function useHasActiveSession(options: UseHasActiveSessionOptions = {}): b
   const fallback = options.fallback ?? true;
   const [hasActiveSession, setHasActiveSession] = useState<boolean>(fallback);
 
-  const evaluateHasActiveSession = useCallback(() => resolveHasActiveSession(fallback), [fallback]);
-
   useEffect(() => {
-    setHasActiveSession(evaluateHasActiveSession());
-  }, [evaluateHasActiveSession]);
+    const timeoutId = window.setTimeout(() => {
+      setHasActiveSession(resolveHasActiveSession(fallback));
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [fallback]);
 
   return hasActiveSession;
 }

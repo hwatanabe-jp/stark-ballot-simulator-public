@@ -1,6 +1,9 @@
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
+/// Current zkVM journal contract method version.
+pub const CURRENT_METHOD_VERSION: u32 = 14;
+
 /// Vote plus its RFC 6962 audit path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoteWithProof {
@@ -73,7 +76,7 @@ pub struct VerificationOutput {
     pub excluded_slots: u32,
     /// Domain-separated hash of input
     pub input_commitment: [u8; 32],
-    /// 12 for v1.2
+    /// Current zkVM journal contract method version.
     pub method_version: u32,
 }
 
@@ -135,7 +138,7 @@ mod tests {
             included_bitmap_root: [4u8; 32],
             excluded_slots: 1,
             input_commitment: [5u8; 32],
-            method_version: 12,
+            method_version: CURRENT_METHOD_VERSION,
         };
 
         assert_eq!(
@@ -147,6 +150,7 @@ mod tests {
             output.missing_slots + output.invalid_presented_slots
         );
         assert_eq!(output.rejected_records, output.invalid_votes);
+        assert_eq!(output.method_version, CURRENT_METHOD_VERSION);
     }
 
     #[test]

@@ -53,8 +53,10 @@ flowchart TD
     I1[入力デシリアライズ] --> I2{掲示板ルート<br/>が非ゼロ?}
     I2 -->|Yes| I3{ツリーサイズ<br/>が正の値?}
     I2 -->|No| FAIL[不正入力]
-    I3 -->|Yes| NEXT[フェーズ 2 へ]
+    I3 -->|Yes| I4{Phase 4 境界と<br/>Merkle パス長が有効?}
     I3 -->|No| FAIL
+    I4 -->|Yes| NEXT[フェーズ 2 へ]
+    I4 -->|No| FAIL
   end
 
   subgraph "フェーズ 2: 投票検証と集計"
@@ -73,7 +75,17 @@ flowchart TD
   end
 ```
 
-> **Note:** 即時 reject は `bulletin_root` がゼロ値、または `tree_size` が 0 の 2 ケースだけです。`votes.length > tree_size` のような入力も事前 reject されず、重複や範囲外は record 単位で `rejectedRecords` に反映されます。
+> **Note:** 次のいずれかに該当する入力は、ジャーナル生成前に fail-closed で拒否されます。
+>
+> - `bulletin_root` がゼロ
+> - `tree_size` が 0
+> - `tree_size > 1,000,000`
+> - `total_expected > 1,000,000`
+> - `votes.length > 1,000,000`
+> - 候補別 tally bucket が 1,000,000 を超える
+> - Merkle パス長が `u16::MAX` を超える
+>
+> `votes.length > tree_size` のような入力は、上記境界内であれば事前 reject されません。重複や範囲外は record 単位で `rejectedRecords` に反映されます。
 
 ## 投票の 6 段階検証
 
@@ -96,36 +108,26 @@ flowchart TD
   C6 -->|成功| VALID[有効: 集計に加算]
 ```
 
-### 1. インデックス範囲チェック
+各検証の失敗条件と、失敗したレコードがどのカウンタに反映されるかを示します。
 
-投票のインデックスが `0` 以上 `tree_size` 未満であることを確認します。範囲外のインデックスは掲示板上に存在し得ないため、不正入力として検出されます。
+| #   | 検証               | 失敗条件                                                           | 反映先                                |
+| --- | ------------------ | ------------------------------------------------------------------ | ------------------------------------- |
+| 1   | インデックス範囲   | `index >= tree_size`（guest contract 上の `index` は `u32`）       | `rejectedRecords`                     |
+| 2   | インデックス重複   | 既に処理済みの `index`（2 番目以降）                               | `rejectedRecords`                     |
+| 3   | 選択肢範囲         | `choice` が `0..=4`（A..E）の外                                    | `rejectedRecords` + `seenBitmap` 反映 |
+| 4   | コミットメント照合 | 再計算したコミットメントが入力の `commitment` と不一致             | `rejectedRecords` + `seenBitmap` 反映 |
+| 5   | コミットメント重複 | 既に処理済みのコミットメント値（範囲内かつ初出スロットでも無効化） | `rejectedRecords` + `seenBitmap` 反映 |
+| 6   | RFC 6962 包含証明  | Merkle パスから再計算したルートが `bulletin_root` と不一致         | `rejectedRecords` + `seenBitmap` 反映 |
 
-### 2. インデックス重複チェック
+範囲内かつ初出のスロットが #3〜#6 で無効化された場合、`seenBitmap` ではビットが立ち（提示はされた）、`includedBitmap` ではビットが立たない（計上されない）ため、`invalidPresentedSlots` として観測されます。範囲外（#1）や既処理スロットへの重複レコード（#2）は `rejectedRecords` のみに反映され、スロット単位の指標には影響しません。
 
-同一インデックスの投票が既に処理されていないことを確認します。重複するインデックスは二重カウント攻撃を意味するため、2 番目以降の同一インデックスは除外されます。
+### コミットメント再計算と照合（#4）
 
-### 3. 選択肢範囲チェック
+ゲスト内で投票者の（選択肢, 乱数, 選挙 ID）からコミットメントを再計算し、入力として渡された値と照合します。これにより、投票者が主張する選択肢が掲示板上のコミットメントと一致することが保証されます。計算規則は [コミットメントスキーム](../protocol/commitment.md) を参照してください。
 
-選択肢の値が 0 から 4（A から E）の範囲内であることを確認します。
+### RFC 6962 包含証明検証（#6）
 
-### 4. コミットメント再計算と照合
-
-ゲスト内で投票者の（選択肢, 乱数, 選挙 ID）からコミットメントを再計算し、入力として渡されたコミットメント値と照合します。
-
-この検証により、投票者が主張する選択肢が掲示板上のコミットメントと一致することが保証されます。コミットメントの計算規則は [コミットメントスキーム](../protocol/commitment.md) を参照してください。
-
-### 5. コミットメント重複チェック
-
-同一コミットメントが既に処理されていないことを確認します。コミットメント値が重複した場合は、入力の異常または二重投入の兆候として無効化されます。
-
-### 6. RFC 6962 包含証明検証
-
-投票のコミットメントが掲示板 Merkle ツリーに含まれることを、RFC 6962 PATH 関数ベースの CT スタイル包含証明で検証します。投票のインデックスと Merkle パスから掲示板ルートを再計算し、入力の `bulletin_root` と一致するかを確認します。
-
-ハッシュ規則は [CT Merkle ツリー](../protocol/ct-merkle.md) の RFC 6962 参照規則に合わせます:
-
-- リーフ: `SHA-256(0x00 || "stark-ballot:leaf|v1" || data)`
-- ノード: `SHA-256(0x01 || left || right)`
+投票のコミットメントが掲示板 Merkle ツリーに含まれることを、RFC 6962 PATH 関数ベースの CT スタイル包含証明で検証します。投票のインデックスと Merkle パスから掲示板ルートを再計算し、入力の `bulletin_root` と一致するかを確認します。リーフ・ノードハッシュの規則とドメインタグは [CT Merkle ツリー](../protocol/ct-merkle.md) を参照してください。
 
 ## 集計ロジック
 
@@ -162,7 +164,7 @@ flowchart LR
 validVotes + invalidPresentedSlots + missingSlots = treeSize
 ```
 
-fail-closed 判定に使われる除外数は、スロット単位の `excludedSlots` です:
+[fail-closed](../appendix/glossary.md#fail-closed) 判定に使われる除外数は、スロット単位の `excludedSlots` です:
 
 ```text
 excludedSlots = missingSlots + invalidPresentedSlots
@@ -175,7 +177,7 @@ excludedSlots = missingSlots + invalidPresentedSlots
 - 既に正しくカウント済みのスロットに対する重複インデックスレコード
 - `tree_size` の外側を指す範囲外レコード
 
-旧 public contract の互換名は現行ゲストの正規出力にも、finalize / status / verify などの公開レスポンスにも現れません。旧名と現行 journal フィールドの 1 対 1 対応は次のとおりです。
+旧 public contract の互換名は現行 journal にも公開レスポンスにも現れませんが、参考までに 1 対 1 対応を示します。
 
 | 旧名 (compatibility mirror) | 現行 journal フィールド |
 | --------------------------- | ----------------------- |
@@ -184,7 +186,7 @@ excludedSlots = missingSlots + invalidPresentedSlots
 | `countedIndices`            | `validVotes`            |
 | `excludedCount`             | `excludedSlots`         |
 
-`rejectedRecords` は旧名のミラーではなく、現行で新設された **record 単位の補助カウント**です。特に `invalidIndices` のミラーではない点に注意してください（`invalidIndices` のミラーは `invalidPresentedSlots` であり、こちらはスロット単位）。
+※ `rejectedRecords` は record 単位の新設カウントで、旧 `invalidIndices` の mirror は `invalidPresentedSlots` 側。
 
 ## ジャーナル出力
 
@@ -210,39 +212,29 @@ excludedSlots = missingSlots + invalidPresentedSlots
 | includedBitmapRoot    | 32 バイト | 実際にカウントされたインデックス集合の [ビットマップ Merkle](../protocol/bitmap-merkle.md) ルート |
 | excludedSlots         | u32       | 除外されたスロットの総数（= missingSlots + invalidPresentedSlots）                                |
 | inputCommitment       | 32 バイト | [入力コミットメント](../protocol/input-commitment.md)                                             |
-| methodVersion         | u32       | ゲストプログラムのバージョン（現行 = `12` / v1.2）                                                |
+| methodVersion         | u32       | ゲストプログラムのバージョン（現行 = `14`）                                                       |
 
 ### ジャーナルの信頼モデル
 
 ジャーナルの各フィールドは、対応する STARK 証明により「ゲストプログラムが正しく計算した結果」であることが保証されます。
 
-| ジャーナル項目       | STARK 証明で保証される内容                                                  | 補足                                                                                    |
-| -------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `verifiedTally`      | 有効投票のみを正しく集計した結果である                                      | `validVotes` / `invalidVotes` との整合もジャーナル上で確認可能                          |
-| `excludedSlots`      | 未提示または未計上のスロット数がゲストの計算結果と一致する                  | `excludedSlots > 0` は完全性違反の重要シグナル                                          |
-| `rejectedRecords`    | 却下されたレコード数がゲストの計算結果と一致する                            | 重複・範囲外・検証失敗の説明に使う補助情報で、スロット単位の判定とは分離される          |
-| `inputCommitment`    | ゲストが処理した入力データを正準エンコードで束縛した値である                | 公開入力側から再計算して照合できる                                                      |
-| `seenBitmapRoot`     | prover に提示された範囲内かつ初出のインデックス集合から計算したルートである | `includedBitmapRoot` と併用すると未提示 / 提示されたが未計上 / カウント済みを区別できる |
-| `includedBitmapRoot` | 実際にカウントされたインデックス集合から計算したルートである                | 自票包含の証明（bitmap proof）の検証基準になる                                          |
-| `sthDigest`          | その実行で参照した掲示板状態から計算した値である                            | 第三者 STH 合意そのものは別チェックで確認する                                           |
+| ジャーナル項目       | STARK 証明で保証される内容                                                  |
+| -------------------- | --------------------------------------------------------------------------- |
+| `verifiedTally`      | 有効投票のみを正しく集計した結果である                                      |
+| `excludedSlots`      | 未提示または未計上のスロット数がゲストの計算結果と一致する                  |
+| `rejectedRecords`    | 却下されたレコード数がゲストの計算結果と一致する                            |
+| `inputCommitment`    | ゲストが処理した入力データを正準エンコードで束縛した値である                |
+| `seenBitmapRoot`     | prover に提示された範囲内かつ初出のインデックス集合から計算したルートである |
+| `includedBitmapRoot` | 実際にカウントされたインデックス集合から計算したルートである                |
+| `sthDigest`          | その実行で参照した掲示板状態から計算した値である                            |
 
-第三者はレシートの STARK 検証を行うだけで、上記の保証を取得できます。ゲストプログラムのロジックを信頼する必要はありますが、ホストやサーバーの正直性を信頼する必要はありません。
+一方、STARK 証明だけでは保証されないものがあります。「ゲストに提示されなかった票」「第三者 STH との合意」「ホストやサーバーの正直性」はジャーナル外の独立チェックで確認します。第三者はレシートの STARK 検証を行うだけで上記の保証を取得でき、ゲストロジックの信頼以外にホスト・サーバーを信頼する必要はありません。
 
 ## ビットマップルートの計算
 
-ゲストプログラムは投票検証と並行して、2 種類のビットマップを構築します。
+ゲストプログラムは投票検証と並行して `seenBitmap`（範囲内かつ初出として提示されたインデックス集合）と `includedBitmap`（6 段階検証を通過したインデックス集合）の 2 種類を構築し、それぞれの Merkle ルートをジャーナルにコミットします。この 2 つのルートを併用することで、公開検証側は「prover に提示されたが無効化された票」と「そもそも提示されなかった票」を区別できます。
 
-1. `seenBitmap` と `includedBitmap` の 2 つのブール配列を初期化（全 `false`）
-2. 範囲内かつ一意インデックスとして処理された票のインデックスに対応する `seenBitmap` のビットを `true` に設定
-3. 6 段階検証を通過した票のインデックスに対応する `includedBitmap` のビットを `true` に設定
-4. 各ビットマップを LSB-first でバイト列にパッキング
-5. パック後の長さが 32 バイト以下なら、ゼロ埋めした 1 リーフとして CT スタイルの leaf hash を計算
-6. 33 バイト以上なら 32 バイトチャンクに分割し、それぞれを leaf とする CT スタイルの Merkle ツリーを構築
-7. 2 つのルート値（`seenBitmapRoot` と `includedBitmapRoot`）をジャーナルにコミット
-
-この 2 つのルートを使うことで、公開検証側は「prover に提示されたが無効化された票」と「そもそも prover に提示されなかった票」を区別できます。
-
-ビットマップの詳細な構造とハッシュ規則は [ビットマップ Merkle](../protocol/bitmap-merkle.md) を参照してください。
+LSB-first のバイト列パッキング、32 バイト境界による単一リーフ / 分割リーフの扱い、leaf / node hash 規則は [ビットマップ Merkle](../protocol/bitmap-merkle.md) を参照してください。
 
 ## 入力コミットメントと STH ダイジェスト
 
@@ -264,8 +256,10 @@ excludedSlots = missingSlots + invalidPresentedSlots
 
 ## ゲストプログラムのバージョニング
 
-ゲストプログラムにはバージョン番号が割り当てられ、ジャーナルの `methodVersion` フィールドに記録されます。現行のジャーナル契約は 12（v1.2）です。
+ゲストプログラムにはバージョン番号が割り当てられ、ジャーナルの `methodVersion` フィールドに記録されます。現行のジャーナル契約は 14 です。
 
 バージョン番号は [Image ID](image-id.md) の管理と連動しており、ゲストプログラムの変更は新しい Image ID の生成を伴います。検証時には、期待 Image ID との一致が確認されます。
+
+ゲストの抽象 tally / rejection model と guest bounds は、[Lean による形式化](../quality/lean-formalization.md) で説明しています。Rust 側の guest-vector tests は、抽象モデルと実装の対応付けを検査します。
 
 <!-- source: zkvm/methods/guest/src/main.rs, zkvm/methods/guest/src/sth.rs, zkvm/contract-core/src/sha256.rs, zkvm/contract-core/src/inclusion_proof.rs, zkvm/contract-core/src/bitmap.rs, zkvm/contract-core/src/encoding.rs, zkvm/contract-core/src/types.rs -->

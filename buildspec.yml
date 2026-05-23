@@ -101,6 +101,23 @@ phases:
           docker tag $IMAGE_URI $LATEST_TAG
         fi
 
+      - echo "Extracting ARM64 guest ImageID from built prover image..."
+      - |
+        IMAGE_ID_METADATA="$(docker run --rm --entrypoint /opt/zkvm/bin/host "$IMAGE_URI" --print-image-id --json)"
+        printf '%s' "$IMAGE_ID_METADATA" > /tmp/risc0-image-id.json
+        ARM64_RISC0_IMAGE_ID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["imageId"])' < /tmp/risc0-image-id.json)"
+        METHOD_VERSION="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["methodVersion"])' < /tmp/risc0-image-id.json)"
+        if ! printf '%s' "$ARM64_RISC0_IMAGE_ID" | grep -Eq '^0x[0-9a-f]{64}$'; then
+          echo "Invalid ARM64 RISC Zero ImageID emitted by prover image: $ARM64_RISC0_IMAGE_ID" >&2
+          exit 1
+        fi
+        if ! printf '%s' "$METHOD_VERSION" | grep -Eq '^[0-9]+$'; then
+          echo "Invalid methodVersion emitted by prover image: $METHOD_VERSION" >&2
+          exit 1
+        fi
+        printf '%s' "$ARM64_RISC0_IMAGE_ID" > /tmp/arm64-risc0-image-id
+        printf '%s' "$METHOD_VERSION" > /tmp/method-version
+
   post_build:
     commands:
       - echo "Pushing Docker image to ECR..."
@@ -132,15 +149,44 @@ phases:
       - |
         RISC0_TOOLCHAIN_IMAGE="$(cat /tmp/risc0-toolchain-image)"
         RISC0_TOOLCHAIN_IMAGE_TAG="$(cat /tmp/risc0-toolchain-image-tag)"
+        ARM64_RISC0_IMAGE_ID="$(cat /tmp/arm64-risc0-image-id)"
+        METHOD_VERSION="$(cat /tmp/method-version)"
         IMAGE_DIGEST=$(aws ecr describe-images \
           --repository-name "$IMAGE_REPO_NAME" \
           --image-ids imageTag="$IMAGE_TAG" \
           --query 'imageDetails[0].imageDigest' \
           --output text)
-        printf '{"image":"%s","tag":"%s","digest":"%s","sha":"%s","risc0ToolchainImage":"%s","risc0ToolchainTag":"%s","timestamp":"%s"}' \
-          "$IMAGE_URI" "$IMAGE_TAG" "$IMAGE_DIGEST" "$CODEBUILD_RESOLVED_SOURCE_VERSION" "$RISC0_TOOLCHAIN_IMAGE" "$RISC0_TOOLCHAIN_IMAGE_TAG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        DIGEST_PINNED_IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME@$IMAGE_DIGEST"
+        printf '%s' "$IMAGE_DIGEST" > /tmp/prover-image-digest
+        printf '%s' "$DIGEST_PINNED_IMAGE_URI" > /tmp/digest-pinned-image-uri
+        printf '{"image":"%s","imageUri":"%s","tag":"%s","digest":"%s","sha":"%s","architecture":"arm64","methodVersion":%s,"risc0ImageId":"%s","risc0ToolchainImage":"%s","risc0ToolchainTag":"%s","buildId":"%s","timestamp":"%s"}' \
+          "$IMAGE_URI" "$DIGEST_PINNED_IMAGE_URI" "$IMAGE_TAG" "$IMAGE_DIGEST" "$CODEBUILD_RESOLVED_SOURCE_VERSION" "$METHOD_VERSION" "$ARM64_RISC0_IMAGE_ID" "$RISC0_TOOLCHAIN_IMAGE" "$RISC0_TOOLCHAIN_IMAGE_TAG" "$CODEBUILD_BUILD_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
           > image-metadata.json
       - cat image-metadata.json
+      - echo "Publishing prover image metadata..."
+      - |
+        IMAGE_DIGEST="$(cat /tmp/prover-image-digest)"
+        if [ -n "${PROVER_IMAGE_METADATA_BUCKET:-}" ]; then
+          METADATA_PREFIX="${PROVER_IMAGE_METADATA_PREFIX:-prover-images/$IMAGE_REPO_NAME}"
+          METADATA_PREFIX="${METADATA_PREFIX%/}"
+          DIGEST_KEY="${IMAGE_DIGEST#sha256:}"
+          DIGEST_METADATA_KEY="${METADATA_PREFIX}/by-digest/sha256-${DIGEST_KEY}.json"
+          aws s3api put-object --bucket "$PROVER_IMAGE_METADATA_BUCKET" --key "$DIGEST_METADATA_KEY" --body image-metadata.json --content-type application/json >/dev/null
+          aws s3api put-object --bucket "$PROVER_IMAGE_METADATA_BUCKET" --key "${METADATA_PREFIX}/by-git-sha/$CODEBUILD_RESOLVED_SOURCE_VERSION.json" --body image-metadata.json --content-type application/json >/dev/null
+          aws s3api put-object --bucket "$PROVER_IMAGE_METADATA_BUCKET" --key "${METADATA_PREFIX}/latest.json" --body image-metadata.json --content-type application/json >/dev/null
+          METADATA_S3_URI="s3://${PROVER_IMAGE_METADATA_BUCKET}/${DIGEST_METADATA_KEY}"
+          printf '%s' "$METADATA_S3_URI" > /tmp/prover-metadata-s3-uri
+        else
+          echo "PROVER_IMAGE_METADATA_BUCKET not set; skipping S3 metadata publish."
+          printf '' > /tmp/prover-metadata-s3-uri
+        fi
+      - |
+        METADATA_S3_URI="$(cat /tmp/prover-metadata-s3-uri)"
+        python3 -c 'import json,sys; metadata_uri=sys.argv[1]; data=json.load(open("image-metadata.json", encoding="utf-8")); data["metadataS3Uri"] = metadata_uri; json.dump(data, open("/tmp/current-prover-image-metadata.json", "w", encoding="utf-8"), separators=(",", ":"))' "$METADATA_S3_URI"
+        if [ -n "${PROVER_CURRENT_IMAGE_METADATA_PARAMETER:-}" ]; then
+          CURRENT_METADATA_JSON="$(cat /tmp/current-prover-image-metadata.json)"
+          aws ssm put-parameter --name "$PROVER_CURRENT_IMAGE_METADATA_PARAMETER" --type String --value "$CURRENT_METADATA_JSON" --overwrite
+        fi
 
 artifacts:
   files:

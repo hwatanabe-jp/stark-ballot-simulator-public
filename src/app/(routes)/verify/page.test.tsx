@@ -6,7 +6,7 @@ import type { VerificationStepStatus } from '@/lib/knowledge';
 import { resolveCanonicalFinalizationPayload } from '@/lib/finalize/client-finalization-result';
 import type { SessionData } from '@/lib/session/types';
 import { VERIFICATION_CHECK_DEFINITIONS, type VerificationCheckId } from '@/lib/verification/verification-checks';
-import { computeCommitment } from '@/lib/zkvm/types';
+import { computeCommitment, CURRENT_METHOD_VERSION } from '@/lib/zkvm/types';
 import { resolveApiUrl } from '@/lib/api/apiBaseUrl';
 import VerifyPage from './page';
 
@@ -85,7 +85,7 @@ function buildCanonicalFinalizeResult(
       excludedSlots: 0,
       excludedCount: 0,
       inputCommitment: '0x' + 'f'.repeat(64),
-      methodVersion: 12,
+      methodVersion: CURRENT_METHOD_VERSION,
     },
   });
 

@@ -28,6 +28,7 @@ const SESSION_REPLACED_ERROR_KEY = 'pages.verify.sessionReplaced';
 interface UseVerificationDataOptions {
   t: (key: string, vars?: Record<string, string | number>) => string;
   sessionIdentityRef: MutableRefObject<SessionIdentity | null>;
+  initialSessionIdentity?: SessionIdentity | null;
 }
 
 interface UseVerificationDataResult {
@@ -41,9 +42,18 @@ interface UseVerificationDataResult {
   fetchVerification: () => Promise<VerificationPayload>;
   fetchVerificationRef: MutableRefObject<() => Promise<VerificationPayload>>;
   triggerFetch: () => void;
+  hasVerificationContinuationAuthority: boolean;
 }
 
-export function useVerificationData({ t, sessionIdentityRef }: UseVerificationDataOptions): UseVerificationDataResult {
+const hasContinuationAuthority = (session: ReturnType<typeof getSessionDataForIdentity>): boolean =>
+  typeof session?.verificationRequestedAt === 'number' &&
+  Boolean(resolveCanonicalFinalizationPayload(session.finalizeResult));
+
+export function useVerificationData({
+  t,
+  sessionIdentityRef,
+  initialSessionIdentity = null,
+}: UseVerificationDataOptions): UseVerificationDataResult {
   const resolveSessionErrorMessage = useCallback(
     (): string =>
       t(
@@ -55,7 +65,7 @@ export function useVerificationData({ t, sessionIdentityRef }: UseVerificationDa
   );
   const initialSnapshot = getStarkVerificationSnapshot();
   let initialData: VerificationPayload | null = null;
-  const initialSession = getSessionDataForIdentity(sessionIdentityRef.current);
+  const initialSession = initialSessionIdentity ? getSessionDataForIdentity(initialSessionIdentity) : null;
   const initialFinalizationSnapshot = resolveCanonicalFinalizationPayload(initialSession?.finalizeResult);
   const initialSnapshotAt =
     initialSnapshot && initialSession?.sessionId === initialSnapshot.sessionId && initialFinalizationSnapshot
@@ -73,6 +83,9 @@ export function useVerificationData({ t, sessionIdentityRef }: UseVerificationDa
   const [serverValidated, setServerValidated] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<VerificationPayload | null>(initialData);
+  const [hasVerificationContinuationAuthority, setHasVerificationContinuationAuthority] = useState(
+    hasContinuationAuthority(initialSession),
+  );
   const latestSnapshotAtRef = useRef(initialSnapshotAt);
 
   useEffect(() => {
@@ -106,8 +119,10 @@ export function useVerificationData({ t, sessionIdentityRef }: UseVerificationDa
   const fetchVerification = useCallback(async (): Promise<VerificationPayload> => {
     const session = getSessionDataForIdentity(sessionIdentityRef.current);
     if (!session) {
+      setHasVerificationContinuationAuthority(false);
       throw new Error(resolveSessionErrorMessage());
     }
+    setHasVerificationContinuationAuthority(hasContinuationAuthority(session));
 
     const endpoint = resolveApiUrl('/api/verify');
     const response = await apiFetch(endpoint, {
@@ -169,7 +184,14 @@ export function useVerificationData({ t, sessionIdentityRef }: UseVerificationDa
     setData(parsed);
     setError(null);
     return parsed;
-  }, [resolveSessionErrorMessage, sessionIdentityRef]);
+  }, [
+    resolveSessionErrorMessage,
+    sessionIdentityRef,
+    setData,
+    setError,
+    setHasVerificationContinuationAuthority,
+    setServerValidated,
+  ]);
 
   const fetchVerificationRef = useRef(fetchVerification);
 
@@ -194,6 +216,7 @@ export function useVerificationData({ t, sessionIdentityRef }: UseVerificationDa
           setError(message);
           setData(null);
           setServerValidated(false);
+          setHasVerificationContinuationAuthority(false);
         }
       } finally {
         if (!cancelledRef.current) {
@@ -208,7 +231,7 @@ export function useVerificationData({ t, sessionIdentityRef }: UseVerificationDa
 
   const triggerFetch = useCallback(() => {
     setFetchTrigger((count) => count + 1);
-  }, []);
+  }, [setFetchTrigger]);
 
   return {
     data,
@@ -216,6 +239,7 @@ export function useVerificationData({ t, sessionIdentityRef }: UseVerificationDa
     loading,
     setLoading,
     serverValidated,
+    hasVerificationContinuationAuthority,
     error,
     setError,
     fetchVerification,

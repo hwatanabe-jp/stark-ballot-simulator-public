@@ -1,6 +1,6 @@
 /**
  * Tests for /api/zkvm-input-hash endpoint
- * t-wada's approach: RED Phase - Write failing tests first
+ * Verifies implemented hash reporting and failure behavior.
  */
 
 import { GET } from './route';

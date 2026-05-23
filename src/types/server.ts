@@ -183,7 +183,7 @@ export interface FinalizationResult {
   /** SHA-256 hash of the zkVM input for tamper-evident verification */
   inputCommitment?: string;
   /**
-   * Current top-level count mirrors follow the v12 slot/record split.
+   * Current top-level count mirrors follow the v14 slot/record split.
    * `missingSlots`, `invalidPresentedSlots`, `rejectedRecords`, and
    * `excludedSlots` are the authoritative public mirrors of the journal.
    */

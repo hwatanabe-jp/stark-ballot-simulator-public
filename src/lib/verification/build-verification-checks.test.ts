@@ -170,7 +170,7 @@ describe('buildVerificationChecks', () => {
     expect(findStatus(checks, 'counted_missing_indices_zero')).toBe('failed');
   });
 
-  it('fails counted_missing_indices_zero when only v12 slot counts are provided', async () => {
+  it('fails counted_missing_indices_zero when only current slot counts are provided', async () => {
     const checks = await buildVerificationChecks({
       missingSlots: 1,
       invalidPresentedSlots: 0,
@@ -676,7 +676,7 @@ describe('buildVerificationChecks', () => {
     );
   });
 
-  it('uses v12 slot counts for the my-vote-excluded note when the journal is omitted', async () => {
+  it('uses current slot counts for the my-vote-excluded note when the journal is omitted', async () => {
     const checks = await buildVerificationChecks({
       verificationStatus: 'success',
       missingSlots: 1,

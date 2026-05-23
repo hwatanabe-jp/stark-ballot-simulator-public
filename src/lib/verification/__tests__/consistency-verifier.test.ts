@@ -303,7 +303,27 @@ describe('consistency-verifier', () => {
       expect(result.severity).toBe('critical');
     });
 
-    it('should detect totalExpected vs treeSize mismatch', () => {
+    it('should fail when totalExpected is missing', () => {
+      const journal = createJournal({ totalExpected: undefined as unknown as number });
+
+      const result = checkCompleteness(journal);
+
+      expect(result.isComplete).toBe(false);
+      expect(result.error).toContain('totalExpected');
+      expect(result.severity).toBe('critical');
+    });
+
+    it('should fail when treeSize is invalid', () => {
+      const journal = createJournal({ treeSize: -1 });
+
+      const result = checkCompleteness(journal);
+
+      expect(result.isComplete).toBe(false);
+      expect(result.error).toContain('treeSize');
+      expect(result.severity).toBe('critical');
+    });
+
+    it('should fail closed when totalExpected differs from treeSize', () => {
       // Arrange
       const journal = createJournal({
         treeSize: 90,
@@ -318,9 +338,9 @@ describe('consistency-verifier', () => {
       const result = checkCompleteness(journal);
 
       // Assert
-      expect(result.isComplete).toBe(true); // Still complete for what was presented
-      expect(result.warning).toContain('Expected 100 votes but tree only has 90');
-      expect(result.severity).toBe('warning');
+      expect(result.isComplete).toBe(false);
+      expect(result.error).toContain('Expected 100 votes but tree only has 90');
+      expect(result.severity).toBe('critical');
     });
   });
 

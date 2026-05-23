@@ -1,0 +1,76 @@
+name: Public Weekly Monitor
+
+on:
+  schedule:
+    # Monday 09:10 JST. GitHub Actions schedules are evaluated in UTC.
+    - cron: '10 0 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '24'
+  PUBLIC_LIVE_DEMO_URL: https://stark-ballot-sim.hwatanabe.dev/
+  PUBLIC_SPECS_URL: https://specs.stark-ballot-sim.hwatanabe.dev/
+
+jobs:
+  weekly-monitor:
+    name: Create public-safe weekly monitor issue
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Run weekly public safety scan
+        id: public_safety
+        continue-on-error: true
+        run: pnpm public-safety:scan
+
+      - name: Generate monitor issue body
+        id: monitor
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          WEEKLY_PUBLIC_SAFETY_SCAN_OUTCOME: ${{ steps.public_safety.outcome }}
+        run: pnpm tsx scripts/showcase/public-weekly-monitor.ts --output .tmp/public-weekly-monitor.md
+
+      - name: Create or update monitor issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          MONITOR_TITLE: ${{ steps.monitor.outputs.title }}
+          MONITOR_SHOULD_CLOSE: ${{ steps.monitor.outputs.should_close }}
+        run: |
+          set -euo pipefail
+
+          search_query="\"$MONITOR_TITLE\" in:title"
+          issue_number="$(gh issue list --state all --search "$search_query" --json number --jq '.[0].number // ""')"
+
+          if [ -n "$issue_number" ]; then
+            gh issue comment "$issue_number" --body-file .tmp/public-weekly-monitor.md
+          else
+            issue_url="$(gh issue create --title "$MONITOR_TITLE" --body-file .tmp/public-weekly-monitor.md)"
+            issue_number="$(gh issue view "$issue_url" --json number --jq '.number')"
+          fi
+
+          issue_state="$(gh issue view "$issue_number" --json state --jq '.state')"
+          if [ "$MONITOR_SHOULD_CLOSE" = "true" ]; then
+            if [ "$issue_state" != "CLOSED" ]; then
+              gh issue close "$issue_number" --comment "Closed automatically because this public-safe weekly monitor is green."
+            fi
+          elif [ "$issue_state" = "CLOSED" ]; then
+            gh issue reopen "$issue_number" --comment "Reopened automatically because this public-safe weekly monitor needs attention."
+          fi

@@ -2,7 +2,7 @@
  * Tests for /api/bitmap-proof endpoint
  * Following final_design.md §2.6.1 specifications
  *
- * TDD RED phase: Writing tests before implementation
+ * Verifies bitmap proof retrieval after implementation.
  */
 
 import { describe, expect, it, beforeEach, vi } from 'vitest';

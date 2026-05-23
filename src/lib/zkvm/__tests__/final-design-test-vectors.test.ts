@@ -1,6 +1,6 @@
 /**
  * Test vectors from final_design.md v1.0 Examples 1-3
- * Following t-wada's approach: RED Phase - Write failing tests first
+ * Verifies implemented final design test vectors.
  *
  * These tests verify the exact byte-level encoding specifications
  * defined in the final design document.
