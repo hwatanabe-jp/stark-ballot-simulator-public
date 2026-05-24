@@ -9,6 +9,7 @@ verification semantics, and implementation notes live in the Public Specs and th
 
 - Live demo: <https://stark-ballot-sim.hwatanabe.dev/>
 - Public specs: <https://specs.stark-ballot-sim.hwatanabe.dev/>
+- Public repository: <https://github.com/hwatanabe-jp/stark-ballot-simulator-public>
 - Security policy: [`SECURITY.md`](./SECURITY.md)
 - License: [`Apache-2.0`](./LICENSE)
 - Public snapshot notes: generated as `docs/PUBLIC_REPOSITORY.md` during public export

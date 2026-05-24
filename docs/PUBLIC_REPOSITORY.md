@@ -2,9 +2,10 @@
 
 This repository is a generated public portfolio snapshot of STARK Ballot Simulator.
 
-- Source commit: `7c2fbcc02b364a5256f5a7613e651e5cdc2a09dc`
-- Generated at: `2026-05-23T03:41:22.731Z`
-- Copied source files: `905`
+- Public repository: https://github.com/hwatanabe-jp/stark-ballot-simulator-public
+- Source commit: `7261be796368d61edfd323c8052c59b7ced9cd9b`
+- Generated at: `2026-05-24T05:35:14.821Z`
+- Copied source files: `906`
 
 The private repository remains the source of truth. Public-repository changes
 should normally be made in the private repository and released again as a new

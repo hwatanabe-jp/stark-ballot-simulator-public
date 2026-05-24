@@ -99,7 +99,7 @@
     - `seenBitmapRoot` があると、presented / invalid / not presented の切り分けが可能
 20. inputCommitment 一致（index順の canonical binding）
 
-> **Phase4.2 厳格モード補足**
+> **厳格モード補足**
 >
 > - `excludedSlots > 0` は **Counted-as-Recorded を failed 扱い**（missing + invalid の合算）
 > - legacy `excludedCount` は現行 public response では返さず、互換入力としてだけ fail-closed に扱う

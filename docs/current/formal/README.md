@@ -8,14 +8,13 @@ toolchain rather than by a separate system package. The workspace pins the
 toolchain in `formal/lean-toolchain` for reproducible builds. The current pin is
 `leanprover/lean4:v4.29.1`.
 
-Phase 1 proves a small fail-closed model for verification summaries and a
-mathematical `Nat` model for zkVM journal count fields. Phase 2 adds
+The current formal layer covers a small fail-closed model for verification
+summaries, a mathematical `Nat` model for zkVM journal count fields,
 implementation-correspondence models for canonical input commitment preimage
-encoding and LSB-first bitmap packing. Phase 3 adds an abstract guest state
-machine over presented vote records and a stable generated report at
-`formal-report.json`. Phase 4 adds generated guest-model and check-definition
-vectors plus `formal-audit.json`, which records proof-hygiene checks, theorem
-statement hashes, and generated-vector hashes.
+encoding and LSB-first bitmap packing, and an abstract guest state machine over
+presented vote records. Stable outputs include `formal-report.json`, generated
+guest-model and check-definition vectors, and `formal-audit.json`, which records
+proof-hygiene checks, theorem statement hashes, and generated-vector hashes.
 
 The count model makes the slot partition explicit:
 
@@ -36,12 +35,12 @@ duplicate-index rejection, invalid presented slots, candidate-indexed tally
 increments, commitment reservation before inclusion-proof rejection, and
 retained rejection classifications.
 
-This is a mathematical `Nat` model and an abstract state machine. The Phase 4
+This is a mathematical `Nat` model and an abstract state machine. The current
 guest bound theorem connects the modeled seen, valid, rejected, and per-candidate
 tally bucket counts to the Rust `u32` domain only for accepted inputs satisfying
-the explicit Phase 4 guest bounds enforced by the guest's checked
-validation-and-tally entry point: `treeSize <= 1,000,000`, presented vote count
-`<= 1,000,000`, and each candidate tally bucket `<= 1,000,000`. It does not
+the explicit guest bounds enforced by the guest's checked validation-and-tally
+entry point: `treeSize <= 1,000,000`, presented vote count `<= 1,000,000`, and
+each candidate tally bucket `<= 1,000,000`. It does not
 prove serialization boundaries, SHA-256 collision resistance, RISC Zero receipt
 soundness, AWS runtime behavior, React rendering behavior, or
 production-election security.
@@ -90,9 +89,8 @@ permutation-invariance theorem is stated over the hashed vote encoding fields;
 generated vector `id` labels are deliberately not part of the modeled pre-hash
 bytes.
 
-Phase 2, Phase 3, and Phase 4 theorem dependencies are checked with
-`#print axioms` under Lean `v4.29.1` by `pnpm formal:audit`. The allowlisted
-Lean core axioms are `propext`,
+The current theorem dependencies are checked with `#print axioms` under Lean
+`v4.29.1` by `pnpm formal:audit`. The allowlisted Lean core axioms are `propext`,
 `Quot.sound`, and `Classical.choice`. The `pack_bits_get_bit` theorem also
 depends on generated `native_decide` axioms from the exhaustive byte-bit case
 split in `byteValueAt_get_bit`; `formal-audit.json` allowlists

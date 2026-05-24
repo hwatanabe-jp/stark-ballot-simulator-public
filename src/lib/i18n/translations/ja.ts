@@ -269,6 +269,7 @@ export const ja = {
     terms: '利用規約',
     privacy: 'プライバシーポリシー',
     spec: '技術仕様',
+    github: 'GitHub',
   },
   legal: {
     backToHome: 'トップに戻る',

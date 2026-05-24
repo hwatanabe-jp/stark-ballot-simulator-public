@@ -12,6 +12,8 @@ vi.mock('@/lib/hooks/useTranslation', () => ({
       const translations: Record<string, string> = {
         'footer.terms': 'Terms of Use',
         'footer.privacy': 'Privacy Policy',
+        'footer.spec': 'Spec',
+        'footer.github': 'GitHub',
       };
       return translations[key] ?? key;
     },
@@ -75,5 +77,21 @@ describe('Footer', () => {
 
     const privacyLink = screen.getByRole('link', { name: 'Privacy Policy' });
     expect(privacyLink).toHaveAttribute('target', '_blank');
+  });
+
+  it('links to public specs and public repository in new tabs', () => {
+    mockGetSessionData.mockReturnValue(null);
+
+    render(<Footer />);
+
+    const specLink = screen.getByRole('link', { name: 'Spec' });
+    expect(specLink).toHaveAttribute('href', 'https://specs.stark-ballot-sim.hwatanabe.dev');
+    expect(specLink).toHaveAttribute('target', '_blank');
+    expect(specLink).toHaveAttribute('rel', 'noopener noreferrer');
+
+    const githubLink = screen.getByRole('link', { name: 'GitHub' });
+    expect(githubLink).toHaveAttribute('href', 'https://github.com/hwatanabe-jp/stark-ballot-simulator-public');
+    expect(githubLink).toHaveAttribute('target', '_blank');
+    expect(githubLink).toHaveAttribute('rel', 'noopener noreferrer');
   });
 });

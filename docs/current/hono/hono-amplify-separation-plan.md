@@ -36,9 +36,9 @@
     - `USE_S3=true` を前提（ローカルFSは不可）
 - 参考: `/api/diag/env` と `/api/test-data/*` は本番露出回避のため削除済み
 
-## 実装ステップ（Big-Bang 前提）
+## 実装済み構成（Big-Bang 前提）
 
-### Phase 1: Hono Lambda 入口を追加（実装済み）
+### Hono Lambda 入口
 
 - `amplify/functions/hono-api/resource.ts`
   - `defineFunction({ runtime: 22, timeoutSeconds: 60, memoryMB: 1024 })`
@@ -56,7 +56,7 @@ const app = createHonoApp({ basePath: '/api', mode: 'lambda' });
 export const handler = handle(app);
 ```
 
-### Phase 2: API Gateway を Amplify で作成（実装済み, CDK）
+### API Gateway の Amplify/CDK 定義
 
 - `amplify/backend.ts` に CDK で `HttpApi` を追加
 - `HttpLambdaIntegration` で `hono-api` Lambda に接続
@@ -76,14 +76,14 @@ export const handler = handle(app);
 - `Content-Type`
 - `X-Session-ID`
 
-### Phase 3: ルート定義に「lambda モード」を追加（実装済み）
+### ルート定義の lambda モード
 
 - **案A（kind追加）**: `ApiRouteKind` に `diagnostic`（必要なら `internal`）を追加
 - **案B（フラグ追加）**: `excludeFromLambda?: boolean` を `ApiRouteDefinition` に追加
 - `ApiRouteMode` に `lambda` を追加
 - `getApiRouteDefinitions('lambda')` は `diagnostic` または `excludeFromLambda` を除外
 
-### Phase 4: 環境変数の整備（Lambda）
+### Lambda 環境変数
 
 最低限の追加（例）:
 
@@ -111,7 +111,7 @@ export const handler = handle(app);
 - `ENV_NAME`（任意: sandbox/develop/main など）
 - `AWS_REGION`（任意: Lambda が自動設定）
 
-### Phase 5: IAM 付与（実装済み）
+### IAM 権限
 
 Hono Lambda に必要な権限（最小セット）:
 
@@ -122,7 +122,7 @@ Hono Lambda に必要な権限（最小セット）:
 - `cognito-identity:GetId`, `cognito-identity:GetCredentialsForIdentity`
 - `lambda:InvokeFunction`（verifier-service-runner 呼び出し）
 
-### Phase 6: クライアント切替（Big-Bang）
+### クライアント切替
 
 - `NEXT_PUBLIC_API_BASE_URL` を導入
 - Fetch を `getApiBaseUrl()` 経由に統一（`/api` 既定）
@@ -157,8 +157,8 @@ Hono Lambda に必要な権限（最小セット）:
 
 ## 実施結果（2026-01-02）
 
-- ✅ Phase 1-5: すべて実装完了
-- ✅ Phase 6 (Big-Bang): develop ブランチで切替完了
+- ✅ Hono Lambda、API Gateway、lambda ルートモード、環境変数、IAM 権限は実装完了
+- ✅ Big-Bang クライアント切替は develop ブランチで完了
   - `NEXT_PUBLIC_API_BASE_URL` を `<HONO_API_ORIGIN>` に設定
   - Voting フロー（session → vote → finalize → verify）が正常動作
   - CloudWatch Logs で Hono Lambda の動作確認済み

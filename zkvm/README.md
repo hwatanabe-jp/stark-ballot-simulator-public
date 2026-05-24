@@ -186,7 +186,7 @@ Note: `EXPECTED_IMAGE_ID` is not consumed by the host CLI itself. It is used dow
 
 The host reads JSON in the format produced by `serializeZkvmAggregatorInput()` in `src/lib/zkvm/executor.ts`.
 
-The Phase 4 guest correspondence contract is intentionally bounded. The checked
+The guest correspondence contract is intentionally bounded. The checked
 guest path accepts `tree_size <= 1,000,000`, at most `1,000,000` presented vote
 records, and candidate tally buckets no larger than `1,000,000`; oversized
 inputs fail closed before journal fields are emitted.

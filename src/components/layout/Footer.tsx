@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import React, { forwardRef } from 'react';
-import { BookOpen } from 'lucide-react';
+import { BookOpen, GitBranch } from 'lucide-react';
 import { useTranslation } from '@/lib/hooks/useTranslation';
 import { useHasActiveSession } from '@/lib/hooks/useActiveSession';
 
@@ -25,6 +25,7 @@ const cn = (...classes: Array<string | false | undefined>): string => {
 };
 
 const SPEC_URL = 'https://specs.stark-ballot-sim.hwatanabe.dev';
+const PUBLIC_REPOSITORY_URL = 'https://github.com/hwatanabe-jp/stark-ballot-simulator-public';
 
 export const Footer = forwardRef<HTMLElement>(function Footer(_props, ref): React.ReactElement {
   const { t } = useTranslation();
@@ -39,7 +40,10 @@ export const Footer = forwardRef<HTMLElement>(function Footer(_props, ref): Reac
           <div className="text-sm text-text-muted font-secondary">&copy; {currentYear} H. Watanabe</div>
 
           {/* Links */}
-          <nav className="flex items-center gap-6" aria-label="Footer navigation">
+          <nav
+            className="grid w-full grid-cols-2 items-center gap-x-6 gap-y-2 sm:flex sm:w-auto sm:gap-6"
+            aria-label="Footer navigation"
+          >
             {hasActiveSession ? (
               <a
                 href="/terms"
@@ -50,6 +54,7 @@ export const Footer = forwardRef<HTMLElement>(function Footer(_props, ref): Reac
                   'hover:text-text-primary',
                   'transition-colors duration-150',
                   'font-secondary',
+                  'text-center',
                 )}
               >
                 {t('footer.terms')}
@@ -62,6 +67,7 @@ export const Footer = forwardRef<HTMLElement>(function Footer(_props, ref): Reac
                   'hover:text-text-primary',
                   'transition-colors duration-150',
                   'font-secondary',
+                  'text-center',
                 )}
               >
                 {t('footer.terms')}
@@ -77,6 +83,7 @@ export const Footer = forwardRef<HTMLElement>(function Footer(_props, ref): Reac
                   'hover:text-text-primary',
                   'transition-colors duration-150',
                   'font-secondary',
+                  'text-center',
                 )}
               >
                 {t('footer.privacy')}
@@ -89,6 +96,7 @@ export const Footer = forwardRef<HTMLElement>(function Footer(_props, ref): Reac
                   'hover:text-text-primary',
                   'transition-colors duration-150',
                   'font-secondary',
+                  'text-center',
                 )}
               >
                 {t('footer.privacy')}
@@ -104,10 +112,27 @@ export const Footer = forwardRef<HTMLElement>(function Footer(_props, ref): Reac
                 'transition-colors duration-150',
                 'font-secondary',
                 'flex items-center gap-1.5',
+                'justify-center',
               )}
             >
               <BookOpen className="w-4 h-4" />
               {t('footer.spec')}
+            </a>
+            <a
+              href={PUBLIC_REPOSITORY_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn(
+                'text-sm text-text-secondary',
+                'hover:text-text-primary',
+                'transition-colors duration-150',
+                'font-secondary',
+                'flex items-center gap-1.5',
+                'justify-center',
+              )}
+            >
+              <GitBranch className="w-4 h-4" />
+              {t('footer.github')}
             </a>
           </nav>
         </div>

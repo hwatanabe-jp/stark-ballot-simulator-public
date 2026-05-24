@@ -1,6 +1,6 @@
 # はじめに
 
-> **最終更新:** 2026-05-23
+> **最終更新:** 2026-05-24
 
 このドキュメントは、`STARK Ballot Simulator` の公開向けガイドです。
 
@@ -12,7 +12,7 @@
 
 ## 公開状態
 
-本書はライブデモと公開用ソース snapshot の読者に向けたドキュメントです。ソースコードへのアクセスが必要な再現手順は、対象リリースの公開 repository snapshot と照合して実行してください。`bundle.zip` だけで実行できる確認範囲は [第三者検証ガイド](reproducibility/index.md) にまとめています。
+本書はライブデモと公開用ソース snapshot の読者に向けたドキュメントです。公開 repository snapshot は [hwatanabe-jp/stark-ballot-simulator-public](https://github.com/hwatanabe-jp/stark-ballot-simulator-public) で確認できます。ソースコードへのアクセスが必要な再現手順は、対象リリースの公開 repository snapshot と照合して実行してください。`bundle.zip` だけで実行できる確認範囲は [第三者検証ガイド](reproducibility/index.md) にまとめています。
 
 ## 想定読者
 
@@ -32,16 +32,17 @@
 ### 標準ルート
 
 1. まず [全体像](overview.md) でシステムの概要を掴む
-2. [暗号プロトコル](protocol/index.md) でコミットメント・Merkle ツリー等の基盤を理解する
-3. [zkVM 設計](zkvm/index.md) でゲストプログラムと証明生成の仕組みを学ぶ
-4. [検証パイプライン](verification/index.md) で 4 段階検証モデルの全体を把握する
-5. [改ざんシナリオ](tamper/index.md) で教育的シミュレーションの動作を確認する
-6. [品質保証と形式手法](quality/index.md) でテスト・PBT・Lean による品質境界を確認する
-7. [AWS アーキテクチャ](aws/index.md) で非同期証明インフラを理解する
-8. [API リファレンス](api/index.md) でエンドポイント仕様を参照する
-9. 実際に検証する場合は [第三者検証ガイド](reproducibility/index.md) で `bundle.zip` を使ったローカル検証手順を実行する
-10. 設計上の判断については [設計判断](decisions/index.md) を参照する
-11. 設計根拠の一次資料は [参考文献](appendix/references.md) を参照する
+2. [アーキテクチャ語彙マップ（試験的）](architecture-map.md) で UI、API、掲示板、zkVM、検証、バンドル境界の関係を 1 枚で確認する（試験的な語彙地図）
+3. [暗号プロトコル](protocol/index.md) でコミットメント・Merkle ツリー等の基盤を理解する
+4. [zkVM 設計](zkvm/index.md) でゲストプログラムと証明生成の仕組みを学ぶ
+5. [検証パイプライン](verification/index.md) で 4 段階検証モデルの全体を把握する
+6. [改ざんシナリオ](tamper/index.md) で教育的シミュレーションの動作を確認する
+7. [品質保証と形式手法](quality/index.md) でテスト・PBT・Lean による品質境界を確認する
+8. [AWS アーキテクチャ](aws/index.md) で非同期証明インフラを理解する
+9. [API リファレンス](api/index.md) でエンドポイント仕様を参照する
+10. 実際に検証する場合は [第三者検証ガイド](reproducibility/index.md) で `bundle.zip` を使ったローカル検証手順を実行する
+11. 設計上の判断については [設計判断](decisions/index.md) を参照する
+12. 設計根拠の一次資料は [参考文献](appendix/references.md) を参照する
 
 ### 読者別ルート
 
@@ -63,11 +64,12 @@
 クライアント/サーバー/zkVM のいずれかの実装を変更・追従したい読者向け。
 
 1. [全体像](overview.md) でシステム境界を確認する
-2. [暗号プロトコル](protocol/index.md) でコミットメント・Merkle・入力コミットメントの正準形を把握する
-3. [zkVM 設計](zkvm/index.md) でゲスト/ホストの責務分担と Image ID 管理を理解する
-4. [検証パイプライン](verification/index.md) でチェック評価とゲーティングを把握する
-5. [品質保証と形式手法](quality/index.md) で、テスト・PBT・Lean のレイヤー分担を確認する
-6. [API リファレンス](api/index.md) でエンドポイント仕様と session-scoped 認可を確認する
+2. [アーキテクチャ語彙マップ（試験的）](architecture-map.md) で境界づけられた語彙と主要データフローを共有する（試験的な語彙地図）
+3. [暗号プロトコル](protocol/index.md) でコミットメント・Merkle・入力コミットメントの正準形を把握する
+4. [zkVM 設計](zkvm/index.md) でゲスト/ホストの責務分担と Image ID 管理を理解する
+5. [検証パイプライン](verification/index.md) でチェック評価とゲーティングを把握する
+6. [品質保証と形式手法](quality/index.md) で、テスト・PBT・Lean のレイヤー分担を確認する
+7. [API リファレンス](api/index.md) でエンドポイント仕様と session-scoped 認可を確認する
 
 飛ばしてよい: [第三者検証ガイド](reproducibility/index.md)（実装変更後の動作確認には [改ざんシナリオ](tamper/index.md) を使う方が早い）
 

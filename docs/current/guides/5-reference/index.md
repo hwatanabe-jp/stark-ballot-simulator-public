@@ -1,12 +1,12 @@
 # Reference Guides
 
-This section contains technical reference documentation and detailed analysis of STARK proofs. The content reflects the **Phase 10 launch prep** (current implementation).
+This section contains technical reference documentation and detailed analysis of STARK proofs. The content reflects the current implementation.
 
 ## Available Guides
 
 ### 🇯🇵 [STARK証明の構造と特性](./stark-proof-structure.md)
 
-**Purpose**: RISC Zero zkVM STARK receipt structure and operational characteristics (Phase 10)  
+**Purpose**: RISC Zero zkVM STARK receipt structure and current operational characteristics
 **Contents**:
 
 - Receipt structure (Composite vs Fake) and verification contract
@@ -16,7 +16,7 @@ This section contains technical reference documentation and detailed analysis of
 
 ### 🇯🇵 [STARK証明検証で得られる情報の詳細分析](./stark-info-summary.md)
 
-**Purpose**: What information is revealed by STARK verification in Phase 10  
+**Purpose**: What information is revealed by the current STARK verification flow
 **Contents**:
 
 - Verified tally vs UI/claimed tally (educational tamper scenarios)
@@ -26,7 +26,7 @@ This section contains technical reference documentation and detailed analysis of
 
 ## Key Technical Details
 
-### STARK Proof Characteristics (Phase 10)
+### STARK Proof Characteristics
 
 - **Receipt type**: Fake receipts in dev (`RISC0_DEV_MODE=1`) vs Composite STARK in production
 - **Size**: Fake receipts are small (few KB); real receipt JSON artifacts are typically hundreds of KB to ~2MB
@@ -53,7 +53,7 @@ This section contains technical reference documentation and detailed analysis of
   - methodVersion (u32)
 - **Note**: `tamperDetected` and `imageId` are not part of the raw journal bytes. JSON projections may add `imageId` as comparison-only metadata.
 
-### Privacy Guarantees (Phase 10)
+### Privacy Guarantees
 
 - ✅ **Protected**: Individual vote contents (choice/random) and voter-vote linkage
 - ✅ **Protected**: Order of votes and per-vote modifications

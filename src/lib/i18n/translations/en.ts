@@ -273,6 +273,7 @@ export const en = {
     terms: 'Terms of Use',
     privacy: 'Privacy Policy',
     spec: 'Spec',
+    github: 'GitHub',
   },
   legal: {
     backToHome: 'Back to Home',

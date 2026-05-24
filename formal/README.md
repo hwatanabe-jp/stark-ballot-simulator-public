@@ -1,6 +1,6 @@
 # STARK Ballot Formalization
 
-Status: Phase 4 correspondence hardening added for audit, generated vectors,
+Status: Correspondence hardening added for audit, generated vectors,
 bounded count and tally-bucket claims, and CI drift guards
 
 This directory contains the Lean 4 formalization layer for STARK Ballot
@@ -54,31 +54,30 @@ formal/
     EmitTestVectors.lean
 ```
 
-Phase 1 added the initial Lean files for journal count semantics and the
-verification summary fail-closed model. Phase 2 added the input commitment and
-bitmap models plus generated vectors consumed by TypeScript and Rust tests.
-Phase 3 added an abstract guest state machine and a stable generated formal
-report under `docs/current/formal/formal-report.json`. The guest model tracks a
-candidate-indexed tally, proves the fold preserves duplicate-free in-range
-seen-index invariants and count bounds, and states its zero-exclusion
-completeness theorem directly over `processVotes`. Phase 4 adds guest-model
-vectors, a check-definition drift vector, bounded count and tally-bucket
-theorems, proof hygiene audit output, and CI drift guards for implementation
-files covered by formal vectors.
+The Lean workspace now includes journal count semantics, the verification
+summary fail-closed model, input commitment and bitmap models, generated vectors
+consumed by TypeScript and Rust tests, an abstract guest state machine, and a
+stable generated formal report under `docs/current/formal/formal-report.json`.
+The guest model tracks a candidate-indexed tally, proves the fold preserves
+duplicate-free in-range seen-index invariants and count bounds, and states its
+zero-exclusion completeness theorem directly over `processVotes`. Current
+hardening adds guest-model vectors, a check-definition drift vector, bounded
+count and tally-bucket theorems, proof hygiene audit output, and CI drift guards
+for implementation files covered by formal vectors.
 
-The Phase 4 guest correspondence bounds are explicit: `treeSize <= 1,000,000`,
+The guest correspondence bounds are explicit: `treeSize <= 1,000,000`,
 presented vote count `<= 1,000,000`, and each candidate tally bucket
 `<= 1,000,000`. Rust rejects inputs beyond those bounds through the same checked
 validation-and-tally entry point used by `guest_main` and the guest-vector tests.
 
-## Phase Documents
+## Historical Phase Documents
 
 - [Phase 1: Foundation and Fail-Closed Model](docs/phases/phase-1-foundation-and-fail-closed-model.md)
 - [Phase 2: Implementation Correspondence Vectors](docs/phases/phase-2-implementation-correspondence-vectors.md)
 - [Phase 3: Public Reporting and Guest Model](docs/phases/phase-3-public-reporting-and-guest-model.md)
 - [Phase 4: Formal Correspondence Hardening](docs/phases/phase-4-formal-correspondence-hardening.md)
 
-These phase documents preserve the implementation plan and historical context.
+These notes preserve the implementation plan and historical context.
 For the durable current documentation entry point, see
 [`docs/current/formal/README.md`](../docs/current/formal/README.md).
 
@@ -110,7 +109,7 @@ formal sources. The `pack_bits_get_bit` proof currently relies on
 `native_decide` to discharge the exhaustive byte-bit case split, so its trust
 base includes Lean's generated native-decision axioms for that helper.
 
-## Phase 3 Guest Model
+## Guest Model
 
 `StarkBallotFormal/GuestModel.lean` models the guest as an abstract fold over
 presented vote records. It deliberately does not translate
@@ -190,7 +189,7 @@ curl https://elan.lean-lang.org/elan-init.sh -sSf | sh
 source "$HOME/.elan/env"
 ```
 
-The Phase 1 workspace currently pins Lean `v4.29.1`, the latest stable release
+The workspace currently pins Lean `v4.29.1`, the latest stable release
 published when this workspace was introduced. Refresh that pin deliberately in a
 small change, because Lean does not promise strong backwards compatibility
 between all versions.
