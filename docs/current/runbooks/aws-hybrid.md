@@ -76,25 +76,25 @@ aws logs describe-log-groups \
 
 CloudWatch Logs Insights のクエリ集と週次監視手順は private operations notes 側で管理します。public snapshot では、この Runbook のロググループ discovery 例を一次切り分けの入口にしてください。
 
-## 2. S3 bundle / presigned URL 障害
+## 2. S3 bundle / authenticated download 障害
 
 ### 典型症状
 
 - Verify 画面やダウンロード導線で 403 が返る
-- 認証付き bundle / report endpoint が 302 redirect を返せない
-- ログに `s3_presign_failed` が出る
+- 認証付き bundle / report endpoint が S3 artifact を取得できない
+- ログに S3 download / GetObject 系のエラーが出る
 
 ### 対応手順
 
 1. `hono-api` のログを最初に確認する
-   - presigned URL の発行は `/api/verification/bundles/:sessionId/:executionId` と `/api/verification/bundles/:sessionId/:executionId/report` 側で実行される
+   - S3 artifact の取得は `/api/verification/bundles/:sessionId/:executionId` と `/api/verification/bundles/:sessionId/:executionId/report` 側で実行される
    - `/api/verify` は `s3BundleUrl` を公開レスポンスに返さず、`verificationExecutionId` を返して認証付き download endpoint へ誘導する
    - `hono-api` のログが出ていない場合は、API Gateway access log も確認する
 2. 対象 branch の実効 env を確認する
    - `S3_PROOF_BUCKET`
    - `S3_PROOF_PREFIX`
    - `USE_S3`
-     - hosted Lambda では Lambda runtime 判定でも S3 upload / redirect 経路が有効になる
+     - hosted Lambda では Lambda runtime 判定でも S3 upload / authenticated download 経路が有効になる
      - ローカルや非 Lambda runtime で S3 経路を再現する場合は `USE_S3=true` が必要
 3. `hono-api` の Lambda 実行ロールに、proof bundle bucket への `s3:GetObject` / `s3:GetObjectVersion` / `s3:ListBucket` があることを確認する
 4. bundle 自体が存在しない、または初回アップロードが失敗している場合は、Step Functions と ECS prover のログを先に確認する
@@ -108,7 +108,7 @@ CloudWatch Logs Insights のクエリ集と週次監視手順は private operati
 
 ### 運用メモ
 
-- 手動 `presign` は通常運用の標準手順にしない
+- 手動 `presign` は通常運用の標準手順にしない。browser / CLI には認証付き download endpoint を使わせる
 - 標準復旧経路は UI の bundle / report ダウンロード再試行、または認証付き download endpoint の再実行
 - TTL の基準値
   - `S3_SIGNED_URL_TTL_SECONDS`: default 3600
@@ -193,7 +193,7 @@ curl -X POST "${BASE_URL%/}/api/finalize/cancel" \
   - hosted backend 側の認可反映を疑う
   - `amplify/data/resource.ts` の `allow.resource(...)` が現行デプロイへ反映されているか確認する
 - `AccessDenied: s3:GetObject`
-  - download / presign 経路ならまず `hono-api` の S3 権限を見る
+  - bundle / report download 経路ならまず `hono-api` の S3 権限を見る
   - callback での bundle 復元なら `finalize-callback-runner`、verify report 再取得なら `verifier-service-runner` も確認する
 - `AccessDenied: s3:PutObject`
   - 初回 `bundle.zip` upload なら ECS prover task role を疑う

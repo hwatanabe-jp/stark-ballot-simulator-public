@@ -242,9 +242,11 @@ input.json, verification.json, included-bitmap.json, seen-bitmap.json
 
 - `GET /api/verification/bundles/:sessionId/:executionId` → `bundle.zip`
 - `GET /api/verification/bundles/:sessionId/:executionId/report` → `verification.json`
-- authoritative な `s3BundleKey` / `s3ReportKey` があり、かつ S3 配布が有効な場合だけ 302 で S3 にリダイレクトする
+- authoritative な `s3BundleKey` / `s3ReportKey` があり、かつ S3 配布が有効な場合は、この authenticated route が S3 から artifact を取得して返す
+- S3-backed `bundle.zip` は large artifact の hosted payload limit を避けるため `Accept-Ranges: bytes` を返し、browser / CLI は byte-range response を結合して保存する。range なしの large bundle request は fail closed する
+- `/report` は small protected JSON artifact として通常の body response を返す。S3-backed report が 4 MiB を超える場合は hosted payload limit 回避のため fail closed する
 - authoritative な S3 key がない場合は、この authenticated route がローカル保存済み artifact を直接返す
-- browser / CLI は raw S3 URL ではなく、この authenticated route を public download contract として使う
+- browser / CLI は raw S3 URL や S3 redirect ではなく、この authenticated route を public download contract として使う
 
 ## STARK 検証
 

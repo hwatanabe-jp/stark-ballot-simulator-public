@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { getS3Client, getS3Config } from './s3-client';
 import { logger } from '@/lib/utils/logger';
+import { hashKeyPrefixForLogging } from '@/lib/utils/logging';
 
 /**
  * S3 Upload Result
@@ -64,7 +65,13 @@ export async function uploadFileToS3(options: S3UploadOptions): Promise<S3Upload
 
       await client.send(command);
 
-      logger.info(`[S3] Upload successful: s3://${config.bucket}/${key}`);
+      logger.info('[S3] Upload successful', {
+        s3: {
+          operation: 'putObject',
+          bucket: config.bucket,
+          key_prefix: hashKeyPrefixForLogging(key),
+        },
+      });
 
       return {
         bucket: config.bucket,

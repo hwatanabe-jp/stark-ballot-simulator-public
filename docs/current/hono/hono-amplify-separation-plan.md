@@ -32,7 +32,7 @@
 - 移行対象外:
 - 条件付き:
   - `/api/verification/bundles/*`
-    - Lambda では **S3 redirect のみ**を許可
+    - Lambda では **S3-backed bundle を authenticated route の byte-range response として返す**
     - `USE_S3=true` を前提（ローカルFSは不可）
 - 参考: `/api/diag/env` と `/api/test-data/*` は本番露出回避のため削除済み
 

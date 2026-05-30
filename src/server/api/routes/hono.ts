@@ -82,7 +82,9 @@ export function createHonoApp(options: HonoAppOptions = {}): Hono {
         'X-Debug-Log',
         SESSION_ID_HEADER,
         SESSION_CAPABILITY_HEADER,
+        'Range',
       ],
+      exposeHeaders: ['Content-Range', 'Accept-Ranges', 'X-Stark-Bundle-Range-Chunk-Size'],
     }),
   );
 

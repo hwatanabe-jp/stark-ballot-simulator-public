@@ -233,7 +233,7 @@ export const en = {
         cta: 'Download Bundle',
         loading: 'Downloading...',
         missingBundle: 'No verification bundle available for download',
-        success: 'Successfully downloaded through the authenticated app route',
+        success: 'Bundle downloaded',
       },
       finalization: {
         messages: {

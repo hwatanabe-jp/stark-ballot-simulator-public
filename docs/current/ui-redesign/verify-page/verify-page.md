@@ -151,7 +151,8 @@
 - UI上のリンク更新ボタンは不要
 - download セクションは **sequenceComplete 後** に表示
 - download は `sessionId` と `verificationExecutionId` から authenticated endpoint を組み立てる
-- S3 URL の期限切れ時は `/api/verification/bundles/:sessionId/:executionId` または `/report` を再リクエストし、サーバ側で短命な配布 URL を再生成する
+- S3-backed `bundle.zip` は authenticated endpoint の byte-range response を UI 側で結合して保存する。raw S3 URL や短命な配布 URL は UI contract にしない
+- `/report` は authenticated endpoint から通常の JSON body として取得する
 - local bundle fallback がある場合はそちらも候補に含める
 
 ## 補足

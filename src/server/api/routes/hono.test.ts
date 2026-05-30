@@ -123,7 +123,7 @@ describe('createHonoApp', () => {
     expect(response.status).toBe(404);
   });
 
-  it('allows session auth headers in CORS preflight', async () => {
+  it('allows authenticated range download headers in CORS preflight', async () => {
     const store = createMockVoteStore();
     vi.mocked(getGlobalStore).mockReturnValue(store);
 
@@ -133,7 +133,7 @@ describe('createHonoApp', () => {
       headers: {
         Origin: 'http://localhost:3000',
         'Access-Control-Request-Method': 'GET',
-        'Access-Control-Request-Headers': 'X-Session-ID, X-Session-Capability',
+        'Access-Control-Request-Headers': 'X-Session-ID, X-Session-Capability, Range',
       },
     });
 
@@ -142,5 +142,23 @@ describe('createHonoApp', () => {
     const allowHeaders = response.headers.get('access-control-allow-headers')?.toLowerCase() ?? '';
     expect(allowHeaders).toContain('x-session-id');
     expect(allowHeaders).toContain('x-session-capability');
+    expect(allowHeaders).toContain('range');
+  });
+
+  it('exposes ranged bundle response headers to browser JavaScript', async () => {
+    const store = createMockVoteStore();
+    vi.mocked(getGlobalStore).mockReturnValue(store);
+
+    const app = createHonoApp();
+    const response = await app.request('http://localhost/api/progress', {
+      headers: {
+        Origin: 'http://localhost:3000',
+      },
+    });
+
+    const exposeHeaders = response.headers.get('access-control-expose-headers')?.toLowerCase() ?? '';
+    expect(exposeHeaders).toContain('content-range');
+    expect(exposeHeaders).toContain('accept-ranges');
+    expect(exposeHeaders).toContain('x-stark-bundle-range-chunk-size');
   });
 });

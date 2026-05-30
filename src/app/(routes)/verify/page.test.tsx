@@ -1577,6 +1577,7 @@ describe('VerifyPage', () => {
         headers: {
           'X-Session-ID': mockSessionId,
           'X-Session-Capability': 'test-capability-token',
+          Range: 'bytes=0-4194303',
         },
       }),
     );

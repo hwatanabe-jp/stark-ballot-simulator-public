@@ -51,6 +51,14 @@ import { isRecord } from '../../src/lib/utils/guards';
 const imageIdMapping = imageIdMappingJson as ImageIdMapping;
 const currentMethodVersion = imageIdMapping.current;
 const AUTHENTICATED_ENDPOINT_DELIVERY = 'authenticated-endpoint' as const;
+const DEFAULT_BUNDLE_RANGE_CHUNK_BYTES = 4 * 1024 * 1024;
+const BUNDLE_RANGE_CHUNK_HEADER = 'x-stark-bundle-range-chunk-size';
+
+interface ParsedContentRange {
+  start: number;
+  end: number;
+  total: number;
+}
 
 type AuthenticatedArtifactKind = 'bundle' | 'report';
 
@@ -759,16 +767,10 @@ export class CLIVotingTest {
       throw new Error('CLI helpers not initialized');
     }
 
-    const response = await fetch(candidate.url, {
-      method: 'GET',
-      headers: this.helpers.getSensitiveAuthHeaders(sessionId),
-    });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} ${response.statusText}`);
-    }
-
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const buffer =
+      candidate.kind === 'bundle'
+        ? await this.downloadAuthenticatedBundle(sessionId, candidate.url)
+        : await this.downloadAuthenticatedReport(sessionId, candidate.url);
     if (candidate.kind === 'report') {
       try {
         JSON.parse(buffer.toString('utf-8'));
@@ -788,6 +790,84 @@ export class CLIVotingTest {
     await fs.writeFile(filePath, buffer);
 
     return { path: filePath, hash };
+  }
+
+  private async downloadAuthenticatedReport(sessionId: string, url: string): Promise<Buffer> {
+    if (!this.helpers) {
+      throw new Error('CLI helpers not initialized');
+    }
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: this.helpers.getSensitiveAuthHeaders(sessionId),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} ${response.statusText}`);
+    }
+
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  private async downloadAuthenticatedBundle(sessionId: string, url: string): Promise<Buffer> {
+    const firstResponse = await this.fetchAuthenticatedBundleRange(
+      sessionId,
+      url,
+      0,
+      DEFAULT_BUNDLE_RANGE_CHUNK_BYTES - 1,
+    );
+    if (firstResponse.status !== 206) {
+      if (!firstResponse.ok) {
+        throw new Error(`HTTP ${firstResponse.status} ${firstResponse.statusText}`);
+      }
+      return Buffer.from(await firstResponse.arrayBuffer());
+    }
+
+    const firstRange = parseContentRange(firstResponse.headers.get('content-range'));
+    if (!firstRange || firstRange.start !== 0) {
+      throw new Error('Invalid ranged bundle response');
+    }
+
+    const chunks: Buffer[] = [Buffer.from(await firstResponse.arrayBuffer())];
+    const chunkSize = resolveAdvertisedChunkSize(firstResponse.headers.get(BUNDLE_RANGE_CHUNK_HEADER));
+    let nextStart = firstRange.end + 1;
+
+    while (nextStart < firstRange.total) {
+      const nextEnd = Math.min(nextStart + chunkSize - 1, firstRange.total - 1);
+      const response = await this.fetchAuthenticatedBundleRange(sessionId, url, nextStart, nextEnd);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} ${response.statusText}`);
+      }
+      if (response.status !== 206) {
+        throw new Error('Invalid ranged bundle response');
+      }
+
+      const range = parseContentRange(response.headers.get('content-range'));
+      if (!range || range.start !== nextStart || range.total !== firstRange.total) {
+        throw new Error('Invalid ranged bundle response');
+      }
+
+      chunks.push(Buffer.from(await response.arrayBuffer()));
+      nextStart = range.end + 1;
+    }
+
+    return Buffer.concat(chunks);
+  }
+
+  private async fetchAuthenticatedBundleRange(
+    sessionId: string,
+    url: string,
+    start: number,
+    end: number,
+  ): Promise<Response> {
+    if (!this.helpers) {
+      throw new Error('CLI helpers not initialized');
+    }
+    return fetch(url, {
+      method: 'GET',
+      headers: {
+        ...this.helpers.getSensitiveAuthHeaders(sessionId),
+        Range: `bytes=${start}-${end}`,
+      },
+    });
   }
 
   async run(): Promise<{ results: TestResult[]; passed: boolean }> {
@@ -852,6 +932,44 @@ export class CLIVotingTest {
     const allPassed = results.every((r) => r.passed);
     return { results, passed: allPassed };
   }
+}
+
+function parseContentRange(value: string | null): ParsedContentRange | null {
+  if (!value) {
+    return null;
+  }
+  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value);
+  if (!match) {
+    return null;
+  }
+
+  const [, rawStart, rawEnd, rawTotal] = match;
+  const start = Number(rawStart);
+  const end = Number(rawEnd);
+  const total = Number(rawTotal);
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    !Number.isSafeInteger(total) ||
+    start < 0 ||
+    end < start ||
+    total <= end
+  ) {
+    return null;
+  }
+
+  return { start, end, total };
+}
+
+function resolveAdvertisedChunkSize(value: string | null): number {
+  if (!value) {
+    return DEFAULT_BUNDLE_RANGE_CHUNK_BYTES;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return DEFAULT_BUNDLE_RANGE_CHUNK_BYTES;
+  }
+  return parsed;
 }
 
 function getNextBinary(): string {

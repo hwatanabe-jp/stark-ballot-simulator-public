@@ -4,7 +4,7 @@ import path from 'path';
 import { promises as fs } from 'fs';
 import { GET as downloadBundle } from '../[sessionId]/[executionId]/route';
 import { GET as downloadReport } from '../[sessionId]/[executionId]/report/route';
-import { generateBundlePresignedUrlForKey } from '@/lib/aws/presigned-url';
+import { downloadFromS3, downloadRangeFromS3, headS3Object } from '@/lib/aws/s3-download';
 import { readJsonRecord } from '@/lib/testing/response-helpers';
 import { SESSION_CAPABILITY_HEADER } from '@/lib/session/capability';
 import { createTestSessionCapabilityToken, setTestSessionCapabilitySecret } from '@/lib/testing/sessionCapability';
@@ -18,23 +18,10 @@ import { resolveCurrentContractGeneration } from '@/lib/contract';
 
 const TEST_BASE_DIR = path.join(process.cwd(), '.test-verifier-downloads');
 
-vi.mock('@/lib/aws/presigned-url', () => ({
-  generateBundlePresignedUrl: vi.fn((_sessionId: string, _executionId: string, fileName = 'bundle.zip') =>
-    Promise.resolve({
-      url: `https://example.com/${fileName}`,
-      expiresAt: '2025-01-01T01:00:00.000Z',
-      expiresIn: 3600,
-      success: true,
-    }),
-  ),
-  generateBundlePresignedUrlForKey: vi.fn((key: string) =>
-    Promise.resolve({
-      url: `https://example.com/download?key=${encodeURIComponent(key)}`,
-      expiresAt: '2025-01-01T01:00:00.000Z',
-      expiresIn: 3600,
-      success: true,
-    }),
-  ),
+vi.mock('@/lib/aws/s3-download', () => ({
+  downloadFromS3: vi.fn(),
+  downloadRangeFromS3: vi.fn(),
+  headS3Object: vi.fn(),
 }));
 
 describe('verification bundle download routes', () => {
@@ -80,6 +67,33 @@ describe('verification bundle download routes', () => {
 
   const createScopedReportKey = (sessionId: string, executionId: string): string =>
     `custom/reports/${sessionId}/${executionId}/verification.json`;
+
+  const requestS3BundleRange = async (
+    executionId: string,
+    download: { body: Buffer; contentLength?: number; contentRange?: string },
+    options?: { rangeHeader?: string; totalSize?: number },
+  ): Promise<Response> => {
+    process.env.USE_S3 = 'true';
+    const session = await mockStore.createSession();
+    const bundleKey = createScopedBundleKey(session.sessionId, executionId);
+    const totalSize = options?.totalSize ?? 20;
+    vi.mocked(headS3Object).mockResolvedValue({ contentLength: totalSize });
+    vi.mocked(downloadRangeFromS3).mockResolvedValue(download);
+    const { sessionId } = await createFinalizedSession(executionId, {
+      sessionId: session.sessionId,
+      s3BundleKey: bundleKey,
+    });
+
+    return await downloadBundle(
+      new NextRequest(`http://localhost/api/verification/bundles/${sessionId}/${executionId}`, {
+        headers: {
+          ...createRequestHeaders(sessionId),
+          Range: options?.rangeHeader ?? 'bytes=0-7',
+        },
+      }),
+      { params: { sessionId, executionId } },
+    );
+  };
 
   const createFinalizedSession = async (
     executionId: string,
@@ -143,7 +157,9 @@ describe('verification bundle download routes', () => {
 
   beforeEach(async () => {
     setTestSessionCapabilitySecret();
-    vi.mocked(generateBundlePresignedUrlForKey).mockClear();
+    vi.mocked(downloadFromS3).mockReset();
+    vi.mocked(downloadRangeFromS3).mockReset();
+    vi.mocked(headS3Object).mockReset();
     await fs.rm(TEST_BASE_DIR, { recursive: true, force: true });
     await fs.mkdir(TEST_BASE_DIR, { recursive: true });
     process.env.VERIFIER_WORK_DIR = TEST_BASE_DIR;
@@ -217,11 +233,13 @@ describe('verification bundle download routes', () => {
     expect(json).toEqual(reportPayload);
   });
 
-  it('redirects bundle download to S3 when enabled', async () => {
+  it('serves S3 bundle downloads through the authenticated route when enabled', async () => {
     process.env.USE_S3 = 'true';
     const session = await mockStore.createSession();
     const executionId = 'exec-s3';
     const bundleKey = createScopedBundleKey(session.sessionId, executionId);
+    vi.mocked(downloadFromS3).mockResolvedValue(Buffer.from('PK\u0003\u0004s3-bundle'));
+    vi.mocked(headS3Object).mockResolvedValue({ contentLength: Buffer.byteLength('PK\u0003\u0004s3-bundle') });
     const { sessionId } = await createFinalizedSession(executionId, {
       sessionId: session.sessionId,
       s3BundleKey: bundleKey,
@@ -234,11 +252,149 @@ describe('verification bundle download routes', () => {
       { params: { sessionId, executionId } },
     );
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe(`https://example.com/download?key=${encodeURIComponent(bundleKey)}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('application/zip');
+    expect(response.headers.get('content-disposition')).toBe(`attachment; filename="${executionId}.zip"`);
+    expect(Buffer.from(await response.arrayBuffer()).toString()).toBe('PK\u0003\u0004s3-bundle');
+    expect(downloadFromS3).toHaveBeenCalledWith(bundleKey);
   });
 
-  it('fails closed instead of presigning a foreign bundle key', async () => {
+  it('serves S3 bundle byte ranges through the authenticated route', async () => {
+    process.env.USE_S3 = 'true';
+    const session = await mockStore.createSession();
+    const executionId = 'exec-s3-range';
+    const bundleKey = createScopedBundleKey(session.sessionId, executionId);
+    vi.mocked(headS3Object).mockResolvedValue({ contentLength: 20 });
+    vi.mocked(downloadRangeFromS3).mockResolvedValue({
+      body: Buffer.from('01234567'),
+      contentLength: 8,
+      contentRange: 'bytes 0-7/20',
+    });
+    const { sessionId } = await createFinalizedSession(executionId, {
+      sessionId: session.sessionId,
+      s3BundleKey: bundleKey,
+    });
+
+    const response = await downloadBundle(
+      new NextRequest(`http://localhost/api/verification/bundles/${sessionId}/${executionId}`, {
+        headers: {
+          ...createRequestHeaders(sessionId),
+          Range: 'bytes=0-7',
+        },
+      }),
+      { params: { sessionId, executionId } },
+    );
+
+    expect(response.status).toBe(206);
+    expect(response.headers.get('accept-ranges')).toBe('bytes');
+    expect(response.headers.get('content-range')).toBe('bytes 0-7/20');
+    expect(response.headers.get('x-stark-bundle-range-chunk-size')).toBe(String(4 * 1024 * 1024));
+    expect(Buffer.from(await response.arrayBuffer()).toString()).toBe('01234567');
+    expect(downloadRangeFromS3).toHaveBeenCalledWith(bundleKey, { start: 0, end: 7 });
+    expect(downloadFromS3).not.toHaveBeenCalled();
+  });
+
+  it('serves S3 suffix byte ranges through the authenticated route', async () => {
+    const response = await requestS3BundleRange(
+      'exec-s3-suffix-range',
+      {
+        body: Buffer.from('56789'),
+        contentLength: 5,
+        contentRange: 'bytes 15-19/20',
+      },
+      { rangeHeader: 'bytes=-5' },
+    );
+
+    expect(response.status).toBe(206);
+    expect(response.headers.get('content-range')).toBe('bytes 15-19/20');
+    expect(Buffer.from(await response.arrayBuffer()).toString()).toBe('56789');
+    expect(downloadRangeFromS3).toHaveBeenCalledWith(expect.any(String), { start: 15, end: 19 });
+    expect(downloadFromS3).not.toHaveBeenCalled();
+  });
+
+  it('returns 416 for invalid S3 bundle byte ranges', async () => {
+    const response = await requestS3BundleRange(
+      'exec-s3-invalid-range',
+      {
+        body: Buffer.from('unused'),
+        contentLength: 6,
+        contentRange: 'bytes 0-5/20',
+      },
+      { rangeHeader: 'bytes=20-25' },
+    );
+
+    expect(response.status).toBe(416);
+    expect(response.headers.get('content-range')).toBe('bytes */20');
+    const payload = await readJsonRecord(response, 'invalid S3 range response');
+    expect(payload.error).toBe('Invalid range');
+    expect(downloadRangeFromS3).not.toHaveBeenCalled();
+    expect(downloadFromS3).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when S3 range content-range does not match the requested range', async () => {
+    const response = await requestS3BundleRange('exec-s3-range-bad-content-range', {
+      body: Buffer.from('01234567'),
+      contentLength: 8,
+      contentRange: 'bytes 1-8/20',
+    });
+
+    expect(response.status).toBe(500);
+    const payload = await readJsonRecord(response, 'mismatched S3 content-range response');
+    expect(payload.error).toBe('Failed to load bundle');
+  });
+
+  it('fails closed when S3 range content-length does not match the requested range', async () => {
+    const response = await requestS3BundleRange('exec-s3-range-bad-content-length', {
+      body: Buffer.from('01234567'),
+      contentLength: 7,
+      contentRange: 'bytes 0-7/20',
+    });
+
+    expect(response.status).toBe(500);
+    const payload = await readJsonRecord(response, 'mismatched S3 content-length response');
+    expect(payload.error).toBe('Failed to load bundle');
+  });
+
+  it('fails closed when S3 range body length does not match the requested range', async () => {
+    const response = await requestS3BundleRange('exec-s3-range-truncated-body', {
+      body: Buffer.from('0123456'),
+      contentLength: 8,
+      contentRange: 'bytes 0-7/20',
+    });
+
+    expect(response.status).toBe(500);
+    const payload = await readJsonRecord(response, 'truncated S3 range response');
+    expect(payload.error).toBe('Failed to load bundle');
+  });
+
+  it('refuses oversized S3 bundle bodies without a byte range in hosted-safe mode', async () => {
+    process.env.USE_S3 = 'true';
+    const session = await mockStore.createSession();
+    const executionId = 'exec-s3-large';
+    const bundleKey = createScopedBundleKey(session.sessionId, executionId);
+    vi.mocked(headS3Object).mockResolvedValue({ contentLength: 4 * 1024 * 1024 + 1 });
+    const { sessionId } = await createFinalizedSession(executionId, {
+      sessionId: session.sessionId,
+      s3BundleKey: bundleKey,
+    });
+
+    const response = await downloadBundle(
+      new NextRequest(`http://localhost/api/verification/bundles/${sessionId}/${executionId}`, {
+        headers: createRequestHeaders(sessionId),
+      }),
+      { params: { sessionId, executionId } },
+    );
+
+    expect(response.status).toBe(413);
+    expect(response.headers.get('accept-ranges')).toBe('bytes');
+    expect(response.headers.get('content-range')).toBe(`bytes */${4 * 1024 * 1024 + 1}`);
+    const payload = await readJsonRecord(response, 'large S3 bundle response');
+    expect(payload.error).toBe('Bundle requires ranged download');
+    expect(downloadFromS3).not.toHaveBeenCalled();
+    expect(downloadRangeFromS3).not.toHaveBeenCalled();
+  });
+
+  it('fails closed instead of serving a foreign bundle key', async () => {
     process.env.USE_S3 = 'true';
     const executionId = 'exec-good';
     const session = await mockStore.createSession();
@@ -268,15 +424,19 @@ describe('verification bundle download routes', () => {
     const payload = await readJsonRecord(response, 'foreign bundle key response');
     expect(payload.error).toBe('CORRUPT_OR_UNREADABLE_FINALIZED_STATE');
     expect(payload.artifactState).toBe('corrupt_or_unreadable');
-    expect(generateBundlePresignedUrlForKey).not.toHaveBeenCalled();
+    expect(downloadFromS3).not.toHaveBeenCalled();
   });
 
-  it('redirects report download to S3 when enabled', async () => {
+  it('serves S3 report downloads through the authenticated route when enabled', async () => {
     process.env.USE_S3 = 'true';
     const session = await mockStore.createSession();
     const executionId = 'exec-s3-report';
     const bundleKey = createScopedBundleKey(session.sessionId, executionId);
     const reportKey = createScopedReportKey(session.sessionId, executionId);
+    vi.mocked(headS3Object).mockResolvedValue({
+      contentLength: Buffer.byteLength('{"status":"success","source":"s3"}'),
+    });
+    vi.mocked(downloadFromS3).mockResolvedValue(Buffer.from('{"status":"success","source":"s3"}'));
     const { sessionId } = await createFinalizedSession(executionId, {
       sessionId: session.sessionId,
       s3BundleKey: bundleKey,
@@ -290,11 +450,40 @@ describe('verification bundle download routes', () => {
       { params: { sessionId, executionId } },
     );
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe(`https://example.com/download?key=${encodeURIComponent(reportKey)}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('application/json');
+    expect(response.headers.get('content-disposition')).toBe(`inline; filename="${executionId}-verification.json"`);
+    expect(await readJsonRecord(response, 'S3 verification report')).toEqual({ status: 'success', source: 's3' });
+    expect(downloadFromS3).toHaveBeenCalledWith(reportKey);
   });
 
-  it('fails closed instead of presigning a foreign report key', async () => {
+  it('fails closed for oversized S3 report downloads through the authenticated route', async () => {
+    process.env.USE_S3 = 'true';
+    const session = await mockStore.createSession();
+    const executionId = 'exec-s3-large-report';
+    const bundleKey = createScopedBundleKey(session.sessionId, executionId);
+    const reportKey = createScopedReportKey(session.sessionId, executionId);
+    vi.mocked(headS3Object).mockResolvedValue({ contentLength: 4 * 1024 * 1024 + 1 });
+    const { sessionId } = await createFinalizedSession(executionId, {
+      sessionId: session.sessionId,
+      s3BundleKey: bundleKey,
+      s3ReportKey: reportKey,
+    });
+
+    const response = await downloadReport(
+      new NextRequest(`http://localhost/api/verification/bundles/${sessionId}/${executionId}/report`, {
+        headers: createRequestHeaders(sessionId),
+      }),
+      { params: { sessionId, executionId } },
+    );
+
+    expect(response.status).toBe(413);
+    const payload = await readJsonRecord(response, 'oversized S3 verification report');
+    expect(payload.error).toBe('Report exceeds authenticated download limit');
+    expect(downloadFromS3).not.toHaveBeenCalled();
+  });
+
+  it('fails closed instead of serving a foreign report key', async () => {
     process.env.USE_S3 = 'true';
     const session = await mockStore.createSession();
     const executionId = 'exec-foreign-report';
@@ -321,7 +510,7 @@ describe('verification bundle download routes', () => {
     const payload = await readJsonRecord(response, 'foreign report key response');
     expect(payload.error).toBe('CORRUPT_OR_UNREADABLE_FINALIZED_STATE');
     expect(payload.artifactState).toBe('corrupt_or_unreadable');
-    expect(generateBundlePresignedUrlForKey).not.toHaveBeenCalled();
+    expect(downloadFromS3).not.toHaveBeenCalled();
   });
 
   it('serves local report when USE_S3 is enabled but no authoritative s3ReportKey exists', async () => {
@@ -363,11 +552,13 @@ describe('verification bundle download routes', () => {
     expect(response.status).toBe(404);
   });
 
-  it('redirects bundle download to S3 in lambda runtime even without USE_S3', async () => {
+  it('serves S3 bundle downloads in lambda runtime even without USE_S3', async () => {
     process.env.AWS_LAMBDA_FUNCTION_NAME = 'hono-api';
     const session = await mockStore.createSession();
     const executionId = 'exec-lambda';
     const bundleKey = createScopedBundleKey(session.sessionId, executionId);
+    vi.mocked(downloadFromS3).mockResolvedValue(Buffer.from('PK\u0003\u0004lambda-s3-bundle'));
+    vi.mocked(headS3Object).mockResolvedValue({ contentLength: Buffer.byteLength('PK\u0003\u0004lambda-s3-bundle') });
     const { sessionId } = await createFinalizedSession(executionId, {
       sessionId: session.sessionId,
       s3BundleKey: bundleKey,
@@ -380,8 +571,9 @@ describe('verification bundle download routes', () => {
       { params: { sessionId, executionId } },
     );
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe(`https://example.com/download?key=${encodeURIComponent(bundleKey)}`);
+    expect(response.status).toBe(200);
+    expect(Buffer.from(await response.arrayBuffer()).toString()).toBe('PK\u0003\u0004lambda-s3-bundle');
+    expect(downloadFromS3).toHaveBeenCalledWith(bundleKey);
   });
 
   it('falls back to local bundle reads when USE_S3 is enabled but no authoritative s3BundleKey exists', async () => {

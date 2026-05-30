@@ -229,7 +229,7 @@ export const ja = {
         cta: 'バンドルをダウンロード',
         loading: 'ダウンロード中...',
         missingBundle: 'ダウンロード可能な検証バンドルがありません',
-        success: '認証付きアプリルート経由で正常にダウンロードしました',
+        success: 'バンドルをダウンロードしました',
       },
       finalization: {
         messages: {

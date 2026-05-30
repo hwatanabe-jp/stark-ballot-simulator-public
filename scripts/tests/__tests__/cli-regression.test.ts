@@ -161,7 +161,7 @@ async function createBundleZipBuffer(): Promise<Buffer> {
 }
 
 function createAuthenticatedDownloadFetch(bundleZip: Buffer): typeof fetch {
-  const fetchMock: typeof fetch = vi.fn((input: Parameters<typeof fetch>[0]) => {
+  const fetchMock: typeof fetch = vi.fn((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const url = resolveFetchInputUrl(input);
     if (url.endsWith('/report')) {
       return Promise.resolve(
@@ -181,6 +181,28 @@ function createAuthenticatedDownloadFetch(bundleZip: Buffer): typeof fetch {
             headers: { 'Content-Type': 'application/json' },
           },
         ),
+      );
+    }
+
+    const rangeHeader = new Headers(init?.headers).get('range');
+    if (rangeHeader) {
+      const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+      if (!match) {
+        return Promise.resolve(new Response('invalid range', { status: 416 }));
+      }
+      const start = Number(match[1]);
+      const requestedEnd = Number(match[2]);
+      const end = Math.min(requestedEnd, bundleZip.byteLength - 1);
+      return Promise.resolve(
+        new Response(Uint8Array.from(bundleZip.subarray(start, end + 1)), {
+          status: 206,
+          headers: {
+            'Content-Type': 'application/zip',
+            'Content-Range': `bytes ${start}-${end}/${bundleZip.byteLength}`,
+            'Accept-Ranges': 'bytes',
+            'X-Stark-Bundle-Range-Chunk-Size': String(4 * 1024 * 1024),
+          },
+        }),
       );
     }
 

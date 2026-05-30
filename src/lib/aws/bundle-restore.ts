@@ -22,6 +22,7 @@ import {
 } from '@/lib/verification/public-audit-artifacts';
 import { normalizeHexString } from '@/lib/utils/hex';
 import { logger } from '@/lib/utils/logger';
+import { hashKeyPrefixForLogging } from '@/lib/utils/logging';
 
 /**
  * Restored receipt data structure
@@ -48,8 +49,14 @@ export interface RestoredReceipt {
  * @throws Error if download fails, zip is invalid, or receipt.json is missing
  */
 export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredReceipt> {
+  const keyPrefix = hashKeyPrefixForLogging(bundleKey);
   try {
-    logger.info(`[S3 Restore] Starting receipt restoration from ${bundleKey}`);
+    logger.info('[S3 Restore] Starting receipt restoration', {
+      s3: {
+        operation: 'restoreBundle',
+        key_prefix: keyPrefix,
+      },
+    });
 
     // Step 1: Download bundle.zip from S3
     const zipBuffer = await downloadFromS3(bundleKey);
@@ -195,7 +202,13 @@ export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredR
     return restored;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    logger.error(`[S3 Restore] Failed to restore receipt from ${bundleKey}:`, errorMessage);
+    logger.error('[S3 Restore] Failed to restore receipt', {
+      s3: {
+        operation: 'restoreBundle',
+        key_prefix: keyPrefix,
+      },
+      errorMessage,
+    });
     throw new Error(`Receipt restoration failed: ${errorMessage}`);
   }
 }

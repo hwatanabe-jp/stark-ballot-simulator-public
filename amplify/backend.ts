@@ -102,7 +102,8 @@ const honoHttpApi = new apigwv2.HttpApi(honoApiStack, 'HonoHttpApi', {
   corsPreflight: {
     allowOrigins: honoCorsOrigins,
     allowMethods: [apigwv2.CorsHttpMethod.ANY],
-    allowHeaders: ['Content-Type', 'X-Session-ID', 'X-Session-Capability'],
+    allowHeaders: ['Content-Type', 'X-Session-ID', 'X-Session-Capability', 'Range'],
+    exposeHeaders: ['Content-Range', 'Accept-Ranges', 'X-Stark-Bundle-Range-Chunk-Size'],
   },
 });
 const defaultStage = honoHttpApi.defaultStage?.node.defaultChild as apigwv2.CfnStage | undefined;

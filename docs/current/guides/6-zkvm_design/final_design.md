@@ -384,8 +384,8 @@ Async public bundle:
 - `included-bitmap.json`
 - `seen-bitmap.json`
 
-`verification.json` は protected report artifact であり、capability-checked endpoint または短命な presigned URL の
-対象にはなり得るが、public bundle member ではない。
+`verification.json` は protected report artifact であり、capability-checked endpoint の対象にはなり得るが、
+public bundle member ではない。
 
 ---
 

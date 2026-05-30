@@ -935,12 +935,13 @@ STARK 検証の実行（必要時）。
 **備考**
 
 - path-scoped endpoint のため `X-Session-ID` は不要。
-- `bundle` / `report` は、S3 配信が有効な環境では presigned URL へ `302` redirect することがある。
+- `bundle` / `report` は raw S3 URL へ redirect せず、authenticated endpoint が artifact body を返す。
+- S3-backed `bundle.zip` は hosted Lambda/API Gateway の buffered payload 上限を避けるため `Accept-Ranges: bytes` を返し、large bundle は byte-range request で取得する。range なしの large bundle request は fail closed する。
 - `bundle.zip` は **public bundle** を返す。現行 contract:
   - sync: `public-input.json`, `election-manifest.json`, `close-statement.json`, `receipt.json`, `journal.json`, `metadata.json`（+ optional `sth.json`, `consistency-proof.json`）
   - async: `public-input.json`, `election-manifest.json`, `close-statement.json`, `receipt.json`, `journal.json`
 - public `bundle.zip` に **含めない**: `input.json`, `verification.json`, `included-bitmap.json`, `seen-bitmap.json`
-- `/report` は authenticated な `verification.json` を返す。
+- `/report` は authenticated な `verification.json` を返す。S3-backed report が 4 MiB を超える場合は fail closed する。
 
 ---
 

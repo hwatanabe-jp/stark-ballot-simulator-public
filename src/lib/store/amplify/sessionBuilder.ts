@@ -3,6 +3,7 @@ import { SimpleBulletinBoard } from '@/lib/bulletin/simple-bulletin-board';
 import { normalizeHex } from '@/lib/utils/hex';
 import { isRecord } from '@/lib/utils/guards';
 import { logger } from '@/lib/utils/logger';
+import { hashKeyPrefixForLogging } from '@/lib/utils/logging';
 import { decryptVoteSecret } from '@/lib/security/voteSecretCipher';
 import { hasMatchingElectionConfigHash, isElectionConfig } from '@/lib/zkvm/election-config';
 import { canonicalizeFinalizationResult, hasConsistentPublicAuditArtifacts } from '@/lib/finalize/finalization-result';
@@ -394,7 +395,12 @@ export async function buildSessionDataFromRecords(
           seenBitmapRoot: restored.seenBitmapArtifact.seenBitmapRoot,
         };
       }
-      logger.info('[AmplifySessionStore] Receipt and journal restored from S3:', finalizationResult.s3BundleKey);
+      logger.info('[AmplifySessionStore] Receipt and journal restored from S3', {
+        s3: {
+          operation: 'restoreBundle',
+          key_prefix: hashKeyPrefixForLogging(finalizationResult.s3BundleKey),
+        },
+      });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       logger.error('[AmplifySessionStore] Failed to restore from S3:', errorMessage);

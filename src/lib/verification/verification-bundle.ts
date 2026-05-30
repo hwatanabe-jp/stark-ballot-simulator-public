@@ -17,6 +17,7 @@ import {
 import { createIncludedBitmapArtifact } from '@/lib/verification/included-bitmap-artifact';
 import { createSeenBitmapArtifact } from '@/lib/verification/seen-bitmap-artifact';
 import { getStringProperty } from '@/lib/utils/guards';
+import { hashKeyPrefixForLogging } from '@/lib/utils/logging';
 import {
   buildSupportedPublicInputArtifactFromZkvmInput,
   buildPublicInputArtifactFromZkvmInput,
@@ -346,7 +347,12 @@ export async function uploadVerificationBundleToS3(
       };
     }
 
-    logger.info(`[Bundle] S3 upload successful: ${uploadResult.key}`);
+    logger.info('[Bundle] S3 upload successful', {
+      s3: {
+        operation: 'putObject',
+        key_prefix: uploadResult.key ? hashKeyPrefixForLogging(uploadResult.key) : undefined,
+      },
+    });
 
     return {
       s3BundleUrl: urlResult.url,
