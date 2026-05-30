@@ -99,7 +99,7 @@ external services.
 ### Prerequisites
 
 - Node.js 24
-- Corepack with pnpm 11.2.2, as pinned by `packageManager`
+- Corepack with pnpm 11.5.0, as pinned by `packageManager`
 - Rust 1.91.1 only if you want Rust builds or real zkVM flows
 - RISC Zero tooling only if you want real zkVM flows
 - Lean / `elan` only if you want to run the formal verification gate
