@@ -1,4 +1,4 @@
-# Root-level ignore to shrink build context for docker/Dockerfile.fargate-prover
+# Root-level ignore to shrink build context for infra/docker/Dockerfile.fargate-prover
 node_modules
 .next
 coverage

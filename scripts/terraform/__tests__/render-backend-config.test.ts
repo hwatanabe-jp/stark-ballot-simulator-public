@@ -15,6 +15,11 @@ function terraformBackendTestEnv(extra: Record<string, string | undefined> = {})
   for (const key of [
     'TERRAFORM_STATE_BUCKET',
     'TERRAFORM_STATE_BUCKET_NAME',
+    'TERRAFORM_ACCOUNT_ALIAS',
+    'TERRAFORM_DEPLOYMENT_ENVIRONMENT',
+    'TERRAFORM_STATE_SCOPE',
+    'TERRAFORM_STATE_KMS_KEY_ID',
+    'TERRAFORM_STATE_KMS_ALIAS',
     'TERRAFORM_AWS_REGION',
     'AWS_REGION',
     'AWS_DEFAULT_REGION',
@@ -62,6 +67,70 @@ describe('render-backend-config.sh', () => {
     });
   });
 
+  it('renders an account-aware target account backend key when state identity is supplied', () => {
+    withTempDir((dir) => {
+      const envFile = path.join(dir, '.env.local');
+      const outputFile = path.join(dir, 'backend.local.hcl');
+      writeFileSync(
+        envFile,
+        [
+          'TERRAFORM_STATE_BUCKET=example-terraform-state',
+          'TERRAFORM_ACCOUNT_ALIAS=stark-dev',
+          'TERRAFORM_DEPLOYMENT_ENVIRONMENT=develop',
+          'TERRAFORM_STATE_SCOPE=bootstrap',
+          'TERRAFORM_STATE_KMS_ALIAS=alias/stark-ballot-simulator-tfstate-stark-dev-develop',
+          'TERRAFORM_AWS_REGION=ap-northeast-1',
+        ].join('\n'),
+      );
+
+      const result = spawnSync('bash', [SCRIPT_PATH, '--env-file', envFile, '--output', outputFile], {
+        encoding: 'utf8',
+        env: terraformBackendTestEnv(),
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain('example-terraform-state');
+      expect(result.stdout).not.toContain('stark-dev');
+
+      const rendered = readFileSync(outputFile, 'utf8');
+      expect(rendered).toContain('bucket       = "example-terraform-state"');
+      expect(rendered).toContain(
+        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
+      );
+      expect(rendered).toContain('kms_key_id   = "alias/stark-ballot-simulator-tfstate-stark-dev-develop"');
+      expect(rendered).not.toContain('key          = "terraform.tfstate"');
+    });
+  });
+
+  it('renders the authorized development app backend key', () => {
+    withTempDir((dir) => {
+      const envFile = path.join(dir, '.env.local');
+      const outputFile = path.join(dir, 'backend.local.hcl');
+      writeFileSync(
+        envFile,
+        [
+          'TERRAFORM_STATE_BUCKET=example-terraform-state',
+          'TERRAFORM_ACCOUNT_ALIAS=stark-dev',
+          'TERRAFORM_DEPLOYMENT_ENVIRONMENT=develop',
+          'TERRAFORM_STATE_SCOPE=app',
+          'TERRAFORM_AWS_REGION=ap-northeast-1',
+        ].join('\n'),
+      );
+
+      const result = spawnSync('bash', [SCRIPT_PATH, '--env-file', envFile, '--output', outputFile], {
+        encoding: 'utf8',
+        env: terraformBackendTestEnv(),
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain('example-terraform-state');
+
+      const rendered = readFileSync(outputFile, 'utf8');
+      expect(rendered).toContain('bucket       = "example-terraform-state"');
+      expect(rendered).toContain('key          = "stark-ballot-simulator/stark-dev/develop/app/terraform.tfstate"');
+    });
+  });
+
   it('lets explicit shell environment values override .env defaults', () => {
     withTempDir((dir) => {
       const envFile = path.join(dir, '.env.local');
@@ -102,4 +171,66 @@ describe('render-backend-config.sh', () => {
       expect(result.stderr).toContain('TERRAFORM_STATE_BUCKET');
     });
   });
+
+  it('rejects partial target account state identity values', () => {
+    withTempDir((dir) => {
+      const envFile = path.join(dir, '.env.local');
+      writeFileSync(
+        envFile,
+        [
+          'TERRAFORM_STATE_BUCKET=example-terraform-state',
+          'TERRAFORM_ACCOUNT_ALIAS=stark-dev',
+          'TERRAFORM_DEPLOYMENT_ENVIRONMENT=develop',
+          'TERRAFORM_AWS_REGION=ap-northeast-1',
+        ].join('\n'),
+      );
+
+      const result = spawnSync('bash', [SCRIPT_PATH, '--env-file', envFile], {
+        encoding: 'utf8',
+        env: terraformBackendTestEnv(),
+      });
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('Target account backend mode requires all state identity values');
+      expect(result.stderr).toContain('TERRAFORM_STATE_SCOPE');
+    });
+  });
+
+  it.each([
+    ['stark-prod', 'main', 'bootstrap'],
+    ['stark-prod', 'main', 'app'],
+  ])(
+    'rejects unauthorized current phase-04 backend identity %s/%s/%s',
+    (accountAlias, deploymentEnvironment, stateScope) => {
+      withTempDir((dir) => {
+        const envFile = path.join(dir, '.env.local');
+        const outputFile = path.join(dir, 'backend.local.hcl');
+        writeFileSync(
+          envFile,
+          [
+            'TERRAFORM_STATE_BUCKET=example-terraform-state',
+            `TERRAFORM_ACCOUNT_ALIAS=${accountAlias}`,
+            `TERRAFORM_DEPLOYMENT_ENVIRONMENT=${deploymentEnvironment}`,
+            `TERRAFORM_STATE_SCOPE=${stateScope}`,
+            'TERRAFORM_AWS_REGION=ap-northeast-1',
+          ].join('\n'),
+        );
+
+        const result = spawnSync('bash', [SCRIPT_PATH, '--env-file', envFile, '--output', outputFile], {
+          encoding: 'utf8',
+          env: terraformBackendTestEnv(),
+        });
+
+        expect(result.status).toBe(2);
+        expect(result.stderr).toContain(
+          'Current backend rendering is authorized only for stark-dev/develop/bootstrap, stark-dev/develop/foundation, and stark-dev/develop/app.',
+        );
+        expect(result.stderr).toContain(
+          'Production bootstrap and app state identities require a later authorization record.',
+        );
+        expect(result.stdout).not.toContain('example-terraform-state');
+        expect(() => readFileSync(outputFile, 'utf8')).toThrow();
+      });
+    },
+  );
 });

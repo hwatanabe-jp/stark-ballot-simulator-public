@@ -17,8 +17,7 @@ The project is in public-readiness work:
 
 ## Source Of Truth
 
-- Runtime behavior: current code in `src/`, `docker/`, `amplify/`, and
-  `terraform/`
+- Runtime behavior: current code in `apps/`, `packages/`, `infra/docker/`, and `infra/terraform/`
 - Verification contract: `docs/current/verification/README.md`
 - zkVM design contract: `docs/current/guides/6-zkvm_design/final_design.md`
 - AWS operations: `docs/current/runbooks/` and

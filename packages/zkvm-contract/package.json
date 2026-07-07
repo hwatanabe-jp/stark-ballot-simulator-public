@@ -1,0 +1,31 @@
+{
+  "name": "@stark-ballot/zkvm-contract",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./zkvm/bitmap": "./src/zkvm/bitmap.ts",
+    "./zkvm/bitmap-artifacts": "./src/zkvm/bitmap-artifacts.ts",
+    "./zkvm/contract-constants": "./src/zkvm/contract-constants.ts",
+    "./zkvm/election-config": "./src/zkvm/election-config.ts",
+    "./zkvm/guards": "./src/zkvm/guards.ts",
+    "./zkvm/hex": "./src/zkvm/hex.ts",
+    "./zkvm/host-io": "./src/zkvm/host-io.ts",
+    "./zkvm/identifiers": "./src/zkvm/identifiers.ts",
+    "./zkvm/journal-count-compat": "./src/zkvm/journal-count-compat.ts",
+    "./zkvm/journal-guards": "./src/zkvm/journal-guards.ts",
+    "./zkvm/log-id": "./src/zkvm/log-id.ts",
+    "./zkvm/public-journal": "./src/zkvm/public-journal.ts",
+    "./zkvm/types": "./src/zkvm/types.ts",
+    "./zkvm/validated-domain": "./src/zkvm/validated-domain.ts",
+    "./zkvm/wire-numeric-preflight": "./src/zkvm/wire-numeric-preflight.ts",
+    "./zkvm/work-budget": "./src/zkvm/work-budget.ts"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.2.0"
+  },
+  "devDependencies": {
+    "fast-check": "4.8.0",
+    "vitest": "4.1.9"
+  }
+}

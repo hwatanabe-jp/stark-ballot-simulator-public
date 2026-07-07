@@ -7,11 +7,19 @@ import {
   generateTestReport,
 } from './helpers/test-helpers';
 import type { VerificationCheckId, VerificationStepId } from './pages';
+import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+
+function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
+  if (value === undefined || value === null) {
+    throw new Error(`Expected ${label} to be defined`);
+  }
+  return value;
+}
 
 // Test configuration
-const USE_REAL_ZKVM = process.env.USE_REAL_ZKVM === 'true';
-const IS_PRODUCTION_MODE = USE_REAL_ZKVM && process.env.RISC0_DEV_MODE !== '1';
-const IS_CI = process.env.CI === 'true';
+const USE_REAL_ZKVM = process.env['USE_REAL_ZKVM'] === 'true';
+const IS_PRODUCTION_MODE = USE_REAL_ZKVM && process.env['RISC0_DEV_MODE'] !== '1';
+const IS_CI = process.env['CI'] === 'true';
 const isRecordValue = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
 // Increase timeout based on zkVM mode
@@ -48,13 +56,11 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
     // Set testMode at context level (applies to all pages in this context)
     await context.addInitScript(() => {
       localStorage.setItem('testMode', 'true');
-      (globalThis as { __STH_SOURCES?: string[] }).__STH_SOURCES = ['/api/sth', '/api/sth?auditor=b'];
     });
 
     // Also set via page.addInitScript for redundancy
     await page.addInitScript(() => {
       localStorage.setItem('testMode', 'true');
-      (globalThis as { __STH_SOURCES?: string[] }).__STH_SOURCES = ['/api/sth', '/api/sth?auditor=b'];
     });
 
     // Start fresh with no localStorage
@@ -114,7 +120,7 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
                     typeof value === 'object' && value !== null;
                   const parsed: unknown = JSON.parse(sessionData);
                   if (!isRecordValue(parsed)) return false;
-                  const sessionId = parsed.sessionId;
+                  const sessionId = parsed['sessionId'];
                   return typeof sessionId === 'string' && sessionId.length > 0;
                 } catch {
                   return false;
@@ -136,7 +142,7 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
               }
             });
             const sessionRecord = isRecordValue(sessionData) ? sessionData : null;
-            const sessionId = typeof sessionRecord?.sessionId === 'string' ? sessionRecord.sessionId : 'unknown';
+            const sessionId = typeof sessionRecord?.['sessionId'] === 'string' ? sessionRecord['sessionId'] : 'unknown';
             console.log(`  ✓ Session created: ${sessionId}`);
           } catch {
             console.log('  ⚠️ Session not found in localStorage, checking page state...');
@@ -145,18 +151,17 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
             const currentUrl = page.url();
             console.log(`  Current URL: ${currentUrl}`);
 
-            // Check all localStorage contents
-            const localStorageData = await page.evaluate(() => {
-              const data: Record<string, string | null> = {};
+            const localStorageKeys = await page.evaluate(() => {
+              const keys: string[] = [];
               for (let i = 0; i < localStorage.length; i++) {
                 const key = localStorage.key(i);
                 if (key) {
-                  data[key] = localStorage.getItem(key);
+                  keys.push(key);
                 }
               }
-              return data;
+              return keys;
             });
-            console.log('  All localStorage:', JSON.stringify(localStorageData, null, 2));
+            console.log('  localStorage keys:', localStorageKeys.join(', ') || '(empty)');
           }
         });
 
@@ -194,23 +199,6 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
           // Give a moment for localStorage to be updated
           await page.waitForTimeout(1000);
 
-          // Debug localStorage contents
-          const localStorageData = await page.evaluate(() => {
-            const sessionData = localStorage.getItem('starkBallotSession');
-            if (sessionData) {
-              try {
-                const isRecordValue = (value: unknown): value is Record<string, unknown> =>
-                  typeof value === 'object' && value !== null;
-                const parsed: unknown = JSON.parse(sessionData);
-                return isRecordValue(parsed) ? parsed : null;
-              } catch {
-                return null;
-              }
-            }
-            return null;
-          });
-          console.log('  Session data after vote:', JSON.stringify(localStorageData, null, 2));
-
           // Store vote data for verification - read directly without waiting
           const commitment = await votePage.getVoteCommitment();
           console.log(
@@ -247,14 +235,6 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
           // Verify we're on the aggregate page
           expect(page.url()).toContain('/aggregate');
           await aggregatePage.waitForPageReady();
-
-          // localStorage の状態を確認（デバッグ用）
-          const storage = await page.evaluate(() => ({
-            origin: window.location.origin,
-            testMode: localStorage.getItem('testMode'),
-            session: localStorage.getItem('starkBallotSession'),
-          }));
-          console.log('[E2E] Before aggregation:', storage);
 
           // Select tamper scenario (single-select radio)
           await aggregatePage.selectScenario(scenario.scenarioId);
@@ -325,7 +305,7 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
           scenario: scenario.name,
           passed: errors.length === 0,
           duration: Date.now() - testStart,
-          errors: errors.length > 0 ? errors : undefined,
+          ...omitUndefinedProperties({ errors: errors.length > 0 ? errors : undefined }),
         });
       } catch (error) {
         // Record failure
@@ -335,7 +315,7 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
           scenario: scenario.name,
           passed: false,
           duration: Date.now() - testStart,
-          errors: [errorMessage],
+          ...omitUndefinedProperties({ errors: [errorMessage] }),
         });
 
         // Take screenshot on failure
@@ -410,11 +390,11 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
     // Assert performance thresholds
     const maxHomeLoadMs = IS_CI ? 8000 : 5000;
     const maxVoteSubmissionMs = IS_CI ? 7000 : 3000;
-    expect(benchmarkResults.pageLoads.home).toBeLessThan(maxHomeLoadMs); // 5s local / 8s CI
-    expect(benchmarkResults.operations.voteSubmission).toBeLessThan(maxVoteSubmissionMs); // 3s local / 7s CI
+    expect(strictDefined(benchmarkResults.pageLoads['home'])).toBeLessThan(maxHomeLoadMs); // 5s local / 8s CI
+    expect(strictDefined(benchmarkResults.operations['voteSubmission'])).toBeLessThan(maxVoteSubmissionMs); // 3s local / 7s CI
 
     if (!IS_PRODUCTION_MODE) {
-      expect(benchmarkResults.zkvm[USE_REAL_ZKVM ? 'dev' : 'mock']).toBeLessThan(10000); // 10s for mock/dev
+      expect(strictDefined(benchmarkResults.zkvm[USE_REAL_ZKVM ? 'dev' : 'mock'])).toBeLessThan(10000); // 10s for mock/dev
     }
   });
 });

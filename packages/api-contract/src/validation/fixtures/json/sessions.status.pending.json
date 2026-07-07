@@ -1,0 +1,15 @@
+{
+  "sessionId": "2b9efb8c-7fb1-41e5-9fc9-0026054eeda6",
+  "finalizationState": {
+    "status": "pending",
+    "executionId": "mock-execution-001",
+    "queuedAt": 1730000000000
+  },
+  "queue": {
+    "concurrencyLimit": 2,
+    "estimatedDurationMs": 360000
+  },
+  "finalizationResult": null,
+  "stepFunctions": null,
+  "asyncFinalizationMode": "enabled"
+}

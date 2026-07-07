@@ -3,9 +3,9 @@
 This repository is a generated public portfolio snapshot of STARK Ballot Simulator.
 
 - Public repository: https://github.com/hwatanabe-jp/stark-ballot-simulator-public
-- Source commit: `e0af278cdab03cd0cf811b3ebffe2f880add6207`
-- Generated at: `2026-05-30T13:50:52.953Z`
-- Copied source files: `907`
+- Source commit: `ba05a5ee18d72375f08713b026f28ebdbf6c58dd`
+- Generated at: `2026-07-07T14:46:10.646Z`
+- Copied source files: `1050`
 
 The private repository remains the source of truth. Public-repository changes
 should normally be made in the private repository and released again as a new
@@ -16,10 +16,10 @@ push, mirror, or graft private repository history into the public repository.
 
 ## What Is Included
 
-- Next.js application and verification UI source
+- Vite / React Router application and verification UI source
 - TypeScript verification, ballot, session, store, and API logic
 - RISC Zero zkVM guest/host source and verifier service source
-- Sanitized infrastructure source for Amplify, Docker, and Terraform
+- Sanitized infrastructure source for Docker and Terraform
 - Public documentation, public book sources, and safe local/test scripts
 - Public-only GitHub Actions workflows
 
@@ -29,16 +29,17 @@ The private source repository intentionally keeps broader working notes than the
 public portfolio snapshot needs. This export preserves that signal while
 publishing only the documentation that is safe and useful for readers.
 
-- Private source docs tracked: `128`
-- Public source docs copied: `62`
+- Private source docs tracked: `182`
+- Public source docs copied: `63`
 - Generated public docs: `1`
-- Source docs stripped: `66`
+- Source docs stripped: `119`
 
 Stripped documentation categories:
 
 - Archived history and progress notes: `49` files from `docs/archive/`
-- Internal implementation notes: `13` files from `docs/current/internal/`
+- Internal implementation notes: `19` files from `docs/current/internal/`
 - Monitoring and operations notes: `4` files from `docs/current/monitoring/`
+- Other unpublished documentation: `47` files from `docs/ outside the public allowlist`
 
 ## What Is Stripped
 
@@ -48,11 +49,10 @@ Stripped documentation categories:
 - `docs/current/internal/`
 - `docs/current/monitoring/`
 - `docs/current/guides/3-deployment/public-repository-release.md`
-- `scripts/aws/`
 - `scripts/monitoring/`
 - `scripts/public/`
-- `terraform/main.tfvars`
-- `terraform/develop.tfvars`
+- `infra/terraform/legacy/main.tfvars`
+- `infra/terraform/legacy/develop.tfvars`
 - `input.json`
 - `verification.json`
 - `included-bitmap.json`

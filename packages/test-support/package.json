@@ -1,0 +1,23 @@
+{
+  "name": "@stark-ballot/test-support",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing/*": "./src/testing/*"
+  },
+  "dependencies": {
+    "@stark-ballot/api-contract": "workspace:*",
+    "@stark-ballot/domain": "workspace:*",
+    "@stark-ballot/node-adapters": "workspace:*",
+    "@stark-ballot/validation": "workspace:*",
+    "@stark-ballot/verification": "workspace:*",
+    "@stark-ballot/zkvm-contract": "workspace:*",
+    "undici": "8.7.0"
+  },
+  "devDependencies": {
+    "@types/yazl": "3.3.1",
+    "vitest": "4.1.9",
+    "yazl": "3.3.1"
+  }
+}

@@ -1,8 +1,10 @@
 # チェック一覧
 
-全検証チェック ID の定義、判定ロジック、失敗時の影響を一覧で解説します。
+全検証チェック ID の定義、判定ロジック、失敗時の影響を一覧で示します。
 
-各チェックは一意の ID を持ち、`success` / `failed` / `not_run` / `running` / `pending` のステータスで管理されます。`required` チェックが `not_run` / `running` / `pending` のまま残っている場合、「Verified」は表示されません。`optional` チェックの取り扱いは [ゲーティングロジック](gating-logic.md#最終判定の種類) を参照してください。
+各チェックは一意の ID を持ち、`success` / `failed` / `not_run` / `running` / `pending` のステータスで管理されます。
+`required` チェックが `not_run` / `running` / `pending` のまま残っている場合、「Verified」は表示されません。
+`optional` チェックの取り扱いは [ゲーティングロジック](gating-logic.md#最終判定の種類) を参照してください。
 
 ## チェックの属性
 
@@ -18,31 +20,37 @@
 
 ### 証拠種別
 
-現行 22 チェックで使う証拠種別です。
+現行 22 チェックで使う証拠種別は次のとおりです。
 
 | 種別     | 説明                                                                                  |
 | -------- | ------------------------------------------------------------------------------------- |
 | `local`  | 投票者の端末に保持されたユーザー固有データ（`localStorage` の投票意図など）           |
 | `public` | 掲示板や capability 保護 API から取得する、秘密データを含まない検証用データ           |
 | `zk`     | zkVM が束縛した公開証拠（ジャーナル、receipt 検証結果、bitmap root に基づく証明など） |
+| `demo`   | dev-mode receipt を許可した場合に、`zk` 証拠種別の表示用結果として使うデモ証拠        |
+
+定義上のチェックは `local` / `public` / `zk` のいずれかを持ちます。
+ただし、`RISC0_DEV_MODE=1` の receipt が明示的に許可された場合、表示用のチェック結果では `zk` 証拠が `demo` に置き換えられます。
+`demo` 証拠は `demo_only` 扱いであり、production STARK proof としての `Verified` にはなりません。
 
 ### 重要度
 
-| 重要度     | 説明                                                                                         |
-| ---------- | -------------------------------------------------------------------------------------------- |
-| `required` | 「Verified」表示に必須。失敗すれば即座にブロック                                             |
-| `optional` | 補助的な検証。通常は単独で失敗扱いにしないが、実行時条件により blocking に昇格する場合がある |
+| 重要度     | 説明                                                                                           |
+| ---------- | ---------------------------------------------------------------------------------------------- |
+| `required` | 「Verified」表示に必須で、失敗すれば即座にブロック                                             |
+| `optional` | 補助的な検証で、通常は単独で失敗扱いにしないが、実行時条件により blocking に昇格する場合がある |
 
 代表例は [`recorded_sth_third_party`](#recorded_sth_third_party) です。
 
-注意: `verificationChecks` と UI 表示用の `verificationSteps` は 1 対 1 ではありません。対応関係は [ゲーティングロジック](gating-logic.md#ステップとチェックの対応関係) を参照してください。
+注意: `verificationChecks` と UI 表示用の `verificationSteps` は 1 対 1 ではありません。
+対応関係は [ゲーティングロジック](gating-logic.md#ステップとチェックの対応関係) を参照してください。
 
 ---
 
 ## Cast-as-Intended（4 チェック）
 
 投票者の意図通りにコミットメントが生成されたかを検証するチェック群です。
-このカテゴリはクライアントが `voteReceipt`（`/api/verify` 応答）とローカル投票意図（`electionId`/`myVote`/`myRand`）を使って評価します。
+クライアントはこのカテゴリを、`voteReceipt`（`/api/verify` 応答）とローカル投票意図（`electionId`/`myVote`/`myRand`）から評価します。
 
 | ID                      | 説明                                                         | 証拠種別 | 重要度     |
 | ----------------------- | ------------------------------------------------------------ | -------- | ---------- |
@@ -55,19 +63,23 @@
 
 #### `cast_receipt_present`
 
-`voteReceipt` が存在し、`voteId` と `commitment` フィールドが存在することを確認します（このチェック単体では UUID/hex 形式までは検証しません）。
+`voteReceipt` が存在し、`voteId` と `commitment` フィールドが存在することを確認します。
+このチェック単体では UUID/hex 形式までは検証しません。
 
 #### `cast_choice_range`
 
-投票時データの選択肢が `A`〜`E` のいずれかであることを確認します。範囲外の値は不正な入力として `failed` となります。
+投票時データの選択肢が `A`〜`E` のいずれかであることを確認します。
+範囲外の値は不正な入力として `failed` となります。
 
 #### `cast_random_format`
 
-投票時データの乱数が 32 バイト（64 文字）の 16 進数文字列であることを確認します。`0x` プレフィックスの有無は正規化により吸収されます。
+投票時データの乱数が 32 バイト（64 文字）の 16 進数文字列であることを確認します。
+`0x` プレフィックスの有無は正規化により吸収されます。
 
 #### `cast_commitment_match`
 
-投票時データから再計算した投票コミットメントが投票レシートの `commitment` 値と一致することを確認します。再計算規則（ドメインタグ・正準フォーマット）は [コミットメントスキーム](../protocol/commitment.md) を参照してください。
+投票時データから再計算した投票コミットメントが投票レシートの `commitment` 値と一致することを確認します。
+再計算規則（ドメインタグ、正準フォーマット）は [コミットメントスキーム](../protocol/commitment.md) を参照してください。
 
 ---
 
@@ -86,33 +98,46 @@
 
 ### 判定ロジックの詳細
 
-`recorded_inclusion_proof` と `recorded_consistency_proof` は [cast-time 証跡](../appendix/glossary.md#cast-time-証跡cast-time-ct-artifact)（`voteReceipt` と `userVote.proof`）の存在を前提とし、まず cast snapshot の一貫性（`leafIndex`、`treeSize`、`bulletinRootAtCast` が receipt と矛盾しないこと）を確認してから個別の検証に進みます。証跡が揃わない場合はどちらも `not_run` となり、全体判定は [fail-closed](../appendix/glossary.md#fail-closed) で `missing_evidence` 側へ倒れます。
+`recorded_inclusion_proof` と `recorded_consistency_proof` は [cast-time 証跡](../appendix/glossary.md#cast-time-証跡cast-time-ct-artifact)（`voteReceipt` と `userVote.proof`）の存在を前提とします。
+両チェックは、まず cast snapshot の一貫性（`leafIndex`、`treeSize`、`bulletinRootAtCast` が receipt と矛盾しないこと）を確認してから個別の検証に進みます。
+証跡が揃わない場合はどちらも `not_run` となり、全体判定は [fail-closed](../appendix/glossary.md#fail-closed) で `missing_evidence` 側へ倒れます。
 
 #### `recorded_commitment_in_bulletin`
 
-包含証明（`recorded_inclusion_proof`）の結果から派生します。包含証明が成功すれば、コミットメントがツリーに存在することが暗号学的に証明されています。
+包含証明（`recorded_inclusion_proof`）の結果から派生します。
+包含証明が成功すれば、コミットメントがツリーに存在することが暗号学的に証明されています。
 
 #### `recorded_index_in_range`
 
-掲示板インデックスが `0 <= index < treeSize` の範囲内であることを確認します。範囲外のインデックスは、データの不整合を示します。
+掲示板インデックスが `0 <= index < treeSize` の範囲内であることを確認します。
+範囲外のインデックスは、データの不整合を示します。
 
 #### `recorded_root_at_cast_consistent`
 
-整合性証明（`recorded_consistency_proof`）の結果から派生します。整合性証明が成功すれば、投票時のルートが最終ツリーの有効な追記専用プレフィックスであることが証明されています。
+整合性証明（`recorded_consistency_proof`）の結果から派生します。
+整合性証明が成功すれば、投票時のルートが最終ツリーの有効な追記専用プレフィックスであることが証明されています。
 
 #### `recorded_inclusion_proof`
 
-投票者のコミットメントに対する RFC 6962 包含証明（監査パス）を検証します。リーフハッシュと監査パスから cast 時点のルートを再計算し、receipt の `bulletinRootAtCast` と一致することを確認します。proof の `treeSize` が `voteReceipt.bulletinIndex + 1` と一致しない場合は `failed` です。
+投票者のコミットメントに対する RFC 6962 包含証明（監査パス）を検証します。
+リーフハッシュと監査パスから cast 時点のルートを再計算し、receipt の `bulletinRootAtCast` と一致することを確認します。
+proof の `treeSize` が `voteReceipt.bulletinIndex + 1` と一致しない場合は `failed` です。
 
 #### `recorded_consistency_proof`
 
-投票時のツリー（oldSize, oldRoot）から最終ツリー（newSize, newRoot）への RFC 6962 整合性証明を検証します。bulletin provider から取得した old/new 両時点の root が期待値と一致することを確認し、投票時ルートが最終ツリーの追記専用プレフィックスであることを保証します。`treeSize` チェックは包含証明と同条件です。
+投票時のツリー（oldSize, oldRoot）から最終ツリー（newSize, newRoot）への RFC 6962 整合性証明を検証します。
+bulletin provider から取得した old/new 両時点の root が期待値と一致することを確認し、投票時ルートが最終ツリーの追記専用プレフィックスであることを保証します。
+`treeSize` チェックは包含証明と同条件です。
 
 #### `recorded_sth_third_party`
 
-設定された STH ソースからスナップショットを取得し、比較可能な応答同士で合意を確認します。判定は `matchingSources >= minMatches`（デフォルト: 2）に加えて、比較対象になった応答間の全会一致（consensus）が必要です。照合対象は STH ダイジェストが必須で、`bulletinRoot` / `treeSize` は各ソースが返した場合に追加で照合されます。STH ソースが未設定の場合は `not_run` になります。
+設定された STH ソースからスナップショットを取得し、比較可能な応答同士で合意を確認します。
+判定は `matchingSources >= minMatches`（デフォルト: 2）に加えて、比較対象になった応答間の全会一致（consensus）が必要です。
+照合対象は STH ダイジェストが必須で、`bulletinRoot` / `treeSize` は各ソースが返した場合に追加で照合されます。
+STH ソースが未設定の場合は `not_run` になります。
 
-早見表では `optional` ですが、STH ソース設定時は required 相当に昇格します。詳細は [ゲーティングロジック](gating-logic.md#ステップとチェックの対応関係) を参照してください。
+早見表では `optional` ですが、STH ソース設定時は required 相当に昇格します。
+詳細は [ゲーティングロジック](gating-logic.md#ステップとチェックの対応関係) を参照してください。
 
 ---
 
@@ -137,40 +162,53 @@
 
 #### `counted_input_sanity`
 
-`public-input.json` 相当から組み立てた公開入力サマリーが存在し、スキーマ検証に成功していることを確認します。加えて、`treeSize` が正の整数、`votesCount <= treeSize`、`bulletinRoot` が 32 バイト hex かつゼロ値でないことを要求します。
+`public-input.json` 相当から組み立てた公開入力サマリーが存在し、スキーマ検証に成功していることを確認します。
+さらに、`treeSize` が正の整数、`votesCount <= treeSize`、`bulletinRoot` が 32 バイト hex かつゼロ値でないことを要求します。
 
 #### `counted_unique_indices`
 
-zkVM に渡された全投票のインデックスが重複なく一意であることを確認します。重複インデックスは、同一投票の二重カウントを示す可能性があります。
+zkVM に渡された全投票のインデックスが重複なく一意であることを確認します。
+重複インデックスは、同一投票の二重カウントを示す可能性があります。
 
 #### `counted_unique_commitments`
 
-zkVM に渡された全投票のコミットメントが重複なく一意であることを確認します。重複コミットメントは、同一コミットメントに対する複数投票を示す可能性があります。
+zkVM に渡された全投票のコミットメントが重複なく一意であることを確認します。
+重複コミットメントは、同一コミットメントに対する複数投票を示す可能性があります。
 
 #### `counted_tally_consistent`
 
-主経路では、公開される claimed tally（`tally.counts`）が zkVM の `verifiedTally` と選択肢ごとに一致し、かつ `verifiedTally` の合計が `tally.totalVotes` と一致することを確認します。これにより「公開表示された集計値」と「zkVM が証明した集計値」の不一致を検出します。claimed tally が利用できない場合は、フォールバックとして `journal.verifiedTally` の合計と `journal.validVotes` の一致を検証します。
+ジャーナルが存在し、`journal.totalVotes` が 0 の場合は、zkVM が投票を 1 件も処理していないため `failed` とします。
+
+主経路では、公開される claimed tally（`tally.counts`）が zkVM の `verifiedTally` と選択肢ごとに一致し、かつ `verifiedTally` の合計が `tally.totalVotes` と一致することを確認します。
+これにより「公開表示された集計値」と「zkVM が証明した集計値」の不一致を検出します。
+claimed tally が利用できない場合は、フォールバックとして `journal.verifiedTally` の合計と `journal.validVotes` の一致を検証します。
 
 #### `counted_missing_indices_zero`
 
-fail-closed（安全側に倒す）な除外数が 0 であることを確認します。除外数は次の優先順で解決し、0 でなければ即座に `failed` とします。
+fail-closed（安全側に倒す）な除外数が 0 であることを確認します。
+除外数は次の優先順で解決し、0 でなければ即座に `failed` とします。
 
-1. `journal` がある場合: `journal.excludedSlots` を proof-bound な除外数として使用。`excludedSlots` / `missingSlots` / `invalidPresentedSlots` / `validVotes` が非負整数であることも先に確認する
+1. `journal` がある場合: `journal.excludedSlots` を proof-bound な除外数として使用し、`excludedSlots` / `missingSlots` / `invalidPresentedSlots` / `validVotes` が非負整数であることも先に確認する
 2. `journal` がない場合: `excludedSlots` → `missingSlots + invalidPresentedSlots` の順で探索
 
-`rejectedRecords` は説明用の補助値で、この判定には使いません。旧フィールド (`excludedCount` / `missingIndices` / `invalidIndices`) は fail-closed 補正経路でのみ参照され、本判定では使用しません。
+`rejectedRecords` は説明用の補助値で、この判定には使いません。
+旧フィールド (`excludedCount` / `missingIndices` / `invalidIndices`) は fail-closed 補正経路でのみ参照され、本判定では使用しません。
 
 #### `counted_expected_vs_tree_size`
 
-`totalExpected`（期待される投票数）が掲示板のツリーサイズと一致することを確認します。不一致は、暗黙の投票除外を示す可能性があります。
+`totalExpected`（期待される投票数）が掲示板のツリーサイズと一致することを確認します。
+不一致は、暗黙の投票除外を示す可能性があります。
 
 #### `counted_election_manifest_consistent`
 
-`election-manifest.json` の `electionConfigHash` を再計算し、manifest 自身の宣言値と一致することを確認します。そのうえで `electionId` と `electionConfigHash` を、セッション値・`publicInputArtifact` から導出した内部 `publicInputSummary`・ジャーナルに含まれる対応値と相互照合します。
+`election-manifest.json` の `electionConfigHash` を再計算し、manifest 自身の宣言値と一致することを確認します。
+そのうえで `electionId` と `electionConfigHash` を、セッション値、`publicInputArtifact` から導出した内部 `publicInputSummary`、ジャーナルに含まれる対応値と相互照合します。
 
 #### `counted_close_statement_consistent`
 
-`close-statement.json` から `sthDigest` を再計算し、宣言された snapshot と一致することを確認します。そのうえで `timestamp` が `publicInputArtifact` から導出した内部 `publicInputSummary.timestamp` と一致し、`logId` / `treeSize` / `bulletinRoot` / `sthDigest` が検証入力やジャーナルと矛盾しないことを確認します。
+`close-statement.json` から `sthDigest` を再計算し、宣言された snapshot と一致することを確認します。
+そのうえで `timestamp` が、`publicInputArtifact` から導出した内部 `publicInputSummary.timestamp` と一致することを確認します。
+さらに `logId` / `treeSize` / `bulletinRoot` / `sthDigest` が、検証入力やジャーナルと矛盾しないことを確認します。
 
 #### `counted_my_vote_included`
 
@@ -182,7 +220,9 @@ fail-closed（安全側に倒す）な除外数が 0 であることを確認し
 
 #### `counted_input_commitment_match`
 
-公開入力から再構成した入力コミットメントが、zkVM ジャーナルの値と一致することを確認します。対象フィールドの集合と正準エンコーディングは [入力コミットメント](../protocol/input-commitment.md) を参照してください（`public-input.json` 全体の単純なハッシュではない点に注意）。
+公開入力から再構成した入力コミットメントが、zkVM ジャーナルの値と一致することを確認します。
+対象フィールドの集合と正準エンコーディングは [入力コミットメント](../protocol/input-commitment.md) を参照してください。
+`public-input.json` 全体の単純なハッシュではない点に注意してください。
 
 ---
 
@@ -199,7 +239,8 @@ STARK 証明の暗号学的正当性を検証するチェック群です。
 
 #### `stark_image_id_match`
 
-STARK status が `success` に解決された後で、期待 Image ID・verifier-confirmed Image ID・ホスト主張値が相互に矛盾しないことを確認します。整合条件（report に Image ID フィールドが揃わない場合の挙動を含む）と fail-closed の取り扱いは [Image ID](../zkvm/image-id.md) を参照してください。
+STARK status が `success` に解決された後で、期待 Image ID、verifier-confirmed Image ID、ホスト主張値が相互に矛盾しないことを確認します。
+整合条件（report に Image ID フィールドが揃わない場合の挙動を含む）と fail-closed の取り扱いは [Image ID](../zkvm/image-id.md) を参照してください。
 
 期待 Image ID の解決順:
 
@@ -208,11 +249,14 @@ STARK status が `success` に解決された後で、期待 Image ID・verifier
 | 1      | `EXPECTED_IMAGE_ID` 環境変数                     |
 | 2      | `public/imageId-mapping.json` の current mapping |
 
-variant は `EXPECTED_IMAGE_ID_VARIANT`（`default` または `x86_64`）で明示指定します（未指定時は `default`）。
+variant は `EXPECTED_IMAGE_ID_VARIANT`（`default` または `x86_64`）または呼び出し側 option で明示指定し、未指定時の解決候補は `default` です。
+unsupported variant、missing mapping、選択 variant の Image ID 欠落は暗黙にフォールバックせず fail-closed で失敗します。
 
 #### `stark_receipt_verify`
 
-サーバー側の Rust 検証サービスが `Receipt::verify(image_id)` を実行し、Seal（STARK 証明）が暗号学的に正当であることを確認します。チェック結果は `success` / `failed` / `not_run` / `running` で表現され、`dev_mode` は [ゲーティングロジック](gating-logic.md#stark-検証のゲーティング) に従って正規化されます。
+サーバー側の Rust 検証サービスが `Receipt::verify(image_id)` を実行し、Seal（STARK 証明）が暗号学的に正当であることを確認します。
+チェック結果は `success` / `failed` / `not_run` / `running` で表現され、`dev_mode` は [ゲーティングロジック](gating-logic.md#stark-検証のゲーティング) に従って正規化されます。
+`RISC0_DEV_MODE=1` で生成された dev-mode receipt はフェイクレシートであり、production STARK proof として扱いません。
 
 ---
 
@@ -267,4 +311,4 @@ stateDiagram-v2
 | 21  | `stark_image_id_match`                 | STARK    | `zk`     | required | —                            |
 | 22  | `stark_receipt_verify`                 | STARK    | `zk`     | required | —                            |
 
-<!-- source: src/lib/verification/verification-checks.ts, src/lib/verification/build-verification-checks.ts, src/lib/verification/engine/evaluate-checks.ts, src/lib/verification/verification-summary.ts -->
+<!-- source: packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/build-verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/verification-summary.ts, packages/verification/src/verification/excluded-count.ts, packages/verification/src/verification/fail-closed-status.ts -->

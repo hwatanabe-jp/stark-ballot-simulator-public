@@ -128,11 +128,13 @@ layout と同一とは限りません。
 
 #### 3. Claim（主張）
 
-証明が主張する内容：
+RISC Zero receipt の claim は、指定された guest image が正常終了し、その実行で journal が commit
+されたことを `Receipt::verify(expectedImageId)` で検証するための内部構造です。現行 app の入力 binding は、
+claim 内の「入力データのハッシュ」として扱うのではなく、journal / public contract の
+`inputCommitment` で確認します。
 
-- 初期プログラムカウンタ（PC）
-- 終了コード
-- 入力データのハッシュ
+- `verifier-service` は receipt を expected ImageID で検証し、top-level `image_id` との整合も確認します。
+- `inputCommitment` は `journal.json` / `public-input.json` 側で、特定の公開入力に対する実行であることを結びます。
 
 ## 実測・目安
 

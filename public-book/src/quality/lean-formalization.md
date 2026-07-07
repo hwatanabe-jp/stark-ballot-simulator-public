@@ -2,7 +2,10 @@
 
 本プロジェクトでは Lean 4 を使い、`Verified` 表示の fail-closed 条件、journal count の整合性、input commitment の canonical encoding、LSB-first bitmap packing、抽象 guest tally model の不変条件を形式化しています。
 
-Lean は実装を直接証明するのではなく、抽象モデル上で不変条件を証明し、そこから生成した generated vectors / formal report / formal audit を TypeScript・Rust のテストと CI に接続することで、モデルと実装の対応付けを継続的に検査します。Lean が扱わない範囲は末尾の [証明していないこと](#証明していないこと) を参照してください。
+Lean は実装を直接証明しません。
+代わりに、抽象モデル上で不変条件を証明し、そこから生成した generated vectors、formal report、formal audit を TypeScript / Rust のテストと CI に接続します。
+この接続により、モデルと実装の対応付けを継続的に検査します。
+Lean が扱わない範囲は末尾の [証明していないこと](#証明していないこと) を参照してください。
 
 ## Lean で定義しているもの
 
@@ -15,7 +18,9 @@ Lean は実装を直接証明するのではなく、抽象モデル上で不変
 | `Bitmap.lean`              | `packedByteCount`, `packedAddress`, `byteValueAt`, `packBits`                                             | LSB-first bitmap packing と bit address をモデル化     |
 | `GuestModel.lean`          | `RejectReason`, `GuestVote`, `CandidateTally`, `GuestState`, `classifyVote`, `processVotes`, guest bounds | zkVM guest の抽象 tally / rejection state machine      |
 
-`GuestModel.lean` は `zkvm/methods/guest/src/main.rs` を行単位で翻訳したものではありません。外部的に重要な処理順序、つまりインデックス範囲、重複 index、選択肢、コミットメント、重複 commitment、包含証明、集計反映の順序を抽象 state machine として表します。
+`GuestModel.lean` は `zkvm/methods/guest/src/main.rs` を行単位で翻訳したものではありません。
+外部的に重要な処理順序を抽象 state machine として表します。
+具体的には、インデックス範囲、重複 index、選択肢、コミットメント、重複 commitment、包含証明、集計反映の順序をモデル化します。
 
 ## Lean で証明していること
 
@@ -29,7 +34,8 @@ Lean は実装を直接証明するのではなく、抽象モデル上で不変
 | Guest completeness   | `zero_exclusion_guest_model_complete`                                                                                                      | `excludedSlots = 0` が guest model 上で missing / invalid presented の不存在につながる   |
 | Bounded counts       | `no_overflow_under_guest_bounds`                                                                                                           | 明示した guest bounds 内で seen / valid / rejected / tally bucket が Rust `u32` に収まる |
 
-これらは抽象モデル上の主張です。実装との対応は、次の generated vectors とテストで検査します。
+これらは抽象モデル上の主張です。
+実装との対応は、次の generated vectors とテストで検査します。
 
 ## 実装との接続
 
@@ -67,13 +73,15 @@ flowchart LR
 | `bitmap-cases.json`               | TypeScript / Rust tests          | LSB-first packing と bitmap behavior の対応                            |
 | `guest-model-cases.json`          | Rust guest tests                 | 抽象 guest model と Rust guest inspection surface の対応               |
 
-`pnpm formal:verify` は Lean build、formal report / generated vectors / audit の freshness、TypeScript の vector-consuming tests、生成 JSON の format check をまとめて実行します。Rust 側の vector-consuming tests は `docs/current/formal/generated-vectors/**` の変更で起動する Rust tests workflow の `cargo test` によって検査します。
+`pnpm formal:verify` は Lean build、formal report、generated vectors、audit の freshness、TypeScript の vector-consuming tests、生成 JSON の format check をまとめて実行します。
+Rust 側の vector-consuming tests は `docs/current/formal/generated-vectors/**` の変更で起動する Rust tests workflow の `cargo test` によって検査します。
 
-この接続により、Lean model が変わったのに実装テストが追従していない場合、または実装側の encoding / summary / guest behavior が model から外れた場合に、CI 上で drift を検出できます。
+この接続により、Lean model が変わったにもかかわらず実装テストが追従していない場合に、CI 上で drift を検出できます。
+実装側の encoding、summary、guest behavior が model から外れた場合も同じです。
 
 ## 対応付けを支える成果物
 
-Lean の成果物を public documentation と実装テストに接続するため、次を組み込んでいます。
+Lean の成果物を public documentation と実装テストに接続するため、次の artifact と検査を組み込んでいます。
 
 - guest-model generated vectors
 - check-definition drift vector
@@ -111,6 +119,7 @@ Lean は次を証明しません。
 - 本番選挙システムとしての安全性
 - zkVM guest Rust 実装全体の line-by-line verification
 
-したがって、正確な主張は「投票システム全体を形式検証した」ではありません。正確には、選択した安全モデルを Lean で証明し、generated vectors と CI drift guard によって TypeScript / Rust 実装との対応を検査している、というものです。
+したがって、主張は「投票システム全体を形式検証した」ではありません。
+選択した安全モデルを Lean で証明し、generated vectors と CI drift guard によって TypeScript / Rust 実装との対応を検査しています。
 
 <!-- source: formal/StarkBallotFormal/*.lean, formal/Scripts/EmitFormalReport.lean, formal/Scripts/EmitTestVectors.lean, formal/README.md, docs/current/formal/README.md, docs/current/formal/formal-report.json, docs/current/formal/formal-audit.json, docs/current/formal/generated-vectors/, package.json -->

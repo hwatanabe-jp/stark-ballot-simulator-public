@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Mock zkVM (`mock-executor.ts`) provides a JavaScript-based implementation of the zkVM execution logic for development and testing purposes. It mimics the behavior of the real RISC Zero zkVM without generating actual STARK proofs.
+The Mock zkVM (`packages/node-adapters/src/zkvm/mock-executor.ts`) is a JavaScript implementation of the tally-side zkVM execution logic for development and testing. It verifies and tallies the supplied zkVM input, but it does not generate an actual STARK proof.
 
 ## Operating Modes
 
@@ -10,7 +10,7 @@ The Mock zkVM (`mock-executor.ts`) provides a JavaScript-based implementation of
 
 **When**: Development and manual testing
 
-**Behavior**: Dynamically verifies votes and generates tally based on actual input
+**Behavior**: Verifies the supplied vote records and generates a tally based on that input
 
 ```bash
 # Development server
@@ -26,39 +26,37 @@ USE_MOCK_ZKVM=true ALLOW_INSECURE_ZKVM=true pnpm start
 - Commitment checks and included/seen bitmap roots use the same canonical helpers as the production contract
 - Merkle inclusion proof verification is intentionally omitted in mock mode; use real zkVM dev/prod mode for proof-equivalent inclusion checks
 - Tally reflects the actual vote distribution
-- Results vary based on random bot vote generation
-- `pnpm start` runs in production mode; `ALLOW_INSECURE_ZKVM=true` is required for CI/test-only mock runs
+- Bot votes are generated before finalization by the bot-voting service; the mock zkVM only verifies and tallies the input it receives
+- `pnpm start` does not set production mode by itself; mock E2E uses `scripts/start-test-server.sh`, which sets `NODE_ENV=production` and `ALLOW_INSECURE_ZKVM=true` for the test-only local server
 
 ### 2. E2E Testing Approach
 
-Mock zkVM generates **random bot votes** (production-like behavior). E2E tests validate total vote count (sum = 64) instead of exact distribution:
+Bot votes use a random production-like distribution, so E2E tests avoid fixed per-choice expectations. The result page checks UI tally consistency:
 
 ```typescript
-// E2E validation in tests/e2e/helpers/test-helpers.ts
-const totalVotes = result.verifiedTally.reduce((sum, count) => sum + count, 0);
-if (totalVotes !== 64) {
-  errors.push(`Expected total votes: 64, got: ${totalVotes}`);
-}
+const tallySum = tallyCounts.reduce((sum, count) => sum + count, 0);
+expect(tallySum).toBe(totalVotes);
 ```
 
-**Why this approach?**
-
-- ✅ Ensures Playwright tests run deterministically in CI
-- ✅ Maintains production-like random vote distribution
-- ✅ Focuses on workflow integrity vs implementation details
+Verification E2E checks then assert scenario-specific summary, check, and step statuses from the verify page.
 
 ## Environment Variables
 
-| Variable        | Values           | Purpose                  |
-| --------------- | ---------------- | ------------------------ |
-| `USE_MOCK_ZKVM` | `true` / `false` | Enable/disable Mock zkVM |
+| Variable                                          | Values                      | Purpose                                                                                                  |
+| ------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `USE_MOCK_ZKVM`                                   | `true` / `false`            | Select mock or real zkVM executor                                                                        |
+| `NODE_ENV`                                        | `test`                      | Also selects the mock executor for Vitest and test-only paths                                            |
+| `RISC0_DEV_MODE`                                  | `1`                         | RISC Zero/host dev-mode flag; real-host dev receipts are fake, insecure, non-production evidence         |
+| `FORCE_DEV_MODE`                                  | `true`                      | App/CLI/test classification and target-runtime guard signal; not passed to the zkVM host by the executor |
+| `ALLOW_INSECURE_ZKVM`                             | `true`                      | Permit mock/dev zkVM when `NODE_ENV=production` for CI or local testing                                  |
+| `EXPECTED_IMAGE_ID` / `EXPECTED_IMAGE_ID_VARIANT` | explicit ImageID / `x86_64` | Resolve the mock receipt ImageID used by verification flows                                              |
 
 ## Implementation Details
 
 ### Console Output
 
 ```text
-[zkvm] Using Mock zkVM executor (JavaScript implementation)
+[zkVM] Using mock executor for fast testing
 ```
 
 ## Usage Examples
@@ -93,4 +91,4 @@ pnpm test
 
 - [E2E Testing Guide](../../../../tests/e2e/README.md) - data-testid best practices
 - [Test Scenarios](../../../../tests/e2e/helpers/test-helpers.ts) - Expected values for each scenario
-- [Verify Page](<../../../../src/app/(routes)/verify/page.tsx>) - useRef pattern explanation
+- [Verify Page](../../../../apps/web/src/routes/verify/page.tsx) - verification flow and UI sequencing

@@ -1,0 +1,8 @@
+{
+  "data": {
+    "verificationStatus": "running",
+    "verificationExecutionId": "mock-verification-001",
+    "estimatedDurationMs": 4000,
+    "idempotent": true
+  }
+}

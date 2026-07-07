@@ -1,6 +1,9 @@
 # Setup Guides
 
-This section contains guides for setting up your development environment for the STARK Ballot Simulator project.
+This section contains optional setup guides for development paths that need
+Rust, RISC Zero, or real zkVM execution. For normal local mock development,
+start with the root `README.md`: Node.js, Corepack/pnpm, `.env.local`, and
+`pnpm dev` are enough.
 
 ## Available Guides
 
@@ -16,7 +19,9 @@ This section contains guides for setting up your development environment for the
 
 ## Quick Start Order
 
-1. **First**: Set up RISC Zero environment ([risc0-setup.md](./risc0-setup.md))
+1. **Default local mock flow**: follow the root `README.md` quick start.
+2. **Real zkVM / Rust work only**: set up the RISC Zero environment
+   ([risc0-setup.md](./risc0-setup.md)).
 
 ## Related Sections
 

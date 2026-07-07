@@ -11,7 +11,14 @@
 
 import { readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { isNumberArray, isRecord } from '../../src/lib/utils/guards';
+import { isNumberArray, isRecord } from '@stark-ballot/domain/utils/guards';
+
+function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
+  if (value === undefined || value === null) {
+    throw new Error(`Expected ${label} to be defined`);
+  }
+  return value;
+}
 
 const VALID_RECEIPT = join(__dirname, '../../zkvm/test-data/test-fixture-valid-receipt.json');
 const TAMPERED_RECEIPT = join(__dirname, '../../zkvm/test-data/test-fixture-tampered-stark-receipt.json');
@@ -39,7 +46,7 @@ interface Receipt {
 }
 
 function tamperReceipt(type: TamperType): void {
-  console.log('🔧 STARK Proof Tamper Tool\n');
+  console.log('STARK Proof Tamper Tool\n');
   console.log(`Reading valid receipt from: ${VALID_RECEIPT}`);
 
   const receiptData: unknown = JSON.parse(readFileSync(VALID_RECEIPT, 'utf-8'));
@@ -53,7 +60,7 @@ function tamperReceipt(type: TamperType): void {
     );
   }
   const receipt = receiptData;
-  const seal = receipt.receipt.inner.Composite.segments[0].seal;
+  const seal = strictDefined(receipt.receipt.inner.Composite.segments[0]).seal;
 
   const originalLength = seal.length;
   console.log(`  Seal array length: ${originalLength.toLocaleString()} elements`);
@@ -65,7 +72,7 @@ function tamperReceipt(type: TamperType): void {
     case TamperType.SINGLE_BIT_FLIP: {
       // Flip the least significant bit of seal[1000]
       const original = seal[1000];
-      seal[1000] ^= 1;
+      seal[1000] = strictDefined(seal[1000]) ^ 1;
       changeDescription = `Flipped bit in seal[1000]: ${original} → ${seal[1000]}`;
       break;
     }
@@ -73,7 +80,7 @@ function tamperReceipt(type: TamperType): void {
     case TamperType.SINGLE_VALUE_CHANGE: {
       // Change seal[5000] to a completely different value
       const before = seal[5000];
-      seal[5000] = (seal[5000] + 12345) & 0xffffffff;
+      seal[5000] = (strictDefined(seal[5000]) + 12345) & 0xffffffff;
       changeDescription = `Changed seal[5000]: ${before} → ${seal[5000]}`;
       break;
     }
@@ -83,7 +90,7 @@ function tamperReceipt(type: TamperType): void {
       const changes: string[] = [];
       [1000, 10000, 30000].forEach((index) => {
         const oldVal = seal[index];
-        seal[index] = (seal[index] + 1) & 0xffffffff;
+        seal[index] = (strictDefined(seal[index]) + 1) & 0xffffffff;
         changes.push(`seal[${index}]: ${oldVal} → ${seal[index]}`);
       });
       changeDescription = `Changed 3 positions:\n    ${changes.join('\n    ')}`;
@@ -105,13 +112,13 @@ function tamperReceipt(type: TamperType): void {
       assertNever(type);
   }
 
-  console.log(`✅ Applied tampering:`);
+  console.log(`Applied tampering:`);
   console.log(`  ${changeDescription}\n`);
 
   writeFileSync(TAMPERED_RECEIPT, JSON.stringify(receipt, null, 2));
-  console.log(`📝 Generated tampered receipt:`);
+  console.log(`Generated tampered receipt:`);
   console.log(`  ${TAMPERED_RECEIPT}\n`);
-  console.log(`⚠️  This receipt should FAIL verification!`);
+  console.log(`WARNING: This receipt should FAIL verification!`);
   console.log(`   Even a 1-bit change breaks STARK proof integrity.\n`);
 }
 
@@ -124,23 +131,23 @@ function isReceipt(value: unknown): value is Receipt {
   if (!isRecord(value)) {
     return false;
   }
-  const receipt = value.receipt;
+  const receipt = value['receipt'];
   if (!isRecord(receipt)) {
     return false;
   }
-  const inner = receipt.inner;
+  const inner = receipt['inner'];
   if (!isRecord(inner)) {
     return false;
   }
-  const composite = inner.Composite;
+  const composite = inner['Composite'];
   if (!isRecord(composite)) {
     return false;
   }
-  const segments = composite.segments;
+  const segments = composite['segments'];
   if (!Array.isArray(segments)) {
     return false;
   }
-  return segments.every((segment) => isRecord(segment) && isNumberArray(segment.seal));
+  return segments.every((segment) => isRecord(segment) && isNumberArray(segment['seal']));
 }
 
 // Parse command line arguments

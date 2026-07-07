@@ -1,7 +1,7 @@
 # 知識パネル仕様（CURRENT / 実装準拠）
 
 > 最終更新: 2026-04-24
-> 対象実装: `src/components/knowledge/*`, `src/lib/knowledge/*`, `src/components/LayoutProvider.tsx`, `src/app/(routes)/verify/*`
+> 対象実装: `apps/web/src/components/knowledge/*`, `apps/web/src/knowledge/*`, `apps/web/src/components/LayoutProvider.tsx`, `apps/web/src/routes/verify/*`
 
 本書は **現在の実装** を正として整理する。  
 `knowledge-panel.md` の TO-BE を反映済みで、以後は本書を正とする。
@@ -23,7 +23,7 @@
 
 - 保存先: `localStorage` の `stark-ballot-knowledge`
 - API からの取り込みは `mergeKnowledgeFromApi()`、個別追加は `saveKnowledgeData()`。
-- Bot 用は `mergeBotKnowledge()`（`/api/botdata/:id`）を使用。
+- Bot 用の `mergeBotKnowledge()` は store API として残るが、`/api/botdata/:id` は現行 Hono runtime では retired / unregistered であり、通常 public browser/CLI contract では使用しない。
 - active session と異なる snapshot は表示せず、session schema version が変わった場合は stale な session / knowledge / lock をまとめて破棄する。
 - retired key は読み込み時に削除する。対象は `missingIndices`, `invalidIndices`, `countedIndices`, `excludedCount`, `s3BundleUrl`, `s3BundleExpiresAt`, `proofMode`。
 
@@ -37,7 +37,7 @@
 
 ## 3. 正規化ルール（実装）
 
-`src/lib/knowledge/normalizer.ts` に準拠。
+`apps/web/src/knowledge/normalizer.ts` に準拠。
 
 > **方針**: `normalizer.ts` は「正規名以外を黙殺する厳格ガード」として維持する。
 
@@ -52,8 +52,8 @@
 
 ### 3.2 ネスト解体
 
-- `userVote.*` → `user.*`
-- `userVote.proof` / `proof` → `user.merklePath`
+- `userVote.vote` / `commitment` / `random` / `voteId` → `user.choice` / `user.commitment` / `user.random` / `user.voteId`
+- `userVote.proof` / top-level `proof` → `user.merklePath`
 - `voteReceipt` → `user.voteReceipt`（オブジェクト保持）
 - `tally` → `tally.counts` / `tally.totalVotes` / `tally.tamperedCount`
 - `verificationSteps` → `verification.steps`
@@ -91,7 +91,7 @@
 
 - 通常: 「私が知っている情報」
 - ボット view + `bot.*` がある場合: 「ボットが知っている情報」
-- 現行 `/verify` では S3/S4 時に bot タブの見た目だけ表示するが、タブは disabled で、`/api/botdata/:id` 取得や Bot モーダルは接続されていない。
+- 現行 `/verify` では S3/S4 時に bot タブの見た目だけ表示するが、タブは disabled で、`/api/botdata/:id` 取得や Bot モーダルは接続されていない。`/api/botdata/:id` は retired / unregistered であり、通常 public browser/CLI contract では使用しない。
 
 ### 4.3 展開 / 折りたたみ
 
@@ -117,7 +117,7 @@
 
 ## 5. グループ定義（表示順）
 
-> `src/components/knowledge/KnowledgeGroup.tsx` に準拠
+> `apps/web/src/components/knowledge/KnowledgeGroup.tsx` に準拠
 
 1. **session**
    - `electionId`, `electionConfigHash`, `logId`
@@ -139,7 +139,7 @@
 
 ## 6. ルート別フィルタ
 
-> `src/components/LayoutProvider.tsx` 準拠
+> `apps/web/src/components/LayoutProvider.tsx` 準拠
 
 | ルート       | 表示グループ（キー）                         |
 | ------------ | -------------------------------------------- |
@@ -255,7 +255,7 @@
 
 - `cast_as_intended`: `electionId`, `user.choice`, `user.random`, `user.commitment`, `user.voteId`
 - `recorded_as_cast`: `user.commitment`, `user.merklePath`, `bulletinRoot`, `treeSize`, `user.voteReceipt`, `sthDigest`
-- `counted_as_recorded`: `proofBundleStatus`, `bulletinRoot`, `treeSize`, `tally.counts`, `tally.totalVotes`, `missingSlots`, `invalidPresentedSlots`, `totalExpected`, `electionId`, `electionConfigHash`, `logId`, `sthDigest`, `includedBitmapRoot`, `user.voteReceipt`, `inputCommitment`
+- `counted_as_recorded`: `proofBundleStatus`, `bulletinRoot`, `treeSize`, `tally.counts`, `tally.totalVotes`, `missingSlots`, `invalidPresentedSlots`, `totalExpected`, `electionId`, `electionConfigHash`, `logId`, `sthDigest`, `includedBitmapRoot`, `user.voteReceipt`, `inputCommitment`（panel-visible keys。check input には `electionManifest` / `closeStatement` / `timestamp` も含まれるが、知識パネルには表示しない）
 - `stark_verification`: `imageId`, `proofBundleStatus`
 
 ---

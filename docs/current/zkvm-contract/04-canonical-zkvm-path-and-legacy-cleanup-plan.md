@@ -92,10 +92,10 @@ canonical.
 - The supported application contract is authenticated bundle-backed
   verification selected by session context plus
   `verificationExecutionId`.
-- That app path may execute through `verifier-service-runner` for S3-
+- That app path may execute through `verification-worker` for S3-
   backed bundles or through direct `verifier-service` invocation for
   trusted local bundles.
-- `verifier-service-runner` payload `mode = direct` remains a bounded
+- `verification-worker` payload `mode = direct` remains a bounded
   tooling or bridge path, not public selector authority and not a
   second production verification model.
 - Legacy raw download URL fields such as `verificationBundleUrl` and
@@ -223,7 +223,7 @@ verificationExecutionId)` authority rather than becoming an
   app selector contract.
 - Treat trusted local bundle verification inside the app as one
   implementation of that contract, not as a second selector model.
-- Isolate `verifier-service-runner` direct payload mode and
+- Isolate `verification-worker` direct payload mode and
   `VerifierServiceRunnerDirectPayload` to intentionally maintained
   tooling or bridge surfaces, or delete them if no maintained caller
   remains.
@@ -346,7 +346,7 @@ Implementation note for the current repository baseline:
 
 > **Status: implemented (commit `b63ca9b`).** Maintained paths use
 > RFC 6962 / CT vocabulary, internal proof handling converges on a
-> canonical RFC 6962 adapter, `verifier-service-runner` direct payload
+> canonical RFC 6962 adapter, `verification-worker` direct payload
 > mode is deleted (no maintained caller remained), and the shared-core
 > law inventory plus Rust-side property harness are in place for `WS4`.
 
@@ -360,7 +360,7 @@ Implementation note for the current repository baseline:
   current public schemas still surface it; internal canonical paths
   should not preserve fresh semantic branching on a field whose only
   supported value is `rfc6962`
-- inventory and isolate `verifier-service-runner` direct payload mode
+- inventory and isolate `verification-worker` direct payload mode
   and similar bridge-only surfaces so `WS4` extracts the shared Rust
   core against the supported app path, not against transitional tooling
 - fix the extraction boundary for `WS4` by naming what belongs in the
@@ -578,5 +578,5 @@ are actually robust under edge cases, not just cleanly described.
   `methodVersion + variant` policy across app, CLI, and helper tooling
 - ImageID resolution failure no longer falls back to implicit defaults
   such as `DEFAULT_POC_IMAGE_ID`
-- `verifier-service-runner` direct mode is not quietly preserved as
+- `verification-worker` direct mode is not quietly preserved as
   shadow production authority

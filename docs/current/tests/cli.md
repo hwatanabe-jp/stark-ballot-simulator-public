@@ -16,19 +16,19 @@ When this guide and implementation disagree, current code wins. Check these file
 - `package.json` for wired commands.
 - `scripts/tests/cli-e2e-voting-flow.ts` for CLI flags, server startup, ImageID resolution, bundle
   selection, and report persistence.
-- `src/lib/testing/cli-voting-flow-helpers.ts` and `src/lib/testing/*` for CLI assertions and helper
+- `packages/test-support/src/testing/cli-voting-flow-helpers.ts` and `packages/test-support/src/testing/*` for CLI assertions and helper
   behavior.
-- `src/server/api/handlers/verificationBundles.ts` for authenticated bundle/report delivery.
-- `.github/workflows/public-cli-tests.yml` and `.github/workflows/public-core-checks.yml` for public CI usage.
+- `apps/api/src/server/api/handlers/verificationBundles.ts` for authenticated bundle/report delivery.
+- repository CI configuration for the current automated CLI smoke coverage.
 - `public/imageId-mapping.json` for the current method version and expected ImageID values.
 
-Last code audit: 2026-05-21 against the PR96 worktree.
+Last code audit: 2026-06-29 against the PR102 worktree.
 
 ## Recommended Commands
 
 ```bash
 # Optional when reusing an external server or overriding local defaults.
-# The CLI-managed `next start` path loads `.env.local` first, then `scripts/tests/.env.test.defaults`.
+# The CLI-owned server path loads `.env.local` first, then `scripts/tests/.env.test.defaults`.
 export SESSION_CAPABILITY_SECRET='prod-session-capability-secret-0123456789abcdef'
 
 # Direct harness entrypoint. Requires --user-choice; defaults to S0 + S1.
@@ -52,7 +52,7 @@ pnpm test:cli:real-prod:all -- --user-choice B --skip-build
 
 Notes:
 
-- `--skip-build` requires an existing `next build` output. Omit it to let the CLI run `next build`.
+- `--skip-build` requires an existing `pnpm build:ci` output. Omit it to let the CLI run `pnpm build:ci`.
 - Real zkVM runs require built Rust binaries (`pnpm run build:zkvm` and
   `pnpm run build:verifier-service`, or `pnpm build`).
 - The `test:cli:*` package scripts append their own flags. Repeated flags use the last value parsed by
@@ -73,7 +73,7 @@ Derived from `scripts/tests/cli-e2e-voting-flow.ts`.
 | `--all-scenarios`     | Iterate S0-S5 sequentially.                                  |
 | `--output`, `-o`      | Report format (`table`, `json`, `markdown`). Default: table. |
 | `--verbose`, `-v`     | Emit detailed step-by-step logs.                             |
-| `--skip-build`        | Reuse an existing Next.js build output.                      |
+| `--skip-build`        | Reuse an existing Vite dist output.                          |
 | `--help`, `-h`        | Print usage information.                                     |
 
 Pass CLI flags after the pnpm separator, for example:
@@ -117,17 +117,20 @@ pnpm test:cli:real-prod:s0
 ## Environment Resolution
 
 - The CLI imports `.env.local`, then `scripts/tests/.env.test.defaults`.
-- If the CLI launches its own `next start`, it sets `USE_MOCK_STORE=true` unless already configured.
+- If the CLI launches its own local server, it sets `USE_MOCK_STORE=true` unless already configured.
 - If `--real-zkvm` is not set, it uses mock zkVM and `RISC0_DEV_MODE=1`.
 - If `--real-zkvm --zkvm-mode dev` is set, it uses `USE_MOCK_ZKVM=false` and `RISC0_DEV_MODE=1`.
 - If `--real-zkvm --zkvm-mode prod` is set, it uses `USE_MOCK_ZKVM=false` and unsets
   `RISC0_DEV_MODE`.
-- Mock or dev-mode zkVM under `next start` requires `ALLOW_INSECURE_ZKVM=true`; the harness sets it
+- Mock or dev-mode zkVM under the CLI-owned local server requires `ALLOW_INSECURE_ZKVM=true`; the harness sets it
   automatically unless you explicitly override it.
 - Turnstile bypass is enabled for the CLI-managed server with a non-production runtime marker.
-- `EXPECTED_IMAGE_ID` defaults to the current `expectedImageID` entry in
-  `public/imageId-mapping.json`. Set `EXPECTED_IMAGE_ID_VARIANT=x86_64` for the x86_64 mapping entry,
-  or set `EXPECTED_IMAGE_ID` directly.
+- `EXPECTED_IMAGE_ID` can be set directly, or derived from `public/imageId-mapping.json` with
+  `EXPECTED_IMAGE_ID_VARIANT`. Current methodVersion `14` contains target-account `default` / ARM64
+  and local `x86_64` trust material. The package CLI scripts explicitly set `x86_64` for local
+  real-zkVM checks; target app handoff helpers use the current `default` mapping as compatibility
+  evidence. The selected prover release/app deployment record remains the deploy-time authority for
+  the digest-pinned prover image plus expected ImageID.
 - Real-mode HTTP waits are long by default. Override with `CLI_HEADERS_TIMEOUT_MS`,
   `CLI_BODY_TIMEOUT_MS`, and `CLI_FINALIZE_TIMEOUT_MS` when debugging infrastructure timeouts.
 - `VERIFIER_SERVICE_BIN` can pin a verifier binary outside the default
@@ -142,13 +145,15 @@ progress polling, finalization, verification fetches, bulletin proofs, and bundl
 
 ## Server Startup
 
-The harness starts a production Next.js server (`next start`) unless `STARK_BALLOT_CLI_BASE_URL` is
-set. When it owns the server, each run builds first unless `--skip-build` or the skip-build env flag
-is present.
+The harness starts a production Vite static frontend plus Hono API server unless
+`STARK_BALLOT_CLI_BASE_URL` is set. The CLI-owned path spawns
+`scripts/dev/static-hono-server.ts` directly; `pnpm start` points at the same entrypoint for manual
+use. When the harness owns the server, each run builds first unless `--skip-build` or the skip-build
+env flag is present.
 
-When the CLI launches `next start`, it forces `USE_S3=false` and sets `VERIFIER_PUBLIC_BASE_URL` to
-the local server. To exercise S3 bundle downloads, start the app separately, configure `USE_S3=true`,
-and point the CLI at it:
+When the CLI launches its owned server path, it forces `USE_S3=false` and sets
+`VERIFIER_PUBLIC_BASE_URL` to the local server. To exercise S3 bundle downloads, start the app
+separately, configure `USE_S3=true`, and point the CLI at it:
 
 ```bash
 export STARK_BALLOT_CLI_BASE_URL="http://127.0.0.1:3000"
@@ -162,9 +167,10 @@ bash scripts/tests/setup-cli-test.sh
 ./scripts/tests/teardown-cli-test.sh
 ```
 
-That helper is a dev-server convenience. The current `pnpm dev` script hardcodes
-`USE_MOCK_ZKVM=true`, so use the CLI-managed `test:cli:real-*` scripts or a separately configured
-server for genuine real-zkVM runs.
+That helper is a dev-server convenience. `pnpm dev` reads local defaults from
+`.env.local`; with the checked-in `.env.local.example` defaults it is a mock
+local UI. Use the CLI-managed `test:cli:real-*` scripts or a separately
+configured server for genuine real-zkVM runs.
 
 ## Bundle and Report Downloads
 
@@ -243,7 +249,7 @@ Verifier-service behavior:
 ## CI Usage
 
 - `.github/workflows/public-cli-tests.yml` runs `pnpm test:cli:mock` for mock S0 from a fresh checkout.
-- `.github/workflows/public-core-checks.yml` runs the public Vitest subset, type-check, lint, and Next.js-only build.
+- `.github/workflows/public-core-checks.yml` runs the public Vitest subset, type-check, lint, and Vite static build.
 ## Troubleshooting
 
 - Session creation fails before voting: confirm the server environment has a non-placeholder
@@ -256,7 +262,8 @@ Verifier-service behavior:
   `verificationExecutionId`.
 - The CLI interpretation looks wrong: fetch `verification.json` through the report endpoint or rerun
   `verifier-service verify --bundle <zip> --image-id <expected>`.
-- Finalization diagnostics are unclear: run `pnpm test:run src/app/api/finalize/route.test.ts`.
+- Finalization diagnostics are unclear: run
+  `pnpm test:run packages/application/src/finalize/usecases/finalize-session.test.ts packages/application/src/finalize/usecases/finalize-sync.test.ts apps/api/src/server/api/routes/hono.test.ts`.
   Vitest 4.1 does not support `--runInBand`.
 
 ## Maintenance Policy

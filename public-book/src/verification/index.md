@@ -1,32 +1,41 @@
 # 検証パイプライン
 
-投票の完全性を 4 段階に分けて検証するパイプラインを扱う部です。
+この部では、投票の完全性を 4 段階に分けて検証するパイプラインを扱います。
 
-## この部に含まれる章
+この部でいう最終的な Verified 判定は fail-closed です。
+required check が失敗、未実行、保留中、実行中のまま残る場合、successful overall result にはなりません。
+`verificationStatus` や `stark_receipt_verify` は STARK receipt verification の信号であり、それだけで overall verdict を表すものではありません。
 
-- [設計と実行フロー](design-and-flow.md) — 設計原則、パイプライン構造、実行フロー
-- [4 段階検証モデル](four-stage-model.md) — 検証の全体設計と各段階の保証
-- [チェック一覧](checks-catalog.md) — 全検証チェック ID とその判定ロジック
-- [バンドル構造](bundle-structure.md) — [証明バンドル](../appendix/glossary.md#証明バンドルproof-bundle)の公開可能・非公開アーティファクト
-- [ゲーティングロジック](gating-logic.md) — 「Verified」表示の条件と不変条件
+public `bundle.zip` は公開可能な監査用アーカイブであり、`verification.json` などの保護対象 artifact は含めません（境界の正本は [公開境界](public-boundary.md)）。
+ここでの public は「秘密を含まず第三者検証に使える」という分類であり、無認証公開を意味しません。
+`RISC0_DEV_MODE=1` の receipt は production STARK proof ではありません。
 
-## 想定読者と前提
+## 章の読み順
 
-- 想定読者: `/verify` 画面の最終判定ロジックを把握したい監査者・実装者
-- 前提: [暗号プロトコル](../protocol/index.md) と [zkVM 設計](../zkvm/index.md) の概要を読み終えていること
+- [設計と実行フロー](design-and-flow.md)：設計原則、パイプライン構造、実行フロー
+- [4 段階検証モデル](four-stage-model.md)：検証の全体設計と各段階の保証
+- [チェック一覧](checks-catalog.md)：全検証チェック ID とその判定ロジック
+- [バンドル構造](bundle-structure.md)：[証明バンドル](../appendix/glossary.md#証明バンドルproof-bundle)の公開可能なアーティファクトと非公開アーティファクト
+- [公開境界](public-boundary.md)：public `bundle.zip` と protected report artifact の境界
+- [ゲーティングロジック](gating-logic.md)：「Verified」表示の条件と不変条件
 
-## 本章で扱わないもの
+## 対象読者と前提
+
+- 想定読者：`/verify` 画面の最終判定ロジックを把握したい監査者と実装者
+- 前提：[暗号プロトコル](../protocol/index.md) と [zkVM 設計](../zkvm/index.md) の概要を読み終えていること
+
+## 扱わない範囲
 
 - `bundle.zip` のローカル監査手順（[第三者検証ガイド](../reproducibility/index.md) を参照）
 - 改ざんシナリオごとの検出表（[改ざんシナリオ](../tamper/index.md) を参照）
 - UI コンポーネントや Storybook 配置の詳細
 
-## 関連する章
+## 関連章
 
-- [暗号プロトコル](../protocol/index.md) — チェック対象となるプリミティブ
-- [zkVM 設計](../zkvm/index.md) — ジャーナルとレシートの構造
-- [改ざんシナリオ](../tamper/index.md) — どのチェックがどの改ざんを検出するか
-- [第三者検証ガイド](../reproducibility/index.md) — [`bundle.zip`](../appendix/glossary.md#配布対象アーカイブbundlezip) を使ったローカル監査
-- [用語集](../appendix/glossary.md) — チェック種別・ゲーティング用語の定義
+- [暗号プロトコル](../protocol/index.md)：チェック対象となるプリミティブ
+- [zkVM 設計](../zkvm/index.md)：ジャーナルとレシートの構造
+- [改ざんシナリオ](../tamper/index.md)：どのチェックがどの改ざんを検出するか
+- [第三者検証ガイド](../reproducibility/index.md)：[`bundle.zip`](../appendix/glossary.md#配布対象アーカイブbundlezip) を使ったローカル監査
+- [用語集](../appendix/glossary.md)：チェック種別とゲーティング用語の定義
 
-<!-- source: src/lib/verification/, src/server/api/handlers/verify.ts, src/server/api/handlers/verificationRun.ts, src/server/api/handlers/verificationBundles.ts, src/app/(routes)/verify/ -->
+<!-- source: packages/verification/src/verification/, apps/api/src/server/api/handlers/verify.ts, apps/api/src/server/api/handlers/verificationRun.ts, apps/api/src/server/api/handlers/verificationBundles.ts, apps/web/src/routes/verify/ -->

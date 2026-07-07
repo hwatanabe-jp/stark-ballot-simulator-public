@@ -1,0 +1,33 @@
+{
+  "name": "@stark-ballot/domain",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./bot/*": "./src/lib/bot/*",
+    "./bulletin/*": "./src/lib/bulletin/*",
+    "./constants/*": "./src/shared/*",
+    "./contract": "./src/lib/contract/index.ts",
+    "./contract/*": "./src/lib/contract/*",
+    "./crypto/*": "./src/lib/crypto/*",
+    "./finalize/*": "./src/lib/finalize/*",
+    "./http/*": "./src/lib/http/*",
+    "./performance/*": "./src/lib/performance/*",
+    "./scenarios/*": "./src/lib/scenarios/*",
+    "./security/sessionCapabilityToken": "./src/lib/security/sessionCapabilityToken.ts",
+    "./session/*": "./src/lib/session/*",
+    "./shared/*": "./src/shared/*",
+    "./types/*": "./src/types/*",
+    "./utils/guards": "./src/lib/utils/guards.ts",
+    "./utils/hex": "./src/lib/utils/hex.ts",
+    "./vote/*": "./src/lib/vote/*"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.2.0",
+    "@stark-ballot/merkle": "workspace:*",
+    "@stark-ballot/validation": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "4.1.9"
+  }
+}

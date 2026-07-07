@@ -1,44 +1,146 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::domain::{BitmapBitIndex, BitmapBitOffset, BitmapLeafIndex, PackedBitmap};
 use crate::inclusion_proof::{compute_merkle_root, hash_leaf};
+
+pub const BITMAP_CHUNK_BYTES: usize = 32;
+pub const BITMAP_CHUNK_BITS: usize = BITMAP_CHUNK_BYTES * 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BitmapAuditPathPosition {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BitmapAuditPathNode {
+    pub hash: [u8; 32],
+    pub position: BitmapAuditPathPosition,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BitmapMerkleProof {
+    pub leaf_chunk: [u8; 32],
+    pub audit_path: Vec<BitmapAuditPathNode>,
+    pub leaf_index: usize,
+    pub bit_index: usize,
+}
 
 /// Compute the CT Merkle root of a bitmap packed into 32-byte leaves.
 pub fn compute_bitmap_merkle_root(bitmap: &[bool]) -> [u8; 32] {
-    let packed_bytes = pack_bits_to_bytes(bitmap);
-
-    if packed_bytes.len() <= 32 {
-        let mut padded = [0u8; 32];
-        padded[..packed_bytes.len()].copy_from_slice(&packed_bytes);
-        return hash_leaf(&padded);
-    }
-
-    let chunk_capacity = packed_bytes.len().div_ceil(32);
-    let mut leaves: Vec<[u8; 32]> = Vec::with_capacity(chunk_capacity);
-    for chunk in packed_bytes.chunks(32) {
-        let mut leaf = [0u8; 32];
-        leaf[..chunk.len()].copy_from_slice(chunk);
-        leaves.push(hash_leaf(&leaf));
-    }
+    let leaves = bitmap_leaf_hashes(bitmap);
 
     compute_merkle_root(&leaves)
 }
 
-fn pack_bits_to_bytes(bits: &[bool]) -> Vec<u8> {
-    let byte_len = bits.len().div_ceil(8);
-    let mut bytes = vec![0u8; byte_len];
-
-    for (chunk_index, chunk) in bits.chunks(8).enumerate() {
-        let mut byte = 0u8;
-        for (bit_index, bit) in chunk.iter().enumerate() {
-            if *bit {
-                byte |= 1 << bit_index;
-            }
-        }
-        bytes[chunk_index] = byte;
+pub fn generate_bitmap_merkle_proof(
+    bitmap: &[bool],
+    bit_index: usize,
+) -> Option<BitmapMerkleProof> {
+    if bitmap.is_empty() {
+        return None;
     }
 
-    bytes
+    let bit_index = BitmapBitIndex::new(bit_index, bitmap.len()).ok()?;
+    let leaf_index = BitmapLeafIndex::from_bit_index(bit_index).get();
+    let leaf_chunk = bitmap_leaf_chunk(bitmap, leaf_index);
+    let levels = bitmap_merkle_tree_levels(bitmap);
+    let mut audit_path = Vec::new();
+    let mut current_index = leaf_index;
+
+    for level in levels.iter().take_while(|level| level.len() > 1) {
+        let sibling_index = if current_index.is_multiple_of(2) {
+            current_index + 1
+        } else {
+            current_index - 1
+        };
+        if let Some(sibling) = level.get(sibling_index) {
+            audit_path.push(BitmapAuditPathNode {
+                hash: *sibling,
+                position: if current_index.is_multiple_of(2) {
+                    BitmapAuditPathPosition::Right
+                } else {
+                    BitmapAuditPathPosition::Left
+                },
+            });
+        }
+        current_index /= 2;
+    }
+
+    Some(BitmapMerkleProof {
+        leaf_chunk,
+        audit_path,
+        leaf_index,
+        bit_index: bit_index.get(),
+    })
+}
+
+fn bitmap_leaf_hashes(bitmap: &[bool]) -> Vec<[u8; 32]> {
+    let packed_bytes = pack_bits_to_bytes(bitmap);
+    let leaf_count = bitmap_leaf_count(bitmap.len());
+    let mut leaves: Vec<[u8; 32]> = Vec::with_capacity(leaf_count);
+    for leaf_index in 0..leaf_count {
+        leaves.push(hash_leaf(&bitmap_leaf_chunk_from_packed(
+            &packed_bytes,
+            leaf_index,
+        )));
+    }
+
+    leaves
+}
+
+fn bitmap_merkle_tree_levels(bitmap: &[bool]) -> Vec<Vec<[u8; 32]>> {
+    let mut levels = vec![bitmap_leaf_hashes(bitmap)];
+    while levels.last().map(|level| level.len()).unwrap_or(0) > 1 {
+        let current = levels.last().expect("level exists");
+        let mut next = Vec::with_capacity(current.len().div_ceil(2));
+        let mut iter = current.chunks_exact(2);
+        for pair in &mut iter {
+            next.push(crate::inclusion_proof::hash_internal(&pair[0], &pair[1]));
+        }
+        if let Some(rem) = iter.remainder().first() {
+            next.push(*rem);
+        }
+        levels.push(next);
+    }
+    levels
+}
+
+fn bitmap_leaf_chunk(bitmap: &[bool], leaf_index: usize) -> [u8; 32] {
+    bitmap_leaf_chunk_from_packed(&pack_bits_to_bytes(bitmap), leaf_index)
+}
+
+fn bitmap_leaf_chunk_from_packed(packed_bytes: &[u8], leaf_index: usize) -> [u8; 32] {
+    let start = leaf_index * BITMAP_CHUNK_BYTES;
+    let end = core::cmp::min(start + BITMAP_CHUNK_BYTES, packed_bytes.len());
+    let mut leaf = [0u8; BITMAP_CHUNK_BYTES];
+    if start < packed_bytes.len() {
+        leaf[..end - start].copy_from_slice(&packed_bytes[start..end]);
+    }
+    leaf
+}
+
+fn bitmap_leaf_count(bit_len: usize) -> usize {
+    core::cmp::max(1, bit_len.div_ceil(BITMAP_CHUNK_BITS))
+}
+
+fn pack_bits_to_bytes(bits: &[bool]) -> Vec<u8> {
+    PackedBitmap::from_bits(bits).bytes().to_vec()
+}
+
+pub fn calculate_bitmap_leaf_index(bit_index: usize, bit_len: usize) -> Option<usize> {
+    BitmapBitIndex::new(bit_index, bit_len)
+        .ok()
+        .map(BitmapLeafIndex::from_bit_index)
+        .map(BitmapLeafIndex::get)
+}
+
+pub fn calculate_bitmap_bit_offset(bit_index: usize, bit_len: usize) -> Option<usize> {
+    BitmapBitIndex::new(bit_index, bit_len)
+        .ok()
+        .map(BitmapBitOffset::from_bit_index)
+        .map(BitmapBitOffset::get)
 }
 
 #[cfg(test)]
@@ -141,12 +243,68 @@ mod tests {
         expected_value: bool,
     }
 
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct BitmapTsGoldenVectors {
+        schema: String,
+        cases: Vec<BitmapTsGoldenCase>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct BitmapTsGoldenCase {
+        bit_length: usize,
+        true_indices: Vec<usize>,
+        root: String,
+        proofs: Vec<BitmapTsGoldenProof>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct BitmapTsGoldenProof {
+        leaf_chunk: String,
+        audit_path: Vec<BitmapTsGoldenAuditNode>,
+        leaf_index: usize,
+        bit_index: usize,
+    }
+
+    #[derive(Deserialize)]
+    struct BitmapTsGoldenAuditNode {
+        hash: String,
+        position: String,
+    }
+
     fn formal_bitmap(case: &FormalBitmapCase) -> Vec<bool> {
         let mut bitmap = vec![false; case.bit_length];
         for index in &case.true_indices {
             bitmap[*index] = true;
         }
         bitmap
+    }
+
+    fn ts_golden_bitmap(case: &BitmapTsGoldenCase) -> Vec<bool> {
+        let mut bitmap = vec![false; case.bit_length];
+        for index in &case.true_indices {
+            bitmap[*index] = true;
+        }
+        bitmap
+    }
+
+    fn decode_hex_32(value: &str) -> [u8; 32] {
+        let normalized = value.strip_prefix("0x").unwrap_or(value);
+        let bytes = hex::decode(normalized).expect("fixture hex should decode");
+        assert_eq!(bytes.len(), 32, "fixture hex should be 32 bytes");
+        let mut result = [0u8; 32];
+        result.copy_from_slice(&bytes);
+        result
+    }
+
+    fn expected_position(value: &str) -> BitmapAuditPathPosition {
+        match value {
+            "left" => BitmapAuditPathPosition::Left,
+            "right" => BitmapAuditPathPosition::Right,
+            other => panic!("unexpected bitmap proof position: {other}"),
+        }
     }
 
     #[test]
@@ -176,6 +334,42 @@ mod tests {
 
             let root = compute_bitmap_merkle_root(&bitmap);
             assert_eq!(root.len(), 32);
+        }
+    }
+
+    #[test]
+    fn test_typescript_bitmap_root_and_proof_golden_vectors() {
+        let vectors: BitmapTsGoldenVectors =
+            serde_json::from_str(include_str!("../testdata/bitmap-ts-golden-vectors.json"))
+                .expect("TS bitmap golden vectors should parse");
+
+        assert_eq!(vectors.schema, "stark-ballot.bitmap-proof-parity.v1");
+
+        for case in vectors.cases {
+            let bitmap = ts_golden_bitmap(&case);
+            assert_eq!(
+                compute_bitmap_merkle_root(&bitmap),
+                decode_hex_32(&case.root)
+            );
+
+            for expected in case.proofs {
+                let proof = generate_bitmap_merkle_proof(&bitmap, expected.bit_index)
+                    .expect("proof should generate for fixture bit");
+                assert_eq!(proof.leaf_chunk, decode_hex_32(&expected.leaf_chunk));
+                assert_eq!(proof.leaf_index, expected.leaf_index);
+                assert_eq!(proof.bit_index, expected.bit_index);
+                assert_eq!(proof.audit_path.len(), expected.audit_path.len());
+
+                for (actual_node, expected_node) in
+                    proof.audit_path.iter().zip(expected.audit_path.iter())
+                {
+                    assert_eq!(actual_node.hash, decode_hex_32(&expected_node.hash));
+                    assert_eq!(
+                        actual_node.position,
+                        expected_position(&expected_node.position)
+                    );
+                }
+            }
         }
     }
 }

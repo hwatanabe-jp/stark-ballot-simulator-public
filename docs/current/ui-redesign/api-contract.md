@@ -2,7 +2,7 @@
 
 UI リデザインで利用する API の現行契約を `docs/current/ui-redesign/` に集約する。
 本文中の endpoint / payload / verification contract は、現ブランチの実装
-（`src/server/api/handlers/*`, `src/lib/validation/apiSchemas.ts`）と照合した shape を優先する。
+（`apps/api/src/server/api/handlers/*`, `packages/api-contract/src/validation/apiSchemas.ts`）と照合した shape を優先する。
 コードと本文が不一致の場合は、現行コードと route/schema tests を正とする。
 
 ## 前提
@@ -10,29 +10,30 @@ UI リデザインで利用する API の現行契約を `docs/current/ui-redesi
 - **現行実装契約**: 本書は現在の UI/API が使う shape を記録する。将来の変更案ではなく、変更時は handler、schema、tests、関連ドキュメントを同時に更新する。
 - **語彙と型の正規化**: `docs/current/guides/6-zkvm_design/final_design.md` を語彙の**正**とし、**API は正規名のみを返す/受ける**。alias は移行メモとしてのみ記載する。
 - **擬似進捗（ブラウザ算出）**: 進捗率は“実測値”ではない。API は _開始時刻・待ち行列情報_ を返し、**ブラウザ側で一意な算出式**（時間ベース補間）から曲線進行を生成する。API 側が `progress` を返す場合でも **演出用の参考値**であり、UI は算出値を優先する。
-- **待機列情報**: ECS Fargate の待機列・同時実行枠の情報は **バックエンド実装を増やして提供する**。現行実装では **非同期モードが有効で `PROVER_WORK_QUEUE_URL` が設定され、SQS メトリクス取得に成功した場合のみ** `queue` に object を返し、それ以外では **`queue: null`** とする（schema 上は省略も許容）。
+- **待機列情報**: `queue` は `{ concurrencyLimit, estimatedDurationMs }` のみを返す。`concurrencyLimit` は `PROVER_MAX_CONCURRENT_PROVERS`（legacy `PROVER_LAMBDA_CONCURRENCY` fallback、未設定時 2）由来、`estimatedDurationMs` は典型所要時間の固定値。SQS depth / position / estimated start は user-facing contract に含めない。
 - **改ざん指示**: UI はシナリオ記号を表示しない。**API は `scenarioId` を必須**とし、`S0..S5` を扱う（`tamperScenarioId` は採用しない）。`S0` は「改ざんなし」。**単一選択のみ**（組み合わせは将来拡張）。
 - **tally 形状の統一**: `tally` は常に `{ counts: { A..E }, totalVotes }` で返す（`tally` の直下に集計値を置かない）。
 - **検証開始のタイミング**: `/verify` は到達時に自動で検証シーケンスを開始し、**準備中表示が終わるまで結果を表示しない**。API が検証結果を既に返せる状態でも UI は非表示を維持する。
-- **ボット検証**: `/api/verify` から `botVotes` は返さない。**オンデマンド取得のみ**にする。`botVotesSummary.affectedBotIds` は **S3/S4 のみ**返す（S5 は表示しない）。契約は **配列** とし、UI は 0..n 件を許容する。現行デモシナリオでは通常 1 件だが、暗号学的な証拠ではなく**教育用シミュレーション由来の特権情報**であることを明示する。
-- **ボット ID の同一性**: `botId` は **該当ボット票の `bulletinIndex` と一致**し、`botVotesSummary.affectedBotIds` と `/api/botdata/:id` で同一の ID を使用する。**ユーザー票の index とは衝突しない**ことを保証する（例: user=0, bot=1..63 の予約ドメイン）。
-- **Bulletin commitments**: `bulletin.commitments` は廃止しないが、`/api/verify` には含めない。**Recorded-as-Cast を行う場合**は `/api/bulletin`（ページング可）で取得するか、`/api/bulletin/:voteId/proof` で **対象票のみ**取得する。`/api/verify` では `bulletinRoot` / `treeSize` のみ返す。
+- **ボット検証**: `/api/verify` から `botVotes` は返さない。`/api/botdata/:id` は retired/unregistered で、通常の browser/CLI contract では利用しない。`botVotesSummary.affectedBotIds` は **S3/S4 のみ**返す（S5 は表示しない）。契約は **配列** とし、UI は 0..n 件を許容する。現行デモシナリオでは通常 1 件だが、暗号学的な証拠ではなく**教育用シミュレーション由来の特権情報**であることを明示する。
+- **ボット ID の同一性**: `botId` は **該当ボット票の `bulletinIndex` と一致**し、`botVotesSummary.affectedBotIds` と同じ ID ドメインを使用する。**ユーザー票の index とは衝突しない**ことを保証する（例: user=0, bot=1..63 の予約ドメイン）。
+- **Bulletin commitments**: `bulletin.commitments` は廃止しないが、`/api/verify` には含めない。**Recorded-as-Cast を行う場合**は現行 retained owner-scoped inspection の `/api/bulletin`（ページング可）で取得するか、`/api/bulletin/:voteId/proof` で **対象票のみ**取得する。Target AWS migration の通常 public browser/CLI contract では full-bulletin inspection を public surface として扱わず、残す場合は retained owner-scoped または internal/operator-only として分類する。`/api/verify` では `bulletinRoot` / `treeSize` のみ返す。
 - **/result 分離採用**: 結果フェーズは `/result` に分離する。
 - **契約は本フォルダで一元管理**。
 
 ## 共通仕様
 
-- **Base path**: `/api`（Next.js Route Handler または Hono 経由で同一仕様）
+- **Base path**: `/api`（Hono 経由で同一仕様）
 - **Content-Type**: `application/json`
 - **エンベロープ**: ほとんどの API は `ApiResponse` 形式で返す。
   - 例: `{ "data": { ... } }`
   - エラー: `{ "error": "ERROR_CODE", "message": "...", "statusCode": 400, ... }`
-  - 例外: `/api/finalize` の **Async** 応答、`/api/finalize/cancel`、`/api/sessions/:id/status`、`/api/sth`、ファイル配信系、および各 endpoint 節で **非 ApiResponse** と明記したものはラップ無し
+  - 例外: `/api/finalize` の **Async** 応答、`/api/finalize/cancel`、`/api/sessions/:id/status`、`/api/zkvm-input-hash`、`/api/sth`、ファイル配信系、および各 endpoint 節で **非 ApiResponse** と明記したものはラップ無し
 - **セッション識別**:
   - `X-Session-ID` は **header-scoped な session endpoint** に送る。
-  - 対象例: `/api/vote`, `/api/progress`, `/api/finalize`, `/api/finalize/cancel`, `/api/verify`, `/api/verification/run`, `/api/bulletin/*`, `/api/bitmap-proof`, `/api/sth`, `/api/botdata/:id`
+  - 対象例: `/api/vote`, `/api/progress`, `/api/finalize`, `/api/finalize/cancel`, `/api/verify`, `/api/verification/run`, `/api/bulletin/*`（full-bulletin inspection は target retained owner-scoped/internal-only classification が必要）, `/api/bitmap-proof`, `/api/sth`
   - **session-scoped mutation / read / restore / verification 系は `X-Session-Capability` が必須**。
   - path-scoped endpoint（`/api/sessions/:id/status`, `/api/verification/bundles/*`）は `sessionId` を path から解決するため、**`X-Session-Capability` のみ必須**で `X-Session-ID` は不要。
+  - query-scoped endpoint（`/api/zkvm-input-hash?sessionId=...`）も `sessionId` を query から解決するため、**`X-Session-Capability` のみ必須**で `X-Session-ID` は不要。
 - **Turnstile**: `turnstileToken` は JSON body に含める（本番では必須）
 - **値形式**
   - Hex: 原則 `0x` + 64 hex（32-byte, lower-case 推奨）。ただし raw Merkle/bitmap materials など endpoint 個別仕様はその記述を優先する
@@ -46,10 +47,10 @@ UI リデザインで利用する API の現行契約を `docs/current/ui-redesi
   - **旧名/別名は受け付けない**。混入した場合は **エラー** または **無視** とし、UI 表示に露出させない。
   - 包含証明/整合性証明は現行では RFC 6962 / CT path として暗黙に扱う。
 - **推定値の扱い（進捗/待機列）**
-  - **SQS**: queue depth / position は **Approximate** な値として扱う。
-  - **ECS**: `concurrencyLimit` は実行枠の推定（`runningCount/desiredCount` 等）として扱う。
+  - **Queue payload**: `concurrencyLimit` は runtime config、`estimatedDurationMs` は typical duration constant。
+  - **SQS**: depth は dispatch backlog の運用指標であり、UI queue payload には出さない。
   - **Step Functions**: execution の状態・開始/終了時刻の参照先。
-  - いずれも UI 表示用の推定値とし、正確性は保証しない。
+  - いずれも UI 表示用の補助値であり、exact queue position は保証しない。
 
 ### 共通型（抜粋）
 
@@ -127,7 +128,42 @@ UI リデザインで利用する API の現行契約を `docs/current/ui-redesi
 
 ---
 
-## エンドポイント（UI 使用）
+## エンドポイント（UI 使用 / owner-scoped retained）
+
+### GET `/api/zkvm-input-hash?sessionId=...`
+
+finalized session から canonical zkVM input commitment を再計算して返す
+owner-scoped hash-only endpoint。Private input data の取得 endpoint ではない。
+
+**Headers**
+
+- `X-Session-Capability: <capabilityToken>`
+
+**Query**
+
+- `sessionId`: 対象 session ID（必須）
+- `includeData`: 現行 target API では retired。truthy 値（`true | 1 | yes`）は `410 ROUTE_RETIRED`。
+
+**Response 200 (非 ApiResponse)**
+
+```json
+{
+  "inputCommitment": "0x..."
+}
+```
+
+**備考**
+
+- finalized session でのみ利用可能。
+- `inputCommitment` は canonical zkVM input から算出される hash-only evidence。
+- `includeData=<truthy>` は private zkVM input data を返さず fail-closed で拒否する。
+
+**主なエラー**
+
+- `INVALID_REQUEST`, `SESSION_CAPABILITY_REQUIRED`, `SESSION_CAPABILITY_INVALID`
+- `SESSION_NOT_FOUND`, `SESSION_NOT_FINALIZED`, `ROUTE_RETIRED`
+- `UNSUPPORTED_CURRENT_ARTIFACT`, `CORRUPT_OR_UNREADABLE_FINALIZED_STATE`
+- `CT_PROOF_UNAVAILABLE`, `INTERNAL_ERROR`
 
 ### POST `/api/session`
 
@@ -265,22 +301,19 @@ Bot 投票進捗。
     "queuedAt": 1730000000000
   },
   "queue": {
-    "position": 3,
-    "depth": 8,
     "concurrencyLimit": 2,
-    "estimatedStartAt": 1730000020000,
-    "estimatedDurationMs": 360000,
-    "estimatedCompletionAt": 1730000380000
+    "estimatedDurationMs": 360000
   }
 }
 ```
 
 **備考**
 
-- `queue.*` は推定値（SQS/ECS 由来）として扱う。
-- `queue` を返す場合、`estimatedDurationMs` は **必須**（擬似進捗の一意算出に利用）。
-- 現行実装では `queue` は **pending かつ queue depth を観測できた場合**に限って object になる。`pending` でも depth が 0 なら `queue: null` になりうる。
-- 非同期モードが無効、`PROVER_WORK_QUEUE_URL` 未設定、または SQS メトリクス取得に失敗した場合、現行 handler は **`queue: null`** を返す（schema 上は省略も許容）。
+- `queue` は `{ concurrencyLimit, estimatedDurationMs }` のみ。
+- `concurrencyLimit` は `PROVER_MAX_CONCURRENT_PROVERS`、legacy `PROVER_LAMBDA_CONCURRENCY`、default `2` の順で決まる。
+- `estimatedDurationMs` は典型所要時間の固定値で、擬似進捗の一意算出に利用する。
+- `position`、`depth`、`estimatedStartAt`、`estimatedCompletionAt` は返さない。
+- 非同期モードが無効、または `PROVER_WORK_QUEUE_URL` 未設定の場合は **`queue: null`** を返す（schema 上は省略も許容）。SQS メトリクス取得は行わない。
 
 **Response 200 (Sync / ApiResponse)**
 
@@ -413,7 +446,7 @@ Bot 投票進捗。
 
 - `SESSION_ID_REQUIRED`, `SESSION_CAPABILITY_REQUIRED`, `SESSION_CAPABILITY_INVALID`
 - `SESSION_NOT_FOUND`, `GLOBAL_LIMIT_EXCEEDED`, `UNSUPPORTED_CURRENT_ARTIFACT`, `CORRUPT_OR_UNREADABLE_FINALIZED_STATE`
-- handler 固有の非標準 error payload: `Async finalization disabled` (`404`), `Invalid JSON body` (`400`), payload validation error (`400`), `Store does not support cancellation` (`501`), `Finalization cannot be cancelled in its current state` (`409`)
+- 標準 error envelope: `ASYNC_FINALIZATION_DISABLED` (`404`), `INVALID_REQUEST` (`400`), `CANCELLATION_UNSUPPORTED` (`501`), `FINALIZATION_NOT_CANCELLABLE` (`409`)
 
 ---
 
@@ -436,12 +469,8 @@ Async 集計のステータス。
     "queuedAt": 1730000000000
   },
   "queue": {
-    "position": 3,
-    "depth": 3,
     "concurrencyLimit": 2,
-    "estimatedStartAt": 1730000020000,
-    "estimatedDurationMs": 360000,
-    "estimatedCompletionAt": 1730000380000
+    "estimatedDurationMs": 360000
   },
   "finalizationResult": null,
   "stepFunctions": null,
@@ -460,7 +489,10 @@ Async 集計のステータス。
     "queuedAt": 1730000000000,
     "startedAt": 1730000020000
   },
-  "queue": null,
+  "queue": {
+    "concurrencyLimit": 2,
+    "estimatedDurationMs": 360000
+  },
   "progress": {
     "phase": "running",
     "source": "derived",
@@ -477,15 +509,15 @@ Async 集計のステータス。
 
 - `progress` は **実測ではない**。現行 API では **`finalizationState.status=running` のときだけ** `startedAt` と `estimatedDurationMs` から導出して返す。
 - **UI の正**: ブラウザ側で `queuedAt` / `startedAt` / `estimatedDurationMs` から擬似進捗を算出する。`progress.percent` は参考値であり、**演出用の算出値は UI を正とする**。
-- `pending` では `progress` は返らない。UI は `finalizationState` と `queue` の時刻情報から待機状態を表現する。
-- `queue.*` は推定値（SQS/ECS 由来）として扱う。
-- `queue` は **pending 時のみ object を返す**（running では現行 handler は **`queue: null`** を返す）。
-- 現行 UI/API では、**`queue` が消えて `progress` が出始めたこと**を実行開始のシグナルとして扱う。`queue.position=0` を前提にしない。
+- `pending` では `progress` は返らない。UI は `finalizationState` と `queue` の static estimate から待機状態を表現する。
+- `queue.*` は runtime config と typical duration 由来の補助値として扱う。SQS depth は表示しない。
+- `queue` は **pending / running 時のみ object を返す**。terminal state では `queue: null`。
+- 実行開始のシグナルは `finalizationState.status=running` と `startedAt`。`queue` が消えることを実行開始のシグナルにしない。
 - `queue` の構造は `/api/finalize` の Async 応答と同じ。
 - `queue` を返す場合、`estimatedDurationMs` は **必須**（擬似進捗の一意算出に利用）。
 - finalized artifact が現行 contract と一致しない場合、`artifactState`（`unsupported_current_artifact | corrupt_or_unreadable`）を返す。この場合 `finalizationResult` は `null` で、`finalizationState` は失敗状態へ投影されることがある。
 - `stepFunctions` は Step Functions の DescribeExecution 情報（存在する場合のみ）。
-- 非同期モードが無効、`PROVER_WORK_QUEUE_URL` 未設定、または SQS メトリクス取得に失敗した場合、現行 handler は **`queue: null`** を返す（schema 上は省略も許容）。
+- 非同期モードが無効、または `PROVER_WORK_QUEUE_URL` 未設定の場合は **`queue: null`** を返す（schema 上は省略も許容）。SQS メトリクス取得は行わない。
 - `finalizationResult` は **集計完了時のみ**返す。`finalizationState=null` でも **同期集計が完了している場合は返却される**。
 
 ---
@@ -514,7 +546,7 @@ Async 集計のステータス。
   - 不要な画面でも payload を重くする
 - `botVotes` は返さない（プライバシー保護のため）。
 - `bulletin.commitments` は返さない（サイズ削減のため）。必要な場合は `/api/bulletin` を利用する。
-- 対象ボットは `botVotesSummary.affectedBotIds` を参照し、詳細は `/api/botdata/:id` で取得する。
+- 対象ボットは `botVotesSummary.affectedBotIds` を参照する。`/api/botdata/:id` は retired/unregistered で、通常の public browser/CLI contract では利用しない。
 - `/api/bulletin/:voteId/proof` は **投票者の voteId** または **affectedBotIds に含まれる bot の voteId** のみ取得可能。
 - `journal` は `includeJournal=1` 指定時のみ含まれ、未指定時は省略される。
 - `journalStatus` の現行 handler 挙動は `available | omitted`。schema 上は forward-compatible な予約値として `unavailable` も許容する。
@@ -797,9 +829,9 @@ Bulletin board から `commitments` とルート情報を取得する。
 {
   "oldSize": 12,
   "newSize": 64,
-  "rootAtOldSize": "ab12...",
-  "rootAtNewSize": "cd34...",
-  "proofNodes": ["ef56..."],
+  "rootAtOldSize": "0xab12...",
+  "rootAtNewSize": "0xcd34...",
+  "proofNodes": ["0xef56..."],
   "timestamp": 1730000000000
 }
 ```
@@ -808,7 +840,7 @@ Bulletin board から `commitments` とルート情報を取得する。
 
 - `oldSize <= newSize <= currentTreeSize` を満たす必要がある。
 - `oldSize=0` は許容され、その場合 `proofNodes` は空になりうる。
-- **この endpoint の現行 handler は `rootAtOldSize` / `rootAtNewSize` / `proofNodes` を `0x` なしの raw hex で返す**（他 endpoint の 32-byte hex ルールとは別扱い）。
+- この endpoint の現行 handler は `rootAtOldSize` / `rootAtNewSize` / `proofNodes` を `0x` prefix 付きの 32-byte normalized hex として返す。
 - `oldSubtreeHashes` / `appendSubtreeHashes` は schema 上の optional field。現行の bulletin handler（RFC 6962 / CT path）では通常は返さない。返る場合は `"size:hash"` 形式の debug metadata とみなす。
 - client-side の Recorded-as-Cast 整合性検証では主に `rootAtOldSize`, `rootAtNewSize`, `proofNodes` を用いる。
 
@@ -877,7 +909,7 @@ STH（Signed Tree Head）スナップショットを返す。第三者 STH 照�
 
 **備考**
 
-- `sth` object は `src/lib/verification/sth-verifier.ts` の parser が読む shape。
+- `sth` object は `packages/verification/src/verification/sth-verifier.ts` の parser が読む shape。
 - `sth.timestamp` は journal 内 timestamp ではなく、現行 handler では `session.lastActivity` を返す。
 - same-origin の `/api/sth` には session auth headers を転送する。cross-origin の third-party STH source には capability token を送らない。
 
@@ -945,47 +977,11 @@ STARK 検証の実行（必要時）。
 
 ---
 
-### GET `/api/botdata/:id`
+### GET `/api/botdata/:id`（retired）
 
-ボット検証用の投票データを **オンデマンド取得**。
+この route は現行 Hono runtime では register されない。route contract metadata では retired/private として残るが、通常の public browser/CLI API では 200 response を提供しない。
 
-**Headers**
-
-- `X-Session-ID: <sessionId>`
-- `X-Session-Capability: <capabilityToken>`
-
-**制約**
-
-- 現行実装での server-side 制約は **finalize 済み + `id` が有効範囲内 + 対応する bot vote が存在すること**。
-- UI 上は `botVotesSummary.affectedBotIds` に含まれる ID のみをリンク対象とする。
-- `scenarioId` が **S3/S4** 以外では通常 `botVotesSummary` 自体が表示されない。
-- `id` は **botId（bulletinIndex と一致）**。`affectedBotIds` と同一の ID ドメインを使用する。
-- 応答生成は bulletin からの包含証明生成に依存するため、proof 生成や hex 正規化に失敗した場合は `INTERNAL_ERROR` を返す。
-
-**Response 200 (ApiResponse)**
-
-```json
-{
-  "data": {
-    "id": 12,
-    "vote": "B",
-    "random": "0x...",
-    "commitment": "0x...",
-    "voteId": "uuid",
-    "timestamp": 1730000000000,
-    "proof": {
-      "leafIndex": 12,
-      "merklePath": ["0x..."],
-      "treeSize": 64,
-      "bulletinRootAtCast": "0x..."
-    }
-  }
-}
-```
-
-**主なエラー**
-
-- `INVALID_BOT_ID`, `BOT_DATA_NOT_FOUND`, `SESSION_NOT_FINALIZED`, `INTERNAL_ERROR`
+`random` は bot vote opening であり、target の通常 public/session API response として返さない。
 
 ---
 
@@ -1013,10 +1009,10 @@ UI ラベルは自由だが、API 送信は以下の ID を利用する。
 
 - 2026-01-07: `tally` 形状を `{ counts, totalVotes }` に統一（直下集計値を廃止）
 - 2026-01-07: `rootAtTime` を `bulletinRootAtCast` に統一（InclusionProof）
-- 2026-01-07: `/api/verify` から `botVotes` を廃止し、`/api/botdata/:id` のオンデマンド取得に一本化
+- 2026-01-07: `/api/verify` から `botVotes` を廃止
+- 2026-03-26: `/api/botdata/:id` を通常 public browser/CLI contract から retired/private に分類
 - 2026-01-07: `/api/sessions/:id/status` の待機列情報を `queue` オブジェクトに統一
 - 2026-01-07: `/api/bulletin` の `rootHistory[].bulletinRoot` を正規名化（`root` は廃止）
 - 2026-03-26: `/api/verify` の verification contract を **22 checks / stage-required derivation** に更新
-- 2026-03-26: `/api/verify` の current payload に `seenBitmapRoot` / `journal.methodVersion=12` を反映
-- 2026-04-30: current zkVM methodVersion を 13 に更新
+- 2026-04-30: current zkVM methodVersion を 14 に更新
 - 2026-03-26: `/api/bitmap-proof` の `kind=included|seen` と public/private bundle 境界を追記

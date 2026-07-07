@@ -533,7 +533,13 @@ def bitmapCases : List BitmapCase := [
   { name := "thirty-one-bits", bitLength := 31, trueIndices := [0, 7, 8, 30], probes := [0, 7, 8, 30] },
   { name := "thirty-two-bits", bitLength := 32, trueIndices := [0, 31], probes := [0, 31] },
   { name := "thirty-three-bits", bitLength := 33, trueIndices := [0, 32], probes := [0, 31, 32] },
-  { name := "two-hundred-fifty-seven-bits", bitLength := 257, trueIndices := [0, 255, 256], probes := [0, 254, 255, 256] }
+  { name := "two-hundred-fifty-five-bits-sparse", bitLength := 255, trueIndices := [0, 254], probes := [0, 253, 254] },
+  { name := "two-hundred-fifty-six-bits-all-one-chunk", bitLength := 256, trueIndices := List.range 256, probes := [0, 127, 255] },
+  { name := "two-hundred-fifty-seven-bits", bitLength := 257, trueIndices := [0, 255, 256], probes := [0, 254, 255, 256] },
+  { name := "five-hundred-eleven-bits-two-partial-leaves", bitLength := 511, trueIndices := [0, 255, 256, 510], probes := [0, 255, 256, 510] },
+  { name := "five-hundred-twelve-bits-two-full-leaves", bitLength := 512, trueIndices := [255, 256, 511], probes := [0, 255, 256, 511] },
+  { name := "five-hundred-thirteen-bits-three-leaf-promoted", bitLength := 513, trueIndices := [0, 256, 512], probes := [0, 255, 256, 512] },
+  { name := "one-thousand-twenty-five-bits-five-leaf-promoted", bitLength := 1025, trueIndices := [0, 512, 1024], probes := [0, 255, 256, 512, 1024] }
 ]
 
 def rejectReasonString : RejectReason -> String

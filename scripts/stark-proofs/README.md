@@ -56,7 +56,7 @@ Behavior:
 # Override the scenario and user choice
 ./scripts/stark-proofs/test-single.sh --scenario S0 --user-choice B
 
-# Reuse an existing Next.js build output
+# Reuse an existing Vite dist output
 ./scripts/stark-proofs/generate-all.sh --skip-build
 
 # Show the underlying CLI options
@@ -87,15 +87,15 @@ are not the stable output contract for these wrappers.
 
 1. **Production mode**: These scripts pass `--zkvm-mode prod`, so the CLI
    unsets `RISC0_DEV_MODE` for real STARK receipts.
-2. **Builds**: The CLI runs `next build` unless you pass `--skip-build` or set
+2. **Builds**: The CLI runs `pnpm build:ci` unless you pass `--skip-build` or set
    `STARK_BALLOT_CLI_SKIP_BUILD=true` / `CLI_SKIP_BUILD=true`.
 3. **Prerequisites**:
    - Dependencies must be installed (`pnpm install`)
    - zkVM binary must be built (`pnpm build:zkvm`)
    - verifier-service binary must be built (`pnpm build:verifier-service`)
-   - an existing `next build` output is required when using `--skip-build`
-4. **No legacy test-data step**: `scripts/test-data/generate-sha256-data.ts` is
-   no longer supported. These wrappers generate votes through the CLI flow.
+   - an existing `pnpm build:ci` output is required when using `--skip-build`
+4. **No legacy test-data step**: legacy `scripts/test-data` generators are
+   retired. These wrappers generate votes through the CLI flow.
 5. **Bundle boundary**: Public bundles must not include private artifacts such
    as `input.json`, `verification.json`, `included-bitmap.json`, or
    `seen-bitmap.json`.

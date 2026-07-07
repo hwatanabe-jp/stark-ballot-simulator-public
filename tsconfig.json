@@ -6,6 +6,9 @@
     "strict": true,
     "noImplicitAny": true,
     "strictNullChecks": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noPropertyAccessFromIndexSignature": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noImplicitReturns": true,
@@ -13,22 +16,211 @@
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
+    "verbatimModuleSyntax": true,
+    "noUncheckedSideEffectImports": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["vitest/globals", "react", "react-dom"],
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ],
+    "types": ["vite/client", "vitest/globals", "react", "react-dom"],
     "paths": {
-      "@/*": ["./src/*"]
+      "@stark-ballot/api": ["./apps/api/src/index.ts"],
+      "@stark-ballot/api/server": ["./apps/api/src/server/index.ts"],
+      "@stark-ballot/api-contract": ["./packages/api-contract/src/index.ts"],
+      "@stark-ballot/api-contract/api-contract/*": ["./packages/api-contract/src/api-contract/*"],
+      "@stark-ballot/api-contract/errors/*": ["./packages/api-contract/src/errors/*"],
+      "@stark-ballot/api-contract/types/api/*": ["./packages/api-contract/src/types/api/*"],
+      "@stark-ballot/api-contract/validation/*": ["./packages/api-contract/src/validation/*"],
+      "@stark-ballot/application": ["./packages/application/src/index.ts"],
+      "@stark-ballot/application/bot/*": ["./packages/application/src/bot/*"],
+      "@stark-ballot/application/finalize/*": ["./packages/application/src/finalize/*"],
+      "@stark-ballot/application/zkvm-input/*": ["./packages/application/src/zkvm-input/*"],
+      "@stark-ballot/aws-adapters": ["./packages/aws-adapters/src/index.ts"],
+      "@stark-ballot/aws-adapters/aws/*": ["./packages/aws-adapters/src/aws/*"],
+      "@stark-ballot/aws-adapters/config/*": ["./packages/aws-adapters/src/config/*"],
+      "@stark-ballot/aws-adapters/finalize/*": ["./packages/aws-adapters/src/finalize/*"],
+      "@stark-ballot/aws-adapters/lambda/*": ["./packages/aws-adapters/src/lambda/*"],
+      "@stark-ballot/aws-adapters/rate-limit/*": ["./packages/aws-adapters/src/rate-limit/*"],
+      "@stark-ballot/aws-adapters/security/*": ["./packages/aws-adapters/src/security/*"],
+      "@stark-ballot/aws-adapters/sqs/*": ["./packages/aws-adapters/src/sqs/*"],
+      "@stark-ballot/aws-adapters/store/*": ["./packages/aws-adapters/src/store/*"],
+      "@stark-ballot/diagnostics": ["./packages/diagnostics/src/index.ts"],
+      "@stark-ballot/diagnostics/logger": ["./packages/diagnostics/src/logger.ts"],
+      "@stark-ballot/diagnostics/loggerTypes": ["./packages/diagnostics/src/loggerTypes.ts"],
+      "@stark-ballot/diagnostics/logging": ["./packages/diagnostics/src/logging.ts"],
+      "@stark-ballot/diagnostics/requestLogContext": ["./packages/diagnostics/src/requestLogContext.ts"],
+      "@stark-ballot/domain": ["./packages/domain/src/index.ts"],
+      "@stark-ballot/domain/bot/*": ["./packages/domain/src/lib/bot/*"],
+      "@stark-ballot/domain/bulletin/*": ["./packages/domain/src/lib/bulletin/*"],
+      "@stark-ballot/domain/constants/*": ["./packages/domain/src/shared/*"],
+      "@stark-ballot/domain/contract": ["./packages/domain/src/lib/contract/index.ts"],
+      "@stark-ballot/domain/contract/*": ["./packages/domain/src/lib/contract/*"],
+      "@stark-ballot/domain/crypto/*": ["./packages/domain/src/lib/crypto/*"],
+      "@stark-ballot/domain/finalize/*": ["./packages/domain/src/lib/finalize/*"],
+      "@stark-ballot/domain/http/*": ["./packages/domain/src/lib/http/*"],
+      "@stark-ballot/domain/performance/*": ["./packages/domain/src/lib/performance/*"],
+      "@stark-ballot/domain/scenarios/*": ["./packages/domain/src/lib/scenarios/*"],
+      "@stark-ballot/domain/security/sessionCapabilityToken": [
+        "./packages/domain/src/lib/security/sessionCapabilityToken.ts"
+      ],
+      "@stark-ballot/domain/session/*": ["./packages/domain/src/lib/session/*"],
+      "@stark-ballot/domain/shared/*": ["./packages/domain/src/shared/*"],
+      "@stark-ballot/domain/types": ["./packages/domain/src/types/index.ts"],
+      "@stark-ballot/domain/types/*": ["./packages/domain/src/types/*"],
+      "@stark-ballot/domain/utils/guards": ["./packages/domain/src/lib/utils/guards.ts"],
+      "@stark-ballot/domain/utils/hex": ["./packages/domain/src/lib/utils/hex.ts"],
+      "@stark-ballot/domain/vote/*": ["./packages/domain/src/lib/vote/*"],
+      "@stark-ballot/merkle": ["./packages/merkle/src/index.ts"],
+      "@stark-ballot/merkle/consistency-proof": ["./packages/merkle/src/consistency-proof.ts"],
+      "@stark-ballot/merkle/rfc6962-merkle-tree": ["./packages/merkle/src/rfc6962-merkle-tree.ts"],
+      "@stark-ballot/merkle/rfc6962-proof": ["./packages/merkle/src/rfc6962-proof.ts"],
+      "@stark-ballot/node-adapters": ["./packages/node-adapters/src/index.ts"],
+      "@stark-ballot/node-adapters/image-id-mapping": ["./packages/node-adapters/src/image-id-mapping.ts"],
+      "@stark-ballot/node-adapters/verifier-service-client": [
+        "./packages/node-adapters/src/verifier-service-client.ts"
+      ],
+      "@stark-ballot/node-adapters/verification-bundle": ["./packages/node-adapters/src/verification-bundle.ts"],
+      "@stark-ballot/node-adapters/zip": ["./packages/node-adapters/src/zip.ts"],
+      "@stark-ballot/node-adapters/zkvm/executor": ["./packages/node-adapters/src/zkvm/executor.ts"],
+      "@stark-ballot/node-adapters/zkvm/executor-factory": ["./packages/node-adapters/src/zkvm/executor-factory.ts"],
+      "@stark-ballot/node-adapters/zkvm/mock-executor": ["./packages/node-adapters/src/zkvm/mock-executor.ts"],
+      "@stark-ballot/node-adapters/zkvm/zkvm-mode": ["./packages/node-adapters/src/zkvm/zkvm-mode.ts"],
+      "@stark-ballot/runtime-config": ["./packages/runtime-config/src/index.ts"],
+      "@stark-ballot/runtime-config/env/*": ["./packages/runtime-config/src/env/*"],
+      "@stark-ballot/test-support": ["./packages/test-support/src/index.ts"],
+      "@stark-ballot/test-support/testing/*": ["./packages/test-support/src/testing/*"],
+      "@stark-ballot/validation": ["./packages/validation/src/index.ts"],
+      "@stark-ballot/validation/definedProperties": ["./packages/validation/src/definedProperties.ts"],
+      "@stark-ballot/validation/duplicate-detector": ["./packages/validation/src/duplicate-detector.ts"],
+      "@stark-ballot/validation/duplicate-detector-cache": ["./packages/validation/src/duplicate-detector-cache.ts"],
+      "@stark-ballot/validation/image-id-policy": ["./packages/validation/src/image-id-policy.ts"],
+      "@stark-ballot/validation/safe-verifier-segment": ["./packages/validation/src/safe-verifier-segment.ts"],
+      "@stark-ballot/validation/schema": ["./packages/validation/src/schema.ts"],
+      "@stark-ballot/verification": ["./packages/verification/src/index.ts"],
+      "@stark-ballot/verification/bitmap-proof-types": [
+        "./packages/verification/src/verification/bitmap-proof-types.ts"
+      ],
+      "@stark-ballot/verification/bitmap-root": ["./packages/verification/src/verification/bitmap-root.ts"],
+      "@stark-ballot/verification/bitmap-verifier": ["./packages/verification/src/verification/bitmap-verifier.ts"],
+      "@stark-ballot/verification/bundle": ["./packages/verification/src/verification/verification-bundle.ts"],
+      "@stark-ballot/verification/check-evaluator": [
+        "./packages/verification/src/verification/engine/evaluate-checks.ts"
+      ],
+      "@stark-ballot/verification/check-results": [
+        "./packages/verification/src/verification/build-verification-checks.ts"
+      ],
+      "@stark-ballot/verification/checks": ["./packages/verification/src/verification/verification-checks.ts"],
+      "@stark-ballot/verification/engine-types": ["./packages/verification/src/verification/engine/types.ts"],
+      "@stark-ballot/verification/excluded-count": ["./packages/verification/src/verification/excluded-count.ts"],
+      "@stark-ballot/verification/fail-closed-status": [
+        "./packages/verification/src/verification/fail-closed-status.ts"
+      ],
+      "@stark-ballot/verification/image-id": ["./packages/verification/src/verification/expected-image-id.ts"],
+      "@stark-ballot/verification/image-id-policy": ["./packages/verification/src/verification/image-id-policy.ts"],
+      "@stark-ballot/verification/image-id-types": ["./packages/verification/src/verification/image-id-types.ts"],
+      "@stark-ballot/verification/included-bitmap-artifact": [
+        "./packages/verification/src/verification/included-bitmap-artifact.ts"
+      ],
+      "@stark-ballot/verification/merkle": ["./packages/verification/src/verification/merkle.ts"],
+      "@stark-ballot/verification/merkle/*": ["./packages/verification/src/merkle/*"],
+      "@stark-ballot/verification/public-audit-artifacts": [
+        "./packages/verification/src/verification/public-audit-artifacts.ts"
+      ],
+      "@stark-ballot/verification/public-audit-artifact-consistency": [
+        "./packages/verification/src/verification/public-audit-artifact-consistency.ts"
+      ],
+      "@stark-ballot/verification/public-input": ["./packages/verification/src/verification/public-input-contract.ts"],
+      "@stark-ballot/verification/public-result": [
+        "./packages/verification/src/verification/public-verification-result.ts"
+      ],
+      "@stark-ballot/verification/receipt-normalizer": [
+        "./packages/verification/src/verification/receipt-normalizer.ts"
+      ],
+      "@stark-ballot/verification/seen-bitmap-artifact": [
+        "./packages/verification/src/verification/seen-bitmap-artifact.ts"
+      ],
+      "@stark-ballot/verification/shared/*": ["./packages/verification/src/shared/*"],
+      "@stark-ballot/verification/stage-evaluators": [
+        "./packages/verification/src/verification/engine/stage-evaluators.ts"
+      ],
+      "@stark-ballot/verification/stage-status": ["./packages/verification/src/verification/engine/derive-stages.ts"],
+      "@stark-ballot/verification/steps": ["./packages/verification/src/verification/build-verification-steps.ts"],
+      "@stark-ballot/verification/sth-verifier": ["./packages/verification/src/verification/sth-verifier.ts"],
+      "@stark-ballot/verification/summary": ["./packages/verification/src/verification/verification-summary.ts"],
+      "@stark-ballot/verification/tamper-detection": ["./packages/verification/src/verification/tamperDetection.ts"],
+      "@stark-ballot/verification/three-stage": ["./packages/verification/src/verification/three-stage.ts"],
+      "@stark-ballot/verification/types": ["./packages/verification/src/verification/types.ts"],
+      "@stark-ballot/web": ["./apps/web/src/index.ts"],
+      "@stark-ballot/web/api/*": ["./apps/web/src/api/*"],
+      "@stark-ballot/web/components/*": ["./apps/web/src/components/*"],
+      "@stark-ballot/web/finalize/*": ["./apps/web/src/finalize/*"],
+      "@stark-ballot/web/hooks": ["./apps/web/src/hooks/index.ts"],
+      "@stark-ballot/web/hooks/*": ["./apps/web/src/hooks/*"],
+      "@stark-ballot/web/i18n": ["./apps/web/src/i18n/index.ts"],
+      "@stark-ballot/web/i18n/*": ["./apps/web/src/i18n/*"],
+      "@stark-ballot/web/knowledge": ["./apps/web/src/knowledge/index.ts"],
+      "@stark-ballot/web/knowledge/*": ["./apps/web/src/knowledge/*"],
+      "@stark-ballot/web/mock-api/*": ["./apps/web/src/mock-api/*"],
+      "@stark-ballot/web/navigation/*": ["./apps/web/src/navigation/*"],
+      "@stark-ballot/web/routes/*": ["./apps/web/src/routes/*"],
+      "@stark-ballot/web/session": ["./apps/web/src/session/index.ts"],
+      "@stark-ballot/web/session/*": ["./apps/web/src/session/*"],
+      "@stark-ballot/web/shared/*": ["./apps/web/src/shared/*"],
+      "@stark-ballot/web/styles/*": ["./apps/web/src/styles/*"],
+      "@stark-ballot/web/verification/*": ["./apps/web/src/verification/*"],
+      "@stark-ballot/web/vote/*": ["./apps/web/src/vote/*"],
+      "@stark-ballot/zkvm-contract": ["./packages/zkvm-contract/src/index.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/bitmap": ["./packages/zkvm-contract/src/zkvm/bitmap.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/bitmap-artifacts": ["./packages/zkvm-contract/src/zkvm/bitmap-artifacts.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/contract-constants": [
+        "./packages/zkvm-contract/src/zkvm/contract-constants.ts"
+      ],
+      "@stark-ballot/zkvm-contract/zkvm/election-config": ["./packages/zkvm-contract/src/zkvm/election-config.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/guards": ["./packages/zkvm-contract/src/zkvm/guards.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/hex": ["./packages/zkvm-contract/src/zkvm/hex.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/host-io": ["./packages/zkvm-contract/src/zkvm/host-io.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/identifiers": ["./packages/zkvm-contract/src/zkvm/identifiers.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/journal-count-compat": [
+        "./packages/zkvm-contract/src/zkvm/journal-count-compat.ts"
+      ],
+      "@stark-ballot/zkvm-contract/zkvm/journal-guards": ["./packages/zkvm-contract/src/zkvm/journal-guards.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/log-id": ["./packages/zkvm-contract/src/zkvm/log-id.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/public-journal": ["./packages/zkvm-contract/src/zkvm/public-journal.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/types": ["./packages/zkvm-contract/src/zkvm/types.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/validated-domain": ["./packages/zkvm-contract/src/zkvm/validated-domain.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/wire-numeric-preflight": [
+        "./packages/zkvm-contract/src/zkvm/wire-numeric-preflight.ts"
+      ],
+      "@stark-ballot/zkvm-contract/zkvm/work-budget": ["./packages/zkvm-contract/src/zkvm/work-budget.ts"]
     },
     "target": "ES2024"
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts", ".next/dev/types/**/*.ts"],
-  "exclude": ["node_modules", ".next", "amplify"]
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": [
+    "node_modules",
+    ".next",
+    ".tmp",
+    ".temp",
+    ".turbo",
+    ".zkvm-temp",
+    ".verifier-bundles",
+    "build",
+    "coverage",
+    "dist",
+    "out",
+    "output",
+    "playwright-report",
+    "smoke-output",
+    "target",
+    "test-results",
+    "tmp",
+    "**/.terraform",
+    "**/.terraform/**",
+    "infra/terraform/.terraform",
+    "infra/terraform/legacy/.tmp",
+    "public-book/book",
+    "verifier-service/target",
+    "zkvm/target"
+  ]
 }

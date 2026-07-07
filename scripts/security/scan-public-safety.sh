@@ -7,6 +7,7 @@ usage() {
 Usage:
   scripts/security/scan-public-safety.sh --staged
   scripts/security/scan-public-safety.sh --all
+  scripts/security/scan-public-safety.sh --root <dir> --all
   scripts/security/scan-public-safety.sh --files <file>...
 
 Scans text files for high-confidence secrets and publishable-repo safety leaks.
@@ -16,9 +17,19 @@ EOF
 
 mode="staged"
 explicit_files=()
+scan_root=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --root)
+      if [ "$#" -lt 2 ]; then
+        echo "--root requires a directory." >&2
+        usage >&2
+        exit 2
+      fi
+      scan_root="$2"
+      shift 2
+      ;;
     --staged)
       mode="staged"
       shift
@@ -47,7 +58,14 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+if [ -n "$scan_root" ]; then
+  if [ ! -d "$scan_root" ]; then
+    echo "--root directory does not exist: $scan_root" >&2
+    exit 2
+  fi
+  repo_root="$(cd "$scan_root" && pwd)"
+  is_git_repo=false
+elif repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
   is_git_repo=true
 else
   repo_root="$(pwd)"
@@ -58,10 +76,13 @@ cd "$repo_root"
 should_skip_path() {
   local path="$1"
   case "$path" in
-    .git/*|node_modules/*|.next/*|out/*|dist/*|build/*|coverage/*|.nyc_output/*)
+    .git/*|node_modules/*|*/node_modules/*|.next/*|out/*|dist/*|build/*|coverage/*|.nyc_output/*)
       return 0
       ;;
     zkvm/target/*|verifier-service/target/*|test-results/*|playwright-report/*)
+      return 0
+      ;;
+    infra/terraform/*/evidence/*)
       return 0
       ;;
     .tmp/*|.temp/*|.verifier-bundles/*|.amplify/*)
@@ -116,12 +137,16 @@ my @simple_rules = (
   ['amplify_generated_logical_id', qr/\bamplify[A-Za-z]+[0-9A-F]{8,}\b/],
   ['personal_mfa_device_name', qr/\b(?:mfa\/)?smartphone_\d+\b/],
   ['gpg_fingerprint', qr/\b(?:pass init|Password store initialized for)\s+[0-9A-F]{32,}\b/],
+  ['aws_presigned_url', qr{https?://[^\s"'`<>]+[?&][^\s"'`<>]*(?:X-Amz-Algorithm=AWS4-HMAC-SHA256|X-Amz-Credential=[^&\s"'`<>]{16,}|X-Amz-Security-Token=[A-Za-z0-9%._~+/=-]{16,}|X-Amz-Signature=[0-9a-f]{16,})}i],
+  ['raw_s3_object_url', qr{https://(?:[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\.s3(?:\.dualstack)?(?:[.-][a-z0-9-]+)?\.amazonaws\.com/[^\s"'\x60<>?#]+|s3(?:\.dualstack)?(?:[.-][a-z0-9-]+)?\.amazonaws\.com/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/[^\s"'\x60<>?#]+)}i],
+  ['cloudfront_signed_cookie', qr/\bCloudFront-(?:Policy|Signature|Key-Pair-Id)=[A-Za-z0-9%._~+\/=-]{8,}(?=.*\bCloudFront-(?:Policy|Signature|Key-Pair-Id)=)/],
 );
 
 my @account_rules = (
   ['aws_account_arn', qr/\barn:aws(?:-[a-z]+)?:[A-Za-z0-9-]+:[A-Za-z0-9-]*:(\d{12}):/],
   ['ecr_account_registry', qr/\b(\d{12})\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\b/],
   ['sqs_account_url', qr{\bhttps://sqs\.[a-z0-9-]+\.amazonaws\.com/(\d{12})\b}],
+  ['aws_account_id_label', qr/\b(?:AWS_ACCOUNT_ID|TERRAFORM_AWS_ACCOUNT_ID(?:_[A-Z0-9_]+)?|aws_account_id|awsAccountId|account_id|account-id|accountId|AWS\s+account\s+ID|expectedAccountId|runtimeConfigAccountId|expectedBucketOwner|expected_bucket_owner|expected-bucket-owner|ownerAccountId|owner_account_id|bucketOwnerAccountId|bucket_owner_account_id|expectedOwnerAccountId|expected_owner_account_id)\b[^A-Za-z0-9]{0,24}["']?(\d{12})\b/i],
 );
 
 my @amplify_rules = (
@@ -134,6 +159,18 @@ my @resource_rules = (
   ['appsync_api_id', qr/\b(?:AMPLIFY_DATA_API_ID|amplifyDataApiId|AppSync API ID|API ID|--api-id)\b[^A-Za-z0-9_-]*[`"']?([a-z0-9]{26})\b/],
   ['aws_resource_id', qr/\b(?:subnet|sg|vpc|ami|rtb|nat|eipalloc|igw|vpce)-[0-9a-f]{8,}\b/],
 );
+
+sub is_account_id_hygiene_scope {
+  my ($path) = @_;
+  return 1 if $path =~ /\.tfvars(?:\.json)?(?:\.example)?$/;
+  return 1 if $path eq 'README.md' || $path eq 'SECURITY.md' || $path eq 'docs/README.md';
+  return 1 if $path =~ m{^public-book/};
+  return 0 if $path =~ m{^docs/current/(?:aws-account-migration|internal|monitoring)/};
+  return 1 if $path =~ m{^docs/current/};
+  return 0;
+}
+
+my $strict_account_id_hygiene = is_account_id_hygiene_scope($display_path);
 
 while (my $line = <$fh>) {
   for my $rule (@simple_rules) {
@@ -165,6 +202,14 @@ while (my $line = <$fh>) {
     my ($name, $regex) = @$rule;
     if ($line =~ $regex) {
       print "$display_path:$.: $name\n";
+    }
+  }
+
+  if ($strict_account_id_hygiene) {
+    while ($line =~ /\b(\d{12})\b/g) {
+      my $account_id = $1;
+      next if $account_id eq '000000000000';
+      print "$display_path:$.: aws_account_id_label\n";
     }
   }
 

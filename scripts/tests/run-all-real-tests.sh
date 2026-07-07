@@ -21,10 +21,10 @@ for CHOICE in A B C D E; do
   echo "[$(date +"%H:%M:%S")] [$COUNTER/5] Starting: User=$CHOICE, Scenarios=S0-S5" | tee -a $SUMMARY
 
   if pnpm test:cli:real-prod:all -- --user-choice $CHOICE --skip-build > "$LOG_FILE" 2>&1; then
-    echo "[$(date +"%H:%M:%S")] [$COUNTER/5] ✅ PASSED: User=$CHOICE, Scenarios=S0-S5" | tee -a $SUMMARY
+    echo "[$(date +"%H:%M:%S")] [$COUNTER/5] [OK] PASSED: User=$CHOICE, Scenarios=S0-S5" | tee -a $SUMMARY
   else
     EXIT_CODE=$?
-    echo "[$(date +"%H:%M:%S")] [$COUNTER/5] ❌ FAILED: User=$CHOICE, Scenarios=S0-S5 (exit code: $EXIT_CODE)" | tee -a $SUMMARY
+    echo "[$(date +"%H:%M:%S")] [$COUNTER/5] [FAIL] FAILED: User=$CHOICE, Scenarios=S0-S5 (exit code: $EXIT_CODE)" | tee -a $SUMMARY
   fi
 
   # 最後のテスト以外は1分待機
@@ -40,7 +40,7 @@ echo "=== STARK Ballot Simulator Real zkVM Test Run Completed at $(date) ===" | 
 echo "See individual logs in $LOG_DIR/" | tee -a $SUMMARY
 
 # 最終集計
-PASSED=$(grep -c "✅ PASSED" $SUMMARY || echo 0)
-FAILED=$(grep -c "❌ FAILED" $SUMMARY || echo 0)
+PASSED=$(grep -c "\\[OK\\] PASSED" $SUMMARY || echo 0)
+FAILED=$(grep -c "\\[FAIL\\] FAILED" $SUMMARY || echo 0)
 echo "" | tee -a $SUMMARY
 echo "Final Results: $PASSED passed, $FAILED failed" | tee -a $SUMMARY

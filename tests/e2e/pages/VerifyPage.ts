@@ -1,10 +1,12 @@
-import type { Page, Locator } from '@playwright/test';
+import { expect, type Page, type Locator } from '@playwright/test';
 import { BasePage } from './BasePage';
 
 // UI-facing statuses are normalized before they reach data-status.
 // Internal "not_run" states are rendered as "pending" in the verification card.
 export type CheckStatus = 'pending' | 'running' | 'success' | 'failed';
+export type SummaryStatus = 'verified' | 'warning' | 'failed' | 'in_progress' | 'demo_only';
 export type VerificationCheckId =
+  | 'recorded_sth_third_party'
   | 'counted_tally_consistent'
   | 'counted_missing_indices_zero'
   | 'counted_expected_vs_tree_size'
@@ -15,6 +17,7 @@ export type VerificationStepId = 'counted_as_recorded' | 'stark_verification';
 
 export interface VerificationResult {
   summaryVisible: boolean;
+  summaryStatus: SummaryStatus | null;
   checkStatuses: Partial<Record<VerificationCheckId, CheckStatus | null>>;
   stepStatuses: Partial<Record<VerificationStepId, CheckStatus | null>>;
 }
@@ -34,11 +37,13 @@ export class VerifyPage extends BasePage {
     stepIds: readonly VerificationStepId[] = [],
   ): Promise<VerificationResult> {
     const summaryVisible = await this.summaryBanner.isVisible().catch(() => false);
+    const summaryStatus = await this.getSummaryStatus();
     const checkStatuses = await this.getCheckStatuses(checkIds);
     const stepStatuses = await this.getStepStatuses(stepIds);
 
     return {
       summaryVisible,
+      summaryStatus,
       checkStatuses,
       stepStatuses,
     };
@@ -51,6 +56,20 @@ export class VerifyPage extends BasePage {
       await this.waitForTerminalStatus(`check-${checkId}`);
     }
     await this.summaryBanner.waitFor({ state: 'visible', timeout: 20000 });
+  }
+
+  private async getSummaryStatus(): Promise<SummaryStatus | null> {
+    const attr = await this.summaryBanner.getAttribute('data-status').catch(() => null);
+    if (
+      attr === 'verified' ||
+      attr === 'warning' ||
+      attr === 'failed' ||
+      attr === 'in_progress' ||
+      attr === 'demo_only'
+    ) {
+      return attr;
+    }
+    return null;
   }
 
   private async getCheckStatuses(
@@ -85,16 +104,8 @@ export class VerifyPage extends BasePage {
 
   private async waitForTerminalStatus(testId: string): Promise<void> {
     const locator = this.page.getByTestId(testId);
-    await locator.waitFor({ state: 'visible', timeout: 20000 });
-    await this.page.waitForFunction(
-      (targetTestId) => {
-        const node = document.querySelector(`[data-testid="${targetTestId}"]`);
-        const status = node?.getAttribute('data-status');
-        return status === 'success' || status === 'failed';
-      },
-      testId,
-      { timeout: 20000 },
-    );
+    await expect(locator).toBeVisible({ timeout: 20000 });
+    await expect(locator).toHaveAttribute('data-status', /^(success|failed)$/, { timeout: 20000 });
   }
 
   async getPageTitle(): Promise<string> {

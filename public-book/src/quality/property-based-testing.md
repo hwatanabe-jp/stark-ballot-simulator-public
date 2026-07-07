@@ -1,19 +1,21 @@
 # Property-based Testing
 
-Property-based Testing (PBT) は、少数の fixture では見落としやすい境界条件を、生成入力と「常に成り立つべき性質」で検査するために使います。
+Property-based Testing (PBT) は、少数の fixture では見落としやすい境界条件を、生成入力と「常に成り立つべき性質」で検査します。
 
-本プロジェクトでは、Merkle tree、bitmap packing、input commitment、journal count のように、順序・境界・改ざん耐性が重要なロジックに PBT を置いています。
+本プロジェクトでは、Merkle tree、bitmap packing、input commitment、journal count のように、順序、境界、改ざん耐性が重要なロジックに PBT を置いています。
 
 ## PBT を導入した理由
 
-example-based tests は既知のシナリオを守ります。PBT はそれに加えて、次のような仕様レベルの性質を入力空間全体に近い形で探索します。
+Example-based tests は既知のシナリオを守ります。
+PBT はそれに加えて、次のような仕様レベルの性質を生成器が到達できる範囲で探索します。
 
 - 同じ vote multiset なら入力順序を変えても input commitment が変わらない
 - root、leaf、index、proof node を改ざんすると Merkle proof が失敗する
 - LSB-first bitmap packing の bit address が境界で崩れない
 - journal count の分解式が常に成立する
 
-PBT は証明ではありませんが、実装に対して広い入力空間を継続的に探索できるため、暗号周辺の encoding drift や境界条件の退行を早期に検出できます。
+PBT は数学的証明ではありません。
+それでも、CI で広い生成入力を継続的に試せるため、暗号周辺の encoding drift や境界条件の退行を早期に検出しやすくなります。
 
 ## TypeScript 側の PBT
 
@@ -21,7 +23,7 @@ PBT は証明ではありませんが、実装に対して広い入力空間を�
 
 対象:
 
-- `src/lib/merkle/rfc6962-merkle-tree.property.test.ts`
+- `packages/merkle/src/rfc6962-merkle-tree.property.test.ts`
 
 検査する性質:
 
@@ -34,7 +36,7 @@ PBT は証明ではありませんが、実装に対して広い入力空間を�
 
 対象:
 
-- `src/lib/merkle/bitmap-merkle-tree.property.test.ts`
+- `packages/verification/src/merkle/bitmap-merkle-tree.property.test.ts`
 
 検査する性質:
 
@@ -47,7 +49,7 @@ PBT は証明ではありませんが、実装に対して広い入力空間を�
 
 対象:
 
-- `src/lib/zkvm/__tests__/input-commitment.property.test.ts`
+- `packages/zkvm-contract/src/zkvm/__tests__/input-commitment.property.test.ts`
 
 検査する性質:
 
@@ -60,7 +62,7 @@ PBT は証明ではありませんが、実装に対して広い入力空間を�
 
 対象:
 
-- `src/lib/zkvm/__tests__/journal-invariants.property.test.ts`
+- `packages/node-adapters/src/zkvm/journal-invariants.property.test.ts`
 
 検査する性質:
 
@@ -85,12 +87,17 @@ PBT は証明ではありませんが、実装に対して広い入力空間を�
 - root / leaf / path 改ざんを拒否する
 - bitmap root が reference oracle と一致する
 - bit flip で bitmap root が変わる
+- guest の slot / record accounting が現在の journal semantics と一致する
+- duplicate index の処理順序 semantics を固定する
 
-Rust 側の PBT は、zkVM guest / contract-core で使う低レベル実装に近い場所で、TypeScript 側と同じ性質を別実装として検査します。
+Rust 側の PBT は、zkVM guest / contract-core で使う低レベル実装に近い場所で動きます。
+TypeScript 側と同じ性質を別実装として検査します。
 
 ## Lean との関係
 
-PBT は実装に対して広い入力空間を探索し、Lean は同種の不変条件を抽象モデル上で証明します。両者の役割分担と、Lean から出力した generated vectors を介して実装テストに接続する仕組みは [Lean による形式化 > 実装との接続](./lean-formalization.md#実装との接続) に整理しています。
+PBT は実装に対して広い入力空間を探索します。
+Lean は同種の不変条件を抽象モデル上で証明します。
+両者の役割分担と、Lean から出力した generated vectors を介して実装テストに接続する仕組みは [Lean による形式化 > 実装との接続](./lean-formalization.md#実装との接続) に整理しています。
 
 ## 限界
 
@@ -100,6 +107,7 @@ PBT は実装に対して広い入力空間を探索し、Lean は同種の不�
 - RISC Zero receipt soundness も PBT の対象ではない
 - 生成器に含めていない入力領域は探索されない
 
-そのため、PBT は example-based tests や Lean formalization を置き換えるものではなく、境界条件と実装 drift を検出する追加レイヤーとして扱います。
+そのため、PBT は example-based tests や Lean formalization を置き換えるものではありません。
+境界条件と実装 drift を検出する追加レイヤーとして扱います。
 
-<!-- source: src/lib/merkle/rfc6962-merkle-tree.property.test.ts, src/lib/merkle/bitmap-merkle-tree.property.test.ts, src/lib/zkvm/__tests__/input-commitment.property.test.ts, src/lib/zkvm/__tests__/journal-invariants.property.test.ts, zkvm/methods/guest/src/property_tests.rs, docs/current/formal/README.md -->
+<!-- source: packages/merkle/src/rfc6962-merkle-tree.property.test.ts, packages/verification/src/merkle/bitmap-merkle-tree.property.test.ts, packages/zkvm-contract/src/zkvm/__tests__/input-commitment.property.test.ts, packages/node-adapters/src/zkvm/journal-invariants.property.test.ts, zkvm/methods/guest/src/property_tests.rs, docs/current/formal/README.md -->

@@ -18028,7 +18028,9 @@
           "test": true
         }
       ],
-      "features": {},
+      "features": {
+        "production": ["risc0-zkvm/disable-dev-mode"]
+      },
       "manifest_path": "<REPO_ROOT>/zkvm/host/Cargo.toml",
       "metadata": null,
       "publish": null,

@@ -1,10 +1,13 @@
 # 4 段階検証モデル
 
-E2E 検証可能投票の各段階（Cast-as-Intended / Recorded-as-Cast / Counted-as-Recorded / STARK Verification）でどんな保証が成り立つかを扱う章です。
+この章では、E2E 検証可能投票の各段階（Cast-as-Intended / Recorded-as-Cast / Counted-as-Recorded / STARK Verification）で成立する保証を説明します。
 
 ## 段階間の依存関係
 
-概念モデルとしては 4 段階を順に評価しますが、実行場所は段階ごとに異なります（Stage 1 はクライアント、Stage 2-4 はサーバー中心）。実行責務の詳細は [設計と実行フロー](design-and-flow.md) を参照してください。
+概念モデルでは 4 段階を順に評価します。
+ただし、実行場所は段階ごとに異なります。
+Stage 1 はクライアントで実行し、Stage 2 から Stage 4 はサーバー中心で実行します。
+実行責務の詳細は [設計と実行フロー](design-and-flow.md) を参照してください。
 
 ```mermaid
 flowchart LR
@@ -34,7 +37,8 @@ flowchart LR
 
 ### 目的
 
-投票者が意図した選択肢のコミットメントが、サーバーから返却された投票レシートと一致することを確認します。これにより、サーバーが投票者の選択を差し替える攻撃を検出します。
+投票者が意図した選択肢のコミットメントが、サーバーから返却された投票レシートと一致することを確認します。
+この確認により、サーバーが投票者の選択を差し替える攻撃を検出します。
 
 ### 検証する内容
 
@@ -66,14 +70,16 @@ flowchart LR
 
 ### 必要な証拠
 
-| 証拠         | 保管場所                                                    | 説明                                                                  |
-| ------------ | ----------------------------------------------------------- | --------------------------------------------------------------------- |
-| 選挙 ID      | クライアントセッション（`localStorage.starkBallotSession`） | セッション作成時に確定した UUID                                       |
-| 選択肢       | クライアントセッション（`localStorage.starkBallotSession`） | 投票者が選択した値（A〜E）                                            |
-| 乱数         | クライアントセッション（`localStorage.starkBallotSession`） | 投票時にクライアントが生成した 32 バイト乱数                          |
-| 投票レシート | `GET /api/verify` 応答（`voteReceipt`）                     | 投票レシート（commitment, voteId, bulletinIndex, bulletinRootAtCast） |
+選挙 ID、選択肢、乱数はクライアントセッション（`localStorage.starkBallotSession`）に保持され、投票レシートは `GET /api/verify` 応答（`voteReceipt`）から取得します。
 
-`voteReceipt` は [cast-time 証跡](../appendix/glossary.md#cast-time-証跡cast-time-ct-artifact)が再構成できた場合のみ返されます（[設計原則 3](design-and-flow.md#原則-3-チェック評価はサーバー中心集約はサーバーとクライアントの双方で実施) 参照）。
+| 証拠         | 説明                                                         |
+| ------------ | ------------------------------------------------------------ |
+| 選挙 ID      | セッション作成時に確定した UUID                              |
+| 選択肢       | 投票者が選択した値（A〜E）                                   |
+| 乱数         | 投票時にクライアントが生成した 32 バイト乱数                 |
+| 投票レシート | commitment, voteId, bulletinIndex, bulletinRootAtCast を含む |
+
+`voteReceipt` は [cast-time 証跡](../appendix/glossary.md#cast-time-証跡cast-time-ct-artifact)が再構成できた場合のみ返されます（[設計原則 3](design-and-flow.md#原則-3-チェック評価と集約の責務を分ける) 参照）。
 
 ### 失敗モード
 
@@ -87,19 +93,20 @@ flowchart LR
 
 ### 限界
 
-この段階は投票者の手元データに依存するため、`localStorage` 消去後や別端末からは検証できません。
-
----
+この段階は投票者の手元データに依存します。
+そのため、`localStorage` 消去後や別端末からは検証できません。
 
 ## Stage 2: Recorded-as-Cast
 
 ### 目的
 
-投票者のコミットメントが、追記専用の掲示板（CT Merkle ツリー）に正しく記録されていることを確認します。さらに、掲示板が追記専用性を維持していること（過去のエントリが削除・改変されていないこと）を検証します。
+投票者のコミットメントが、追記専用の掲示板（CT Merkle ツリー）に正しく記録されていることを確認します。
+さらに、掲示板が追記専用性を維持していることを検証します。
+つまり、過去のエントリが削除や改変を受けていないことを確認します。
 
 ### 検証する内容
 
-この段階には 3 系統の検証があります。UI ステップとの対応関係は [ゲーティングロジック](gating-logic.md#ステップとチェックの対応関係) を参照してください。
+この段階には 3 系統の検証があります。
 
 ```mermaid
 flowchart TB
@@ -122,15 +129,19 @@ flowchart TB
 
 #### 2a: 包含証明（Inclusion Proof）
 
-RFC 6962 の PATH 関数に基づく CT スタイルの Merkle 包含証明を検証し、投票者のコミットメントが掲示板のツリーに含まれていることを確認します。検証者はリーフハッシュと監査パスからルートハッシュを再計算し、期待されるルートと照合します。
+RFC 6962 の PATH 関数に基づく CT スタイルの Merkle 包含証明を検証し、投票者のコミットメントが掲示板のツリーに含まれていることを確認します。
+検証者はリーフハッシュと監査パスからルートハッシュを再計算し、期待されるルートと照合します。
 
 #### 2b: 整合性証明（Consistency Proof）
 
-投票時点のツリー状態（ルートとサイズ）から、最終的なツリー状態への遷移が追記のみで行われたことを検証します。RFC 6962 の SUBPROOF アルゴリズムに基づく整合性証明により、サーバーが過去のエントリを密かに削除したり順序を変更したりするスプリットビュー攻撃を検出します。
+投票時点のツリー状態（ルートとサイズ）から、最終的なツリー状態への遷移が追記のみで行われたことを検証します。
+RFC 6962 の SUBPROOF アルゴリズムに基づく整合性証明により、サーバーが過去のエントリを密かに削除したり順序を変更したりするスプリットビュー攻撃を検出します。
 
 #### 2c: 第三者 STH 検証（オプション）
 
-複数の独立した STH（Signed Tree Head）ソースに問い合わせ、合意が成立しているかを確認します。これにより、サーバーが検証者ごとに異なるツリー状態を提示するスプリットビュー攻撃を検出します。照合条件の詳細は [チェック一覧](checks-catalog.md#recorded_sth_third_party) を参照してください。
+複数の独立した STH（Signed Tree Head）ソースに問い合わせ、合意が成立しているかを確認します。
+この確認により、サーバーが検証者ごとに異なるツリー状態を提示するスプリットビュー攻撃を検出します。
+照合条件の詳細は [チェック一覧](checks-catalog.md#recorded_sth_third_party) を参照してください。
 
 ### 必要な証拠
 
@@ -147,7 +158,7 @@ RFC 6962 の PATH 関数に基づく CT スタイルの Merkle 包含証明を�
 
 `userVote.proof.treeSize` は整合性証明の oldSize として参照されます。
 
-関連: [fail-closed](../appendix/glossary.md#fail-closed)（cast-time 証跡が欠ける場合の動作） / [設計原則 3](design-and-flow.md#原則-3-チェック評価はサーバー中心集約はサーバーとクライアントの双方で実施) / [チェック一覧](checks-catalog.md#recorded_inclusion_proof)（判定の詳細）。
+関連: [fail-closed](../appendix/glossary.md#fail-closed)（cast-time 証跡が欠ける場合の動作） / [設計原則 3](design-and-flow.md#原則-3-チェック評価と集約の責務を分ける) / [チェック一覧](checks-catalog.md#recorded_inclusion_proof)（判定の詳細）。
 
 ### 失敗モード
 
@@ -159,37 +170,25 @@ RFC 6962 の PATH 関数に基づく CT スタイルの Merkle 包含証明を�
 | 第三者 STH 合意の不成立  | サーバーが検証者ごとに異なるツリーを提示                                      | 重大（有効時） |
 | ルートが履歴に存在しない | ルート履歴の不整合                                                            | 重大           |
 
----
-
 ## Stage 3: Counted-as-Recorded
 
 ### 目的
 
-掲示板に記録された全投票が、zkVM の集計処理に正しく含まれたことを確認します。投票の除外、欠落、重複がないことに加え、公開された claimed tally（表示用集計値）が zkVM の `verifiedTally` と一致することを検証し、集計結果の完全性と整合性を保証します。
+掲示板に記録された全投票が、zkVM の集計処理に正しく含まれたことを確認します。
+投票の除外、欠落、重複がないことも確認します。
+さらに、公開された claimed tally（表示用集計値）が zkVM の `verifiedTally` と一致することを検証し、集計結果の完全性と整合性を保証します。
 
 ### 検証する内容
 
-この段階では 10 個の required チェックが全て `success` であることを要求します。導出ルールと journal 省略時のガード補正は [ゲーティングロジック](gating-logic.md#ステップとチェックの対応関係) を参照してください。
+この段階では 10 個の required チェックが全て `success` であることを要求します。
+導出ルールと journal 省略時のガード補正は [ゲーティングロジック](gating-logic.md#ステップとチェックの対応関係) を参照してください。
 
-```mermaid
-flowchart TD
-  subgraph PUBLIC["public 系 required (6)"]
-    P["counted_input_sanity<br/>counted_unique_indices<br/>counted_unique_<br/>commitments<br/>counted_election_<br/>manifest_consistent<br/>counted_close_<br/>statement_consistent<br/>counted_input_<br/>commitment_match"]
-  end
+| 系統           | required チェック                                                                                                                                                                              |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| public 系（6） | `counted_input_sanity`, `counted_unique_indices`, `counted_unique_commitments`, `counted_election_manifest_consistent`, `counted_close_statement_consistent`, `counted_input_commitment_match` |
+| zk 系（4）     | `counted_tally_consistent`, `counted_missing_indices_zero`, `counted_expected_vs_tree_size`, `counted_my_vote_included`                                                                        |
 
-  subgraph ZK["zk 系 required (4)"]
-    Z["counted_tally_consistent<br/>counted_missing_<br/>indices_zero<br/>counted_expected_<br/>vs_tree_size<br/>counted_my_vote_<br/>included"]
-  end
-
-  RESULT{"10 required 全て success?"}
-  PASS["Counted: success"]
-  FAIL["Verified をブロック"]
-
-  P --> RESULT
-  Z --> RESULT
-  RESULT -->|Yes| PASS
-  RESULT -->|No| FAIL
-```
+1 つでも `success` でないチェックが残る場合、Counted は成功にならず、Verified をブロックします。
 
 ### 必要な証拠
 
@@ -203,7 +202,9 @@ flowchart TD
 | ビットマップ証明材料     | `/api/bitmap-proof`                                  | `kind=included` と `kind=seen` を使い分け、自分のインデックスが counted されたことや prover に提示されたかを説明する材料   |
 | ビットマップルート       | ジャーナル                                           | zkVM ゲストが計算した `includedBitmapRoot` と `seenBitmapRoot`                                                             |
 
-公開入力サマリーはサーバー内部表現であり、レスポンスにそのまま含まれません。`inputCommitment` が束縛するのは `public-input.json` の部分集合です。各チェックの判定ロジックは [チェック一覧](checks-catalog.md#counted-as-recorded10-チェック) を参照してください。
+公開入力サマリーはサーバー内部表現であり、レスポンスにそのまま含まれません。
+`inputCommitment` が束縛するのは `public-input.json` の部分集合です。
+各チェックの判定ロジックは [チェック一覧](checks-catalog.md#counted-as-recorded10-チェック) を参照してください。
 
 ### 重要な判定: 除外数（`excludedSlots`）
 
@@ -212,7 +213,8 @@ flowchart TD
 - `excludedSlots == 0`: 除外なし（正常）
 - `excludedSlots > 0`: 掲示板スロットの未提示または計上失敗（即座に検証失敗）
 
-`counted_missing_indices_zero` が除外数を解決し、0 でなければ `failed` になります。解決順序と legacy aliases の扱いは [チェック一覧](checks-catalog.md#counted_missing_indices_zero) を参照してください。
+`counted_missing_indices_zero` が除外数を解決し、0 でなければ `failed` になります。
+解決順序と legacy aliases の扱いは [チェック一覧](checks-catalog.md#counted_missing_indices_zero) を参照してください。
 
 ### 失敗モード
 
@@ -228,13 +230,12 @@ flowchart TD
 | 自票のビットマップ証明が失敗または欠落 | bit が 0、proof source 不可、またはルート不一致                                              | 重大（required check が `failed/not_run`）        |
 | ツリーサイズの不一致                   | `totalExpected` と `treeSize` が異なる（暗黙の除外、または close/input side の不整合を示す） | 重大（必須チェック失敗）                          |
 
----
-
 ## Stage 4: STARK Verification
 
 ### 目的
 
-zkVM の実行が正しく行われたことを STARK 証明（レシート）の暗号学的検証により確認します。レシートの検証に成功すれば、ジャーナルの内容（集計結果、除外情報、入力コミットメント等）がゲストプログラムの正しい実行の結果であることが保証されます。
+zkVM の実行が正しく行われたことを STARK 証明（レシート）の暗号学的検証により確認します。
+レシートの検証に成功すれば、ジャーナルの内容（集計結果、除外情報、入力コミットメント等）がゲストプログラムの正しい実行の結果であることが保証されます。
 
 ### 検証する内容
 
@@ -266,9 +267,12 @@ flowchart LR
 
 STARK Verification では 2 つのチェックを実行します。
 
-**Image ID 照合**: verifier-confirmed な `receipt_image_id` が期待 Image ID と一致し、ホスト主張値（`imageId`）や comparison-only の `journal.imageId` とも矛盾しないことを確認します。Image ID はゲストプログラムから導出される暗号的識別子であり、プログラムの改変やホスト主張値の食い違いを検出します。解決順の詳細は [チェック一覧](checks-catalog.md#stark_image_id_match) を参照してください。
+**Image ID 照合**: verifier-confirmed な `receipt_image_id` が期待 Image ID と一致し、ホスト主張値（`imageId`）や comparison-only の `journal.imageId` とも矛盾しないことを確認します。
+Image ID はゲストプログラムから導出される暗号的識別子であり、プログラムの改変やホスト主張値の食い違いを検出します。
+解決順の詳細は [チェック一覧](checks-catalog.md#stark_image_id_match) を参照してください。
 
-**レシート検証**: RISC Zero の `Receipt::verify()` を呼び出し、Seal（STARK 証明）がジャーナルと Image ID に対して暗号学的に正当であることを検証します。この検証は計算量が多いため、サーバー側の Rust 検証サービスで実行されます。
+**レシート検証**: RISC Zero の `Receipt::verify()` を呼び出し、Seal（STARK 証明）がジャーナルと Image ID に対して暗号学的に正当であることを検証します。
+この検証は計算量が多いため、サーバー側の Rust 検証サービスで実行されます。
 
 ### 必要な証拠
 
@@ -280,7 +284,11 @@ STARK Verification では 2 つのチェックを実行します。
 
 ### 開発モードの検出
 
-`RISC0_DEV_MODE=1` で生成されたレシートは `InnerReceipt::Fake` 型であり、暗号学的な保証を持たず、本番 STARK 検証としては受理されません。検証サービスはこれを `dev_mode` ステータスとして報告し、core evaluator では明示的な dev-mode allowance が有効な場合だけ `success` に正規化し、それ以外では `not_run` として扱います。判定の詳細は [ゲーティングロジック](gating-logic.md#stark-検証のゲーティング) を参照してください。
+`RISC0_DEV_MODE=1` で生成されたレシートは `InnerReceipt::Fake` 型であり、暗号学的な保証を持ちません。
+そのため、本番 STARK 検証としては受理されません。
+検証サービスはこれを `dev_mode` ステータスとして報告します。
+core evaluator では明示的な dev-mode allowance が有効な場合だけ `success` に正規化し、それ以外では `not_run` として扱います。
+判定の詳細は [ゲーティングロジック](gating-logic.md#stark-検証のゲーティング) を参照してください。
 
 ### 失敗モード
 
@@ -290,8 +298,6 @@ STARK Verification では 2 つのチェックを実行します。
 | レシート検証失敗 | 証明が暗号学的に無効                                                         | 重大   |
 | 開発モード検出   | フェイクレシートが混入                                                       | 重大   |
 
----
-
 UI ステップの対応チェック、集約ルール、最終判定の決定方法は [ゲーティングロジック](gating-logic.md) を参照してください。
 
-<!-- source: src/server/api/handlers/verify.ts, src/lib/verification/engine/evaluate-checks.ts, src/lib/verification/verification-checks.ts, src/lib/verification/build-verification-steps.ts, src/app/(routes)/verify/hooks/useVerificationData.ts, src/app/(routes)/verify/hooks/useVerificationSequence.ts, src/lib/verification/consistency-verifier.ts -->
+<!-- source: apps/api/src/server/api/handlers/verify.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/build-verification-steps.ts, apps/web/src/routes/verify/hooks/useVerificationData.ts, apps/web/src/routes/verify/hooks/useVerificationSequence.ts, packages/verification/src/verification/consistency-verifier.ts -->

@@ -1,8 +1,10 @@
 packages:
   - '.'
+  - 'apps/*'
+  - 'packages/*'
 
-# Nested package.json files are local module or deployment boundaries, not
-# pnpm workspace packages.
+# Apps/packages own workspace boundaries. Root scripts remain the orchestration
+# and execution authority for repository-level gates.
 strictDepBuilds: true
 minimumReleaseAge: 1440
 minimumReleaseAgeStrict: true
@@ -18,8 +20,7 @@ trustPolicyExclude:
   - 'ua-parser-js@1.0.41'
 
 overrides:
-  '@aws-cdk/cloud-assembly-schema': 53.28.0
-  '@smithy/types': 4.14.2
+  '@smithy/types': 4.15.1
 
 peerDependencyRules:
   allowedVersions:
@@ -32,3 +33,7 @@ allowBuilds:
   sharp: true
   unrs-resolver: true
   core-js: false
+  classic-level: false
+  cpu-features: false
+  protobufjs: false
+  ssh2: false

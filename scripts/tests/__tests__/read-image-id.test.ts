@@ -107,7 +107,7 @@ describe('read-image-id.mjs', () => {
       },
     });
 
-    expect(runScript([jsonPath])).toBe('0xdefault');
+    expect(runScript([jsonPath], { EXPECTED_IMAGE_ID_VARIANT: '' })).toBe('0xdefault');
   });
 
   it('uses EXPECTED_IMAGE_ID_VARIANT when no --variant flag is provided', () => {

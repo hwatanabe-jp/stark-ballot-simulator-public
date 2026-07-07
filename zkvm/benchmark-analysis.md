@@ -74,7 +74,8 @@ In particular, it does not measure the cost of:
 - seen/included bitmap root construction
 - canonical input commitment encoding and sorting
 - real fixture shapes from `zkvm/test-data/`
-- app-driven proof generation through `src/lib/zkvm/executor.ts`
+- app-driven proof generation through `packages/node-adapters/src/zkvm/executor.ts`
+  and `packages/application/src/finalize/zkvm-executor.ts`
 - async ARM64 ECS/Fargate prover execution
 - `verifier-service` receipt verification latency
 

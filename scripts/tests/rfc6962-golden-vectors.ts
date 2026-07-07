@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { RFC6962MerkleTree } from '@/lib/merkle/rfc6962-merkle-tree';
+import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
 
 export const RFC6962_GOLDEN_VECTOR_SIZES = [1, 2, 3, 5, 7, 8, 9, 64] as const;
 

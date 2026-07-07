@@ -1,12 +1,14 @@
 # 検証サービス
 
-STARK レシートを検証する Rust サービスの構造と、ローカル / Lambda 双方での使い方を扱う章です。
+この章では、STARK レシートを検証する Rust サービスの構造と、ローカルおよび Lambda での使い方を扱います。
 
-レシートの STARK 検証をサーバー側で行い、結果をレポートとしてクライアントに提供する Rust コンポーネントです。
+検証サービスは、レシートの STARK 検証をサーバー側で実行し、結果をレポートとしてクライアントに提供する Rust コンポーネントです。
 
 ## 概要
 
-STARK 証明の検証は計算コストが証明生成に比べて低いものの、ブラウザ上で RISC Zero の検証ロジックを実行することは現時点では実用的ではありません。そのため、本システムではサーバー側で検証を行い、その結果をレポートとしてクライアントに提供する設計を採用しています。
+STARK 証明の検証は、証明生成に比べれば計算コストが低い処理です。
+ただし、ブラウザ上で RISC Zero の検証ロジックを実行することは、現時点では実用的ではありません。
+そのため、本システムではサーバー側で検証を行い、その結果をレポートとしてクライアントに提供します。
 
 ```mermaid
 flowchart LR
@@ -22,7 +24,7 @@ flowchart LR
 
 ## 検証フロー
 
-検証サービスは以下の手順でレシートを検証します。
+検証サービスは、次の手順でレシートを検証します。
 
 ```mermaid
 flowchart TD
@@ -51,7 +53,9 @@ flowchart TD
 
 ### 入力形式の解決
 
-検証サービスは単一のレシートファイルだけでなく、レシートを含むバンドルディレクトリや ZIP にも対応しています。`image_id` はラッパーの top-level フィールドで、レシート本体の内部フィールドではありません。同期ファイナライズ経路では proof bundle ディレクトリ全体を渡し、その中の `receipt.json` を解決させる実装になっています。
+検証サービスは、単一のレシートファイルだけでなく、レシートを含むバンドルディレクトリや ZIP にも対応しています。
+`image_id` はラッパーの top-level フィールドであり、レシート本体の内部フィールドではありません。
+同期 finalization 経路では proof bundle ディレクトリ全体を渡し、その中の `receipt.json` を解決します。
 
 | 形式           | 説明                                                           |
 | -------------- | -------------------------------------------------------------- |
@@ -62,13 +66,17 @@ flowchart TD
 
 ### Image ID 照合と Fake receipt の扱い
 
-ラッパーの `image_id` を期待値と照合し、不一致なら `failed` として即時拒否します。Image ID の管理は [Image ID](image-id.md) を参照してください。
+ラッパーの `image_id` を期待値と照合し、不一致なら `failed` として即時拒否します。
+Image ID の管理は [Image ID](image-id.md) を参照してください。
 
-レシートの内部構造（`InnerReceipt`）が `Fake` 型の場合は開発モードで生成されたレシートですが、即 `dev_mode` にはなりません。Image ID 不一致なら `failed`、Image ID 一致時のみ `Receipt::verify` の結果に応じて `dev_mode` に振り分けられます。
+レシートの内部構造（`InnerReceipt`）が `Fake` 型の場合、そのレシートは開発モードで生成されたものです。
+ただし、`Fake` 型であることだけでは即座に `dev_mode` になりません。
+Image ID が不一致なら `failed` になり、Image ID が一致した場合だけ `Receipt::verify` の結果に応じて `dev_mode` に振り分けられます。
 
 ### STARK 検証の実行
 
-Image ID 照合に成功した後、RISC Zero SDK の `Receipt::verify(expected_image_id)` で STARK 証明を検証します。検証成功は次を保証します。
+Image ID 照合に成功した後、RISC Zero SDK の `Receipt::verify(expected_image_id)` で STARK 証明を検証します。
+検証成功は、次の内容を保証します。
 
 - レシートに含まれる seal（証明データ）が有効
 - ジャーナルが指定 Image ID のゲスト実行結果である
@@ -76,29 +84,32 @@ Image ID 照合に成功した後、RISC Zero SDK の `Receipt::verify(expected_
 
 ## 検証レポート
 
-検証サービスは、検証が最後まで到達した試行について JSON レポートを出力します。exit code とレポート出力の関係は次のとおりです。
+検証サービスは、検証が最後まで到達した試行について JSON レポートを出力します。
+exit code とレポート出力の関係は次のとおりです。
 
 | 状況                      | exit code | JSON レポート            |
 | ------------------------- | --------- | ------------------------ |
 | `success`                 | `0`       | stdout または `--output` |
-| 引数不正・bundle 不在など | `1`       | 出力しない               |
+| 引数不正、bundle 不在など | `1`       | 出力しない               |
 | `dev_mode`                | `2`       | stdout または `--output` |
 | `failed`                  | `3`       | stdout または `--output` |
 
-呼び出し側は exit code とレポートの両方を見ます。`--quiet` を指定すると stdout 出力は抑制されるので、その場合は `--output` も併せて指定してレポートを保存します。
+呼び出し側は exit code とレポートの両方を見ます。
+`--quiet` を指定すると stdout 出力は抑制されます。
+その場合は `--output` も併せて指定し、レポートを保存します。
 
-| フィールド        | 型       | 説明                                                                                               |
-| ----------------- | -------- | -------------------------------------------------------------------------------------------------- |
-| status            | 列挙型   | `success` / `failed` / `dev_mode`                                                                  |
-| verifier_version  | 文字列   | `verifier-service` のバージョン                                                                    |
-| verified_at       | 文字列   | RFC 3339 形式の検証完了時刻                                                                        |
-| duration_ms       | 数値     | 検証処理時間（ミリ秒）                                                                             |
-| expected_image_id | 文字列   | 検証に使用した期待 Image ID                                                                        |
-| receipt_image_id  | 文字列?  | 入力 JSON の top-level `image_id` から抽出した値                                                   |
-| bundle_path       | 文字列   | 入力 bundle パスの basename のみ                                                                   |
-| receipt_path      | 文字列   | 解決されたレシートファイル名の basename のみ                                                       |
-| dev_mode_receipt  | 真偽値   | `Fake` receipt なら `true`。`status` 単独では `success` と `dev_mode` を区別できないため判定に併用 |
-| errors            | 文字列[] | 診断文字列の配列。空の場合は省略される                                                             |
+| フィールド        | 型       | 説明                                                                                           |
+| ----------------- | -------- | ---------------------------------------------------------------------------------------------- |
+| status            | 列挙型   | `success` / `failed` / `dev_mode`                                                              |
+| verifier_version  | 文字列   | `verifier-service` のバージョン                                                                |
+| verified_at       | 文字列   | RFC 3339 形式の検証完了時刻                                                                    |
+| duration_ms       | 数値     | 検証処理時間（ミリ秒）                                                                         |
+| expected_image_id | 文字列   | 検証に使用した期待 Image ID                                                                    |
+| receipt_image_id  | 文字列?  | 入力 JSON の top-level `image_id` から抽出した値                                               |
+| bundle_path       | 文字列   | 入力 bundle パスの basename のみ                                                               |
+| receipt_path      | 文字列   | 解決されたレシートファイル名の basename のみ                                                   |
+| dev_mode_receipt  | 真偽値   | `Fake` receipt なら `true`。`status` とは別に、入力 receipt の生の種別を示す診断信号として使う |
+| errors            | 文字列[] | 診断文字列の配列。空の場合は省略される                                                         |
 
 `errors` は固定のエラーコード一覧ではなく、実装が積む自由形式の診断文字列です。
 
@@ -112,47 +123,70 @@ Image ID 照合に成功した後、RISC Zero SDK の `Receipt::verify(expected_
 
 ## デプロイメントモデル
 
-検証サービス（Rust バイナリ `verifier-service`）は、呼び出し経路ごとに実行場所が異なります。詳細は下の「呼び出しパターン」を参照してください。
+検証サービス（Rust バイナリ `verifier-service`）は、呼び出し経路ごとに実行場所が異なります。
+詳細は下の「呼び出しパターン」を参照してください。
 
 ```mermaid
 sequenceDiagram
   participant C as クライアント
   participant API as API サーバー
-  participant RUNNER as verifier-service-runner Lambda
+  participant Q as verification-work SQS
+  participant RUNNER as verification-worker Lambda
   participant VS as verifier-service バイナリ
   participant S3 as S3
+  participant STORE as セッションストア
 
   C->>API: POST /api/verification/run
   API->>API: session capability と finalization result を確認
-  alt S3 bundle locator がある
-    API->>RUNNER: 実行要求（sessionId, executionId, bundleKey, expectedImageId）
+  alt target AWS runtime + S3 bundle locator がある
+    API->>STORE: verificationResult を running に更新
+    API->>Q: 検証 work を送信（sessionId, executionId, bundleKey, expectedImageId）
+    API-->>C: running
+    Q-->>RUNNER: SQS event
     RUNNER->>S3: bundle.zip を取得・展開
     RUNNER->>VS: bundle ディレクトリ + 期待 Image ID + reportPath
     VS->>VS: STARK 検証実行 + verification.json 書き出し
     VS-->>RUNNER: 検証レポート
+    RUNNER->>S3: public bundle / verification.json / sidecar を保存
+    RUNNER->>STORE: report locator と terminal verificationResult を保存
+  else non-target S3 bundle locator がある
+    API->>RUNNER: 同期実行要求（sessionId, executionId, bundleKey, expectedImageId）
+    RUNNER->>S3: bundle.zip を取得・展開
+    RUNNER->>VS: bundle ディレクトリ + 期待 Image ID + reportPath
+    VS-->>RUNNER: 検証レポート
     RUNNER-->>API: 検証レポート + S3 report locator
+    API->>STORE: verificationResult / execution 状態を更新
+    API-->>C: 検証結果
   else 信頼済み local bundle がある
     API->>VS: bundle ディレクトリ + 期待 Image ID + reportPath
     VS->>VS: STARK 検証実行 + verification.json 書き出し
     VS-->>API: 検証レポート
+    API->>STORE: verificationResult / execution 状態を更新
+    API-->>C: 検証結果
   end
-  API->>API: verificationResult / execution 状態を更新
-  API-->>C: 検証結果
 ```
 
 ### 呼び出しパターン
 
-検証サービスの呼び出しには主に 3 つのパターンがあります。明示的検証はいずれも、サーバー側で保持している finalization result に紐付いた **権威ある bundle locator** だけを使い、クライアントが任意の S3 キーや local パスを指定して検証させることはできません。
+検証サービスの呼び出しには、主に 3 つのパターンがあります。
+明示的検証はいずれも、サーバー側で保持している finalization result に紐付いた **権威ある bundle locator** だけを使います。
+クライアントが任意の S3 キーや local パスを指定し、検証サービスに検証させることはできません。
 
-| パターン          | トリガー                                  | 説明                                                                                             |
-| ----------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| 同期実行          | 同期ファイナライズ (`POST /api/finalize`) | real executor 時のみ実行。mock executor 時は verifier-service を呼ばず `dev_mode` 扱いとして帰る |
-| 明示的 S3 実行    | クライアントが検証を要求                  | `POST /api/verification/run` が verifier-service-runner Lambda に S3 bundle locator を渡す       |
-| 明示的 local 実行 | クライアントが検証を要求                  | `POST /api/verification/run` が信頼済み local bundle を API サーバープロセス内で直接検証する     |
+| パターン                 | トリガー                                 | 説明                                                                                               |
+| ------------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| 同期実行                 | 同期 finalization (`POST /api/finalize`) | real executor 時のみ実行。mock executor 時は `verifier-service` を呼ばず `dev_mode` 扱いとして帰る |
+| 明示的 S3 実行（target） | クライアントが検証を要求                 | `POST /api/verification/run` が検証 work を SQS に積み、`verification-worker` が後続で処理する     |
+| 明示的 S3 実行（direct） | クライアントが検証を要求                 | non-target S3 実行では API が `verification-worker` Lambda を同期呼び出しする                      |
+| 明示的 local 実行        | クライアントが検証を要求                 | `POST /api/verification/run` が信頼済み local bundle を API サーバープロセス内で直接検証する       |
 
-非同期ファイナライズのコールバック Lambda は、結果の復元と保存を担当します。STARK 検証は自動実行されず、`POST /api/verification/run` で実行します。
+非同期 finalization のコールバック Lambda は、結果の復元と保存を担当します。
+STARK 検証は自動実行されず、`POST /api/verification/run` で実行します。
+target AWS runtime では、この POST は `verifier-service` の完了を待たず、`verificationResult.status=running` を保存して SQS work を発行します。
+`verification-worker` は SQS event を受け取り、S3 bundle を展開して `verifier-service` を実行し、`verification.json` の report locator と terminal `verificationResult` をセッションストアへ保存します。
 
-`verificationResult.status` が `success` / `failed` / `dev_mode` のような終端状態にある場合、`POST /api/verification/run` は再検証せず idempotent な応答を返します。`running` の場合も実行中として idempotent に扱い、status 未設定または `not_run` のときだけ verifier-service の実行に進みます。
+`verificationResult.status` が `success` / `failed` / `dev_mode` のような終端状態にある場合、`POST /api/verification/run` は再検証せず idempotent な応答を返します。
+`running` の場合も実行中として idempotent に扱いますが、target AWS runtime で queue marker が未保存なら同じ execution の SQS work を補修発行します。
+status 未設定または `not_run` のときだけ、新しい検証実行または検証 work の enqueue に進みます。
 
 ## 検証パイプラインにおける役割
 
@@ -163,15 +197,19 @@ sequenceDiagram
 | `stark_image_id_match` | レシートに記録された Image ID が期待値と一致するか |
 | `stark_receipt_verify` | STARK 証明が暗号学的に有効であるか                 |
 
-`stark_image_id_match` は verifier report の `expected_image_id` と `receipt_image_id` が一致することを検証します。検証パイプラインはさらに claimed / comparison 側の Image ID とも整合することを確認します。
+`stark_image_id_match` は、verifier report の `expected_image_id` と `receipt_image_id` が一致することを検証します。
+検証パイプラインはさらに、claimed 側および comparison 側の Image ID とも整合することを確認します。
 
-これらのチェックが両方成功した場合に限り、「STARK Verified」のステータスが付与されます。詳細は [4 段階検証モデル](../verification/four-stage-model.md) を参照してください。
+これらのチェックが両方成功した場合に限り、「STARK Verified」のステータスが付与されます。
+これは STARK 検証段階のステータスであり、全体の Verified 判定とは区別されます。
+詳細は [4 段階検証モデル](../verification/four-stage-model.md) を参照してください。
 
 ## セキュリティ上の考慮事項
 
 ### サーバー側検証の信頼境界
 
-検証サービスはサーバー側で実行されるため、クライアントはサーバーの検証結果を信頼する必要があります。この PoC における信頼モデルは以下の通りです:
+検証サービスはサーバー側で実行されるため、クライアントはサーバーの検証結果を信頼する必要があります。
+この PoC における信頼モデルは次のとおりです。
 
 - **STARK 証明自体は秘密データを含まない検証データ**: レシートと Image ID があれば、第三者が独立に検証可能
 - **検証サービスは利便性のための委任**: ブラウザでの STARK 検証が実用的になれば、クライアント側のみで完結させることも理論上は可能
@@ -179,6 +217,8 @@ sequenceDiagram
 
 ### verification.json の非公開性
 
-`verification.json` は配布対象アーカイブ `bundle.zip` には含まれません。必要に応じてレポート用の capability 保護エンドポイント経由で配布されますが、第三者検証ではレシートファイルを直接使った独立検証が推奨されます。
+`verification.json` は配布対象アーカイブ `bundle.zip` には含まれません。
+必要に応じてレポート用の capability 保護エンドポイント経由で配布されます。
+第三者検証では、レシートファイルを直接使った独立検証が推奨されます。
 
-<!-- source: verifier-service/src/main.rs, verifier-service/src/lib.rs, amplify/functions/verifier-service-runner/ -->
+<!-- source: verifier-service/src/main.rs, verifier-service/src/lib.rs, apps/api/src/server/api/handlers/verificationRun.ts, infra/lambdas/verification-worker/, packages/aws-adapters/src/sqs/verificationWorkMessage.ts, packages/aws-adapters/src/sqs/publishVerificationWorkMessage.ts -->

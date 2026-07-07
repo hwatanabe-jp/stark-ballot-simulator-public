@@ -137,13 +137,11 @@ Journal はバイナリですが、パース後の現行 public shape は概ね�
 
 ### 6. ランダムエラー注入（S5）
 
-**状況**: ランダムに 1 票を選び、現行実装では input tamper として除外または choice 書換えを適用する。  
+**状況**: ランダムに 1 票を選び、現行実装では input tamper として除外する。
 **検出**:
 
-- 除外分岐では `missingSlots` / `invalidPresentedSlots` / `excludedSlots` の増加が主信号になる
-- choice 書換え分岐では、提示された slot が集計に失敗し `invalidPresentedSlots` / `rejectedRecords` / `excludedSlots` の増加が主信号になる
+- `missingSlots` / `invalidPresentedSlots` / `excludedSlots` の増加が主信号になる
 - S5 は S2/S4 のような純粋な claimed tally tamper ではなく、modified input を guest に渡す教育用 input tamper として扱う
-- 実装上は `rejectedRecords` だけが増えて `tamperDetected=true` になるケースもありうる
 
 ## セキュリティとプライバシー
 

@@ -363,7 +363,7 @@ interface KnowledgeGroup {
   keys: Array<keyof KnowledgeData>;
 }
 
-// public グループは src/lib/knowledge/visibility.ts の
+// public グループは apps/web/src/knowledge/visibility.ts の
 // PUBLIC_KNOWLEDGE_KEYS をそのまま利用する。
 
 const KNOWLEDGE_GROUPS: KnowledgeGroup[] = [
@@ -430,8 +430,6 @@ const HIDDEN_KEYS: Array<keyof KnowledgeData> = [
   'scenarioId',
   'verification.steps',
   'verification.reportSummary',
-  's3BundleUrl',
-  's3BundleExpiresAt',
 ];
 ```
 
@@ -500,7 +498,7 @@ function toggleGroup(id: KnowledgeGroupId, setExpandedGroups: Function) {
 
 ### 4.5 ハイライト連動（現行）
 
-検証ステップ表示時、対応する知識項目をハイライトする。現行実装では固定マップを手書きせず、`src/lib/verification/verification-checks.ts` の step inputs から既定値を導出し、API が step ごとの `inputs` を返した場合はそれを優先する。
+検証ステップ表示時、対応する知識項目をハイライトする。現行実装では固定マップを手書きせず、`packages/verification/src/verification/verification-checks.ts` の step inputs から既定値を導出し、API が step ごとの `inputs` を返した場合はそれを優先する。
 
 ```typescript
 const DEFAULT_VERIFICATION_HIGHLIGHTS: Record<VerificationStepId, string[]> = {
@@ -663,6 +661,8 @@ function LayoutProvider({ children }: Props) {
 
       {showKnowledgePanel && isMobile && <KnowledgePanel filterKeys={visibleKeys} variant="bottomSheet" />}
 
+      {showKnowledgePanel && !isMobile && <div ref={dockZoneRef} aria-hidden className="h-px w-full" />}
+
       {showKnowledgePanel && !isMobile && (
         <div className="mt-8">
           {isDocked && (
@@ -697,8 +697,6 @@ function LayoutProvider({ children }: Props) {
         </div>
       </div>
     )}
-
-    {showKnowledgePanel && !isMobile && <div ref={dockZoneRef} aria-hidden className="h-px w-full" />}
   );
 }
 ```
@@ -721,11 +719,11 @@ function LayoutProvider({ children }: Props) {
 
 ## 7. 主要構成ファイル
 
-- `src/components/LayoutProvider.tsx` - シングルカラムの共通レイアウト、step bar、知識パネルの配置制御
-- `src/components/step/StepIndicatorHorizontal.tsx` - 横型ステップナビ
-- `src/components/knowledge/KnowledgePanel.tsx` - variant 対応、ボトムシート、浮遊/ドッキング連携
-- `src/components/knowledge/KnowledgeGroup.tsx` - グループ化と折りたたみ UI
-- `src/lib/hooks/useDockingPanel.ts` - デスクトップのドッキング判定
+- `apps/web/src/components/LayoutProvider.tsx` - シングルカラムの共通レイアウト、step bar、知識パネルの配置制御
+- `apps/web/src/components/step/StepIndicatorHorizontal.tsx` - 横型ステップナビ
+- `apps/web/src/components/knowledge/KnowledgePanel.tsx` - variant 対応、ボトムシート、浮遊/ドッキング連携
+- `apps/web/src/components/knowledge/KnowledgeGroup.tsx` - グループ化と折りたたみ UI
+- `apps/web/src/hooks/useDockingPanel.ts` - デスクトップのドッキング判定
 
 > **注記**: `Sidebar.tsx` 前提の旧構成はすでに廃止済み。
 

@@ -1,0 +1,18 @@
+{
+  "name": "@stark-ballot/api-contract",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./api-contract/*": "./src/api-contract/*",
+    "./errors/*": "./src/errors/*",
+    "./types/api/*": "./src/types/api/*",
+    "./validation/*": "./src/validation/*"
+  },
+  "dependencies": {
+    "@stark-ballot/validation": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "4.1.9"
+  }
+}

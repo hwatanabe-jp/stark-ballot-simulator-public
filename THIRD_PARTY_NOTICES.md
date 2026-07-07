@@ -10,10 +10,11 @@ Update this file when dependencies or vendored assets change.
 
 This summary assumes the public repository includes the full codebase, including:
 
-- Next.js app and shared libraries in the repository root
+- Vite / React Router app and shared libraries in the repository root
 - zkVM workspace under `zkvm/`
 - verifier-service under `verifier-service/`
-- Terraform lambda under `terraform/lambda/check-image-signature/`
+- Target Lambdas under `infra/lambdas/`: `public-api`, `finalization-writer`,
+  `proof-dispatcher`, `verification-worker`, and `image-signature-gate`
 - Lean formal models under `formal/` (current Lake metadata lists no external packages)
 - Docs, scripts, and tests
 
@@ -68,11 +69,7 @@ the generated Public Specs can build without a network fetch:
 
 ## Special obligations / attention
 
-LGPL-3.0-or-later (Node prod):
-
-- `@img/sharp-libvips-linux-x64`
-
-CC-BY-4.0 (Node prod):
+CC-BY-4.0 (Node all-dependencies metadata):
 
 - `caniuse-lite` (requires attribution)
 

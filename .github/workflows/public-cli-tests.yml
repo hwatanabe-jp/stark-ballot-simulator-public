@@ -4,11 +4,10 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/**'
+      - 'apps/**'
+      - 'packages/**'
       - 'public/**'
       - 'scripts/tests/**'
-      - 'scripts/test-data/**'
-      - 'scripts/verification/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
       - '.github/workflows/public-cli-tests.yml'

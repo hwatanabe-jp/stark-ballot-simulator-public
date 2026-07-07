@@ -2,7 +2,7 @@
 
 > この文書は、リデザイン意図を残しつつ、現行実装との整合を取った `/verify` 契約メモ。
 > チェック ID と required/optional 判定の単一ソースは
-> `src/lib/verification/verification-checks.ts`。
+> `packages/verification/src/verification/verification-checks.ts`。
 
 ## 前提
 
@@ -16,7 +16,7 @@
 - `journal` 本体は `GET /api/verify?includeJournal=1` のときだけ返る。
   - 現行 handler は `includeJournal=1` で `journalStatus=available`、要求しない通常系で `journalStatus=omitted` を返す。
   - `journalStatus=unavailable` は forward-compatible な予約値として扱う。
-- ResultSummary は **verificationChecks に加えて missing/invalid/excluded と STH 設定有無の文脈を参照**して要約を出す。
+- ResultSummary は **verificationChecks に加えて missing/invalid/excluded、STH 設定有無、dev-mode/demo evidence の文脈を参照**して要約を出す。
 - **Never show Verified unless all required checks pass** が前提。
   - `excludedSlots > 0` は成功扱いにしない。
   - stale cache 等で legacy `excludedCount > 0` を受けた場合も fail-closed に倒す。
@@ -119,8 +119,10 @@
 - **必須チェック欠落は missing_evidence** に落とす（不完全なチェック列で Verified を出さない）
 - STH は **設定時のみ required 扱い**で blocking
 - `tally_consistency` が失敗し、証明/包含/完全性/入力整合が成功なら **公開結果不一致** として要約する
+- dev-mode receipt や demo evidence が含まれる場合は `demo_only` とし、production Verified として扱わない
 - 現行 summary status は以下を区別する
   - `fully_verified`
+  - `demo_only`
   - `in_progress`
   - `missing_evidence`
   - `verified_with_limitations`
@@ -153,7 +155,7 @@
 - download は `sessionId` と `verificationExecutionId` から authenticated endpoint を組み立てる
 - S3-backed `bundle.zip` は authenticated endpoint の byte-range response を UI 側で結合して保存する。raw S3 URL や短命な配布 URL は UI contract にしない
 - `/report` は authenticated endpoint から通常の JSON body として取得する
-- local bundle fallback がある場合はそちらも候補に含める
+- download/report 候補は authenticated endpoint のみを扱う
 
 ## 補足
 

@@ -1,6 +1,6 @@
 # ゲストプログラム
 
-zkVM 内のゲストが、入力検証から集計・ビットマップ計算までをどう構成するかを扱う章です。
+zkVM 内のゲストは、入力検証から集計、ビットマップ計算までを実行します。
 
 ゲストプログラムは、投票コミットメントの再計算、RFC 6962 包含証明の検証、集計の実行、ビットマップルートの計算を行い、結果をジャーナルにコミットします。
 
@@ -8,7 +8,8 @@ zkVM 内のゲストが、入力検証から集計・ビットマップ計算ま
 
 ## 概要
 
-ゲストプログラムは RISC Zero zkVM 上で動作する Rust プログラムです。ホストから投票データ（選択肢・乱数・コミットメント・Merkle パスと選挙メタデータ）を受け取り、以下の処理を行います:
+ゲストプログラムは RISC Zero zkVM 上で動作する Rust プログラムです。
+ホストから投票データ（選択肢、乱数、コミットメント、Merkle パスと選挙メタデータ）を受け取り、以下の処理を行います:
 
 1. 各投票の正当性検証（コミットメント再計算 + 包含証明）
 2. 有効投票の集計
@@ -16,24 +17,24 @@ zkVM 内のゲストが、入力検証から集計・ビットマップ計算ま
 4. 入力コミットメントと STH ダイジェストの計算
 5. 結果のジャーナルへのコミット
 
-ゲスト内の処理はすべて STARK 証明に含まれるため、出力（ジャーナル）の正しさが暗号学的に保証されます。
+ゲスト内の処理はすべて STARK 証明に含まれるため、出力（ジャーナル）の正しさはゲストロジックに対して暗号学的に保証されます。
 
 ## 入力構造
 
 ゲストプログラムが受け取る入力（`AggregatorInput`）の構造を示します。
 
-| フィールド           | 型               | 説明                                                                  |
-| -------------------- | ---------------- | --------------------------------------------------------------------- |
-| election_id          | 16 バイト        | 選挙の UUID v4 バイナリ表現                                           |
-| bulletin_root        | 32 バイト        | 掲示板 Merkle ツリーの最終ルート                                      |
-| tree_size            | u32              | 掲示板のリーフ数（= 投票スロット数）                                  |
-| log_id               | 32 バイト        | 掲示板のログ識別子                                                    |
-| timestamp            | u64              | 入力構築時に採用された最新 STH スナップショットの Unix タイムスタンプ |
-| total_expected       | u32              | 想定される総投票数                                                    |
-| election_config_hash | 32 バイト        | 選挙設定のハッシュ値                                                  |
-| votes                | VoteWithProof[ ] | 投票データと Merkle パスの配列                                        |
+| フィールド           | 型               | 説明                                                              |
+| -------------------- | ---------------- | ----------------------------------------------------------------- |
+| election_id          | 16 バイト        | 選挙の UUID v4 バイナリ表現                                       |
+| bulletin_root        | 32 バイト        | 掲示板 Merkle ツリーの最終ルート                                  |
+| tree_size            | u32              | 掲示板のリーフ数（= 投票スロット数）                              |
+| log_id               | 32 バイト        | 掲示板のログ識別子                                                |
+| timestamp            | u64              | 入力構築時に採用された最新 STH スナップショットの Unix 時刻ミリ秒 |
+| total_expected       | u32              | 想定される総投票数                                                |
+| election_config_hash | 32 バイト        | 選挙設定のハッシュ値                                              |
+| votes                | VoteWithProof[ ] | 投票データと Merkle パスの配列                                    |
 
-各 `VoteWithProof` は以下のフィールドを持ちます:
+各 `VoteWithProof` は以下のフィールドを持ちます。
 
 | フィールド  | 型           | 説明                                        |
 | ----------- | ------------ | ------------------------------------------- |
@@ -45,7 +46,7 @@ zkVM 内のゲストが、入力検証から集計・ビットマップ計算ま
 
 ## 処理パイプライン
 
-ゲストプログラムの処理は、入力検証、投票検証・集計、出力構築の 3 フェーズで構成されます。
+ゲストプログラムの処理は、入力検証、投票検証と集計、出力構築の 3 フェーズで構成されます。
 
 ```mermaid
 flowchart TD
@@ -84,29 +85,16 @@ flowchart TD
 > - `votes.length > 1,000,000`
 > - 候補別 tally bucket が 1,000,000 を超える
 > - Merkle パス長が `u16::MAX` を超える
+> - Merkle パスノード総数が 1,000,000 を超える
+> - 推定構造化入力サイズが 64 MiB を超える
 >
-> `votes.length > tree_size` のような入力は、上記境界内であれば事前 reject されません。重複や範囲外は record 単位で `rejectedRecords` に反映されます。
+> `votes.length > tree_size` のような入力は、上記境界内であれば事前 reject されません。
+> 重複や範囲外は record 単位で `rejectedRecords` に反映されます。
 
 ## 投票の 6 段階検証
 
-各投票に対して、以下の 6 つの検証が順に実行されます。いずれかが失敗した投票は即座に「無効」として除外され、以降の検証はスキップされます。
-
-```mermaid
-flowchart TD
-  V[投票] --> C1{"第1検証<br/>インデックス範囲チェック"}
-  C1 -->|失敗| INV[無効として除外]
-  C1 -->|成功| C2{"第2検証<br/>インデックス重複チェック"}
-  C2 -->|失敗| INV
-  C2 -->|成功| C3{"第3検証<br/>選択肢範囲チェック"}
-  C3 -->|失敗| INV
-  C3 -->|成功| C4{"第4検証<br/>コミットメント再計算と照合"}
-  C4 -->|失敗| INV
-  C4 -->|成功| C5{"第5検証<br/>コミットメント重複チェック"}
-  C5 -->|失敗| INV
-  C5 -->|成功| C6{"第6検証<br/>包含証明検証"}
-  C6 -->|失敗| INV
-  C6 -->|成功| VALID[有効: 集計に加算]
-```
+各投票に対して、以下の 6 つの検証が順に実行されます。
+いずれかが失敗した投票は即座に「無効」として除外され、以降の検証はスキップされます。
 
 各検証の失敗条件と、失敗したレコードがどのカウンタに反映されるかを示します。
 
@@ -119,15 +107,21 @@ flowchart TD
 | 5   | コミットメント重複 | 既に処理済みのコミットメント値（範囲内かつ初出スロットでも無効化） | `rejectedRecords` + `seenBitmap` 反映 |
 | 6   | RFC 6962 包含証明  | Merkle パスから再計算したルートが `bulletin_root` と不一致         | `rejectedRecords` + `seenBitmap` 反映 |
 
-範囲内かつ初出のスロットが #3〜#6 で無効化された場合、`seenBitmap` ではビットが立ち（提示はされた）、`includedBitmap` ではビットが立たない（計上されない）ため、`invalidPresentedSlots` として観測されます。範囲外（#1）や既処理スロットへの重複レコード（#2）は `rejectedRecords` のみに反映され、スロット単位の指標には影響しません。
+範囲内かつ初出のスロットが #3〜#6 で無効化された場合、`seenBitmap` ではビットが立ち（提示はされた）、`includedBitmap` ではビットが立ちません（計上されない）。
+このスロットは `invalidPresentedSlots` として観測されます。
+範囲外（#1）や既処理スロットへの重複レコード（#2）は `rejectedRecords` のみに反映され、スロット単位の指標には影響しません。
 
 ### コミットメント再計算と照合（#4）
 
-ゲスト内で投票者の（選択肢, 乱数, 選挙 ID）からコミットメントを再計算し、入力として渡された値と照合します。これにより、投票者が主張する選択肢が掲示板上のコミットメントと一致することが保証されます。計算規則は [コミットメントスキーム](../protocol/commitment.md) を参照してください。
+ゲスト内で投票者の（選択肢, 乱数, 選挙 ID）からコミットメントを再計算し、入力として渡された値と照合します。
+これにより、投票者が主張する選択肢が掲示板上のコミットメントと一致することが保証されます。
+計算規則は [コミットメントスキーム](../protocol/commitment.md) を参照してください。
 
 ### RFC 6962 包含証明検証（#6）
 
-投票のコミットメントが掲示板 Merkle ツリーに含まれることを、RFC 6962 PATH 関数ベースの CT スタイル包含証明で検証します。投票のインデックスと Merkle パスから掲示板ルートを再計算し、入力の `bulletin_root` と一致するかを確認します。リーフ・ノードハッシュの規則とドメインタグは [CT Merkle ツリー](../protocol/ct-merkle.md) を参照してください。
+投票のコミットメントが掲示板 Merkle ツリーに含まれることを、RFC 6962 PATH 関数ベースの CT スタイル包含証明で検証します。
+投票のインデックスと Merkle パスから掲示板ルートを再計算し、入力の `bulletin_root` と一致するかを確認します。
+リーフとノードハッシュの規則とドメインタグは [CT Merkle ツリー](../protocol/ct-merkle.md) を参照してください。
 
 ## 集計ロジック
 
@@ -140,7 +134,7 @@ flowchart TD
 
 ## スロット / レコード分離モデル
 
-現行のゲストプログラムは、掲示板スロットに対する完全性と、入力レコードの異常を別々に記録します。
+現行のゲストプログラムは、掲示板スロットに対する完全性と入力レコードの異常を別々に記録します。
 
 ```mermaid
 flowchart LR
@@ -170,14 +164,17 @@ validVotes + invalidPresentedSlots + missingSlots = treeSize
 excludedSlots = missingSlots + invalidPresentedSlots
 ```
 
-`excludedSlots > 0` は検証失敗の決定的な指標です。1 スロットでも未提示または未計上であれば、集計結果の完全性が損なわれていることを意味します。
+`excludedSlots > 0` は検証失敗の決定的な指標です。
+1 スロットでも未提示または未計上であれば、集計結果の完全性が損なわれていることを意味します。
 
-一方で `rejectedRecords` はレコード単位の補助指標です。たとえば次のようなケースでは `rejectedRecords` は増えても `excludedSlots` は増えません。
+一方で `rejectedRecords` はレコード単位の補助指標です。
+たとえば次のようなケースでは `rejectedRecords` は増えても `excludedSlots` は増えません。
 
 - 既に正しくカウント済みのスロットに対する重複インデックスレコード
 - `tree_size` の外側を指す範囲外レコード
 
-旧 public contract の互換名は現行 journal にも公開レスポンスにも現れませんが、参考までに 1 対 1 対応を示します。
+旧 public contract の互換名は現行 journal にも公開レスポンスにも現れません。
+参考までに 1 対 1 対応を示します。
 
 | 旧名 (compatibility mirror) | 現行 journal フィールド |
 | --------------------------- | ----------------------- |
@@ -207,7 +204,7 @@ excludedSlots = missingSlots + invalidPresentedSlots
 | seenIndicesCount      | u32       | 範囲内かつ初出のインデックスとして処理した件数                                                    |
 | missingSlots          | u32       | 一度も提示されなかった掲示板スロット数                                                            |
 | invalidPresentedSlots | u32       | 提示はされたが計上されなかった範囲内スロット数                                                    |
-| rejectedRecords       | u32       | 却下されたレコード数（重複・範囲外・各種検証失敗を含む）                                          |
+| rejectedRecords       | u32       | 却下されたレコード数（重複、範囲外、各種検証失敗を含む）                                          |
 | seenBitmapRoot        | 32 バイト | prover に提示されたインデックス集合の [ビットマップ Merkle](../protocol/bitmap-merkle.md) ルート  |
 | includedBitmapRoot    | 32 バイト | 実際にカウントされたインデックス集合の [ビットマップ Merkle](../protocol/bitmap-merkle.md) ルート |
 | excludedSlots         | u32       | 除外されたスロットの総数（= missingSlots + invalidPresentedSlots）                                |
@@ -228,11 +225,15 @@ excludedSlots = missingSlots + invalidPresentedSlots
 | `includedBitmapRoot` | 実際にカウントされたインデックス集合から計算したルートである                |
 | `sthDigest`          | その実行で参照した掲示板状態から計算した値である                            |
 
-一方、STARK 証明だけでは保証されないものがあります。「ゲストに提示されなかった票」「第三者 STH との合意」「ホストやサーバーの正直性」はジャーナル外の独立チェックで確認します。第三者はレシートの STARK 検証を行うだけで上記の保証を取得でき、ゲストロジックの信頼以外にホスト・サーバーを信頼する必要はありません。
+一方、STARK 証明だけでは保証されないものがあります。
+「ゲストに提示されなかった票」「第三者 STH との合意」「ホストやサーバーの正直性」はジャーナル外の独立チェックで確認します。
+第三者はレシートの STARK 検証を行うだけで上記の保証を取得でき、ゲストロジックの信頼以外にホストやサーバーを信頼する必要はありません。
 
 ## ビットマップルートの計算
 
-ゲストプログラムは投票検証と並行して `seenBitmap`（範囲内かつ初出として提示されたインデックス集合）と `includedBitmap`（6 段階検証を通過したインデックス集合）の 2 種類を構築し、それぞれの Merkle ルートをジャーナルにコミットします。この 2 つのルートを併用することで、公開検証側は「prover に提示されたが無効化された票」と「そもそも提示されなかった票」を区別できます。
+ゲストプログラムは投票検証と並行して、`seenBitmap`（範囲内かつ初出として提示されたインデックス集合）と `includedBitmap`（6 段階検証を通過したインデックス集合）の 2 種類を構築します。
+また、それぞれの Merkle ルートをジャーナルにコミットします。
+この 2 つのルートを併用することで、公開検証側は「prover に提示されたが無効化された票」と「そもそも提示されなかった票」を区別できます。
 
 LSB-first のバイト列パッキング、32 バイト境界による単一リーフ / 分割リーフの扱い、leaf / node hash 規則は [ビットマップ Merkle](../protocol/bitmap-merkle.md) を参照してください。
 
@@ -242,7 +243,9 @@ LSB-first のバイト列パッキング、32 バイト境界による単一リ�
 
 ### 入力コミットメント
 
-ゲストに渡された入力のうち、公開フィールドを正準エンコーディングで連結し SHA-256 で圧縮します。現行実装では固定のドメインタグと format version を先頭に付与した上で、`electionId`・`bulletinRoot`・`treeSize`・`totalExpected`・`votesCount` と各投票の `index`・コミットメント値・Merkle パスを束縛します。投票列はハッシュ前に `index` 昇順で正規化されます（異常入力時の tie-break 補助ルールは [入力コミットメント > ソート規則](../protocol/input-commitment.md#ソート規則) を参照）。
+ゲストに渡された入力のうち、公開フィールドを正準エンコーディングで連結し SHA-256 で圧縮します。
+現行実装では固定のドメインタグと format version を先頭に付与した上で、`electionId`、`bulletinRoot`、`treeSize`、`totalExpected`、`votesCount` と各投票の `index`、コミットメント値、Merkle パスを束縛します。
+投票列はハッシュ前に `index` 昇順で正規化されます（異常入力時の tie-break 補助ルールは [入力コミットメント > ソート規則](../protocol/input-commitment.md#ソート規則) を参照）。
 
 第三者は `public-input.json` などの公開検証用レコードから同じ値を再計算し、ジャーナルの値と照合することで、zkVM が処理した入力の同一性を検証できます。
 
@@ -250,16 +253,20 @@ LSB-first のバイト列パッキング、32 バイト境界による単一リ�
 
 ### STH ダイジェスト
 
-掲示板のログ ID、ツリーサイズ、タイムスタンプ、ルートハッシュを結合して SHA-256 で圧縮します。このダイジェストは第三者の STH ソースとの照合に使用され、サーバーが異なる投票者に異なる掲示板ビューを提示する分割ビュー攻撃を緩和します。
+掲示板のログ ID、ツリーサイズ、タイムスタンプ、ルートハッシュを結合して SHA-256 で圧縮します。
+このダイジェストは第三者の STH ソースとの照合に使用され、サーバーが異なる投票者に異なる掲示板ビューを提示する分割ビュー攻撃を緩和します。
 
 詳細は [STH ダイジェスト](../protocol/sth-digest.md) を参照してください。
 
 ## ゲストプログラムのバージョニング
 
-ゲストプログラムにはバージョン番号が割り当てられ、ジャーナルの `methodVersion` フィールドに記録されます。現行のジャーナル契約は 14 です。
+ゲストプログラムにはバージョン番号が割り当てられ、ジャーナルの `methodVersion` フィールドに記録されます。
+現行のジャーナル契約は 14 です。
 
-バージョン番号は [Image ID](image-id.md) の管理と連動しており、ゲストプログラムの変更は新しい Image ID の生成を伴います。検証時には、期待 Image ID との一致が確認されます。
+バージョン番号は [Image ID](image-id.md) の管理と連動しており、ゲストプログラムの変更は新しい Image ID の生成を伴います。
+検証時には、期待 Image ID との一致が確認されます。
 
-ゲストの抽象 tally / rejection model と guest bounds は、[Lean による形式化](../quality/lean-formalization.md) で説明しています。Rust 側の guest-vector tests は、抽象モデルと実装の対応付けを検査します。
+ゲストの抽象 tally / rejection model と guest bounds は、[Lean による形式化](../quality/lean-formalization.md) で説明しています。
+Rust 側の guest-vector tests は、抽象モデルと実装の対応付けを検査します。
 
-<!-- source: zkvm/methods/guest/src/main.rs, zkvm/methods/guest/src/sth.rs, zkvm/contract-core/src/sha256.rs, zkvm/contract-core/src/inclusion_proof.rs, zkvm/contract-core/src/bitmap.rs, zkvm/contract-core/src/encoding.rs, zkvm/contract-core/src/types.rs -->
+<!-- source: zkvm/methods/guest/src/main.rs, zkvm/methods/guest/src/sth.rs, zkvm/contract-core/src/sha256.rs, zkvm/contract-core/src/inclusion_proof.rs, zkvm/contract-core/src/bitmap.rs, zkvm/contract-core/src/encoding.rs, zkvm/contract-core/src/types.rs, zkvm/contract-core/src/work_budget.rs -->

@@ -1,0 +1,18 @@
+{
+  "name": "@stark-ballot/diagnostics",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./logger": "./src/logger.ts",
+    "./loggerTypes": "./src/loggerTypes.ts",
+    "./logging": "./src/logging.ts",
+    "./requestLogContext": "./src/requestLogContext.ts"
+  },
+  "dependencies": {
+    "@stark-ballot/validation": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "4.1.9"
+  }
+}

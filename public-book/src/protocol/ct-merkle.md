@@ -1,18 +1,20 @@
 # CT Merkle ツリー
 
-RFC 6962 を参照した追記専用 Merkle ツリーで、掲示板の透明性をどう作るかを扱う章です。
+この章は、RFC 6962 を参照した追記専用 Merkle ツリーによって、掲示板の透明性をどう作るかを説明します。
 
-リーフハッシュ（`0x00` プレフィックス）とノードハッシュ（`0x01` プレフィックス）の区別により、second-preimage 攻撃を防止します。包含証明と整合性証明により、投票の記録と掲示板の追記専用性を検証可能にします。
+リーフハッシュ（`0x00` プレフィックス）とノードハッシュ（`0x01` プレフィックス）の区別により、second-preimage 攻撃を防止します。
+包含証明と整合性証明により、投票の記録と掲示板の追記専用性を検証可能にします。
 
 ## なぜ RFC 6962 CT スタイルか
 
-- 整合性証明で追記専用性を示せるため、Recorded-as-Cast に必要な「後から削除・改変されていない」保証を与えられる。
+- 整合性証明で追記専用性を示せるため、Recorded-as-Cast に必要な「後から削除や改変がされていない」保証を与えられる。
 - 包含証明と整合性証明の両方を同一モデルで扱える。
 - STH ダイジェストと組み合わせてスプリットビュー攻撃の検出力を上げられる。
 
 ## 概要
 
-本システムの掲示板（Bulletin Board）は、Certificate Transparency (CT) で実績のある追記専用ログの設計を投票に応用しています。各投票コミットメントは Merkle ツリーのリーフとして追記され、一度記録されたエントリは削除も改変もできません。
+本システムの掲示板（Bulletin Board）は、Certificate Transparency (CT) で実績のある追記専用ログの設計を投票に応用しています。
+各投票コミットメントは Merkle ツリーのリーフとして追記され、一度記録されたエントリは削除や改変ができません。
 
 ```mermaid
 graph TD
@@ -80,7 +82,8 @@ NodeHash = SHA-256(0x01 || left_hash || right_hash)
 
 ### ドメイン分離の安全性
 
-`0x00`（リーフ）と `0x01`（内部ノード）のプレフィックス区別は、second-preimage 攻撃を防止するために不可欠です。この区別がなければ、攻撃者はリーフノードを内部ノードとして解釈させる（またはその逆の）偽造データを構築できる可能性があります。
+`0x00`（リーフ）と `0x01`（内部ノード）のプレフィックス区別は、second-preimage 攻撃を防止するために必要です。
+この区別がなければ、攻撃者はリーフノードを内部ノードとして解釈させる（またはその逆の）偽造データを構築できる可能性があります。
 
 使用タグ `"stark-ballot:leaf|v1"` は、他システムのリーフハッシュとの偶発的な衝突を防止する追加の防御層です。
 
@@ -100,7 +103,8 @@ MTH({d₀, ..., dₙ₋₁}) = SHA-256(0x01 || MTH({d₀, ..., dₖ₋₁}) || M
 
 ### 非 2 のべき乗サイズへの対応
 
-ツリーサイズが 2 のべき乗でない場合（例: 5, 6, 7 リーフ）、MTH アルゴリズムは「n 未満の最大の 2 のべき乗」で分割を行います。これにより、左部分木は常に完全二分木（2 のべき乗サイズ）となり、右部分木にのみ不完全さが集中します。
+ツリーサイズが 2 のべき乗でない場合（例: 5, 6, 7 リーフ）、MTH アルゴリズムは「n 未満の最大の 2 のべき乗」で分割を行います。
+これにより、左部分木は常に完全二分木（2 のべき乗サイズ）となり、右部分木にのみ不完全さが集中します。
 
 ```mermaid
 graph TD
@@ -113,7 +117,8 @@ graph TD
   end
 ```
 
-デフォルトのデモ構成では 64 票（2⁶）を扱うため、最終的なツリーは完全二分木になります。ただし投票の追加途中や小規模な検証ケースでは非 2 のべき乗サイズが現れるため、実装は任意の `treeSize` に対する一般対応を備えます。
+デフォルトのデモ構成では 64 票（2⁶）を扱うため、最終的なツリーは完全二分木になります。
+ただし投票の追加途中や小規模な検証ケースでは非 2 のべき乗サイズが現れるため、実装は任意の `treeSize` に対する一般対応を備えます。
 
 ## 掲示板のリーフデータ形式
 
@@ -186,10 +191,10 @@ Recorded-as-Cast では、包含証明に加えて以下の cast-time 一貫性�
 graph TD
   subgraph "インデックス 5 の包含証明"
     Root["ルート ✓"]
-    N1["H(N3, N4)"]
+    N1["H(N3, N4)<br/>監査パス"]
     N2["H(N5, N6) ← 計算対象"]
-    N3["H(L0,L1)<br/>監査パス"]
-    N4["H(L2,L3)<br/>監査パス"]
+    N3["H(L0,L1)"]
+    N4["H(L2,L3)"]
     N5["H(L4,L5) ← 計算対象"]
     N6["H(L6,L7)<br/>監査パス"]
     L4["L4<br/>監査パス"]
@@ -206,15 +211,15 @@ graph TD
   end
 
   style L5 fill:#4CAF50,color:#fff
-  style N3 fill:#2196F3,color:#fff
-  style N4 fill:#2196F3,color:#fff
+  style N1 fill:#2196F3,color:#fff
   style N6 fill:#2196F3,color:#fff
   style L4 fill:#2196F3,color:#fff
 ```
 
 ## 整合性証明（Consistency Proof）
 
-整合性証明は、古いツリー状態（サイズ m）が新しいツリー状態（サイズ n）の前方互換的なプレフィックスであること、つまり追記専用性を暗号学的に証明するものです。
+整合性証明は、古いツリー状態（サイズ m）が新しいツリー状態（サイズ n）の前方互換的なプレフィックスであることを暗号学的に証明するものです。
+これは追記専用性の確認に使われます。
 
 ### 構造
 
@@ -224,7 +229,9 @@ graph TD
 | newSize    | 新しいツリーのサイズ（n）      |
 | proofNodes | 整合性を証明するハッシュの配列 |
 
-> **補足**: `/api/bulletin/consistency-proof` は `proofNodes` に加えて `rootAtOldSize` と `rootAtNewSize` も返します。`/verify` の `recorded_consistency_proof` 判定は、主に bulletin provider から取得した old/new root と整合性証明を検証する経路で、HTTP エンドポイントは `consistency-verifier.ts` の補助系で利用されます。判定では old root をレシートの `bulletinRootAtCast`、new root を最終 `bulletinRoot` と照合します。
+> **補足**: `/api/bulletin/consistency-proof` は `proofNodes` に加えて `rootAtOldSize` と `rootAtNewSize` も返します。
+> `/verify` の `recorded_consistency_proof` 判定は、主に bulletin provider から取得した old/new root と整合性証明を検証する経路で、HTTP エンドポイントは `consistency-verifier.ts` の補助系で利用されます。
+> 判定では old root をレシートの `bulletinRootAtCast`、new root を最終 `bulletinRoot` と照合します。
 
 ### SUBPROOF アルゴリズム
 
@@ -232,19 +239,23 @@ RFC 6962 の SUBPROOF 関数に基づき、整合性証明を再帰的に生成�
 
 1. `m = n` かつ古いツリーが完全部分木: 空の証明を返す
 2. `m = n` かつ完全部分木でない: 部分木のルートハッシュを返す
-3. k を n 未満の最大の 2 のべき乗とし:
+3. `m = 1`、`n = 2`、かつ古いツリーが完全部分木: 2 番目のリーフの生データを返す
+4. k を n 未満の最大の 2 のべき乗とし:
    - `m <= k` の場合: 左部分木の SUBPROOF + 右部分木のハッシュ
    - `m > k` の場合: 右部分木の SUBPROOF + 左部分木のハッシュ
+
+1→2 の特殊ケースでは、証明ノードは 2 番目のリーフの MTH ではなく生の 32 バイトリーフです。
+検証時にそのリーフへ通常の `LeafHash` を適用し、`SHA-256(0x01 || oldRoot || LeafHash(second_leaf))` が新しいルートと一致するかを確認します。
 
 ### 検証の意味
 
 整合性証明の検証が成功することは、以下を意味します:
 
-- 古いツリーのすべてのリーフが、新しいツリーにも同じ位置・同じ値で存在する
+- 古いツリーのすべてのリーフが、新しいツリーにも同じ位置に同じ値で存在する
 - 新しいツリーは古いツリーの末尾にリーフを追加しただけで構成されている
 - 古いツリーのルートハッシュと新しいツリーのルートハッシュの両方が、提供された証明ノードから独立に再構成できる
 
-これにより、サーバーが過去に記録した投票を密かに削除したり順序を変更したりする攻撃を検出できます。
+この性質により、サーバーが過去に記録した投票を密かに削除したり順序を変更したりする攻撃を検出できます。
 
 ## 検証パイプラインにおける役割
 
@@ -255,7 +266,8 @@ CT Merkle ツリーは、4 段階検証モデルの主に 2 段階で使用さ�
 | Recorded-as-Cast    | 包含証明でコミットメントの記録を確認し、整合性証明で追記専用性を確認する |
 | Counted-as-Recorded | zkVM ゲストが同じハッシュ規則で各 vote の包含を内部検証する              |
 
-Recorded-as-Cast では `recorded_inclusion_proof` と `recorded_consistency_proof` が表の役割を担当し、他の派生チェックもこれらの結果に基づきます。ハッシュ規則の不一致は zkVM ゲスト内での検証失敗として即座に検出されます。
+Recorded-as-Cast では `recorded_inclusion_proof` と `recorded_consistency_proof` が表の役割を担当し、他の派生チェックもこれらの結果に基づきます。
+ハッシュ規則の不一致は zkVM ゲスト内での検証失敗として即座に検出されます。
 
 各チェックの判定ロジックは [チェック一覧 > Recorded-as-Cast](../verification/checks-catalog.md#recorded-as-cast6-チェック) を参照してください。
 
@@ -263,13 +275,13 @@ Recorded-as-Cast では `recorded_inclusion_proof` と `recorded_consistency_pro
 
 | 要件                         | 対応状況 | 備考                               |
 | ---------------------------- | -------- | ---------------------------------- |
-| リーフ・ノードのドメイン分離 | 実装済   | `0x00` / `0x01` プレフィックス     |
+| リーフとノードのドメイン分離 | 実装済   | `0x00` / `0x01` プレフィックス     |
 | MTH アルゴリズム             | 実装済   | 再帰的分割 + キャッシュ最適化      |
 | PATH 関数（包含証明）        | 実装済   | O(log n) サイズの監査パス          |
 | SUBPROOF 関数（整合性証明）  | 実装済   | 再帰的生成 + 1→2 特殊ケース対応    |
 | 非 2 のべき乗サイズ          | 実装済   | 最大 2 のべき乗分割                |
 | 証明の独立検証               | 実装済   | ツリーの完全な再構築なしに検証可能 |
 
-本システムはリーフハッシュに使用タグ `"stark-ballot:leaf|v1"` を追加しています。これは RFC 6962 の拡張であり、他システムとのリーフハッシュ衝突を防止するための措置です。標準の CT 実装との直接的な相互運用は意図していません。
+リーフハッシュへの使用タグ `"stark-ballot:leaf|v1"` の追加は RFC 6962 にない拡張であり、標準の CT 実装との直接的な相互運用は意図していません。
 
-<!-- source: src/lib/merkle/rfc6962-merkle-tree.ts, src/lib/bulletin/simple-bulletin-board.ts, src/lib/verification/verification-checks.ts, zkvm/methods/guest/src/tally.rs, zkvm/contract-core/src/inclusion_proof.rs -->
+<!-- source: packages/merkle/src/rfc6962-merkle-tree.ts, packages/domain/src/lib/bulletin/simple-bulletin-board.ts, packages/verification/src/verification/verification-checks.ts, zkvm/methods/guest/src/tally.rs, zkvm/contract-core/src/inclusion_proof.rs -->

@@ -87,7 +87,7 @@
 /* テキストカラー */
 --color-text-primary: #1a1f4d; /* 本文 */
 --color-text-secondary: #4a5399; /* 補足テキスト */
---color-text-muted: #7a7f9a; /* 薄いテキスト */
+--color-text-muted: #686d8a; /* 薄いテキスト（WCAG AA調整済み） */
 --color-text-disabled: #b0b3c5; /* 無効状態 */
 ```
 
@@ -129,7 +129,7 @@
 --color-knowledge-bg-alt: #fdfcf4; /* 代替背景 */
 --color-knowledge-border: #d4c9a8; /* 古紙の縁 */
 --color-knowledge-border-light: #e8e0c8; /* 薄いボーダー */
---color-knowledge-accent: #8b7355; /* 古墨色 */
+--color-knowledge-accent: #7a6448; /* 古墨色（WCAG AA調整済み） */
 --color-knowledge-highlight: #f5f0e0; /* ハイライト */
 ```
 
@@ -696,12 +696,7 @@
   background: var(--color-verified-500);
 }
 
-/* NEW ドットのフェードアウト */
-.knowledge-new-indicator.fading,
-.knowledge-item-new-dot.fading {
-  animation: new-dot-fade 500ms ease-out forwards;
-  animation-delay: 1500ms; /* 2秒間表示後にフェード開始 */
-}
+/* 新規項目は追加後2秒間ドットと通知アニメーションで示す */
 ```
 
 ### 7.5.3 パネルタイトル切替（私 / ボット）
@@ -999,9 +994,9 @@ function completeProgress(): number {
 }
 ```
 
-### 8.7 NEW ドットフェードアウト
+### 8.7 NEW 表示の期限
 
-新規項目インジケーターのフェードアウト。2秒間表示後に消える。
+新規項目インジケーターは追加後2秒間表示し、その後は通常表示に戻る。
 
 > 定義は **7.5.2 NEW インジケーター（緑系ドット）** を参照。
 
@@ -1198,11 +1193,11 @@ function completeProgress(): number {
 
 - S1〜S5の記号を使わない日本語ラベル
 - 単一選択のラジオグループ
-- 「改ざんしない」がデフォルト選択肢
+- デフォルト選択は置かず、ユーザーが明示的に選ぶ
 - 選択状態で次へ進むボタンが有効化
-- 改ざんシナリオの注記（S2/S4の原理的な不可能性など）はUIに表示せず、外部ドキュメント（`<PUBLIC_SPECS_ORIGIN>`）に集約して記載する予定
+- 改ざんシナリオの注記（S2/S4の原理的な不可能性など）はUIに表示せず、公開仕様側に集約する
 
-### 10.5 結果ページ (/result) - 新設
+### 10.5 結果ページ (/result)
 
 - 集計結果のみを表示
 - 投票結果はA〜Eのコンパクトグリッド（票数・割合・下線バー）
@@ -1212,19 +1207,19 @@ function completeProgress(): number {
 
 ### 10.6 検証ページ (/verify)
 
-- 検証ページ到達時に自動で順次表示開始（準備中表示→ステップ表示）
+- 検証ページ到達時に通常は自動で検証シーケンスを開始
+- STARK状態が `not_run` / `running` の間は内部で解決を待ち、必要なら `/api/verification/run` を起動
+- STARK状態解決後に約2秒の準備中表示を出し、その後ステップを順次表示
 - 各検証ステップがカードとして順番にスライドイン
 - ステップ完了時に印鑑アニメーション
-- STARK検証は最後（4秒のローディング表示）
 - 知識パネルと検証ステップの関連を視覚化（ハイライト連動）
-- ダウンロードカードは「未ダウンロード」ラベル付き
+- ダウンロード導線はシーケンス完了後に表示し、知識パネル側で未ダウンロード/ダウンロード済みを示す
 
 ### 10.7 ボット検証（/verify タブ切替）
 
-- タブUIで「私の検証」「ボット検証」を切替
-- 影響を受けたボット（1体）をテーブル表示
-- 各ボットをクリックで詳細モーダル
-- モーダル内に当該ボットの知識パネルを表示
+- S3/S4では「私の検証」「ボット検証」のタブ外観を表示
+- 現行UIでは「私の検証」のみ有効
+- ボット検証タブは disabled のプレースホルダで、ボット詳細取得・モーダル・bot知識パネルは未接続
 
 ---
 
@@ -1304,60 +1299,11 @@ Tree-shakeable で `currentColor` 対応済み。以下のアイコンを使用�
 
 ---
 
-## 13. 実装対象
+## 13. 実装参照
 
-### 基盤
+現在の実装は以下を正とする。
 
-1. カラー変数とタイポグラフィの定義
-2. 基本コンポーネント（Button, Card, Badge）
-3. グローバルレイアウト構造
-
-### コアUI
-
-4. ステップナビゲーション
-5. 知識パネル
-6. 投票フォーム（RadioGroup）
-
-### フロー実装
-
-7. ボット投票アニメーション
-8. 改ざん指示UI
-9. 進捗表示（非線形補間）
-
-### 検証UI
-
-10. 検証カード群
-11. 印鑑アニメーション
-12. ボット検証タブ
-
-### 仕上げ
-
-13. テクスチャ/パターン適用
-14. アニメーション調整
-15. アクセシビリティ検証
-
----
-
-## 14. 変更対象ファイル
-
-### 新規作成
-
-- `src/app/globals.css` - カラー/タイポグラフィ変数の全面改訂
-- `src/components/KnowledgePanel/` - 知識パネルコンポーネント群
-- `src/app/(routes)/result/page.tsx` - 結果ページ（新設）
-- `public/textures/` - テクスチャアセット
-- `public/patterns/` - パターンアセット
-
-### 大幅変更
-
-- `src/components/ui/Button.tsx`
-- `src/components/ui/Badge.tsx`
-- `src/components/ui/RadioGroup.tsx`
-- `src/components/ui/ProgressBar.tsx`
-- `src/components/sidebar/Sidebar.tsx`
-- `src/components/LayoutProvider.tsx`
-- `src/app/(routes)/vote/page.tsx`
-- `src/app/(routes)/aggregate/page.tsx`
-- `src/app/(routes)/verify/page.tsx`
-- `src/components/vote/WaitingProgress.tsx`
-- `src/components/verification/*`
+- デザイントークン/アニメーション: `apps/web/src/styles/globals.css`
+- 基本UI: `apps/web/src/components/ui/*`
+- フロー/ページ固有UI: `apps/web/src/routes/*`, `apps/web/src/components/vote/*`, `apps/web/src/components/verification/*`
+- 知識パネル: `apps/web/src/components/knowledge/*`, `docs/current/ui-redesign/knowledge-panel.md`

@@ -1,5 +1,5 @@
-import type { Page, Locator } from '@playwright/test';
-import { getStringProperty } from '@/lib/utils/guards';
+import { expect, type Page, type Locator } from '@playwright/test';
+import { getStringProperty } from '@stark-ballot/domain/utils/guards';
 import { BasePage } from './BasePage';
 
 export type TamperScenario = 'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5';
@@ -43,21 +43,11 @@ export class AggregatePage extends BasePage {
   }
 
   async runAggregation(): Promise<void> {
-    // Check button state before clicking
-    const isEnabled = await this.runButton.isEnabled();
-    console.log(`    [AggregatePage] Run button enabled: ${isEnabled}`);
-
-    if (!isEnabled) {
-      console.log('    [AggregatePage] Run button is disabled, checking for errors...');
-      const errorMsg = await this.getErrorMessage();
-      if (errorMsg) {
-        throw new Error(`Cannot run aggregation: ${errorMsg}`);
-      }
-    }
+    await expect(this.runButton).toBeEnabled();
 
     // Determine timeout based on zkVM mode
-    const isRealZkVM = process.env.USE_REAL_ZKVM === 'true' || process.env.USE_MOCK_ZKVM === 'false';
-    const isProductionMode = isRealZkVM && process.env.RISC0_DEV_MODE !== '1';
+    const isRealZkVM = process.env['USE_REAL_ZKVM'] === 'true' || process.env['USE_MOCK_ZKVM'] === 'false';
+    const isProductionMode = isRealZkVM && process.env['RISC0_DEV_MODE'] !== '1';
     const apiTimeout = isProductionMode
       ? 150000 // 2.5 minutes for production STARK proofs
       : isRealZkVM
@@ -96,8 +86,8 @@ export class AggregatePage extends BasePage {
             if (sessionData) {
               const parsed: unknown = JSON.parse(sessionData);
               if (isRecordValue(parsed)) {
-                const payload = isRecordValue(data) && isRecordValue(data.data) ? data.data : data;
-                parsed.finalizeResult = payload;
+                const payload = isRecordValue(data) && isRecordValue(data['data']) ? data['data'] : data;
+                parsed['finalizeResult'] = payload;
                 localStorage.setItem('starkBallotSession', JSON.stringify(parsed));
               }
             }
@@ -221,19 +211,6 @@ export class AggregatePage extends BasePage {
 
   async waitForPageReady(): Promise<void> {
     await this.runButton.waitFor({ state: 'visible', timeout: 10000 });
-
-    // Check if button is enabled
-    const isEnabled = await this.runButton.isEnabled();
-    if (!isEnabled) {
-      console.log('    ⚠️ Run button is disabled, checking for rate limit...');
-
-      // Check localStorage for rate limit data
-      const rateLimitData = await this.page.evaluate(() => {
-        return localStorage.getItem('zkVmExecutions');
-      });
-      console.log('    Rate limit data:', rateLimitData);
-    }
-
     await this.waitForPageLoad();
   }
 }

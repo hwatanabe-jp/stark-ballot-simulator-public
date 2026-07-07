@@ -1,7 +1,7 @@
 version: 0.2
 
 # AWS CodeBuild buildspec for ARM64 Fargate prover Docker image
-# This file orchestrates the build and push of the zkVM prover container to ECR
+# This file builds a prover image candidate. It is not release authority by itself.
 #
 # Build Strategy:
 # - Uses a pre-built RISC Zero toolchain base image when one is supplied
@@ -20,13 +20,62 @@ phases:
       - echo "Logging in to Amazon ECR..."
       - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
 
+      - echo "Validating requested source revision..."
+      - |
+        if [ -z "${CODEBUILD_RESOLVED_SOURCE_VERSION:-}" ]; then
+          echo "CODEBUILD_RESOLVED_SOURCE_VERSION is required for prover release builds." >&2
+          exit 1
+        fi
+        if ! printf '%s' "$CODEBUILD_RESOLVED_SOURCE_VERSION" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
+          echo "CODEBUILD_RESOLVED_SOURCE_VERSION must be a 40- or 64-character lowercase Git SHA." >&2
+          exit 1
+        fi
+        if [ -z "${REQUESTED_SOURCE_SHA:-}" ] || [ "$REQUESTED_SOURCE_SHA" = "__MISSING_REQUESTED_SOURCE_SHA__" ]; then
+          SOURCE_SHA_MODE="branch-head"
+          REQUESTED_SOURCE_SHA="$CODEBUILD_RESOLVED_SOURCE_VERSION"
+          echo "REQUESTED_SOURCE_SHA not pinned - recording resolved branch head $CODEBUILD_RESOLVED_SOURCE_VERSION."
+        else
+          SOURCE_SHA_MODE="pinned"
+          if ! printf '%s' "$REQUESTED_SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
+            echo "REQUESTED_SOURCE_SHA must be a 40- or 64-character lowercase Git SHA." >&2
+            exit 1
+          fi
+          if [ "$REQUESTED_SOURCE_SHA" != "$CODEBUILD_RESOLVED_SOURCE_VERSION" ]; then
+            echo "REQUESTED_SOURCE_SHA must match CODEBUILD_RESOLVED_SOURCE_VERSION for prover release builds." >&2
+            exit 1
+          fi
+        fi
+        printf '%s' "$REQUESTED_SOURCE_SHA" > /tmp/requested-source-sha
+        printf '%s' "$CODEBUILD_RESOLVED_SOURCE_VERSION" > /tmp/resolved-source-sha
+        printf '%s' "$SOURCE_SHA_MODE" > /tmp/source-sha-mode
+
       - echo "Resolving RISC Zero toolchain base image..."
       - |
         if [ -z "${RISC0_TOOLCHAIN_REPO_NAME:-}" ]; then
-          RISC0_TOOLCHAIN_REPO_NAME="stark-ballot-simulator/risc0-toolchain"
-          echo "RISC0_TOOLCHAIN_REPO_NAME not set - defaulting to $RISC0_TOOLCHAIN_REPO_NAME"
-        else
-          echo "Using RISC0_TOOLCHAIN_REPO_NAME from environment: $RISC0_TOOLCHAIN_REPO_NAME"
+          echo "RISC0_TOOLCHAIN_REPO_NAME is required; the CodeBuild lane must supply the target toolchain repository name." >&2
+          exit 1
+        fi
+        echo "Using RISC0_TOOLCHAIN_REPO_NAME from environment: $RISC0_TOOLCHAIN_REPO_NAME"
+      - |
+        TOOLCHAIN_AUTHORITY_FILE="${RESOLVED_TOOLCHAIN_AUTHORITY_FILE:-}"
+        if [ -z "$TOOLCHAIN_AUTHORITY_FILE" ] && [ -n "${CODEBUILD_SRC_DIR_ToolchainAuthorityOutput:-}" ]; then
+          TOOLCHAIN_AUTHORITY_FILE="$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/toolchain-authority.json"
+        fi
+        if [ -n "$TOOLCHAIN_AUTHORITY_FILE" ] && [ -f "$TOOLCHAIN_AUTHORITY_FILE" ]; then
+          echo "Using resolved toolchain authority from $TOOLCHAIN_AUTHORITY_FILE"
+          RISC0_TOOLCHAIN_IMAGE="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["imageUri"])' "$TOOLCHAIN_AUTHORITY_FILE")"
+          TOOLCHAIN_AUTHORITY_SCHEMA_VERSION="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["schemaVersion"])' "$TOOLCHAIN_AUTHORITY_FILE")"
+          TOOLCHAIN_SELECTION="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selection"])' "$TOOLCHAIN_AUTHORITY_FILE")"
+          SELECTED_TOOLCHAIN_ARTIFACT_RECORD_KEY="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["artifactRecordKey"])' "$TOOLCHAIN_AUTHORITY_FILE")"
+          SELECTED_TOOLCHAIN_ARTIFACT_RECORD_VERSION_ID="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["artifactRecordVersionId"])' "$TOOLCHAIN_AUTHORITY_FILE")"
+          SELECTED_TOOLCHAIN_ARTIFACT_RECORD_SHA256="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["artifactRecordSha256"])' "$TOOLCHAIN_AUTHORITY_FILE")"
+          ACCEPTED_TOOLCHAIN_POINTER_KEY="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); pointer=data.get("acceptedPointer") or {}; print(pointer.get("key", ""))' "$TOOLCHAIN_AUTHORITY_FILE")"
+          ACCEPTED_TOOLCHAIN_POINTER_VERSION_ID="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); pointer=data.get("acceptedPointer") or {}; print(pointer.get("versionId", ""))' "$TOOLCHAIN_AUTHORITY_FILE")"
+          ACCEPTED_TOOLCHAIN_POINTER_SHA256="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); pointer=data.get("acceptedPointer") or {}; print(pointer.get("sha256", ""))' "$TOOLCHAIN_AUTHORITY_FILE")"
+          export RISC0_TOOLCHAIN_IMAGE TOOLCHAIN_AUTHORITY_SCHEMA_VERSION TOOLCHAIN_SELECTION SELECTED_TOOLCHAIN_ARTIFACT_RECORD_KEY SELECTED_TOOLCHAIN_ARTIFACT_RECORD_VERSION_ID SELECTED_TOOLCHAIN_ARTIFACT_RECORD_SHA256 ACCEPTED_TOOLCHAIN_POINTER_KEY ACCEPTED_TOOLCHAIN_POINTER_VERSION_ID ACCEPTED_TOOLCHAIN_POINTER_SHA256
+        elif [ "${REQUIRE_TOOLCHAIN_AUTHORITY_FILE:-0}" = "true" ]; then
+          echo "Resolved toolchain authority file is required for this prover release build." >&2
+          exit 1
         fi
       - |
         if [ -z "${RISC0_TOOLCHAIN_IMAGE:-}" ]; then
@@ -56,15 +105,15 @@ phases:
 
       - echo "Determining image tags..."
       - |
-        if [ -z "$IMAGE_REPO_NAME" ]; then
-          IMAGE_REPO_NAME="stark-ballot-simulator/zkvm-prover"
-          echo "IMAGE_REPO_NAME not set - defaulting to $IMAGE_REPO_NAME"
-        else
-          echo "Using IMAGE_REPO_NAME from environment: $IMAGE_REPO_NAME"
+        if [ -z "${IMAGE_REPO_NAME:-}" ]; then
+          echo "IMAGE_REPO_NAME is required; the CodeBuild lane must supply the target prover repository name." >&2
+          exit 1
         fi
-      # Image Tag Strategy (Semantic Versioning):
-      # - Manual builds: Override IMAGE_TAG via environment variables (e.g., IMAGE_TAG=v1.1.0)
-      # - Automatic fallback: Use commit SHA if IMAGE_TAG is not set
+        echo "Using IMAGE_REPO_NAME from environment: $IMAGE_REPO_NAME"
+      # Image Tag Strategy:
+      # - Prover release CodePipeline passes IMAGE_TAG=candidate-<pipeline-execution-id>
+      # - Manual/legacy primitive builds may override IMAGE_TAG explicitly
+      # - Automatic fallback uses commit SHA only when IMAGE_TAG is not set
       # - Latest tag: Only updated for main branch builds
       # - See: docs/current/guides/7-terraform/README.md (運用フロー)
       - |
@@ -93,7 +142,7 @@ phases:
       - echo "Building ARM64 Docker image..."
       - echo "Build started on $(date)"
       - RISC0_TOOLCHAIN_IMAGE="$(cat /tmp/risc0-toolchain-image)"
-      - docker build --build-arg RISC0_TOOLCHAIN_IMAGE="$RISC0_TOOLCHAIN_IMAGE" -t $IMAGE_URI -f docker/Dockerfile.fargate-prover .
+      - docker build --build-arg RISC0_TOOLCHAIN_IMAGE="$RISC0_TOOLCHAIN_IMAGE" -t $IMAGE_URI -f infra/docker/Dockerfile.fargate-prover .
 
       - |
         if [ -n "$LATEST_TAG" ]; then
@@ -140,6 +189,10 @@ phases:
           --image-id imageTag="$IMAGE_TAG" \
           --query 'length(imageScanFindings.findings[?severity==`CRITICAL` || severity==`HIGH`])' \
           --output text)
+        if ! printf '%s' "$CRITICAL_HIGH_COUNT" | grep -Eq '^[0-9]+$'; then
+          echo "Unable to parse HIGH/CRITICAL ECR scan finding count: $CRITICAL_HIGH_COUNT" >&2
+          exit 1
+        fi
         if [ "$CRITICAL_HIGH_COUNT" -gt 0 ]; then
           echo "ECR scan found $CRITICAL_HIGH_COUNT HIGH/CRITICAL findings. Failing build."
           exit 1
@@ -159,8 +212,64 @@ phases:
         DIGEST_PINNED_IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME@$IMAGE_DIGEST"
         printf '%s' "$IMAGE_DIGEST" > /tmp/prover-image-digest
         printf '%s' "$DIGEST_PINNED_IMAGE_URI" > /tmp/digest-pinned-image-uri
-        printf '{"image":"%s","imageUri":"%s","tag":"%s","digest":"%s","sha":"%s","architecture":"arm64","methodVersion":%s,"risc0ImageId":"%s","risc0ToolchainImage":"%s","risc0ToolchainTag":"%s","buildId":"%s","timestamp":"%s"}' \
-          "$IMAGE_URI" "$DIGEST_PINNED_IMAGE_URI" "$IMAGE_TAG" "$IMAGE_DIGEST" "$CODEBUILD_RESOLVED_SOURCE_VERSION" "$METHOD_VERSION" "$ARM64_RISC0_IMAGE_ID" "$RISC0_TOOLCHAIN_IMAGE" "$RISC0_TOOLCHAIN_IMAGE_TAG" "$CODEBUILD_BUILD_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      - echo "Re-reading ImageID from pushed digest-pinned prover image..."
+      - |
+        DIGEST_PINNED_IMAGE_URI="$(cat /tmp/digest-pinned-image-uri)"
+        ARM64_RISC0_IMAGE_ID="$(cat /tmp/arm64-risc0-image-id)"
+        METHOD_VERSION="$(cat /tmp/method-version)"
+        docker pull "$DIGEST_PINNED_IMAGE_URI"
+        POST_PUSH_IMAGE_ID_METADATA="$(docker run --rm --entrypoint /opt/zkvm/bin/host "$DIGEST_PINNED_IMAGE_URI" --print-image-id --json)"
+        printf '%s' "$POST_PUSH_IMAGE_ID_METADATA" > /tmp/risc0-image-id-post-push.json
+        POST_PUSH_RISC0_IMAGE_ID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["imageId"])' < /tmp/risc0-image-id-post-push.json)"
+        POST_PUSH_METHOD_VERSION="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["methodVersion"])' < /tmp/risc0-image-id-post-push.json)"
+        if [ "$POST_PUSH_RISC0_IMAGE_ID" != "$ARM64_RISC0_IMAGE_ID" ]; then
+          echo "Post-push ImageID does not match built image ImageID." >&2
+          exit 1
+        fi
+        if [ "$POST_PUSH_METHOD_VERSION" != "$METHOD_VERSION" ]; then
+          echo "Post-push methodVersion does not match built image methodVersion." >&2
+          exit 1
+        fi
+        printf '%s' "$POST_PUSH_RISC0_IMAGE_ID" > /tmp/post-push-risc0-image-id
+        printf '%s' "$POST_PUSH_METHOD_VERSION" > /tmp/post-push-method-version
+      - echo "Waiting for ECR managed signing status..."
+      - |
+        IMAGE_DIGEST="$(cat /tmp/prover-image-digest)"
+        SIGNING_STATUS=""
+        SIGNING_STATUS_JSON="/tmp/prover-signing-status.json"
+        for attempt in $(seq 1 30); do
+          aws ecr describe-image-signing-status \
+            --repository-name "$IMAGE_REPO_NAME" \
+            --image-id imageDigest="$IMAGE_DIGEST" \
+            --region "$AWS_DEFAULT_REGION" \
+            --output json > "$SIGNING_STATUS_JSON"
+          SIGNING_STATUS=$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); statuses=data.get("signingStatuses") or []; print(statuses[0].get("status", "") if statuses else "")' "$SIGNING_STATUS_JSON")
+          if [ "$SIGNING_STATUS" = "COMPLETE" ]; then
+            break
+          fi
+          echo "ECR signing status is '${SIGNING_STATUS:-empty}' (attempt $attempt/30); waiting..."
+          sleep 20
+        done
+        if [ "$SIGNING_STATUS" != "COMPLETE" ]; then
+          echo "ECR signing status must be COMPLETE for prover release records; got '${SIGNING_STATUS:-empty}'." >&2
+          cat "$SIGNING_STATUS_JSON" >&2
+          exit 1
+        fi
+        printf '%s' "$SIGNING_STATUS" > /tmp/prover-signing-status
+      - |
+        IMAGE_DIGEST="$(cat /tmp/prover-image-digest)"
+        DIGEST_PINNED_IMAGE_URI="$(cat /tmp/digest-pinned-image-uri)"
+        RISC0_TOOLCHAIN_IMAGE="$(cat /tmp/risc0-toolchain-image)"
+        RISC0_TOOLCHAIN_IMAGE_TAG="$(cat /tmp/risc0-toolchain-image-tag)"
+        ARM64_RISC0_IMAGE_ID="$(cat /tmp/arm64-risc0-image-id)"
+        METHOD_VERSION="$(cat /tmp/method-version)"
+        POST_PUSH_RISC0_IMAGE_ID="$(cat /tmp/post-push-risc0-image-id)"
+        POST_PUSH_METHOD_VERSION="$(cat /tmp/post-push-method-version)"
+        SIGNING_STATUS="$(cat /tmp/prover-signing-status)"
+        REQUESTED_SOURCE_SHA="$(cat /tmp/requested-source-sha)"
+        RESOLVED_SOURCE_SHA="$(cat /tmp/resolved-source-sha)"
+        printf '{"image":"%s","imageUri":"%s","tag":"%s","digest":"%s","sha":"%s","requestedSourceSha":"%s","resolvedSourceSha":"%s","sourceShaMode":"%s","architecture":"arm64","methodVersion":%s,"postPushMethodVersion":%s,"risc0ImageId":"%s","postPushRisc0ImageId":"%s","risc0ToolchainImage":"%s","risc0ToolchainTag":"%s","toolchainAuthoritySchemaVersion":"%s","toolchainSelection":"%s","selectedToolchainArtifactRecordKey":"%s","selectedToolchainArtifactRecordVersionId":"%s","selectedToolchainArtifactRecordSha256":"%s","acceptedToolchainPointerKey":"%s","acceptedToolchainPointerVersionId":"%s","acceptedToolchainPointerSha256":"%s","signingStatus":"%s","scanStatus":"PASS","buildId":"%s","timestamp":"%s"}' \
+          "$IMAGE_URI" "$DIGEST_PINNED_IMAGE_URI" "$IMAGE_TAG" "$IMAGE_DIGEST" "$RESOLVED_SOURCE_SHA" "$REQUESTED_SOURCE_SHA" "$RESOLVED_SOURCE_SHA" "$(cat /tmp/source-sha-mode)" "$METHOD_VERSION" "$POST_PUSH_METHOD_VERSION" "$ARM64_RISC0_IMAGE_ID" "$POST_PUSH_RISC0_IMAGE_ID" "$RISC0_TOOLCHAIN_IMAGE" "$RISC0_TOOLCHAIN_IMAGE_TAG" "${TOOLCHAIN_AUTHORITY_SCHEMA_VERSION:-}" "${TOOLCHAIN_SELECTION:-}" "${SELECTED_TOOLCHAIN_ARTIFACT_RECORD_KEY:-}" "${SELECTED_TOOLCHAIN_ARTIFACT_RECORD_VERSION_ID:-}" "${SELECTED_TOOLCHAIN_ARTIFACT_RECORD_SHA256:-}" "${ACCEPTED_TOOLCHAIN_POINTER_KEY:-}" "${ACCEPTED_TOOLCHAIN_POINTER_VERSION_ID:-}" "${ACCEPTED_TOOLCHAIN_POINTER_SHA256:-}" "$SIGNING_STATUS" "$CODEBUILD_BUILD_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
           > image-metadata.json
       - cat image-metadata.json
       - echo "Publishing prover image metadata..."
@@ -172,7 +281,7 @@ phases:
           DIGEST_KEY="${IMAGE_DIGEST#sha256:}"
           DIGEST_METADATA_KEY="${METADATA_PREFIX}/by-digest/sha256-${DIGEST_KEY}.json"
           aws s3api put-object --bucket "$PROVER_IMAGE_METADATA_BUCKET" --key "$DIGEST_METADATA_KEY" --body image-metadata.json --content-type application/json >/dev/null
-          aws s3api put-object --bucket "$PROVER_IMAGE_METADATA_BUCKET" --key "${METADATA_PREFIX}/by-git-sha/$CODEBUILD_RESOLVED_SOURCE_VERSION.json" --body image-metadata.json --content-type application/json >/dev/null
+          aws s3api put-object --bucket "$PROVER_IMAGE_METADATA_BUCKET" --key "${METADATA_PREFIX}/by-git-sha/$REQUESTED_SOURCE_SHA.json" --body image-metadata.json --content-type application/json >/dev/null
           aws s3api put-object --bucket "$PROVER_IMAGE_METADATA_BUCKET" --key "${METADATA_PREFIX}/latest.json" --body image-metadata.json --content-type application/json >/dev/null
           METADATA_S3_URI="s3://${PROVER_IMAGE_METADATA_BUCKET}/${DIGEST_METADATA_KEY}"
           printf '%s' "$METADATA_S3_URI" > /tmp/prover-metadata-s3-uri

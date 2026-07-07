@@ -1,20 +1,34 @@
-# AWS Hybrid Environment Runbook
+# AWS Target Environment Runbook
+
+> **Status guardrail:** This runbook describes current target-design and
+> post-Plan-03 operations for the AWS hybrid path. It is not Plan 02
+> release-candidate handoff evidence and does not authorize Plan 03. For current
+> go/no-go authority, use
+> [`post-merge/02`](../aws-account-migration/post-merge/02-develop-app-prerequisite-definitions-plan.md)
+> and
+> [`post-merge/03`](../aws-account-migration/post-merge/03-develop-app-execution-and-validation-plan.md).
 
 ## スコープ
 
-この Runbook は、GitHub 連携済みの Amplify branch deploy（`develop` / `main`）と、その背後にある AWS 環境を対象にした運用手順です。
+この Runbook は、target AWS account の `stark-dev/develop/app` と後続の
+production path を対象にした運用手順です。
 
-- 対象: Amplify Hosting + Amplify Data + Terraform 管理リソース
-- 前提: Amplify アプリはすでに稼働中で、通常運用は branch deploy を起点に行う
-- 非対象: Amplify sandbox、`localhost`、ローカル CLI を使った共同検証
-- 原則: AWS 障害の一次切り分けは、対象 branch のデプロイ URLと AWS コンソール / AWS CLI で行う
+- 対象: Terraform-managed static frontend, CloudFront, Hono API, DynamoDB, S3
+  proof artifacts, SQS, Step Functions, Lambda, ECS/Fargate
+- 前提: 通常運用は AWS-native saved-plan pipeline と Terraform-managed target
+  runtime を起点に行う
+- 非対象: legacy AWS account cleanup, production DNS cutover, localhost,
+  local CLI-only reproduction
+- 原則: AWS 障害の一次切り分けは target environment、CloudFront/API origin、
+  AWS Console、AWS CLI、retained deployment evidence で行う
 
 補足:
 
-- ブラウザが実際に叩く API origin は、`NEXT_PUBLIC_API_BASE_URL` が設定されていればその値を優先し、未設定時のみ branch deploy URL 配下の `/api/*` を使います
-- API カスタムドメイン運用中は、branch URL と API origin が異なることがあります。疎通確認や `curl` は **実効 API origin** を優先してください
-
-Amplify の app-level / branch override の確認方法は `docs/current/guides/7-terraform/README.md` の「Amplify との連携」を参照してください。
+- ブラウザは通常 CloudFront same-origin の `/api/*` を叩きます。分離 origin
+  を使う local/test path では `VITE_API_BASE_URL` が browser-public authority
+  です。
+- API カスタムドメイン運用中は、frontend URL と API origin が異なることが
+  あります。疎通確認や `curl` は実効 API origin を優先してください。
 
 ## 1. 初動確認
 
@@ -23,58 +37,51 @@ Amplify の app-level / branch override の確認方法は `docs/current/guides/
    - 発生時刻
    - 症状
    - `sessionId` と、取得できる場合は `executionId`
-2. Amplify Console で対象 branch の最新 deploy が成功しているか確認する
-3. branch の実効環境変数を確認する
-   - 特に `NEXT_PUBLIC_API_BASE_URL`、`PROVER_STATE_MACHINE_ARN`、`PROVER_WORK_QUEUE_ARN`、`PROVER_WORK_QUEUE_URL`、`S3_PROOF_BUCKET`、`S3_PROOF_PREFIX`、`USE_S3`
-4. 関連ロググループを current app / branch に絞って discovery する
+2. app pipeline の最新 accepted deployment evidence と source SHA を確認する
+3. target runtime config と apply outputs を確認する
+   - 特に `VITE_API_BASE_URL`, `PROVER_STATE_MACHINE_ARN`,
+     `PROVER_WORK_QUEUE_URL`, `VERIFICATION_WORK_QUEUE_URL`,
+     `VERIFICATION_WORKER_FUNCTION_NAME`, `S3_PROOF_BUCKET`,
+     `S3_PROOF_PREFIX`, `PROVER_SEMAPHORE_TABLE_NAME`,
+     `PROVER_SEMAPHORE_LOCK_NAME`, `PROVER_SEMAPHORE_STALE_SECONDS`, `USE_S3`
+4. 関連ロググループを target environment に絞って discovery する
 
 ```bash
-APP_ID="<AMPLIFY_APP_ID>"
-BRANCH_NAME="develop" # or main
-AWS_ENV="$BRANCH_NAME"
+TARGET_PREFIX="stark-ballot-simulator-stark-dev-develop"
+# For production after cutover, use:
+# TARGET_PREFIX="stark-ballot-simulator-stark-prod-main"
 
-# Amplify-managed Lambda logs for the current app / branch only.
-# appId で絞らない broad query は、削除していない旧 Amplify app のログまで拾うことがある。
+# Hono API / target Lambda logs.
 aws logs describe-log-groups \
-  --log-group-name-prefix "/aws/lambda" \
-  --output json \
-  | jq -r --arg app "$APP_ID" --arg branch "$BRANCH_NAME" '
-      ($branch
-        | if . == "main" then ["main", "ma"]
-          elif . == "develop" then ["develop", "de"]
-          else [.]
-          end) as $branchTokens
-      | .logGroups[].logGroupName as $name
-      | $name
-      | select(contains($app))
-      | select(any($branchTokens[]; $name | contains(.)))
-      | select(test("hono|proverdispatchproxy|verifierservicerunner|finalizecallbackrunner"))
-    '
+  --log-group-name-prefix "/aws/lambda/${TARGET_PREFIX}-" \
+  --query 'logGroups[].logGroupName' \
+  --output json
 
-# Terraform-managed async prover logs for the selected environment.
+# Terraform-managed async prover logs.
 aws logs describe-log-groups \
-  --log-group-name-prefix "/aws/ecs/stark-ballot-simulator-prover-${AWS_ENV}" \
+  --log-group-name-prefix "/aws/ecs/${TARGET_PREFIX}-prover" \
   --query 'logGroups[].logGroupName' \
   --output json
 
 aws logs describe-log-groups \
-  --log-group-name-prefix "/aws/stepfunctions/stark-ballot-simulator-prover-${AWS_ENV}" \
+  --log-group-name-prefix "/aws/vendedlogs/states/${TARGET_PREFIX}-finalization" \
   --query 'logGroups[].logGroupName' \
   --output json
 
 aws logs describe-log-groups \
-  --log-group-name-prefix "/aws/lambda/stark-ballot-simulator-check-image-signature-${AWS_ENV}" \
+  --log-group-name-prefix "/aws/lambda/${TARGET_PREFIX}-image-signature-gate" \
   --query 'logGroups[].logGroupName' \
   --output json
 
-# API Gateway access logs for the current API path.
+# API Gateway access logs for the target API path.
 aws logs describe-log-groups \
-  --log-group-name-prefix "/aws/apigateway/stark-ballot-simulator-hono-api-${AWS_ENV}" \
+  --log-group-name-prefix "/aws/apigateway/${TARGET_PREFIX}-api/access" \
   --query 'logGroups[].logGroupName' \
   --output json
 ```
 
-CloudWatch Logs Insights のクエリ集と週次監視手順は private operations notes 側で管理します。public snapshot では、この Runbook のロググループ discovery 例を一次切り分けの入口にしてください。
+CloudWatch Logs Insights では該当 log group の API errors、finalize
+errors、verifier errors を時間範囲で絞り込んで確認してください。
 
 ## 2. S3 bundle / authenticated download 障害
 
@@ -86,69 +93,95 @@ CloudWatch Logs Insights のクエリ集と週次監視手順は private operati
 
 ### 対応手順
 
-1. `hono-api` のログを最初に確認する
-   - S3 artifact の取得は `/api/verification/bundles/:sessionId/:executionId` と `/api/verification/bundles/:sessionId/:executionId/report` 側で実行される
-   - `/api/verify` は `s3BundleUrl` を公開レスポンスに返さず、`verificationExecutionId` を返して認証付き download endpoint へ誘導する
-   - `hono-api` のログが出ていない場合は、API Gateway access log も確認する
-2. 対象 branch の実効 env を確認する
+1. `public-api` のログを最初に確認する
+   - S3 artifact の取得は
+     `/api/verification/bundles/:sessionId/:executionId` と
+     `/api/verification/bundles/:sessionId/:executionId/report` 側で実行される
+   - `/api/verify` は `s3BundleUrl` を公開レスポンスに返さず、
+     `verificationExecutionId` を返して認証付き download endpoint へ誘導する
+   - `public-api` のログが出ていない場合は、API Gateway access log も確認する
+2. target runtime env を確認する
    - `S3_PROOF_BUCKET`
    - `S3_PROOF_PREFIX`
    - `USE_S3`
-     - hosted Lambda では Lambda runtime 判定でも S3 upload / authenticated download 経路が有効になる
-     - ローカルや非 Lambda runtime で S3 経路を再現する場合は `USE_S3=true` が必要
-3. `hono-api` の Lambda 実行ロールに、proof bundle bucket への `s3:GetObject` / `s3:GetObjectVersion` / `s3:ListBucket` があることを確認する
-4. bundle 自体が存在しない、または初回アップロードが失敗している場合は、Step Functions と ECS prover のログを先に確認する
+   - `TARGET_AWS_RUNTIME`
+3. Hono API Lambda 実行ロールに proof artifact bucket への
+   object-level `s3:GetObject` / `s3:GetObjectVersion` があることを確認する
+4. bundle 自体が存在しない、または初回アップロードが失敗している場合は、
+   Step Functions と ECS prover のログを先に確認する
    - 初回の `bundle.zip` 生成と S3 upload は ECS prover task の責務
-   - `s3:PutObject` や task failure は `/aws/ecs/stark-ballot-simulator-prover-<env>` を見る
-5. bundle は存在するのに session state が更新されない場合は、`finalize-callback-runner` のログを確認する
-   - callback は既存 bundle を読み出して session を確定する
-6. `/api/verification/run` 実行後の `verification.json` 再生成や再 upload が怪しい場合だけ、`verifier-service-runner` のログを確認する
+   - `s3:PutObject` や task failure は
+     `/aws/ecs/<target-prefix>-prover` を見る
+5. bundle は存在するのに session state が更新されない場合は、
+   finalize callback Lambda のログを確認する
+6. `/api/verification/run` 実行後の `verification.json` 再生成や再 upload が
+   怪しい場合は verification worker Lambda のログを確認する
 7. 必要に応じて、対象 object の存在を確認する
    - key は通常 `<S3_PROOF_PREFIX><sessionId>/<executionId>/bundle.zip`
 
 ### 運用メモ
 
-- 手動 `presign` は通常運用の標準手順にしない。browser / CLI には認証付き download endpoint を使わせる
-- 標準復旧経路は UI の bundle / report ダウンロード再試行、または認証付き download endpoint の再実行
-- TTL の基準値
-  - `S3_SIGNED_URL_TTL_SECONDS`: default 3600
-  - `S3_BUNDLE_SIGNED_URL_TTL_SECONDS`: default 300, max 900
+- 手動 `presign` は通常運用の標準手順にしない。browser / CLI には認証付き
+  download endpoint を使わせる
+- 標準復旧経路は UI の bundle / report ダウンロード再試行、または認証付き
+  download endpoint の再実行
+- `S3_SIGNED_URL_TTL_SECONDS` / `S3_BUNDLE_SIGNED_URL_TTL_SECONDS` は
+  現行の bundle/report 配信制御ではない。残存する場合は履歴互換入力の
+  fail-closed validation 対象であり、復旧手順や browser / CLI download
+  経路として扱わない
 
 ## 3. 非同期 finalization 障害
 
 ### 典型症状
 
 - Finalization が `pending` / `running` のまま進まない
-- Verify 画面で `FAILED`、または callback が `TIMED_OUT` を受けた場合の `TIMEOUT`
+- Verify 画面で `FAILED`、または callback が `TIMED_OUT` を受けた場合の
+  `TIMEOUT`
 - Step Functions が `SUCCEEDED` なのに UI が進行中のまま
 
 ### 対応手順
 
 1. Step Functions 実行の `status` と `cause` を確認する
 2. Step Functions のログを確認する
-   - log group は通常 `/aws/stepfunctions/stark-ballot-simulator-prover-<env>`
-   - 現行 Terraform の終端は `FinalizeSucceeded` / `FinalizeFailed` / `FinalizeSignatureFailed`。callback Lambda は `TIMED_OUT` も受理するが、標準の State Machine からは通常送出されない
-3. `hono-api` のログを確認する
+   - log group は通常 `/aws/vendedlogs/states/<target-prefix>-finalization`
+   - target Terraform の callback 終端は `CallbackSucceeded` /
+     `CallbackTimedOut` / `CallbackSignatureFailed` / `CallbackFailed`
+   - callback delivery 自体が失敗した場合は `CallbackDeliveryFailed`
+3. `public-api` のログを確認する
    - `/api/finalize` での SQS publish 失敗
    - `PROVER_WORK_QUEUE_URL` の未設定や `sqs:SendMessage` 権限不足
-4. `prover-dispatch-proxy` のログを確認する
+4. prover dispatch Lambda のログを確認する
    - SQS 受信後の payload parse / dispatch precondition / input upload 失敗
+   - session が存在しない、または stored finalization state が message の
+     `executionId` に対する `pending` ではないため message が drop されたケース
    - Step Functions 起動失敗
-   - AppSync への running state 更新失敗
-5. Step Functions が `VerifyImageSignature` / `CheckImageSignature` で止まる場合は、`check-image-signature` Lambda のログと ECR signing status を確認する
-   - log group は通常 `/aws/lambda/stark-ballot-simulator-check-image-signature-<env>`
-   - 署名ステータスが `COMPLETE` でない場合、ECS task は起動されず `FinalizeSignatureFailed` に進む
-6. Step Functions が `RunProver` まで進んでいる場合は、ECS prover のログを確認する
-   - zkVM 実行失敗
-   - `bundle.zip` upload 失敗
-   - log group は通常 `/aws/ecs/stark-ballot-simulator-prover-<env>`
-7. backlog が疑われる場合は、対象 queue の深さと古いメッセージ滞留を確認する
-   - 併せて `PROVER_LAMBDA_CONCURRENCY` の実効値を確認する
-8. Step Functions が `SUCCEEDED` なのに UI が更新されない場合は、`finalize-callback-runner` のログと session 更新成否を確認する
-9. オペレータが中断する場合は `/api/finalize/cancel` を使う
-   - `X-Session-ID`
-   - `X-Session-Capability`
-   - body: `executionId`
+   - `ExecutionAlreadyExists` 後の再 read で outcome が記録済みなら
+     already-processed として drop される
+   - `ExecutionAlreadyExists` 後も session が同じ `executionId` の `pending`
+     のままなら、`DescribeExecution` を確認する。execution が `RUNNING` なら
+     already-dispatched duplicate として drop し、closed / not-found なら
+     lost-outcome execution として retry / DLQ evidence を残す
+   - malformed message は fail-closed に throw し、retry / DLQ 対象になる。
+     verified-stale work だけが削除される
+5. Step Functions が `VerifyImageSignature` / `CheckImageSignature` で止まる場合は、
+   `image-signature-gate` Lambda のログと ECR signing status を確認する
+6. Step Functions が semaphore 導入後の `AcquireProverSlot`（およびその
+   wait/retry ループ）で止まっている場合は、semaphore item の
+   `currentLockCount`、`limit`、owner marker、古い owner の有無を確認する
+7. Step Functions が `RunProver` まで進んでいる場合は、ECS prover のログを確認する
+   - Fargate capacity / ECS API transient retry 中も user-visible state は
+     `running` のまま
+   - operators may see multiple `RunTask` attempts in the Step Functions
+     execution history before success or final failure
+8. backlog が疑われる場合は、対象 queue の深さと古いメッセージ滞留を確認する。
+   semaphore 導入後の SQS depth は dispatch backlog であり、prover slot 待ちの
+   execution 数そのものではない
+9. Step Functions が `SUCCEEDED` なのに UI が更新されない場合は、finalize
+   callback Lambda のログと session 更新成否を確認する
+10. オペレータが中断する場合は `/api/finalize/cancel` を使う
+    - `X-Session-ID`
+    - `X-Session-Capability`
+    - body: `executionId`
 
 ```bash
 BASE_URL="https://<EFFECTIVE_API_ORIGIN>"
@@ -160,56 +193,193 @@ curl -X POST "${BASE_URL%/}/api/finalize/cancel" \
   -d '{"executionId":"<executionId>","reason":"Cancelled by operator"}'
 ```
 
-- `BASE_URL` には、`NEXT_PUBLIC_API_BASE_URL` または API カスタムドメインが設定されていればその origin を使います
-- API base を分離していない環境では、従来どおり Amplify branch URL を使います
+- `BASE_URL` には、CloudFront domain、API カスタムドメイン、または explicit
+  `VITE_API_BASE_URL` origin を使います。
+
+### Passive observability baseline
+
+Plan 03 時点の alarm は passive です。SNS / auto-remediation は設定せず、発火時は
+operator が evidence を確認して redrive / drop / 再実行を判断します。
+
+| Alarm                                      | Signal                                                                  | Operator response                                                                                                                                                               |
+| ------------------------------------------ | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prover_work_dlq_depth`                    | prover dispatch DLQ の visible message が 0 を超えた                    | message payload、dispatcher log、Step Functions execution 有無、session state を保存し、下の redrive-or-drop 判断へ進む                                                         |
+| `verification_work_dlq_depth`              | verification worker DLQ の visible message が 0 を超えた                | verification worker log、対象 session/execution、bundle/report object の有無を保存し、再投入で重複副作用がないか確認する                                                        |
+| `target_sfn_executions_failed`             | target finalization state machine の `ExecutionsFailed` が 0 を超えた   | execution history と callback state を確認する。意図的な `CallbackDeliveryFailed` terminal もここに出るため、session state reconciliation と callback Lambda log を必ず確認する |
+| `target_sfn_executions_timed_out`          | target finalization state machine の `ExecutionsTimedOut` が 0 を超えた | `RunProver` timeout、callback timeout、ECS task status、proof artifact の有無を確認する                                                                                         |
+| `target_lambda_errors_proof_dispatcher`    | proof dispatcher Lambda `Errors` が 0 を超えた                          | SQS record、payload parse、pre-dispatch gate、`StartExecution` / `DescribeExecution` error を確認する                                                                           |
+| `target_lambda_errors_finalization_writer` | finalization writer Lambda `Errors` が 0 を超えた                       | callback payload、DynamoDB/KMS permissions、sticky terminal guard の返却 state、artifact metadata を確認する                                                                    |
+| `target_lambda_errors_semaphore_janitor`   | semaphore janitor Lambda `Errors` が 0 を超えた                         | EventBridge terminal-status event、scheduled sweep log、DynamoDB conditional failure 以外の error、`DescribeExecution` error を確認する                                         |
+| `fargate_on_demand_vcpu_usage`             | AWS/Usage Fargate On-Demand vCPU usage が threshold を超えた            | threshold は `40`、想定 quota は `48`。Service Quotas、active ECS tasks、Step Functions `RunTask` retry、semaphore slot limit を確認する                                        |
+
+Semaphore lock count、janitor activity、slot wait は custom metric ではなく、CLI
+checks と `semaphore-janitor` logs で確認します。これは passive demo model の
+意図的な境界です。
+
+### DLQ redrive-or-drop 判断
+
+DLQ message はすぐ redrive しないで、まず evidence を保存します。
+
+1. message の `sessionId` / `executionId` / S3 keys を記録する
+2. session state を読む
+   - session が missing、または stored finalization state が message の
+     `executionId` に対する `pending` ではない場合は stale work として drop 候補
+   - すでに `FINALIZATION_DISPATCH_TIMEOUT` で `failed` になった session は、
+     message を redrive しても dispatcher が non-pending work として drop する。
+     この DLQ message は evidence であり、user recovery path は新しい session
+     からの再実行
+   - same executionId の `pending` の場合は Step Functions execution の有無を確認する
+3. Step Functions execution を確認する
+   - `RUNNING` なら duplicate delivery の可能性が高く、redrive しない
+   - not found か closed without recorded outcome なら、status handler が
+     fail-closed に persist するまで待つか、evidence を添えて再実行方針を決める
+4. malformed message は redrive しても同じ fail-closed path に戻るため、payload と
+   parser error を保存して drop する
+
+Redrive は、message が正当で、session がまだ同じ executionId の `pending` で、
+execution が存在せず、dispatch deadline 内で再送に意味がある場合だけ検討します。
+Deadline 後に sticky failed state へ進んだ attempt は redrive で復活しません。
+
+### 状態遷移メモ
+
+- `pending` または `running` 中の cancel は durable です。Terminal states
+  (`succeeded` / `failed` / `timeout`) は executionId ごとに sticky なので、
+  late dispatcher delivery や racing callback は terminal state を別の
+  terminal / running state に戻しません。
+- 既存 attempt がある間の duplicate `POST /api/finalize` は、既存 attempt を
+  一貫して記述する 202 response を返します。二つ目の `input.json` upload、
+  SQS publish、proof run は発生しません。
+- Dispatcher は session missing または stored finalization state が message の
+  `executionId` に対する `pending` ではない message を drop します。この場合、
+  SQS message は削除され、retry / DLQ には進みません。
+- `RunProver` の capacity / ECS API transient retry は Step Functions execution
+  history に現れます。`running` は `MarkProverStarted` が semaphore slot 取得後に
+  記録するため、slot 取得後の capacity / ECS API transient retry 中は
+  user-visible state が `running` のままです。
+- semaphore wait 中の cancel は session state を terminal `failed` にします。
+  待機中の Step Functions execution が後で slot を取得しても、
+  `MarkProverStarted` は store guard によって `running` へ進めず、
+  `ReleaseSuperseded` 経由で slot を解放して proof を実行せずに終了します。
+- Status polling は stuck `pending` を reconcile します。`pending` が 60 秒より
+  若い間は Step Functions describe を行いません。60 秒を超えた場合は
+  `PROVER_STATE_MACHINE_ARN` と `executionId` から deterministic execution ARN を
+  構築して確認します。
+- Execution が存在せず、age が `FINALIZE_PENDING_DISPATCH_DEADLINE_SECONDS`
+  （未設定時 900 秒）を超えた場合は、store guard 経由で
+  `FINALIZATION_DISPATCH_TIMEOUT` の `failed` state を persist します。
+- Execution が closed (`SUCCEEDED` / `FAILED` / `TIMED_OUT` / `ABORTED`) なのに
+  stored state がまだ `pending` の場合は、recorded result authority がないため、
+  `SUCCEEDED` でも `FINALIZATION_OUTCOME_UNRECORDED` として fail closed に
+  persist します。
+- `running` についても Step Functions が terminal なら display-only projection
+  ではなく store guard 経由で terminal state を persist します。Callback が race に
+  勝っていれば sticky guard の返却 state が response に使われます。
 
 ### 注意
 
 - `StopExecution` の直接実行は標準手順にしない
 - 直接停止すると、Step Functions は止まっても session state が整合しない可能性がある
-- 再実行が必要な場合は、対象 branch の `/aggregate` 導線からやり直す
+- semaphore 導入後は、直接停止によって owner marker が残る可能性もあるため、
+  EventBridge/scheduled janitor の cleanup evidence を確認する
+- 再実行が必要な場合は、対象環境の `/aggregate` 導線からやり直す
+
+### Semaphore 運用チェック
+
+通常の operator cancel は `/api/finalize/cancel` を使います。`StopExecution`
+は session state と semaphore owner marker を分離させるため標準手順にしません。
+
+Semaphore item は 1 行です。`LockName`、`currentLockCount`、`limit` 以外の
+top-level attributes は Step Functions execution name（通常は `executionId`）を
+名前に持つ owner marker です。値は slot 取得時刻の ISO timestamp です。
+
+```bash
+TARGET_PREFIX="stark-ballot-simulator-stark-dev-develop"
+PROVER_SEMAPHORE_TABLE_NAME="${TARGET_PREFIX}-prover-semaphore"
+
+aws dynamodb get-item \
+  --table-name "${PROVER_SEMAPHORE_TABLE_NAME}" \
+  --key '{"LockName":{"S":"prover-fargate"}}' \
+  --consistent-read
+```
+
+確認ポイント:
+
+- `currentLockCount` が `limit` を超えていないこと。ただし stored `limit` は
+  seed item 作成時の inventory であり、現在の enforced authority は
+  `var.prover_max_concurrent_provers`
+- owner marker 数と `currentLockCount` が整合していること
+- owner marker の timestamp が古すぎないこと
+- owner marker に対応する Step Functions execution がまだ active か、terminal
+  event / scheduled sweep の janitor cleanup 対象か
+
+Semaphore row 自体が削除されている場合、Step Functions は
+`CheckProverSlotHeld` から `CallbackCapacityWaitFailed` へ fail closed します。
+復旧は item shape `{ LockName: "prover-fargate", currentLockCount: 0, limit:
+var.prover_max_concurrent_provers }` で seed item を再作成し、通常の finalize
+path から再実行します。
+
+Capacity wait 中の execution は Step Functions history で
+`AcquireProverSlot` retry / `CheckProverSlotHeld` 付近に留まります。SQS depth は
+dispatcher に到達していない work の backlog だけを示し、semaphore 待ちの
+execution 数や UI queue position ではありません。
+
+Leaked owner が疑われる場合は、次の evidence を 1 つの調査記録に残します:
+
+- SQS queue depth、oldest message age、DLQ message count
+- Step Functions execution ARN、status、history の最後の state、失敗 cause
+- ECS task ARN、last status、stopped reason、container exit code、ECS log excerpt
+- semaphore item の `currentLockCount`、`limit`、owner marker と timestamp
+- `semaphore-janitor` Lambda の EventBridge terminal-status invocation と
+  30-minute scheduled sweep のログ
+- session の finalization state と stuck `pending` / `running` の有無
+
+`ConditionalCheckFailedException` による release 失敗は、すでに解放済みの
+owner として許容されることがあります。DynamoDB のその他の error、古い owner
+が残り続けるケース、または session が terminal なのに owner marker が残る
+ケースは evidence を残して retry / janitor / manual recovery の判断対象にします。
 
 ## 4. IAM / 設定ドリフト
 
 ### 優先して確認すること
 
-1. 対象 branch の deploy 成否
-2. app-level / branch override の実効 env
-3. current app / branch の API Gateway access log と `hono-api` / `prover-dispatch-proxy` / `finalize-callback-runner` / `verifier-service-runner` のログ
-4. async finalization 経路なら `/aws/stepfunctions/stark-ballot-simulator-prover-<env>`、`/aws/lambda/stark-ballot-simulator-check-image-signature-<env>`、`/aws/ecs/stark-ballot-simulator-prover-<env>` のログ
+1. target app pipeline の source SHA と accepted deployment evidence
+2. Terraform apply outputs と runtime env
+3. CloudFront/API Gateway access log と Hono API / prover dispatch / finalize
+   callback / verification worker のログ
+4. async finalization 経路なら Step Functions、`image-signature-gate` Lambda、
+   ECS prover のログ
 
-### まず管理境界を切り分ける
+### 管理境界
 
-- Amplify 管理:
-  - branch/app env、API Gateway（`hono-api` integration 含む）、AppSync、`hono-api` / `prover-dispatch-proxy` / `verifier-service-runner` / `finalize-callback-runner` の Lambda とそのロール
-  - 反映漏れや設定差分の復旧は Amplify backend 再デプロイを第一候補にする
 - Terraform 管理:
-  - VPC、ECS、Step Functions、SQS、S3、ECR、CloudWatch Logs、ECS task role / Step Functions role など
-  - 反映漏れや設定差分の復旧は Terraform で行う。`terraform workspace show` で対象環境を確認してから、guarded flow（`pnpm terraform:plan:<env>` / `pnpm terraform:apply:<env>`、または `scripts/terraform/terraform-guarded.sh`）で実行する
+  - CloudFront, S3 static frontend, API Gateway, Lambda, DynamoDB, SQS,
+    Step Functions, ECS/Fargate, proof artifact S3, ECR, CloudWatch Logs,
+    IAM roles and policies
+  - 反映漏れや設定差分の復旧は AWS-native saved-plan pipeline の retained
+    evidence と Terraform state identity を確認してから実行する
+- Legacy AWS account references:
+  - historical, retention-only, or future cutover context として扱う
+  - target runtime の復旧 authority にはしない
 
 ### 症状別メモ
 
-- `AccessDeniedException: appsync:GraphQL`
-  - hosted backend 側の認可反映を疑う
-  - `amplify/data/resource.ts` の `allow.resource(...)` が現行デプロイへ反映されているか確認する
 - `AccessDenied: s3:GetObject`
-  - bundle / report download 経路ならまず `hono-api` の S3 権限を見る
-  - callback での bundle 復元なら `finalize-callback-runner`、verify report 再取得なら `verifier-service-runner` も確認する
+  - bundle / report download 経路ならまず Hono API Lambda の S3 権限を見る
+  - callback での bundle 復元なら finalize callback Lambda、verify report
+    再取得なら verification worker Lambda も確認する
 - `AccessDenied: s3:PutObject`
   - 初回 `bundle.zip` upload なら ECS prover task role を疑う
-  - `/api/verification/run` 後の再 upload なら `USE_S3=true` の実効値、`verifier-service-runner` の権限、同 Lambda のログを見る
-  - ECS prover task role は Terraform 管理、`verifier-service-runner` は Amplify 管理
+  - `/api/verification/run` 後の再 upload なら `USE_S3=true` の実効値、
+    verification worker Lambda の権限、同 Lambda のログを見る
 - ECR signing status が `COMPLETE` ではない
-  - `ecs_image_uri` が digest pin され、対象 digest の ECR signing status が `COMPLETE` であることを確認する
-  - `check-image-signature` Lambda は Terraform 管理、`FinalizeSignatureFailed` 後の session state 更新は Amplify 管理 `finalize-callback-runner` を確認する
+  - prover image URI が digest pinned され、対象 digest の ECR signing status
+    が `COMPLETE` であることを確認する
 - `HybridCliAccessPolicyArn`
   - 外部 CLI や運用ロールが S3 を直接読む場合の補助ポリシー
   - hosted UI / API 障害の一次確認先ではない
-  - Amplify branch deploy の通常運用では必須前提にしない
-
-設定差分や認可反映漏れが疑われる場合は、まず対象リソースが Amplify 管理か Terraform 管理かを確定します。Amplify 管理の差分なら対象 branch の Amplify backend を再デプロイし、Terraform 管理の差分なら `terraform workspace show` で環境を確認したうえで、`pnpm terraform:plan:<env>` / `pnpm terraform:apply:<env>` または `scripts/terraform/terraform-guarded.sh <env> ...` で反映状態を揃えます。
 
 ## 5. 参照先
 
-- Terraform / Amplify env 連携: `docs/current/guides/7-terraform/README.md`
-- CloudWatch Logs Insights query catalogs and weekly monitoring runbooks are private operations notes stripped from the generated public snapshot.
+- Target Terraform roots: `infra/terraform/app/README.md`, `infra/terraform/foundation/README.md`, and `infra/terraform/bootstrap/README.md`
+- Retained legacy Terraform reference: `docs/current/guides/7-terraform/README.md`
+- CloudWatch Logs Insights: target log groups for API, finalize, verifier, and access logs

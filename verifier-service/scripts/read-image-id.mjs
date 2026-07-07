@@ -4,39 +4,58 @@ import { readFileSync } from 'node:fs';
 import {
   resolveConfiguredImageIdVariant,
   resolveExpectedImageIdFromMapping,
-} from '../../src/lib/verification/image-id-policy.js';
+} from '../../packages/verification/src/verification/image-id-policy.js';
 
 function usage() {
   console.error('usage: node verifier-service/scripts/read-image-id.mjs <json-path> [--variant default|x86_64]');
 }
 
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * @param {unknown} payload
+ * @param {import('../../packages/verification/src/verification/image-id-policy.js').ImageIdVariant} variant
+ * @returns {string | null}
+ */
 function resolveImageId(payload, variant) {
   if (!isRecord(payload)) {
     return null;
   }
 
-  if (typeof payload.imageId === 'string' && payload.imageId.length > 0) {
-    return payload.imageId;
+  if (typeof payload['imageId'] === 'string' && payload['imageId'].length > 0) {
+    return payload['imageId'];
   }
 
-  if (typeof payload.image_id === 'string' && payload.image_id.length > 0) {
-    return payload.image_id;
+  if (typeof payload['image_id'] === 'string' && payload['image_id'].length > 0) {
+    return payload['image_id'];
   }
 
-  if (typeof payload.current === 'string' && isRecord(payload.mappings)) {
-    return resolveExpectedImageIdFromMapping(payload, undefined, variant);
+  if (typeof payload['current'] === 'string' && isRecord(payload['mappings'])) {
+    return resolveExpectedImageIdFromMapping(
+      /** @type {import('../../packages/verification/src/verification/image-id-types.ts').ImageIdMapping} */ (
+        /** @type {unknown} */ (payload)
+      ),
+      undefined,
+      variant,
+    );
   }
 
   return null;
 }
 
+/**
+ * @param {string[]} argv
+ * @returns {{ filePath: string; variant: import('../../packages/verification/src/verification/image-id-policy.js').ImageIdVariant }}
+ */
 function parseArgs(argv) {
   let filePath = '';
-  let variant = resolveConfiguredImageIdVariant(process.env.EXPECTED_IMAGE_ID_VARIANT);
+  let variant = resolveConfiguredImageIdVariant(process.env['EXPECTED_IMAGE_ID_VARIANT']);
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
@@ -56,6 +75,9 @@ function parseArgs(argv) {
     }
 
     if (!filePath) {
+      if (!token) {
+        throw new Error('unexpected empty argument');
+      }
       filePath = token;
       continue;
     }

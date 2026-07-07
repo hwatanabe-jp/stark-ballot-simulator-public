@@ -29,7 +29,7 @@ run_test() {
     
     # Check if input file exists
     if [ ! -f "$input_file" ]; then
-        echo -e "${RED}✗ Input file not found: $input_file${NC}"
+        echo -e "${RED}[FAIL] Input file not found: $input_file${NC}"
         return 1
     fi
     
@@ -54,9 +54,9 @@ run_test() {
             fi
 
             if [ "$tamper_detected_flag" = "$expected_tamper" ]; then
-                echo -e "${GREEN}✓ Test passed${NC}"
+                echo -e "${GREEN}[OK] Test passed${NC}"
             else
-                echo -e "${RED}✗ Test failed: expected tamper=$expected_tamper, got $tamper_detected_flag${NC}"
+                echo -e "${RED}[FAIL] Test failed: expected tamper=$expected_tamper, got $tamper_detected_flag${NC}"
                 return 1
             fi
 
@@ -71,12 +71,12 @@ run_test() {
 
             return 0
         else
-            echo -e "${RED}✗ Output file not found: $output_file${NC}"
+            echo -e "${RED}[FAIL] Output file not found: $output_file${NC}"
             cat /tmp/test-output.log
             return 1
         fi
     else
-        echo -e "${RED}✗ Host execution failed${NC}"
+        echo -e "${RED}[FAIL] Host execution failed${NC}"
         cat /tmp/test-output.log
         return 1
     fi
@@ -88,7 +88,7 @@ if [ ! -f "$ZKVM_DIR/target/release/host" ]; then
     echo "Building zkVM..."
     cd "$ZKVM_DIR"
     cargo build --release --bin host || {
-        echo -e "${RED}✗ Failed to build zkVM${NC}"
+        echo -e "${RED}[FAIL] Failed to build zkVM${NC}"
         exit 1
     }
 fi

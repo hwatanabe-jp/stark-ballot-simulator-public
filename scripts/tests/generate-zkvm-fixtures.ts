@@ -11,12 +11,19 @@
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { RFC6962MerkleTree } from '@/lib/merkle/rfc6962-merkle-tree';
-import { serializeZkvmAggregatorInput } from '@/lib/zkvm/executor';
-import type { ZkVMInput, VoteWithProof } from '@/lib/zkvm/types';
-import { computeCommitment, computeSTHDigest } from '@/lib/zkvm/types';
-import { generateElectionConfigHash } from '@/lib/testing/test-helpers';
-import { addHexPrefix } from '@/lib/utils/hex';
+import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
+import { serializeZkvmAggregatorInput } from '@stark-ballot/zkvm-contract/zkvm/host-io';
+import type { ZkVMInput, VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
+import { asUnixTimestampMillis, computeCommitment, computeSTHDigest } from '@stark-ballot/zkvm-contract/zkvm/types';
+import { generateElectionConfigHash } from '@stark-ballot/test-support/testing/test-helpers';
+import { addHexPrefix } from '@stark-ballot/domain/utils/hex';
+
+function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
+  if (value === undefined || value === null) {
+    throw new Error(`Expected ${label} to be defined`);
+  }
+  return value;
+}
 
 const OUTPUT_DIR = path.resolve(__dirname, '../../zkvm/test-data');
 
@@ -41,7 +48,7 @@ function buildVotes(): {
   bulletinRoot: HexString;
 } {
   const commitments: HexString[] = RANDOM_VALUES.map(
-    (rand, i) => computeCommitment(ELECTION_ID, CHOICES[i], rand) as HexString,
+    (rand, i) => computeCommitment(ELECTION_ID, strictDefined(CHOICES[i]), rand) as HexString,
   );
   const tree = new RFC6962MerkleTree();
   for (const commitment of commitments) {
@@ -50,8 +57,8 @@ function buildVotes(): {
 
   const votes: VoteWithProof[] = commitments.map((commitment, index) => ({
     commitment,
-    choice: CHOICES[index],
-    random: RANDOM_VALUES[index],
+    choice: strictDefined(CHOICES[index]),
+    random: strictDefined(RANDOM_VALUES[index]),
     index,
     merklePath: tree.getInclusionProof(index, commitments.length).proofNodes.map((node) => addHexPrefix(node)),
   }));
@@ -90,7 +97,12 @@ function computeLogId(): HexString {
 function generateFixtures() {
   const input = buildInput();
 
-  const sthDigest = computeSTHDigest(input.logId, input.treeSize, input.timestamp, input.bulletinRoot);
+  const sthDigest = computeSTHDigest(
+    input.logId,
+    input.treeSize,
+    asUnixTimestampMillis(input.timestamp),
+    input.bulletinRoot,
+  );
 
   console.log('Expected STH digest:', sthDigest);
 

@@ -1,0 +1,389 @@
+{
+  "schema": "stark-ballot.bitmap-proof-parity.v1",
+  "cases": [
+    {
+      "name": "one-bit",
+      "bitLength": 1,
+      "trueIndices": [0],
+      "probes": [0],
+      "root": "0x9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+      "proofs": [
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
+          "auditPath": [],
+          "leafIndex": 0,
+          "bitIndex": 0
+        }
+      ]
+    },
+    {
+      "name": "two-hundred-fifty-five-bits-sparse",
+      "bitLength": 255,
+      "trueIndices": [0, 254],
+      "probes": [0, 254],
+      "root": "0x12316adb5b05c27fe2cadf936beba71dec49639b37997dde182a9871b69d879a",
+      "proofs": [
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000040",
+          "auditPath": [],
+          "leafIndex": 0,
+          "bitIndex": 0
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000040",
+          "auditPath": [],
+          "leafIndex": 0,
+          "bitIndex": 254
+        }
+      ]
+    },
+    {
+      "name": "two-hundred-fifty-six-bits-all-one-chunk",
+      "bitLength": 256,
+      "trueIndices": [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+        30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
+        58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85,
+        86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110,
+        111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132,
+        133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154,
+        155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176,
+        177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198,
+        199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220,
+        221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242,
+        243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255
+      ],
+      "probes": [0, 127, 255],
+      "root": "0x560b191d0a3875dd26c7322f05e61259bed7a216c0ecc47955ab7dd9d3b47f0a",
+      "proofs": [
+        {
+          "leafChunk": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "auditPath": [],
+          "leafIndex": 0,
+          "bitIndex": 0
+        },
+        {
+          "leafChunk": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "auditPath": [],
+          "leafIndex": 0,
+          "bitIndex": 127
+        },
+        {
+          "leafChunk": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "auditPath": [],
+          "leafIndex": 0,
+          "bitIndex": 255
+        }
+      ]
+    },
+    {
+      "name": "two-hundred-fifty-seven-bits",
+      "bitLength": 257,
+      "trueIndices": [0, 255, 256],
+      "probes": [0, 255, 256],
+      "root": "0xa838e88750ab211c864800676f6a657e2a447579ff09f827bdb4d83c01ccd3c6",
+      "proofs": [
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000080",
+          "auditPath": [
+            {
+              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+              "position": "right"
+            }
+          ],
+          "leafIndex": 0,
+          "bitIndex": 0
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000080",
+          "auditPath": [
+            {
+              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+              "position": "right"
+            }
+          ],
+          "leafIndex": 0,
+          "bitIndex": 255
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
+          "auditPath": [
+            {
+              "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357",
+              "position": "left"
+            }
+          ],
+          "leafIndex": 1,
+          "bitIndex": 256
+        }
+      ]
+    },
+    {
+      "name": "five-hundred-eleven-bits-two-partial-leaves",
+      "bitLength": 511,
+      "trueIndices": [0, 255, 256, 510],
+      "probes": [0, 255, 256, 510],
+      "root": "0x2242da41d2fa3215f0f6d79014e9b8daf244459bfbdfc408b4b901211d4cd373",
+      "proofs": [
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000080",
+          "auditPath": [
+            {
+              "hash": "12316adb5b05c27fe2cadf936beba71dec49639b37997dde182a9871b69d879a",
+              "position": "right"
+            }
+          ],
+          "leafIndex": 0,
+          "bitIndex": 0
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000080",
+          "auditPath": [
+            {
+              "hash": "12316adb5b05c27fe2cadf936beba71dec49639b37997dde182a9871b69d879a",
+              "position": "right"
+            }
+          ],
+          "leafIndex": 0,
+          "bitIndex": 255
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000040",
+          "auditPath": [
+            {
+              "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357",
+              "position": "left"
+            }
+          ],
+          "leafIndex": 1,
+          "bitIndex": 256
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000040",
+          "auditPath": [
+            {
+              "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357",
+              "position": "left"
+            }
+          ],
+          "leafIndex": 1,
+          "bitIndex": 510
+        }
+      ]
+    },
+    {
+      "name": "five-hundred-twelve-bits-two-full-leaves",
+      "bitLength": 512,
+      "trueIndices": [255, 256, 511],
+      "probes": [0, 255, 256, 511],
+      "root": "0x375818066c80932be544a35a586e37a71b0bd31fe56c914a08b0a015c9d5e73e",
+      "proofs": [
+        {
+          "leafChunk": "0000000000000000000000000000000000000000000000000000000000000080",
+          "auditPath": [
+            {
+              "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357",
+              "position": "right"
+            }
+          ],
+          "leafIndex": 0,
+          "bitIndex": 0
+        },
+        {
+          "leafChunk": "0000000000000000000000000000000000000000000000000000000000000080",
+          "auditPath": [
+            {
+              "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357",
+              "position": "right"
+            }
+          ],
+          "leafIndex": 0,
+          "bitIndex": 255
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000080",
+          "auditPath": [
+            {
+              "hash": "adbe2642f95bd49d26eb4e0f4f310883ab2ff7a6bd00b0d56bd9ae82d32bb01b",
+              "position": "left"
+            }
+          ],
+          "leafIndex": 1,
+          "bitIndex": 256
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000080",
+          "auditPath": [
+            {
+              "hash": "adbe2642f95bd49d26eb4e0f4f310883ab2ff7a6bd00b0d56bd9ae82d32bb01b",
+              "position": "left"
+            }
+          ],
+          "leafIndex": 1,
+          "bitIndex": 511
+        }
+      ]
+    },
+    {
+      "name": "five-hundred-thirteen-bits-three-leaf-promoted",
+      "bitLength": 513,
+      "trueIndices": [0, 256, 512],
+      "probes": [0, 255, 256, 512],
+      "root": "0x3c96d20933a5080b2bfa468f8b8ded44ef7a4a9f77228786d8495758f7c8fe32",
+      "proofs": [
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
+          "auditPath": [
+            {
+              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+              "position": "right"
+            },
+            {
+              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+              "position": "right"
+            }
+          ],
+          "leafIndex": 0,
+          "bitIndex": 0
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
+          "auditPath": [
+            {
+              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+              "position": "right"
+            },
+            {
+              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+              "position": "right"
+            }
+          ],
+          "leafIndex": 0,
+          "bitIndex": 255
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
+          "auditPath": [
+            {
+              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+              "position": "left"
+            },
+            {
+              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+              "position": "right"
+            }
+          ],
+          "leafIndex": 1,
+          "bitIndex": 256
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
+          "auditPath": [
+            {
+              "hash": "0054a5e06904125fb9adb5b7ce8388312f3fd36642f1bb628551f8aeb6773456",
+              "position": "left"
+            }
+          ],
+          "leafIndex": 2,
+          "bitIndex": 512
+        }
+      ]
+    },
+    {
+      "name": "one-thousand-twenty-five-bits-five-leaf-promoted",
+      "bitLength": 1025,
+      "trueIndices": [0, 512, 1024],
+      "probes": [0, 255, 256, 512, 1024],
+      "root": "0xf5cd6f5480f0474436b584d7c97048229d207d4a5fb7c00204459e1d16d4245e",
+      "proofs": [
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
+          "auditPath": [
+            {
+              "hash": "7a44d73283ab34ef0fb3a243e46dc7d205769d78f30647b8100ae7394961dc5e",
+              "position": "right"
+            },
+            {
+              "hash": "4e22e94f76343d46ed3caf680414bbdef73a94f8688df060f8893458e2be34a8",
+              "position": "right"
+            },
+            {
+              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+              "position": "right"
+            }
+          ],
+          "leafIndex": 0,
+          "bitIndex": 0
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
+          "auditPath": [
+            {
+              "hash": "7a44d73283ab34ef0fb3a243e46dc7d205769d78f30647b8100ae7394961dc5e",
+              "position": "right"
+            },
+            {
+              "hash": "4e22e94f76343d46ed3caf680414bbdef73a94f8688df060f8893458e2be34a8",
+              "position": "right"
+            },
+            {
+              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+              "position": "right"
+            }
+          ],
+          "leafIndex": 0,
+          "bitIndex": 255
+        },
+        {
+          "leafChunk": "0000000000000000000000000000000000000000000000000000000000000000",
+          "auditPath": [
+            {
+              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+              "position": "left"
+            },
+            {
+              "hash": "4e22e94f76343d46ed3caf680414bbdef73a94f8688df060f8893458e2be34a8",
+              "position": "right"
+            },
+            {
+              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+              "position": "right"
+            }
+          ],
+          "leafIndex": 1,
+          "bitIndex": 256
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
+          "auditPath": [
+            {
+              "hash": "7a44d73283ab34ef0fb3a243e46dc7d205769d78f30647b8100ae7394961dc5e",
+              "position": "right"
+            },
+            {
+              "hash": "4e22e94f76343d46ed3caf680414bbdef73a94f8688df060f8893458e2be34a8",
+              "position": "left"
+            },
+            {
+              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
+              "position": "right"
+            }
+          ],
+          "leafIndex": 2,
+          "bitIndex": 512
+        },
+        {
+          "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
+          "auditPath": [
+            {
+              "hash": "e8eca749f5c37919afebba2ca1fba2bc7781c7f6f1f52cd858cc9ebe6e986393",
+              "position": "left"
+            }
+          ],
+          "leafIndex": 4,
+          "bitIndex": 1024
+        }
+      ]
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 use contract_core::{
-    compute_bitmap_merkle_root, compute_commitment, verify_inclusion_proof_rfc6962,
-    AggregatorInput, VerificationOutput, VoteWithProof, CURRENT_METHOD_VERSION,
+    compute_bitmap_merkle_root, compute_commitment, validate_guest_work_budget,
+    verify_inclusion_proof_rfc6962, AggregatorInput, GuestWorkBudgetError, UnixTimestampMillis,
+    VerificationOutput, VoteWithProof, CURRENT_METHOD_VERSION, MAX_GUEST_SERIALIZED_INPUT_BYTES,
 };
 use risc0_zkvm::{default_prover, ExecutorEnv};
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,7 @@ pub struct JsonInput {
     pub bulletin_root: Vec<u8>, // 32 bytes
     pub tree_size: u32,
     pub log_id: Vec<u8>, // 32 bytes
+    /// Unix timestamp in milliseconds.
     pub timestamp: u64,
     pub total_expected: u32,
     pub election_config_hash: Vec<u8>, // 32 bytes
@@ -193,6 +195,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("RISC Zero Host Program v2");
     println!("Loading input from: {}", input_path);
 
+    let serialized_input_bytes = std::fs::metadata(&input_path)?.len();
+    if serialized_input_bytes > MAX_GUEST_SERIALIZED_INPUT_BYTES {
+        return Err(format!(
+            "zkVM input exceeds serialized byte budget: {} > {}",
+            serialized_input_bytes, MAX_GUEST_SERIALIZED_INPUT_BYTES
+        )
+        .into());
+    }
+
     // Read input file and parse as JSON
     let input_file = File::open(&input_path)?;
     let reader = BufReader::new(input_file);
@@ -200,6 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Convert JSON input to AggregatorInput format
     let aggregator_input = json_to_aggregator_input(&json_input)?;
+    validate_host_work_budget(&aggregator_input, serialized_input_bytes)?;
     println!(
         "Prepared {} votes for zkVM processing",
         aggregator_input.votes.len()
@@ -375,6 +387,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn validate_host_work_budget(
+    input: &AggregatorInput,
+    serialized_input_bytes: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    validate_guest_work_budget(input, Some(serialized_input_bytes))
+        .map(|_| ())
+        .map_err(|error| format_guest_work_budget_error(error).into())
+}
+
+fn format_guest_work_budget_error(error: GuestWorkBudgetError) -> String {
+    match error {
+        GuestWorkBudgetError::TreeSizeOutOfBounds { actual, min, max } => {
+            format!(
+                "zkVM input tree_size exceeds guest contract bounds: {actual} not in {min}..{max}"
+            )
+        }
+        GuestWorkBudgetError::TotalExpectedExceeded { actual, max } => {
+            format!("zkVM input total_expected exceeds guest contract bound: {actual} > {max}")
+        }
+        GuestWorkBudgetError::VoteCountExceeded { actual, max } => {
+            format!("zkVM input vote count exceeds guest contract bound: {actual} > {max}")
+        }
+        GuestWorkBudgetError::MerklePathNodesPerRecordExceeded {
+            vote_position,
+            actual,
+            max,
+        } => {
+            format!("zkVM input votes[{vote_position}] Merkle path length exceeds per-record budget: {actual} > {max}")
+        }
+        GuestWorkBudgetError::TotalPathNodesExceeded { actual, max } => {
+            format!("zkVM input exceeds total Merkle path node budget: {actual} > {max}")
+        }
+        GuestWorkBudgetError::SerializedInputBytesExceeded { actual, max } => {
+            format!("zkVM input exceeds serialized byte budget: {actual} > {max}")
+        }
+        GuestWorkBudgetError::StructuralInputBytesExceeded { actual, max } => {
+            format!("zkVM input exceeds structural byte budget: {actual} > {max}")
+        }
+        GuestWorkBudgetError::StructuralInputBytesOverflow => {
+            "zkVM input structural byte budget calculation overflowed".to_string()
+        }
+    }
+}
+
 fn build_exact_bitmaps(input: &AggregatorInput) -> ExactBitmaps {
     let tree_size = input.tree_size as usize;
     let mut seen_bitmap = vec![false; tree_size];
@@ -431,6 +487,8 @@ fn build_exact_bitmaps(input: &AggregatorInput) -> ExactBitmaps {
 fn json_to_aggregator_input(
     json_input: &JsonInput,
 ) -> Result<AggregatorInput, Box<dyn std::error::Error>> {
+    let timestamp = UnixTimestampMillis::new(json_input.timestamp)
+        .map_err(|_| String::from("timestamp must be positive Unix timestamp milliseconds"))?;
     let mut votes = Vec::with_capacity(json_input.votes.len());
 
     // Convert all votes
@@ -455,7 +513,7 @@ fn json_to_aggregator_input(
         bulletin_root: vec_to_bytes32(&json_input.bulletin_root)?,
         tree_size: json_input.tree_size,
         log_id: vec_to_bytes32(&json_input.log_id)?,
-        timestamp: json_input.timestamp,
+        timestamp: timestamp.get(),
         total_expected: json_input.total_expected,
         election_config_hash: vec_to_bytes32(&json_input.election_config_hash)?,
         votes,
@@ -496,6 +554,17 @@ fn vec_to_bytes32(data: &[u8]) -> Result<[u8; 32], Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use contract_core::{hash_internal, hash_leaf};
+    #[cfg(feature = "production")]
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    #[cfg(feature = "production")]
+    fn lock_env() -> MutexGuard<'static, ()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned")
+    }
 
     #[test]
     fn test_json_to_aggregator_input() {
@@ -504,7 +573,7 @@ mod tests {
             bulletin_root: vec![2u8; 32],
             tree_size: 4,
             log_id: vec![3u8; 32],
-            timestamp: 1234567890,
+            timestamp: 1_234_567_890_000,
             total_expected: 4,
             election_config_hash: vec![4u8; 32],
             votes: vec![
@@ -529,6 +598,157 @@ mod tests {
         assert_eq!(aggregator_input.votes.len(), 2);
         assert_eq!(aggregator_input.tree_size, 4);
         assert_eq!(aggregator_input.total_expected, 4);
+    }
+
+    #[test]
+    fn test_json_to_aggregator_input_rejects_zero_timestamp() {
+        let input = JsonInput {
+            election_id: vec![1u8; 16],
+            bulletin_root: vec![2u8; 32],
+            tree_size: 4,
+            log_id: vec![3u8; 32],
+            timestamp: 0,
+            total_expected: 4,
+            election_config_hash: vec![4u8; 32],
+            votes: vec![],
+        };
+
+        let error = json_to_aggregator_input(&input).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "timestamp must be positive Unix timestamp milliseconds"
+        );
+    }
+
+    #[test]
+    fn test_host_work_budget_accepts_max_serialized_bytes() {
+        let input = AggregatorInput {
+            election_id: [1u8; 16],
+            bulletin_root: [2u8; 32],
+            tree_size: 1,
+            log_id: [3u8; 32],
+            timestamp: 123,
+            total_expected: 1,
+            election_config_hash: [4u8; 32],
+            votes: vec![],
+        };
+
+        assert!(validate_host_work_budget(&input, MAX_GUEST_SERIALIZED_INPUT_BYTES).is_ok());
+    }
+
+    #[test]
+    fn test_host_work_budget_rejects_over_serialized_bytes() {
+        let input = AggregatorInput {
+            election_id: [1u8; 16],
+            bulletin_root: [2u8; 32],
+            tree_size: 1,
+            log_id: [3u8; 32],
+            timestamp: 123,
+            total_expected: 1,
+            election_config_hash: [4u8; 32],
+            votes: vec![],
+        };
+
+        let error = validate_host_work_budget(&input, MAX_GUEST_SERIALIZED_INPUT_BYTES + 1)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("zkVM input exceeds serialized byte budget"));
+    }
+
+    #[test]
+    fn test_host_work_budget_rejects_over_path_nodes() {
+        let vote_count = 50_000;
+        let path_len = (contract_core::MAX_GUEST_TOTAL_PATH_NODES / vote_count) + 1;
+        let input = AggregatorInput {
+            election_id: [1u8; 16],
+            bulletin_root: [2u8; 32],
+            tree_size: 1,
+            log_id: [3u8; 32],
+            timestamp: 123,
+            total_expected: 1,
+            election_config_hash: [4u8; 32],
+            votes: vec![
+                VoteWithProof {
+                    commitment: [5u8; 32],
+                    choice: 0,
+                    random: [6u8; 32],
+                    index: 0,
+                    merkle_path: vec![[7u8; 32]; path_len],
+                };
+                vote_count
+            ],
+        };
+
+        let error = validate_host_work_budget(&input, 1024)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("zkVM input exceeds total Merkle path node budget"));
+    }
+
+    #[test]
+    fn test_host_work_budget_rejects_oversized_tree_size_before_executor() {
+        let input = AggregatorInput {
+            election_id: [1u8; 16],
+            bulletin_root: [2u8; 32],
+            tree_size: contract_core::MAX_GUEST_TREE_SIZE + 1,
+            log_id: [3u8; 32],
+            timestamp: 123,
+            total_expected: 1,
+            election_config_hash: [4u8; 32],
+            votes: vec![],
+        };
+
+        let error = validate_host_work_budget(&input, 1024)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("zkVM input tree_size exceeds guest contract bounds"));
+    }
+
+    #[test]
+    fn test_host_work_budget_rejects_oversized_total_expected_before_executor() {
+        let input = AggregatorInput {
+            election_id: [1u8; 16],
+            bulletin_root: [2u8; 32],
+            tree_size: 1,
+            log_id: [3u8; 32],
+            timestamp: 123,
+            total_expected: contract_core::MAX_GUEST_TOTAL_EXPECTED + 1,
+            election_config_hash: [4u8; 32],
+            votes: vec![],
+        };
+
+        let error = validate_host_work_budget(&input, 1024)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("zkVM input total_expected exceeds guest contract bound"));
+    }
+
+    #[test]
+    fn test_host_work_budget_rejects_oversized_per_record_path_before_executor() {
+        let input = AggregatorInput {
+            election_id: [1u8; 16],
+            bulletin_root: [2u8; 32],
+            tree_size: 1,
+            log_id: [3u8; 32],
+            timestamp: 123,
+            total_expected: 1,
+            election_config_hash: [4u8; 32],
+            votes: vec![VoteWithProof {
+                commitment: [5u8; 32],
+                choice: 0,
+                random: [6u8; 32],
+                index: 0,
+                merkle_path: vec![
+                    [7u8; 32];
+                    contract_core::MAX_GUEST_MERKLE_PATH_NODES_PER_RECORD + 1
+                ],
+            }],
+        };
+
+        let error = validate_host_work_budget(&input, 1024)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Merkle path length exceeds per-record budget"));
     }
 
     #[test]
@@ -557,6 +777,37 @@ mod tests {
                 format: ImageIdOutputFormat::Json
             }
         ));
+    }
+
+    #[test]
+    #[cfg(feature = "production")]
+    fn production_feature_rejects_risc0_dev_mode_env() {
+        let _env_lock = lock_env();
+        let original = std::env::var_os("RISC0_DEV_MODE");
+        unsafe {
+            std::env::set_var("RISC0_DEV_MODE", "1");
+        }
+
+        let result = std::panic::catch_unwind(|| {
+            #[allow(deprecated)]
+            {
+                let _ = risc0_zkvm::is_dev_mode();
+            }
+        });
+
+        match original {
+            Some(value) => unsafe {
+                std::env::set_var("RISC0_DEV_MODE", value);
+            },
+            None => unsafe {
+                std::env::remove_var("RISC0_DEV_MODE");
+            },
+        }
+
+        assert!(
+            result.is_err(),
+            "production host builds must reject inherited RISC0_DEV_MODE"
+        );
     }
 
     #[test]

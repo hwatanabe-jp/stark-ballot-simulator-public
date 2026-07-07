@@ -8,7 +8,7 @@ use risc0_zkvm::sha::{Impl, Sha256};
 /// Parameters:
 /// - log_id: 32-byte bulletin board identifier
 /// - tree_size: Tree size (u32, little-endian)
-/// - timestamp: Unix timestamp (u64, little-endian)
+/// - timestamp: Unix timestamp in milliseconds (u64, little-endian)
 /// - bulletin_root: 32-byte Merkle root
 pub fn compute_sth_digest(
     log_id: &[u8; 32],
@@ -49,7 +49,7 @@ mod tests {
     fn test_sth_digest_deterministic() {
         let log_id = [1u8; 32];
         let tree_size = 64u32;
-        let timestamp = 1234567890u64;
+        let timestamp = 1_234_567_890_000u64;
         let bulletin_root = [2u8; 32];
 
         let digest1 = compute_sth_digest(&log_id, tree_size, timestamp, &bulletin_root);
@@ -64,8 +64,8 @@ mod tests {
         let tree_size = 32u32;
         let bulletin_root = [4u8; 32];
 
-        let digest1 = compute_sth_digest(&log_id, tree_size, 1000000u64, &bulletin_root);
-        let digest2 = compute_sth_digest(&log_id, tree_size, 2000000u64, &bulletin_root);
+        let digest1 = compute_sth_digest(&log_id, tree_size, 1_000_000_000_000u64, &bulletin_root);
+        let digest2 = compute_sth_digest(&log_id, tree_size, 2_000_000_000_000u64, &bulletin_root);
 
         assert_ne!(
             digest1, digest2,
@@ -76,7 +76,7 @@ mod tests {
     #[test]
     fn test_sth_digest_different_tree_sizes() {
         let log_id = [5u8; 32];
-        let timestamp = 3000000u64;
+        let timestamp = 3_000_000_000_000u64;
         let bulletin_root = [6u8; 32];
 
         let digest1 = compute_sth_digest(&log_id, 10u32, timestamp, &bulletin_root);

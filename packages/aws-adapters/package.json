@@ -1,0 +1,40 @@
+{
+  "name": "@stark-ballot/aws-adapters",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./aws/*": "./src/aws/*",
+    "./config/*": "./src/config/*",
+    "./finalize/*": "./src/finalize/*",
+    "./lambda/*": "./src/lambda/*",
+    "./rate-limit/*": "./src/rate-limit/*",
+    "./security/*": "./src/security/*",
+    "./sqs/*": "./src/sqs/*",
+    "./store/*": "./src/store/*"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.1079.0",
+    "@aws-sdk/client-s3": "3.1079.0",
+    "@aws-sdk/client-secrets-manager": "3.1079.0",
+    "@aws-sdk/client-sqs": "3.1079.0",
+    "@aws-sdk/client-ssm": "3.1079.0",
+    "@aws-sdk/lib-dynamodb": "3.1079.0",
+    "@stark-ballot/application": "workspace:*",
+    "@stark-ballot/diagnostics": "workspace:*",
+    "@stark-ballot/domain": "workspace:*",
+    "@stark-ballot/node-adapters": "workspace:*",
+    "@stark-ballot/runtime-config": "workspace:*",
+    "@stark-ballot/validation": "workspace:*",
+    "@stark-ballot/verification": "workspace:*",
+    "@stark-ballot/zkvm-contract": "workspace:*",
+    "fs-extra": "11.3.6"
+  },
+  "devDependencies": {
+    "@stark-ballot/test-support": "workspace:*",
+    "@types/fs-extra": "11.0.4",
+    "testcontainers": "12.0.4",
+    "vitest": "4.1.9",
+    "yazl": "3.3.1"
+  }
+}

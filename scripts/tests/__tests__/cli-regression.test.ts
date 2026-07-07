@@ -1,14 +1,34 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CLITestHelpers } from '../../../src/lib/testing/cli-test-helpers';
-import type { ImageIdMapping } from '../../../src/lib/verification/image-id-types';
-import type { CLITestConfig } from '../cli-e2e-voting-flow';
-import { CLIVotingTest, resolveDefaultCliExpectedImageId } from '../cli-e2e-voting-flow';
-import { getStringProperty, requireRecord } from '../../../src/lib/utils/guards';
-import { createTestJournal } from '../../../src/lib/testing/test-helpers';
+import { EventEmitter } from 'node:events';
+import type { CLITestHelpers } from '@stark-ballot/test-support/testing/cli-test-helpers';
+import type { ImageIdMapping } from '@stark-ballot/verification/image-id-types';
+import type { CLITestConfig, CommandSpawner } from '../cli-e2e-voting-flow';
+import { CLIVotingTest, resolveDefaultCliExpectedImageId, runBuildCiCommand } from '../cli-e2e-voting-flow';
+import { getStringProperty, requireRecord } from '@stark-ballot/domain/utils/guards';
+import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import imageIdMappingJson from '../../../public/imageId-mapping.json';
+import packageJson from '../../../package.json';
 import * as yazl from 'yazl';
+import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
-vi.mock('../../../src/lib/verification/tamperDetection', () => ({
+const MAINTAINED_CLI_PACKAGE_SCRIPTS = [
+  'test:cli',
+  'test:cli:mock',
+  'test:cli:real-dev',
+  'test:cli:real-prod:s0',
+  'test:cli:real-prod:all',
+] as const;
+const CLI_HARNESS_COMMAND = 'pnpm tsx scripts/tests/cli-e2e-voting-flow.ts';
+const ACTIVE_LOCAL_IMAGE_ID_VARIANT_ASSIGNMENT = 'EXPECTED_IMAGE_ID_VARIANT=x86_64';
+
+function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
+  if (value === undefined || value === null) {
+    throw new Error(`Expected ${label} to be defined`);
+  }
+  return value;
+}
+
+vi.mock('@stark-ballot/verification/tamper-detection', () => ({
   detectTampering: vi.fn().mockResolvedValue({
     isTampered: false,
     detectedScenarios: [],
@@ -133,6 +153,17 @@ type VerifyStark = CLITestHelpers['verifySTARK'];
 const trackedEnvVars = ['USE_MOCK_ZKVM', 'RISC0_DEV_MODE', 'STARK_BALLOT_CLI_BASE_URL'];
 const originalFetch = global.fetch;
 const imageIdMapping = imageIdMappingJson as ImageIdMapping;
+const BUILD_ENV_DENYLIST = [
+  'SESSION_CAPABILITY_SECRET',
+  'S3_PROOF_PREFIX',
+  'USE_MOCK_ZKVM',
+  'RISC0_DEV_MODE',
+  'TURNSTILE_BYPASS',
+  'VITE_USE_MOCK_API',
+  'VITE_TURNSTILE_BYPASS',
+  'VITE_USE_MOCK_API',
+  'VITE_TURNSTILE_BYPASS',
+] as const;
 
 async function createBundleZipBuffer(): Promise<Buffer> {
   const zipfile = new yazl.ZipFile();
@@ -190,8 +221,8 @@ function createAuthenticatedDownloadFetch(bundleZip: Buffer): typeof fetch {
       if (!match) {
         return Promise.resolve(new Response('invalid range', { status: 416 }));
       }
-      const start = Number(match[1]);
-      const requestedEnd = Number(match[2]);
+      const start = Number(strictDefined(match[1]));
+      const requestedEnd = Number(strictDefined(match[2]));
       const end = Math.min(requestedEnd, bundleZip.byteLength - 1);
       return Promise.resolve(
         new Response(Uint8Array.from(bundleZip.subarray(start, end + 1)), {
@@ -236,7 +267,7 @@ describe('CLIVotingTest regression coverage', () => {
       savedEnv[key] = process.env[key];
       delete process.env[key];
     });
-    process.env.STARK_BALLOT_CLI_BASE_URL = 'http://localhost';
+    process.env['STARK_BALLOT_CLI_BASE_URL'] = 'http://localhost';
   });
 
   afterEach(() => {
@@ -257,7 +288,7 @@ describe('CLIVotingTest regression coverage', () => {
     const helpers = createHelpers({ verifySTARK, verifyMerkle });
     const config: CLITestConfig = {
       scenarios: [],
-      scenario: undefined,
+      ...omitUndefinedProperties({ scenario: undefined }),
       allScenarios: false,
       useRealZkVM: false,
       realMode: 'dev',
@@ -270,7 +301,7 @@ describe('CLIVotingTest regression coverage', () => {
     const cliTest = new CLIVotingTest(config, helpers);
     const result = await cliTest.runTestCase({
       name: 'S0: Normal case (no tampering)',
-      scenario: [],
+      ...omitUndefinedProperties({ scenario: [] }),
       expectedTamper: false,
     });
 
@@ -286,7 +317,7 @@ describe('CLIVotingTest regression coverage', () => {
       }),
     );
     const verifyCall = vi.mocked(verifySTARK).mock.calls[0];
-    const verifyOptions = requireRecord(verifyCall[1], 'verifySTARK options');
+    const verifyOptions = requireRecord(strictDefined(verifyCall)[1], 'verifySTARK options');
     expect(verifyOptions).not.toHaveProperty('verificationBundlePath');
 
     expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(2);
@@ -297,7 +328,7 @@ describe('CLIVotingTest regression coverage', () => {
     for (const fetchCall of vi.mocked(global.fetch).mock.calls) {
       const requestOptions = requireRecord(fetchCall[1], 'fetch request init');
       expect(getStringProperty(requestOptions, 'method')).toBe('GET');
-      const requestHeaders = requireRecord(requestOptions.headers, 'fetch request headers');
+      const requestHeaders = requireRecord(requestOptions['headers'], 'fetch request headers');
       expect(getStringProperty(requestHeaders, 'X-Session-ID')).toBe('session-123');
       expect(getStringProperty(requestHeaders, 'X-Session-Capability')).toBe('capability-token');
     }
@@ -306,16 +337,16 @@ describe('CLIVotingTest regression coverage', () => {
     expect(result.details.verificationHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.details.verificationReportHash).toMatch(/^[0-9a-f]{64}$/);
     expect(verifyMerkle).toHaveBeenCalledTimes(1);
-    expect(process.env.USE_MOCK_ZKVM).toBe('true');
-    expect(process.env.RISC0_DEV_MODE).toBe('1');
+    expect(strictDefined(process.env['USE_MOCK_ZKVM'])).toBe('true');
+    expect(strictDefined(process.env['RISC0_DEV_MODE'])).toBe('1');
   });
 
-  it('uses the default ImageID variant unless an explicit variant is requested', () => {
-    const resolved = resolveDefaultCliExpectedImageId(imageIdMapping);
+  it('resolves the default ARM64 ImageID variant', () => {
+    const resolved = resolveDefaultCliExpectedImageId(imageIdMapping, 'default');
     const current = imageIdMapping.mappings[imageIdMapping.current];
 
     expect(resolved.variant).toBe('default');
-    expect(resolved.imageId).toBe(current.expectedImageID);
+    expect(resolved.imageId).toBe(strictDefined(current).expectedImageID);
   });
 
   it('resolves the x86_64 variant when explicitly requested', () => {
@@ -323,7 +354,61 @@ describe('CLIVotingTest regression coverage', () => {
     const current = imageIdMapping.mappings[imageIdMapping.current];
 
     expect(resolved.variant).toBe('x86_64');
-    expect(resolved.imageId).toBe(current.expectedImageID_x86_64);
+    expect(resolved.imageId).toBe(strictDefined(current).expectedImageID_x86_64);
+  });
+
+  it('sets the active x86_64 ImageID variant on maintained CLI package scripts', () => {
+    for (const scriptName of MAINTAINED_CLI_PACKAGE_SCRIPTS) {
+      const script = packageJson.scripts[scriptName];
+
+      expect(script).toContain(ACTIVE_LOCAL_IMAGE_ID_VARIANT_ASSIGNMENT);
+      expect(script).toContain(CLI_HARNESS_COMMAND);
+      expect(script.indexOf(ACTIVE_LOCAL_IMAGE_ID_VARIANT_ASSIGNMENT)).toBeLessThan(
+        script.indexOf(CLI_HARNESS_COMMAND),
+      );
+    }
+  });
+
+  it('runs the target artifact build without server secrets or mock bypass flags', async () => {
+    const sourceEnv: NodeJS.ProcessEnv = {
+      NODE_ENV: 'development',
+      PATH: '/usr/bin',
+      HOME: '/home/tester',
+      CI: 'true',
+      VITE_API_BASE_URL: 'https://api.example.com',
+      VITE_STH_SOURCES: 'https://auditor.example/sth',
+      SESSION_CAPABILITY_SECRET: 'test-capability-secret-0123456789abcdef',
+      S3_PROOF_PREFIX: 'sessions/',
+      USE_MOCK_ZKVM: 'true',
+      RISC0_DEV_MODE: '1',
+      TURNSTILE_BYPASS: '1',
+      VITE_USE_MOCK_API: 'true',
+      VITE_TURNSTILE_BYPASS: '1',
+    };
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+
+    const spawnImpl = ((command: string, args?: readonly string[], options?: { env?: NodeJS.ProcessEnv }) => {
+      expect(command).toMatch(/^pnpm(?:\.cmd)?$/);
+      expect(args).toEqual(['build:ci']);
+      capturedEnv = options?.env;
+      const child = new EventEmitter();
+      queueMicrotask(() => child.emit('exit', 0));
+      return child;
+    }) as CommandSpawner;
+
+    await runBuildCiCommand('/repo', spawnImpl, sourceEnv);
+
+    expect(capturedEnv).toMatchObject({
+      NODE_ENV: 'production',
+      PATH: '/usr/bin',
+      HOME: '/home/tester',
+      CI: 'true',
+      VITE_API_BASE_URL: 'https://api.example.com',
+      VITE_STH_SOURCES: 'https://auditor.example/sth',
+    });
+    for (const key of BUILD_ENV_DENYLIST) {
+      expect(capturedEnv).not.toHaveProperty(key);
+    }
   });
 
   it('treats STARK verification failure as a hard error in real mode', async () => {
@@ -333,7 +418,7 @@ describe('CLIVotingTest regression coverage', () => {
 
     const config: CLITestConfig = {
       scenarios: [],
-      scenario: 'S0',
+      ...omitUndefinedProperties({ scenario: 'S0' }),
       allScenarios: false,
       useRealZkVM: true,
       realMode: 'prod',
@@ -346,7 +431,7 @@ describe('CLIVotingTest regression coverage', () => {
     const cliTest = new CLIVotingTest(config, helpers);
     const result = await cliTest.runTestCase({
       name: 'S0: Normal case (no tampering)',
-      scenario: [],
+      ...omitUndefinedProperties({ scenario: [] }),
       expectedTamper: false,
     });
 
@@ -359,7 +444,7 @@ describe('CLIVotingTest regression coverage', () => {
     );
 
     const verifyCall = vi.mocked(verifySTARK).mock.calls[0];
-    const verifyOptions = requireRecord(verifyCall[1], 'verifySTARK options');
+    const verifyOptions = requireRecord(strictDefined(verifyCall)[1], 'verifySTARK options');
     const bundlePath = getStringProperty(verifyOptions, 'verificationBundlePath');
     expect(bundlePath).toBeDefined();
     expect(bundlePath).toContain('bundle');
@@ -378,14 +463,135 @@ describe('CLIVotingTest regression coverage', () => {
     const requestOptions = requireRecord(fetchCall?.[1], 'fetch request init');
     expect(getStringProperty(requestOptions, 'method')).toBe('GET');
 
-    const requestHeaders = requireRecord(requestOptions.headers, 'fetch request headers');
+    const requestHeaders = requireRecord(requestOptions['headers'], 'fetch request headers');
     expect(getStringProperty(requestHeaders, 'X-Session-ID')).toBe('session-123');
     expect(getStringProperty(requestHeaders, 'X-Session-Capability')).toBe('capability-token');
     expect(vi.mocked(global.fetch).mock.calls.at(1)?.[0]).toBe(
       'http://localhost/api/verification/bundles/session-123/exec-1/report',
     );
-    expect(process.env.USE_MOCK_ZKVM).toBe('false');
-    expect(process.env.RISC0_DEV_MODE).toBeUndefined();
+    expect(strictDefined(process.env['USE_MOCK_ZKVM'])).toBe('false');
+    expect(process.env['RISC0_DEV_MODE']).toBeUndefined();
+  });
+
+  it('does not allow deployed dev-mode verification evidence in production real mode used by develop gated smoke', async () => {
+    const verifySTARK = vi.fn<VerifyStark>().mockResolvedValue(false);
+    const helpers = createHelpers({
+      verifySTARK,
+      finalizeWithScenarios: vi.fn().mockResolvedValue({
+        data: {
+          tally: {
+            counts: [64, 0, 0, 0, 0],
+            merkleRoot: '0xroot',
+            totalVotes: 64,
+            tamperedCount: 0,
+          },
+          proof: {
+            receipt: JSON.stringify({ mock: true }),
+            imageId: '0ximage',
+          },
+          debug: {
+            verifiedTally: [64, 0, 0, 0, 0],
+            missingSlots: 0,
+            invalidPresentedSlots: 0,
+          },
+          userMerklePath: ['0xabc', '0xdef'],
+          userVote: {
+            commitment: '0xcommit',
+            merklePath: ['0xabc', '0xdef'],
+            leafIndex: 0,
+            treeSize: 64,
+          },
+          treeSize: 64,
+          totalExpected: 64,
+          missingSlots: 0,
+          invalidPresentedSlots: 0,
+          sthDigest: '0xsth',
+          includedBitmapRoot: '0xbitmap',
+          inputCommitment: '0xinput',
+          verificationStatus: 'dev_mode',
+          verificationSteps: [
+            {
+              id: 'counted_as_recorded',
+              status: 'success',
+              inputs: [],
+            },
+            {
+              id: 'stark_verification',
+              status: 'success',
+              inputs: [],
+            },
+          ],
+          verificationChecks: [
+            {
+              id: 'counted_expected_vs_tree_size',
+              status: 'success',
+              evidence: 'public',
+              inputs: ['totalExpected', 'treeSize'],
+            },
+            {
+              id: 'counted_election_manifest_consistent',
+              status: 'success',
+              evidence: 'public',
+              inputs: ['electionManifest'],
+            },
+            {
+              id: 'counted_close_statement_consistent',
+              status: 'success',
+              evidence: 'public',
+              inputs: ['closeStatement'],
+            },
+            {
+              id: 'stark_receipt_verify',
+              status: 'success',
+              evidence: 'zk',
+              inputs: ['proofBundleStatus'],
+            },
+          ],
+          verificationExecutionId: 'exec-1',
+          journal: createTestJournal({ totalExpected: 64, validVotes: 64 }),
+          verificationReport: {
+            status: 'dev_mode',
+            verifier_version: '0.1.0',
+            verified_at: '2025-10-16T00:00:00Z',
+            duration_ms: 1,
+            expected_image_id: '0ximage',
+            receipt_image_id: null,
+            bundle_path: 'bundle',
+            receipt_path: 'receipt.json',
+            dev_mode_receipt: true,
+            errors: [],
+          },
+        },
+      }),
+    });
+    const config: CLITestConfig = {
+      scenarios: [],
+      ...omitUndefinedProperties({ scenario: 'S0' }),
+      allScenarios: false,
+      useRealZkVM: true,
+      realMode: 'prod',
+      verbose: false,
+      outputFormat: 'table',
+      userChoice: 'A',
+      skipBuild: true,
+    };
+
+    const cliTest = new CLIVotingTest(config, helpers);
+    const result = await cliTest.runTestCase({
+      name: 'S0: Normal case (no tampering)',
+      ...omitUndefinedProperties({ scenario: [] }),
+      expectedTamper: false,
+    });
+
+    const verifyCall = vi.mocked(verifySTARK).mock.calls[0];
+    const verifyOptions = requireRecord(strictDefined(verifyCall)[1], 'verifySTARK options');
+    expect(verifyOptions).toMatchObject({
+      useRealZkVM: true,
+      verificationStatus: 'dev_mode',
+      allowDevMode: false,
+    });
+    expect(result.passed).toBe(false);
+    expect(result.details.errors).toEqual(expect.arrayContaining(['STARK proof verification failed']));
   });
 
   it('fails closed when the finalized payload omits the top-level verificationExecutionId', async () => {
@@ -484,7 +690,7 @@ describe('CLIVotingTest regression coverage', () => {
 
     const config: CLITestConfig = {
       scenarios: [],
-      scenario: 'S0',
+      ...omitUndefinedProperties({ scenario: 'S0' }),
       allScenarios: false,
       useRealZkVM: true,
       realMode: 'prod',
@@ -497,7 +703,7 @@ describe('CLIVotingTest regression coverage', () => {
     const cliTest = new CLIVotingTest(config, helpers);
     const result = await cliTest.runTestCase({
       name: 'S0: Normal case (no tampering)',
-      scenario: [],
+      ...omitUndefinedProperties({ scenario: [] }),
       expectedTamper: false,
     });
 
@@ -587,7 +793,7 @@ describe('CLIVotingTest regression coverage', () => {
     });
     const config: CLITestConfig = {
       scenarios: [],
-      scenario: undefined,
+      ...omitUndefinedProperties({ scenario: undefined }),
       allScenarios: false,
       useRealZkVM: false,
       realMode: 'dev',
@@ -600,7 +806,7 @@ describe('CLIVotingTest regression coverage', () => {
     const cliTest = new CLIVotingTest(config, helpers);
     const result = await cliTest.runTestCase({
       name: 'S0: Normal case (no tampering)',
-      scenario: [],
+      ...omitUndefinedProperties({ scenario: [] }),
       expectedTamper: false,
     });
 

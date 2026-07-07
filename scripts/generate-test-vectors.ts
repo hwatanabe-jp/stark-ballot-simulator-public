@@ -6,12 +6,13 @@
  */
 
 import {
+  asUnixTimestampMillis,
   computeSTHDigest,
   computeInputCommitment,
   computeCommitment,
   type ZkVMInput,
   type VoteWithProof,
-} from '../src/lib/zkvm/types';
+} from '@stark-ballot/zkvm-contract/zkvm/types';
 import { createHash } from 'crypto';
 
 console.log('===== Test Vectors for TypeScript-Rust Compatibility =====\n');
@@ -20,10 +21,10 @@ console.log('===== Test Vectors for TypeScript-Rust Compatibility =====\n');
 console.log('=== Test Vector 1: STH Digest ===');
 const logId1 = '0x' + '01'.repeat(32);
 const treeSize1 = 64;
-const timestamp1 = 1234567890;
+const timestamp1 = 1_234_567_890_000;
 const bulletinRoot1 = '0x' + 'aa'.repeat(32);
 
-const sthDigest1 = computeSTHDigest(logId1, treeSize1, timestamp1, bulletinRoot1);
+const sthDigest1 = computeSTHDigest(logId1, treeSize1, asUnixTimestampMillis(timestamp1), bulletinRoot1);
 
 console.log('Input:');
 console.log('  logId:', logId1);
@@ -54,7 +55,7 @@ const input2: ZkVMInput = {
   bulletinRoot: bulletinRoot2,
   treeSize: treeSize2,
   logId: '0x' + '22'.repeat(32),
-  timestamp: 1234567890,
+  timestamp: 1_234_567_890_000,
   totalExpected: totalExpected2,
   electionConfigHash: '0x' + '33'.repeat(32),
   votes: [vote2],
@@ -106,7 +107,7 @@ const input3: ZkVMInput = {
   bulletinRoot: '0x' + '44'.repeat(32),
   treeSize: 10,
   logId: '0x' + '55'.repeat(32),
-  timestamp: 1234567890,
+  timestamp: 1_234_567_890_000,
   totalExpected: 10,
   electionConfigHash: '0x' + '66'.repeat(32),
   votes: [vote3a, vote3b, vote3c], // Unsorted order: 5, 2, 8
@@ -129,7 +130,7 @@ const input3b: ZkVMInput = {
   bulletinRoot: '0x' + '11'.repeat(32),
   treeSize: 8,
   logId: '0x' + '77'.repeat(32),
-  timestamp: 1234567890,
+  timestamp: 1_234_567_890_000,
   totalExpected: 3,
   electionConfigHash: '0x' + '88'.repeat(32),
   votes: [
@@ -227,7 +228,7 @@ console.log();
 
 // Test Vector 6: Complete scenario with MockZkVM
 console.log('=== Test Vector 6: Complete MockZkVM Execution ===');
-import { executeMockZkVM } from '../src/lib/zkvm/mock-executor';
+import { executeMockZkVM } from '@stark-ballot/node-adapters/zkvm/mock-executor';
 
 const electionId6 = 'abcdef12-3456-7890-abcd-ef1234567890';
 const input6: ZkVMInput = {

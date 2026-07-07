@@ -30,7 +30,7 @@ pub struct AggregatorInput {
     pub tree_size: u32,
     /// Bulletin board identifier
     pub log_id: [u8; 32],
-    /// Unix timestamp
+    /// Unix timestamp in milliseconds
     pub timestamp: u64,
     /// Expected total votes (fixed N for this experiment)
     pub total_expected: u32,
@@ -106,7 +106,7 @@ mod tests {
             bulletin_root: [1u8; 32],
             tree_size: 64,
             log_id: [2u8; 32],
-            timestamp: 1234567890,
+            timestamp: 1_234_567_890_000,
             total_expected: 64,
             election_config_hash: [3u8; 32],
             votes: vec![],
@@ -160,13 +160,13 @@ mod tests {
             bulletin_root: [1u8; 32],
             tree_size: 64,
             log_id: [2u8; 32],
-            timestamp: 1234567890,
+            timestamp: 1_234_567_890_000,
             total_expected: 64,
             election_config_hash: [3u8; 32],
             votes: vec![],
         };
 
         assert_eq!(input.log_id.len(), 32);
-        assert_eq!(input.timestamp, 1234567890);
+        assert_eq!(input.timestamp, 1_234_567_890_000);
     }
 }

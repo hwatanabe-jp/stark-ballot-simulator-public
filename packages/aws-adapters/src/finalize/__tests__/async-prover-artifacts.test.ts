@@ -1,0 +1,224 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { buildDefaultElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
+import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
+import { createTestPublicInputArtifact } from '@stark-ballot/test-support/testing/public-input-artifact';
+import { buildCloseStatement, buildElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
+import { admitReceiptPayload } from '@stark-ballot/verification/receipt-normalizer';
+import {
+  buildAsyncProverArtifactKeys,
+  buildFinalizationResultFromS3Bundle,
+  persistAsyncProverInputToS3,
+  validateAsyncProverArtifactKeys,
+  validateAsyncProverBundleKey,
+} from '@stark-ballot/aws-adapters/finalize/async-prover-artifacts';
+import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
+
+vi.mock('@stark-ballot/aws-adapters/aws/s3-client', () => ({
+  getS3Config: vi.fn(() => ({
+    region: 'ap-northeast-1',
+    bucket: 'proof-bucket',
+    prefix: 'sessions/',
+    expectedBucketOwner: '123456789012',
+  })),
+  getS3Client: vi.fn(),
+}));
+
+vi.mock('@stark-ballot/aws-adapters/aws/bundle-restore', () => ({
+  restoreReceiptFromS3: vi.fn(),
+}));
+
+const zkvmInput: ZkVMInput = {
+  electionId: '550e8400-e29b-41d4-a716-446655440000',
+  electionConfigHash: '0x' + '1'.repeat(64),
+  bulletinRoot: '0x' + '2'.repeat(64),
+  treeSize: 1,
+  logId: '0x' + '3'.repeat(64),
+  timestamp: 1730000000000,
+  totalExpected: 1,
+  votes: [
+    {
+      commitment: '0x' + '4'.repeat(64),
+      choice: 0,
+      random: '0x' + '5'.repeat(64),
+      index: 0,
+      merklePath: ['0x' + '6'.repeat(64)],
+    },
+  ],
+};
+
+describe('async prover artifacts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('builds deterministic S3 keys under the configured proof prefix', () => {
+    const keys = buildAsyncProverArtifactKeys('session-1', 'exec-1');
+
+    expect(keys).toEqual({
+      inputS3Key: 'sessions/session-1/exec-1/input.json',
+      outputS3Prefix: 'sessions/session-1/exec-1',
+      bundleS3Key: 'sessions/session-1/exec-1/bundle.zip',
+    });
+  });
+
+  it.each([
+    ['sessionId', 'session/1', 'exec-1'],
+    ['executionId with slash', 'session-1', 'bad/segment-123'],
+    ['executionId with dot', 'session-1', 'bad.segment-123'],
+    ['executionId as URL', 'session-1', 'https://example.invalid/execution'],
+  ])('rejects unsafe %s before constructing target S3 keys', (_label, sessionId, executionId) => {
+    expect(() => buildAsyncProverArtifactKeys(sessionId, executionId)).toThrow(/safe single path segment/);
+  });
+
+  it('validates that supplied artifact keys match the canonical session and execution layout', () => {
+    const keys = validateAsyncProverArtifactKeys({
+      sessionId: 'session-1',
+      executionId: 'exec-1',
+      inputS3Key: 'sessions/session-1/exec-1/input.json',
+      outputS3Prefix: 'sessions/session-1/exec-1',
+      bundleS3Key: 'sessions/session-1/exec-1/bundle.zip',
+    });
+
+    expect(keys).toEqual({
+      inputS3Key: 'sessions/session-1/exec-1/input.json',
+      outputS3Prefix: 'sessions/session-1/exec-1',
+      bundleS3Key: 'sessions/session-1/exec-1/bundle.zip',
+    });
+  });
+
+  it.each([
+    [
+      'foreign session',
+      {
+        inputS3Key: 'sessions/session-2/exec-1/input.json',
+        outputS3Prefix: 'sessions/session-1/exec-1',
+        bundleS3Key: 'sessions/session-1/exec-1/bundle.zip',
+      },
+    ],
+    [
+      'foreign execution',
+      {
+        inputS3Key: 'sessions/session-1/exec-1/input.json',
+        outputS3Prefix: 'sessions/session-1/exec-2',
+        bundleS3Key: 'sessions/session-1/exec-1/bundle.zip',
+      },
+    ],
+    [
+      'foreign prefix',
+      {
+        inputS3Key: 'archive/session-1/exec-1/input.json',
+        outputS3Prefix: 'archive/session-1/exec-1',
+        bundleS3Key: 'archive/session-1/exec-1/bundle.zip',
+      },
+    ],
+  ])('rejects %s artifact keys', (_label, keys) => {
+    expect(() =>
+      validateAsyncProverArtifactKeys({
+        sessionId: 'session-1',
+        executionId: 'exec-1',
+        ...keys,
+      }),
+    ).toThrow('Async prover artifact keys must match the canonical session/execution S3 layout');
+  });
+
+  it('rejects a supplied bundle key outside the canonical session and execution layout', () => {
+    expect(() => validateAsyncProverBundleKey('session-1', 'exec-1', 'sessions/session-2/exec-1/bundle.zip')).toThrow(
+      'Async prover bundle key must match the canonical session/execution S3 layout',
+    );
+  });
+
+  it('persists the target prover input with public artifact fields required by the container', async () => {
+    const { getS3Client } = await import('@stark-ballot/aws-adapters/aws/s3-client');
+    const send = vi.fn().mockResolvedValue({});
+    vi.mocked(getS3Client).mockReturnValue({ send } as never);
+
+    const keys = await persistAsyncProverInputToS3({
+      sessionId: 'session-1',
+      executionId: 'exec-1',
+      contractGeneration: '2026-04-zkvm-current-v1',
+      zkvmInput,
+      electionConfig: {
+        ...buildDefaultElectionConfig(),
+        totalExpected: 1,
+        botCount: 0,
+      },
+    });
+
+    expect(keys.inputS3Key).toBe('sessions/session-1/exec-1/input.json');
+    expect(send).toHaveBeenCalledTimes(1);
+    const command = send.mock.calls[0]?.[0] as PutObjectCommand;
+    expect(command).toBeInstanceOf(PutObjectCommand);
+    expect(command.input.Bucket).toBe('proof-bucket');
+    expect(command.input.Key).toBe('sessions/session-1/exec-1/input.json');
+    expect(command.input.ExpectedBucketOwner).toBe('123456789012');
+    expect(typeof command.input.Body).toBe('string');
+    const payload = JSON.parse(command.input.Body as string) as Record<string, unknown>;
+    expect(payload['contract_generation']).toBe('2026-04-zkvm-current-v1');
+    expect(payload['election_config']).toMatchObject({ totalExpected: 1, botCount: 0 });
+    expect(payload['votes']).toHaveLength(1);
+  });
+
+  it('builds canonical finalization authority from a restored S3 bundle', async () => {
+    const { restoreReceiptFromS3 } = await import('@stark-ballot/aws-adapters/aws/bundle-restore');
+    const journal = createTestJournal({ totalExpected: 1, validVotes: 1, missingSlots: 0 });
+    const electionManifest = buildElectionManifest(journal.electionId, {
+      ...buildDefaultElectionConfig(),
+      totalExpected: journal.totalExpected,
+      botCount: 0,
+    });
+    journal.electionConfigHash = electionManifest.electionConfigHash;
+    const closeStatement = buildCloseStatement({
+      logId: '0x' + '3'.repeat(64),
+      treeSize: journal.treeSize,
+      timestamp: 1730000000000,
+      bulletinRoot: journal.bulletinRoot,
+    });
+    journal.sthDigest = closeStatement.sthDigest;
+
+    vi.mocked(restoreReceiptFromS3).mockResolvedValue({
+      receipt: { seal: 'seal', journal: { bytes: [1, 2, 3] }, imageId: journal.imageId },
+      receiptRaw: admitReceiptPayload({ receipt: { seal: 'seal' }, imageId: journal.imageId }),
+      journal,
+      publicInputArtifact: createTestPublicInputArtifact({
+        source: 'bundle',
+        executionId: 'exec-1',
+        bundleKey: 'sessions/session-1/exec-1/bundle.zip',
+        typedAuthority: {
+          electionId: journal.electionId,
+          electionConfigHash: journal.electionConfigHash,
+          bulletinRoot: journal.bulletinRoot,
+          treeSize: journal.treeSize,
+          totalExpected: journal.totalExpected,
+          methodVersion: journal.methodVersion,
+          votesCount: 1,
+          logId: closeStatement.logId,
+          timestamp: closeStatement.timestamp,
+          recomputedInputCommitment: journal.inputCommitment,
+        },
+      }),
+      electionManifest,
+      closeStatement,
+    });
+
+    const result = await buildFinalizationResultFromS3Bundle({
+      bundleS3Key: 'sessions/session-1/exec-1/bundle.zip',
+      verificationExecutionId: 'exec-1',
+      s3UploadedAt: '2026-01-01T00:00:00.000Z',
+      finalizedAt: 1730000005000,
+    });
+
+    expect(result.journal).toEqual(journal);
+    expect(result.s3BundleKey).toBe('sessions/session-1/exec-1/bundle.zip');
+    expect(result.verificationExecutionId).toBe('exec-1');
+    expect(result.s3UploadedAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(result).not.toHaveProperty('receiptRaw');
+    expect(result.publicInputArtifact?.provenance).toMatchObject({
+      source: 'bundle',
+      executionId: 'exec-1',
+      bundleKey: 'sessions/session-1/exec-1/bundle.zip',
+    });
+    expect(result.electionManifest).toEqual(electionManifest);
+    expect(result.closeStatement).toEqual(closeStatement);
+  });
+});

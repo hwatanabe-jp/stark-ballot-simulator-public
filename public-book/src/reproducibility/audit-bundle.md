@@ -7,13 +7,19 @@
 - 検証ページから `bundle.zip` をダウンロード済みであること
 - Ubuntu 22.04 / 24.04
 - このリポジトリ（`stark-ballot-simulator`）のソースを取得済みであること
-- Node.js 24 と Corepack 経由の pnpm 11.x が利用可能で、`$REPO_ROOT` で `corepack enable` と `pnpm install --frozen-lockfile` を実行済みであること（Step 7–8 のみ必要）
+- Node.js 24 が利用可能であること（Step 4、Step 7、Step 8 で必要）
+- Corepack 経由の pnpm 11.x が利用可能で、`$REPO_ROOT` で `corepack enable` と `pnpm install --frozen-lockfile` を実行済みであること（Step 7 と Step 8 のみ必要）
 
-> 手順の前提（ソース取得やビルドが必要なステップ）は、リポジトリが公開されるまで実行できません。詳細は [第三者検証ガイド](index.md) を参照してください。
+> 手順の前提（ソース取得やビルドが必要なステップ）は、リポジトリが公開されるまで実行できません。
+> 詳細は [第三者検証ガイド](index.md) を参照してください。
 
-ここで扱う `public` は「秘密データを含まない配布対象」を指し、無認証取得を意味しません。取得経路（capability エンドポイントと短命な presigned URL）と、現行レスポンスに含まれない旧 URL フィールドの扱いは、それぞれ [バンドル構造](../verification/bundle-structure.md) と [API エンドポイント一覧](../api/endpoints.md#現行-response-で返さない-legacy-フィールド) を参照してください。
+ここで扱う `public` は「秘密データを含まない配布対象」を指し、無認証取得を意味しません。
+通常の取得経路は capability 保護 API です。
+raw S3 URL や presigned URL は通常のブラウザと CLI 契約ではありません。
+現行レスポンスに含まれない旧 URL フィールドの扱いは、[バンドル構造](../verification/bundle-structure.md) と [API エンドポイント一覧](../api/endpoints.md#現行-response-で返さない-legacy-フィールド) を参照してください。
 
-以降の手順では、リポジトリルートを `REPO_ROOT` として扱います。実際のクローン先に合わせて先に設定してください。
+以降の手順では、リポジトリルートを `REPO_ROOT` として扱います。
+実際のクローン先に合わせて先に設定してください。
 
 ```bash
 export REPO_ROOT="$HOME/stark-ballot-simulator"
@@ -73,45 +79,54 @@ ls -1 bundle
 
 ## 4. 期待 Image ID を決定
 
-Step 4 では `receipt.json` の `image_id` が `public/imageId-mapping.json` のどの variant に該当するかを判定し、`verifier-service` に渡す Image ID を決めます。アプリ側と同様に `methodVersion` が `CURRENT_METHOD_VERSION` と一致しない場合は [fail-closed](../appendix/glossary.md#fail-closed) で停止します（アプリ内では `EXPECTED_IMAGE_ID` または `EXPECTED_IMAGE_ID_VARIANT=default|x86_64` で variant を選択します）。
+Step 4 では `public/imageId-mapping.json` から、`verifier-service` に渡す期待 Image ID を決めます。
+アプリ側と同様に、`methodVersion` が `CURRENT_METHOD_VERSION` と一致しない場合は [fail-closed](../appendix/glossary.md#fail-closed) で停止します。
+variant は検証対象の成果物に合わせて選びます（trust material の対応は [Image ID > variant とアーキテクチャ](../zkvm/image-id.md#variant-とアーキテクチャ) を参照）。
+
+| 検証対象の成果物                               | variant 指定                                     |
+| ---------------------------------------------- | ------------------------------------------------ |
+| target-account prover image（default / ARM64） | 未指定または `EXPECTED_IMAGE_ID_VARIANT=default` |
+| local / CI production-feature build（x86_64）  | `EXPECTED_IMAGE_ID_VARIANT=x86_64`               |
+
+unsupported variant、missing mapping、選択 variant の Image ID 欠落は暗黙にフォールバックせず fail-closed です。
 
 ```bash
 METHOD_VERSION="$(jq -r '.methodVersion' bundle/journal.json)"
-CURRENT_METHOD_VERSION="$(awk -F'= ' '/export const CURRENT_METHOD_VERSION/ {print $2; exit}' "$REPO_ROOT/src/lib/zkvm/types.ts" | tr -d ';[:space:]')"
+CURRENT_METHOD_VERSION="$(awk -F'= ' '/export const CURRENT_METHOD_VERSION/ {print $2; exit}' "$REPO_ROOT/packages/zkvm-contract/src/zkvm/types.ts" | tr -d ';[:space:]')"
 
 if [ "$METHOD_VERSION" != "$CURRENT_METHOD_VERSION" ]; then
   echo "methodVersion=$METHOD_VERSION is not the current supported contract ($CURRENT_METHOD_VERSION)"
   exit 1
 fi
 
+export EXPECTED_IMAGE_ID_VARIANT=default
+EXPECTED_IMAGE_ID="$(
+  node "$REPO_ROOT/verifier-service/scripts/read-image-id.mjs" \
+    "$REPO_ROOT/public/imageId-mapping.json"
+)"
 RECEIPT_IMAGE_ID="$(jq -r '.image_id // .imageId // .receipt.image_id // .receipt.imageId // empty' bundle/receipt.json | tr '[:upper:]' '[:lower:]')"
 
-ARM_IMAGE_ID="$(jq -r --arg v "$METHOD_VERSION" '.mappings[$v].expectedImageID // empty' "$REPO_ROOT/public/imageId-mapping.json" | tr '[:upper:]' '[:lower:]')"
-X86_IMAGE_ID="$(jq -r --arg v "$METHOD_VERSION" '.mappings[$v].expectedImageID_x86_64 // empty' "$REPO_ROOT/public/imageId-mapping.json" | tr '[:upper:]' '[:lower:]')"
-
-case "$RECEIPT_IMAGE_ID" in
-  "$ARM_IMAGE_ID")
-    EXPECTED_IMAGE_ID="$ARM_IMAGE_ID"
-    ;;
-  "$X86_IMAGE_ID")
-    EXPECTED_IMAGE_ID="$X86_IMAGE_ID"
-    ;;
-  "")
-    echo "receipt_image_id is missing; choose the expected Image ID manually"
-    exit 1
-    ;;
-  *)
-    echo "receipt_image_id is not present in imageId-mapping.json for methodVersion=$METHOD_VERSION"
-    exit 1
-    ;;
-esac
+if [ -z "$EXPECTED_IMAGE_ID" ]; then
+  echo "expected Image ID could not be resolved from imageId-mapping.json"
+  exit 1
+fi
 
 echo "methodVersion=$METHOD_VERSION"
+echo "imageIdVariant=$EXPECTED_IMAGE_ID_VARIANT"
 echo "receiptImageId=$RECEIPT_IMAGE_ID"
 echo "expectedImageId=$EXPECTED_IMAGE_ID"
 ```
 
-通常の本番 bundle では `expectedImageID`（ARM64）が選ばれ、ローカル x86_64 で生成した receipt では `expectedImageID_x86_64` が選ばれます。
+local / CI production-feature build の成果物を検証する場合だけ、上の `export` を次のように置き換えます。
+
+```bash
+export EXPECTED_IMAGE_ID_VARIANT=x86_64
+```
+
+`verifier-service/scripts/read-image-id.mjs` は `EXPECTED_IMAGE_ID_VARIANT=default` または未指定の場合に mapping の `expectedImageID` を返し、`EXPECTED_IMAGE_ID_VARIANT=x86_64` の場合に `expectedImageID_x86_64` を返します。
+`verifier-service` 本体は `EXPECTED_IMAGE_ID_VARIANT` を直接読みません。
+Step 5 では、ここで導出した `EXPECTED_IMAGE_ID` を `--image-id` として渡します。
+`receipt.json` の Image ID が期待値と一致しない場合は Step 5 で不合格になります。
 
 ## 5. STARK レシートを検証
 
@@ -128,7 +143,7 @@ jq '{status, expected_image_id, receipt_image_id, dev_mode_receipt, errors}' ./v
 判定:
 
 - `exit_code=0` かつ `status="success"`: 合格
-- `exit_code=2` または `status="dev_mode"`: フェイクレシート（本番検証としては不合格）
+- `exit_code=2` または `status="dev_mode"`: dev-mode のフェイクレシート（production STARK proof ではなく、本番検証としては不合格）
 - `exit_code=3` または `status="failed"`: 不合格
 
 ## 6. journal.json の完全性チェック
@@ -149,15 +164,17 @@ jq -e '(.verifiedTally | add) == .validVotes' bundle/journal.json >/dev/null \
   || echo 'tally_sum=ng'
 ```
 
-`excludedSlots > 0` または `missingSlots > 0` または `invalidPresentedSlots > 0` は、検証失敗として扱います。加えて `totalExpected != treeSize` も、現行の必須チェックでは検証失敗です。
+`excludedSlots > 0`、`missingSlots > 0`、`invalidPresentedSlots > 0` のいずれかに該当する場合は、検証失敗として扱います。
+加えて `totalExpected != treeSize` も、現行の必須チェックでは検証失敗です。
 
 ## 7. 公開監査アーティファクトの整合性チェック
 
-`public-input.json`、`election-manifest.json`、`close-statement.json` は `bundle.zip` に含まれる Counted 段階の必須チェック対象です。次の 4 点を確認します（フィールド単位の詳細はスクリプト内の `checks` 参照）。
+`public-input.json`、`election-manifest.json`、`close-statement.json` は `bundle.zip` に含まれる Counted 段階の必須チェック対象です。
+次の 4 点を確認します（フィールド単位の詳細はスクリプト内の `checks` 参照）。
 
-- `public-input.json` が現行 contract に沿い、vote entry / 重複 index / commitment / `journal.json` 各フィールドと矛盾しない
-- `election-manifest.json` の `electionConfigHash` 再計算値が宣言値・`public-input.json` / `journal.json` と一致する
-- `close-statement.json` の `sthDigest` 再計算値が宣言値・`public-input.json` / `journal.json` と一致する
+- `public-input.json` が現行 contract に沿い、vote entry、重複 index、commitment、`journal.json` の各フィールドと矛盾しない
+- `election-manifest.json` の `electionConfigHash` 再計算値が宣言値、`public-input.json`、`journal.json` と一致する
+- `close-statement.json` の `sthDigest` 再計算値が宣言値、`public-input.json`、`journal.json` と一致する
 - `journal.json` と `public-input.json` の `methodVersion` が現行 contract と一致する
 
 ```bash
@@ -165,9 +182,9 @@ cd "$REPO_ROOT"
 
 pnpm tsx -e "
 import fs from 'node:fs';
-import { buildCloseStatement, recomputeElectionManifestHash } from './src/lib/verification/public-audit-artifacts';
-import { parsePublicInputArtifact } from './src/lib/verification/public-input-contract';
-import { CURRENT_METHOD_VERSION } from './src/lib/zkvm/types';
+import { buildCloseStatement, recomputeElectionManifestHash } from './packages/verification/src/verification/public-audit-artifacts';
+import { parsePublicInputArtifact } from './packages/verification/src/verification/public-input-contract';
+import { CURRENT_METHOD_VERSION } from './packages/zkvm-contract/src/zkvm/types';
 
 const [manifestPath, closePath, journalPath, publicInputPath] = process.argv.slice(1);
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
@@ -242,14 +259,15 @@ echo "exit_code=$?"
 判定:
 
 - `exit_code=0` かつ全項目が `true`: 合格
-- いずれかが `false`: Counted 段階の input sanity / unique index・commitment / election-manifest / close-statement 整合チェック、または public input authority の整合性失敗（チェック ID の対応は [チェック一覧](../verification/checks-catalog.md) 参照）
+- いずれかが `false`: Counted 段階の input sanity、unique index、unique commitment、election-manifest、close-statement の整合チェック、または public input authority の整合性失敗（チェック ID の対応は [チェック一覧](../verification/checks-catalog.md) 参照）
 
 ## 8. inputCommitment 再計算
 
-`public-input.json` から再計算した値が `journal.json` の `inputCommitment` と一致することを確認します。Step 0 の Node.js / pnpm 前提を満たしてから実行してください。
+`public-input.json` から再計算した値が `journal.json` の `inputCommitment` と一致することを確認します。
+Step 0 の Node.js と pnpm 前提を満たしてから実行してください。
 
 ```bash
-RECALC="$(cd "$REPO_ROOT" && pnpm tsx -e "import fs from 'node:fs'; import { computeInputCommitmentFromPublicInput } from './src/lib/zkvm/types'; const p = JSON.parse(fs.readFileSync(process.argv[1], 'utf-8')); console.log(computeInputCommitmentFromPublicInput(p));" "$AUDIT_ROOT/bundle/public-input.json")"
+RECALC="$(cd "$REPO_ROOT" && pnpm tsx -e "import fs from 'node:fs'; import { computeInputCommitmentFromPublicInput } from './packages/zkvm-contract/src/zkvm/types'; const p = JSON.parse(fs.readFileSync(process.argv[1], 'utf-8')); console.log(computeInputCommitmentFromPublicInput(p));" "$AUDIT_ROOT/bundle/public-input.json")"
 JOURNAL_COMMITMENT="$(jq -r '.inputCommitment' "$AUDIT_ROOT/bundle/journal.json")"
 
 echo "recalculated=$RECALC"
@@ -261,8 +279,9 @@ echo "journal=$JOURNAL_COMMITMENT"
 ## 合格条件
 
 - Step 4 で `EXPECTED_IMAGE_ID` を決定できる
-- Step 5–8 の判定がすべて緑
+- Step 5 から Step 8 の判定がすべて合格
 
-いずれかが失敗した場合、Counted / STARK 段階の必須チェックを満たしていないため `Verified` にはなりません。範囲外や `bundle.zip` 単体では揃わない検証材料は [第三者検証ガイド](index.md) を参照してください。
+いずれかが失敗した場合、Counted 段階または STARK 段階の必須チェックを満たしていないため `Verified` にはなりません。
+範囲外や `bundle.zip` 単体では揃わない検証材料は [第三者検証ガイド](index.md) を参照してください。
 
-<!-- source: src/app/(routes)/verify/page.tsx, src/app/(routes)/verify/lib/verification-data.ts, src/app/(routes)/verify/lib/download.ts, src/server/api/handlers/verify.ts, src/server/api/handlers/verificationBundles.ts, src/lib/verification/verification-bundle.ts, src/lib/verification/public-audit-artifacts.ts, src/lib/verification/verification-checks.ts, src/lib/verification/engine/evaluate-checks.ts, docker/entrypoint.sh, verifier-service/src/lib.rs, public/imageId-mapping.json, src/lib/zkvm/types.ts -->
+<!-- source: apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/lib/verification-data.ts, apps/web/src/routes/verify/lib/download.ts, apps/api/src/server/api/handlers/verify.ts, apps/api/src/server/api/handlers/verificationBundles.ts, packages/verification/src/verification/verification-bundle.ts, packages/verification/src/verification/public-audit-artifacts.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, infra/docker/entrypoint.sh, verifier-service/src/lib.rs, public/imageId-mapping.json, packages/zkvm-contract/src/zkvm/types.ts -->

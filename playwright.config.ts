@@ -1,5 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 
+if (process.env['FORCE_COLOR'] && process.env['NO_COLOR']) {
+  delete process.env['NO_COLOR'];
+}
+
 /**
  * Read environment variables from file.
  * https://github.com/motdotla/dotenv
@@ -16,9 +20,9 @@ export default defineConfig({
   /* Run tests in files in parallel */
   fullyParallel: true,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
-  forbidOnly: !!process.env.CI,
+  forbidOnly: !!process.env['CI'],
   /* Retry on CI only */
-  retries: process.env.CI ? 2 : 0,
+  retries: process.env['CI'] ? 2 : 0,
   /* Opt out of parallel tests on CI. */
   workers: 1,
   /* Reporter to use. See https://playwright.dev/docs/test-reporters */
@@ -84,15 +88,15 @@ export default defineConfig({
   webServer: {
     // Dynamic command based on zkVM mode
     command: (() => {
-      const useMockZkVM = process.env.USE_REAL_ZKVM !== 'true' && process.env.USE_MOCK_ZKVM !== 'false';
+      const useMockZkVM = process.env['USE_REAL_ZKVM'] !== 'true' && process.env['USE_MOCK_ZKVM'] !== 'false';
 
       if (useMockZkVM) {
         // Use test server script for Mock zkVM
-        // Script exports env vars BEFORE Next.js starts, overriding .env.local
+        // Script exports env vars before the static Hono/Vite test server starts, overriding .env.local
         return 'bash ./scripts/start-test-server.sh';
       } else {
         // Real zkVM mode: pass env vars directly in command
-        const devMode = process.env.RISC0_DEV_MODE === '1';
+        const devMode = process.env['RISC0_DEV_MODE'] === '1';
         const envVars = ['USE_MOCK_ZKVM=false', 'USE_MOCK_STORE=false'];
 
         if (devMode) {
@@ -104,7 +108,7 @@ export default defineConfig({
       }
     })(),
     url: 'http://localhost:3000',
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: !process.env['CI'],
     stdout: 'ignore', // Changed back to 'ignore' after diagnostics
     stderr: 'pipe',
     timeout: 180 * 1000, // 3 minutes timeout for build + start
@@ -112,8 +116,8 @@ export default defineConfig({
 
   /* Test timeout based on zkVM mode */
   timeout: (() => {
-    const isRealZkVM = process.env.USE_REAL_ZKVM === 'true' || process.env.USE_MOCK_ZKVM === 'false';
-    const isProductionMode = isRealZkVM && process.env.RISC0_DEV_MODE !== '1';
+    const isRealZkVM = process.env['USE_REAL_ZKVM'] === 'true' || process.env['USE_MOCK_ZKVM'] === 'false';
+    const isProductionMode = isRealZkVM && process.env['RISC0_DEV_MODE'] !== '1';
 
     if (isProductionMode) {
       return 420 * 1000; // 420 seconds (7 minutes) for production STARK proofs - Phase 8: ~366s for 64 votes

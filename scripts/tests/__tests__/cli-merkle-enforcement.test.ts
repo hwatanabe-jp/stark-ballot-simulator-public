@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CLITestHelpers } from '../../../src/lib/testing/cli-test-helpers';
-import { createTestJournal } from '../../../src/lib/testing/test-helpers';
+import type { CLITestHelpers } from '@stark-ballot/test-support/testing/cli-test-helpers';
+import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import type { CLITestConfig } from '../cli-e2e-voting-flow';
 
-vi.mock('../../../src/lib/verification/tamperDetection', () => ({
+vi.mock('@stark-ballot/verification/tamper-detection', () => ({
   detectTampering: vi.fn().mockResolvedValue({
     isTampered: false,
     detectedScenarios: [],
@@ -12,6 +12,7 @@ vi.mock('../../../src/lib/verification/tamperDetection', () => ({
 }));
 
 import { CLIVotingTest } from '../cli-e2e-voting-flow';
+import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 describe('CLIVotingTest - Merkle enforcement', () => {
   beforeEach(() => {
@@ -108,7 +109,7 @@ describe('CLIVotingTest - Merkle enforcement', () => {
 
     const config: CLITestConfig = {
       scenarios: [],
-      scenario: undefined,
+      ...omitUndefinedProperties({ scenario: undefined }),
       allScenarios: false,
       useRealZkVM: false,
       realMode: 'dev',
@@ -122,7 +123,7 @@ describe('CLIVotingTest - Merkle enforcement', () => {
 
     const testCase = {
       name: 'S0: Normal case (no tampering)',
-      scenario: [] as string[],
+      ...omitUndefinedProperties({ scenario: [] as string[] }),
       expectedTamper: false,
     };
 

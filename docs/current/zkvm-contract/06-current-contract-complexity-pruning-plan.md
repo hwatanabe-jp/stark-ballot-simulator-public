@@ -1,10 +1,10 @@
 # Current Contract Complexity Pruning Plan
 
 > **Status: internal pruning implemented** (commit `b951166`).
-> Public alias and delivery-URL response fields that still survive are
-> projection-only deletion debt unless a later explicit 03 cutover
-> removes or keeps them. This doc remains the maintained post-01-05
-> residue and pruning-status record.
+> Public alias and delivery-URL response fields that survived this slice were
+> projection-only deletion debt until the later explicit public-boundary
+> cutover in `07-current-public-boundary-cutover-plan.md`. This doc remains
+> the maintained post-01-05 residue and pruning-status record.
 
 ## Completion Memo
 
@@ -19,8 +19,10 @@
 - Derived trusted-local bundle verification from scoped `sessionId`,
   top-level `verificationExecutionId`, and optional `s3BundleKey`
   under `VERIFIER_WORK_DIR` rather than from nested persisted local
-  paths. Sync-finalize `s3BundleUrl` / `s3BundleExpiresAt` survive only
-  as transient route-local delivery projections.
+  paths. Sync-finalize `s3BundleUrl` / `s3BundleExpiresAt` survived this
+  06 slice only as transient route-local delivery projections; the later
+  07 public-boundary cutover removed those projections from browser/CLI
+  public payloads.
 - Pointed `SessionData.finalizationResult` at
   `FinalizationResultAuthority`; the loose `FinalizationResult` DTO is
   limited to explicit parse, serialization, projection, and
@@ -157,10 +159,10 @@ route contract.
   top-level `verificationExecutionId`, and optional `s3BundleKey`
   identity under `VERIFIER_WORK_DIR`, rather than from nested persisted
   local path fields.
-- Sync finalize may still return transient `s3BundleUrl` /
-  `s3BundleExpiresAt` delivery projections when the existing public
-  contract requires them, but those values are not written back into
-  finalized authority.
+- Sync finalize no longer returns `s3BundleUrl` / `s3BundleExpiresAt`
+  delivery projections after the later 07 public-boundary cutover.
+  During this 06 slice those fields were not written back into finalized
+  authority.
 - The primary session contract now advertises
   `FinalizationResultAuthority` for `SessionData.finalizationResult`.
   The loose `FinalizationResult` compatibility DTO is confined to
@@ -194,7 +196,9 @@ route contract.
 The fact-check section below is the pre-implementation residue baseline
 from 2026-04-22. It remains as rationale for the cleanup and should not
 be read as the current runtime state where the implemented-state notes
-above say the residue has been pruned.
+above say the residue has been pruned or where the later
+`07-current-public-boundary-cutover-plan.md` says browser/CLI delivery URL
+projections were removed.
 
 ## Pre-Implementation Fact Check
 

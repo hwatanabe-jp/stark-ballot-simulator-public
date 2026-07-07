@@ -1,64 +1,78 @@
 # エンドポイント一覧
 
-この文書は、外部クライアント向け API のレスポンス形状・要件を現行実装ベースで記載します。session-scoped / capability 保護 API も含むため、無認証公開 API ではありません。
+この文書は、外部クライアント向け API のレスポンス形状と要件を現行実装ベースで記載します。
+session-scoped API と capability 保護 API も含むため、無認証公開 API ではありません。
 
-## 対象外（内部向け）
+## 対象外の retired route と内部向け route
 
-以下は内部運用/デバッグ用途のため、この文書の詳細対象外です。
+`GET /api/debug/enable`、`GET /api/botdata/:id`、`POST /api/finalize/callback`、`GET /api/zkvm-input-hash?includeData=<truthy>` は通常のブラウザと CLI の契約ではありません。
+この文書では active API として扱わず、詳細な request/response contract も定義しません。
+各 route の位置づけは [Retired route と internal surface の扱い](#retired-route-と-internal-surface-の扱い) を参照してください。
 
-- `GET /api/debug/enable`
-- `POST /api/finalize/callback`
+## API runtime 構成
 
-## デュアルランタイム構成
+API ハンドラはフレームワーク非依存の共通実装で、ローカル static Hono server と AWS Lambda runtime から利用されます。
 
-API ハンドラはフレームワーク非依存の共通実装で、Next.js と Hono(Lambda) の両方から利用されます。
+| ランタイム         | 用途                | 主な入口                              |
+| ------------------ | ------------------- | ------------------------------------- |
+| Static Hono server | ローカルと test API | `scripts/dev/static-hono-server.ts`   |
+| Hono on Lambda     | AWS Lambda API      | `infra/lambdas/public-api/handler.ts` |
 
-| ランタイム            | 用途               | 主な入口                                |
-| --------------------- | ------------------ | --------------------------------------- |
-| Next.js Route Handler | ローカル開発 / SSR | `src/app/api/**/route.ts`               |
-| Hono on Lambda        | AWS デプロイ API   | `amplify/functions/hono-api/handler.ts` |
+## Active browser と CLI API 一覧
 
-## 外部クライアント向け API 一覧
+この一覧は通常のブラウザと CLI flow から使う active API です。
+`public` は秘密データを含まない公開可能 artifact を指し、無認証で誰でも取得できることは意味しません。
+session-scoped API と bundle/report API は capability 保護が必須です。
+「セッションヘッダー」列の「両方必須」は `X-Session-ID` と `X-Session-Capability` の両方、「capability のみ」は `X-Session-Capability` だけを要求します。
 
-| メソッド | パス                                                                                                                | 主用途                      | `X-Session-ID` | `X-Session-Capability` |
-| -------- | ------------------------------------------------------------------------------------------------------------------- | --------------------------- | -------------- | ---------------------- |
-| `POST`   | [`/api/session`](#post-apisession)                                                                                  | セッション作成              | 不要           | 不要                   |
-| `POST`   | [`/api/vote`](#post-apivote)                                                                                        | 投票送信                    | 必須           | 必須                   |
-| `GET`    | [`/api/progress`](#get-apiprogress)                                                                                 | ボット投票進捗              | 必須           | 必須                   |
-| `POST`   | [`/api/finalize`](#post-apifinalize)                                                                                | 集計/証明生成               | 必須           | 必須                   |
-| `POST`   | [`/api/finalize/cancel`](#post-apifinalizecancel)                                                                   | 非同期集計キャンセル        | 必須           | 必須                   |
-| `GET`    | [`/api/sessions/:sessionId/status`](#get-apisessionssessionidstatus)                                                | 非同期集計ステータス        | 不要           | 必須                   |
-| `GET`    | [`/api/verify`](#get-apiverify)                                                                                     | 検証ペイロード取得          | 必須           | 必須                   |
-| `POST`   | [`/api/verification/run`](#post-apiverificationrun)                                                                 | STARK 検証実行              | 必須           | 必須                   |
-| `GET`    | [`/api/verification/bundles/:sessionId/:executionId`](#get-apiverificationbundlessessionidexecutionid)              | バンドル ZIP 取得           | 不要           | 必須                   |
-| `GET`    | [`/api/verification/bundles/:sessionId/:executionId/report`](#get-apiverificationbundlessessionidexecutionidreport) | 検証レポート取得            | 不要           | 必須                   |
-| `GET`    | [`/api/bulletin`](#get-apibulletin)                                                                                 | 掲示板一覧（inspection）    | 必須           | 必須                   |
-| `GET`    | [`/api/bulletin/:voteId/proof`](#get-apibulletinvoteidproof)                                                        | 最小包含証明                | 必須           | 必須                   |
-| `GET`    | [`/api/bulletin/consistency-proof`](#get-apibulletinconsistency-proof)                                              | 整合性証明（tooling）       | 必須           | 必須                   |
-| `GET`    | [`/api/botdata/:id`](#get-apibotdataid)                                                                             | ボット投票データ（tooling） | 必須           | 必須                   |
-| `GET`    | [`/api/bitmap-proof`](#get-apibitmap-proof)                                                                         | ビットマップ証明材料        | 必須           | 必須                   |
-| `GET`    | [`/api/sth`](#get-apisth)                                                                                           | STH スナップショット        | 必須           | 必須                   |
-| `GET`    | [`/api/zkvm-input-hash`](#get-apizkvm-input-hash)                                                                   | zkVM 入力コミットメント     | 不要           | 必須                   |
+| メソッド | パス                                                                                                                | 主用途                             | セッションヘッダー |
+| -------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ------------------ |
+| `POST`   | [`/api/session`](#post-apisession)                                                                                  | セッション作成                     | 不要               |
+| `POST`   | [`/api/vote`](#post-apivote)                                                                                        | 投票送信                           | 両方必須           |
+| `GET`    | [`/api/progress`](#get-apiprogress)                                                                                 | ボット投票進捗                     | 両方必須           |
+| `POST`   | [`/api/finalize`](#post-apifinalize)                                                                                | 集計/証明生成                      | 両方必須           |
+| `POST`   | [`/api/finalize/cancel`](#post-apifinalizecancel)                                                                   | 非同期集計キャンセル               | 両方必須           |
+| `GET`    | [`/api/sessions/:sessionId/status`](#get-apisessionssessionidstatus)                                                | 非同期集計ステータス               | capability のみ    |
+| `GET`    | [`/api/verify`](#get-apiverify)                                                                                     | 検証ペイロード取得                 | 両方必須           |
+| `POST`   | [`/api/verification/run`](#post-apiverificationrun)                                                                 | STARK 検証実行                     | 両方必須           |
+| `GET`    | [`/api/verification/bundles/:sessionId/:executionId`](#get-apiverificationbundlessessionidexecutionid)              | バンドル ZIP 取得                  | capability のみ    |
+| `GET`    | [`/api/verification/bundles/:sessionId/:executionId/report`](#get-apiverificationbundlessessionidexecutionidreport) | 検証レポート取得                   | capability のみ    |
+| `GET`    | [`/api/bulletin/:voteId/proof`](#get-apibulletinvoteidproof)                                                        | 最小包含証明                       | 両方必須           |
+| `GET`    | [`/api/bitmap-proof`](#get-apibitmap-proof)                                                                         | ビットマップ証明材料               | 両方必須           |
+| `GET`    | [`/api/sth`](#get-apisth)                                                                                           | STH スナップショット               | 両方必須           |
+| `GET`    | [`/api/zkvm-input-hash`](#get-apizkvm-input-hash)                                                                   | zkVM input commitment（hash-only） | capability のみ    |
+
+## Active owner-scoped inspection と tooling API
+
+以下は active route ですが、通常のブラウザと CLI の主導線ではなく、owner-scoped inspection や検証 tooling 用の surface です。
+private inspection route や debug 系 route とは分離して扱います。
+
+| メソッド | パス                                                                   | 主用途                                    | セッションヘッダー |
+| -------- | ---------------------------------------------------------------------- | ----------------------------------------- | ------------------ |
+| `GET`    | [`/api/bulletin`](#get-apibulletin)                                    | retained owner-scoped bulletin inspection | 両方必須           |
+| `GET`    | [`/api/bulletin/consistency-proof`](#get-apibulletinconsistency-proof) | RFC6962 整合性証明 tooling                | 両方必須           |
 
 ## 共通の実装上の注意
 
 ### ミドルウェア構成
 
-ミドルウェアは「全リクエスト共通の固定チェーン」ではなく、エンドポイント実装ごとに必要な検証を呼び出す方式です。セッションヘッダーの要否は上記一覧テーブルを参照してください。
+ミドルウェアは「全リクエスト共通の固定チェーン」ではなく、エンドポイント実装ごとに必要な検証を呼び出す方式です。
+セッションヘッダーの要否は上記一覧テーブルを参照してください。
 
-| 区分                                     | 代表エンドポイント                                                                                                            | Turnstile    | レート制限       |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------ | ---------------- |
-| セッション作成                           | `POST /api/session`                                                                                                           | 環境設定次第 | セッション作成用 |
-| 投票                                     | `POST /api/vote`                                                                                                              | あり         | 投票用           |
-| 集計                                     | `POST /api/finalize`                                                                                                          | あり         | zkVM 用          |
-| 非同期集計キャンセル                     | `POST /api/finalize/cancel`                                                                                                   | なし         | キャンセル専用   |
-| 検証実行                                 | `POST /api/verification/run`                                                                                                  | なし         | zkVM 用          |
-| 読み取り（セッションスコープ）           | `GET /api/progress`, `GET /api/bulletin*`, `GET /api/botdata/:id`, `GET /api/bitmap-proof`, `GET /api/sth`, `GET /api/verify` | なし         | なし             |
-| 読み取り（path/query で session を指す） | `GET /api/sessions/:sessionId/status`, `GET /api/verification/bundles/...`, `GET /api/zkvm-input-hash`                        | なし         | なし             |
+| 区分                                     | 代表エンドポイント                                                                                                  | Turnstile                                             | レート制限       |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- | ---------------- |
+| セッション作成                           | `POST /api/session`                                                                                                 | production では server-side abuse protection を有効化 | セッション作成用 |
+| 投票                                     | `POST /api/vote`                                                                                                    | あり                                                  | 投票用           |
+| 集計                                     | `POST /api/finalize`                                                                                                | あり                                                  | zkVM 用          |
+| 非同期集計キャンセル                     | `POST /api/finalize/cancel`                                                                                         | なし                                                  | キャンセル専用   |
+| 検証実行                                 | `POST /api/verification/run`                                                                                        | なし                                                  | zkVM 用          |
+| 読み取り（セッションスコープ）           | `GET /api/progress`, `GET /api/bulletin*`, `GET /api/bitmap-proof`, `GET /api/sth`, `GET /api/verify`               | なし                                                  | なし             |
+| 読み取り（path/query で session を指す） | `GET /api/sessions/:sessionId/status`, `GET /api/verification/bundles/...`, `GET /api/zkvm-input-hash`（hash-only） | なし                                                  | なし             |
 
 ### 共通セッションエラー（ヘッダースコープ）
 
-`X-Session-ID` / `X-Session-Capability` をヘッダーで受け取る session-scoped エンドポイントは、session/capability 失敗時に以下の共通エラーを返します。各エンドポイントの「主なエラー」欄ではこれらを省略し、固有エラーのみ記載します。
+`X-Session-ID` と `X-Session-Capability` をヘッダーで受け取る session-scoped エンドポイントは、session/capability 失敗時に以下の共通エラーを返します。
+各エンドポイントの「主なエラー」欄ではこれらを省略し、固有エラーのみ記載します。
 
 - `SESSION_ID_REQUIRED` (`400`)
 - `SESSION_CAPABILITY_REQUIRED` (`401`)
@@ -72,9 +86,7 @@ API ハンドラはフレームワーク非依存の共通実装で、Next.js �
 
 共通 JSON パーサーを使うエンドポイントは `API_REQUEST_BODY_LIMIT_BYTES`（既定 16 KiB）を超えると `PAYLOAD_TOO_LARGE` (`413`) を返します。
 
-例外:
-
-- `POST /api/finalize/cancel` は現状 `request.json()` を直接使うため、この共通サイズ制限の対象外です。JSON 不正や payload 不正は handler 固有の `400` を返します。
+`POST /api/finalize/cancel` も共通 JSON パーサーを使うため、この制限の対象です。
 
 ### エラーレスポンスの形式
 
@@ -85,9 +97,8 @@ API ハンドラはフレームワーク非依存の共通実装で、Next.js �
 - `statusCode`（HTTP ステータス）
 - 必要に応じて `details` など
 
-以下のエンドポイントは、session/capability 失敗時は標準形式、handler 内部の個別検証では `{ error: "..." }` 系の独自形式を返します。
+以下のエンドポイントは、session/capability 失敗時は標準形式、handler 内部の個別検証では `{ error: "..." }` 系の独自形式を返す場合があります。
 
-- `POST /api/finalize/cancel`
 - `GET /api/sessions/:sessionId/status`
 - `GET /api/bulletin/consistency-proof`
 - `GET /api/bitmap-proof`
@@ -95,21 +106,21 @@ API ハンドラはフレームワーク非依存の共通実装で、Next.js �
 
 ### 現行 response で返さない legacy フィールド
 
-以下は過去の public response に存在したものの、現行の `POST /api/finalize`（同期）および `GET /api/verify` のレスポンスには含まれません。旧クライアントや旧ドキュメントが参照している場合は更新してください。
+以下は過去の public response に存在したものの、現行の `POST /api/finalize`（同期）および `GET /api/verify` のレスポンスには含まれません。
+旧クライアントや旧ドキュメントが参照している場合は更新してください。
 
-- バンドル/レポート URL 系: `verificationBundleUrl`, `verificationReportUrl`
+- バンドルとレポート URL 系: `verificationBundleUrl`, `verificationReportUrl`
 - S3 メタデータ系: `s3BundleUrl`, `s3BundleKey`, `s3UploadedAt`, `s3BundleExpiresAt`
 - カウント互換エイリアス: `missingIndices`, `invalidIndices`, `countedIndices`, `excludedCount`
 
 バンドルとレポートの取得は `verificationExecutionId` を識別子に `/api/verification/bundles/:sessionId/:executionId` および同 `/report` を組み立てます。
 
----
-
 ## 基本フロー API
 
 ### `POST /api/session`
 
-新規セッションを作成します。`X-Session-ID` は不要です。
+新規セッションを作成します。
+`X-Session-ID` は不要です。
 
 レスポンス（`200`）:
 
@@ -122,7 +133,9 @@ API ハンドラはフレームワーク非依存の共通実装で、Next.js �
 
 備考:
 
-- `SESSION_CREATE_TURNSTILE_REQUIRED=1` の場合、`turnstileToken` が必要です。
+- local/mock では設定により `turnstileToken` を省略できます。
+- これは開発用 bypass であり、production 契約ではありません。
+- production では `POST /api/session` に Turnstile などの server-side abuse protection を有効化します。
 
 ### `POST /api/vote`
 
@@ -166,11 +179,14 @@ API ハンドラはフレームワーク非依存の共通実装で、Next.js �
 - `data.userVoted`
 - `data.finalized`
 
-主なエラー: 共通セッションエラー（ヘッダースコープ）のみ。
+主なエラー:
+
+- 共通セッションエラー（ヘッダースコープ）のみ
 
 ### `POST /api/finalize`
 
-集計と証明生成を開始します。同期/非同期の 2 形態があります。
+集計と証明生成を開始します。
+同期と非同期の 2 形態があります。
 
 要件:
 
@@ -209,7 +225,8 @@ API ハンドラはフレームワーク非依存の共通実装で、Next.js �
 
 補足:
 
-- バンドル/レポート取得の識別子は `verificationExecutionId` です。クライアントは自身の `sessionId` と `verificationExecutionId` から `/api/verification/bundles/:sessionId/:executionId` および同 `/report` を構築します。
+- バンドルとレポート取得の識別子は `verificationExecutionId` です。
+- クライアントは自身の `sessionId` と `verificationExecutionId` から `/api/verification/bundles/:sessionId/:executionId` および同 `/report` を構築します。
 
 レスポンス（`202`, 非同期）:
 
@@ -250,13 +267,11 @@ API ハンドラはフレームワーク非依存の共通実装で、Next.js �
 主なエラー:
 
 - `GLOBAL_LIMIT_EXCEEDED` (`503`)
-
-handler 固有エラー（独自形式）:
-
-- `404`: Async finalization disabled
-- `400`: Invalid JSON body / payload 不正
-- `409`: 現在状態ではキャンセル不可
-- `501`: ストアが cancellation 非対応
+- `PAYLOAD_TOO_LARGE` (`413`)
+- `INVALID_REQUEST` (`400`; JSON 不正または payload 不正)
+- `ASYNC_FINALIZATION_DISABLED` (`404`)
+- `FINALIZATION_NOT_CANCELLABLE` (`409`)
+- `CANCELLATION_UNSUPPORTED` (`501`)
 
 ### `GET /api/sessions/:sessionId/status`
 
@@ -288,8 +303,6 @@ handler 固有エラー（独自形式）:
 handler 固有エラー（独自形式）:
 
 - `400`: Session ID is required
-
----
 
 ## 検証 API
 
@@ -377,21 +390,22 @@ handler 固有エラー（独自形式）:
 - `PAYLOAD_TOO_LARGE` (`413`)
 - `INTERNAL_ERROR` (`500`)
 
----
-
 ## バンドル取得 API
 
 両エンドポイントとも `X-Session-Capability` ヘッダーによる capability 保護が必須です。
-S3 配信条件が揃っている場合（対象 artifact が S3 にアップロード済みで、`USE_S3=true` または Lambda ランタイム）、`302` で短命な presigned URL にリダイレクトします。
+通常のブラウザと CLI の契約は、capability 保護された API からの配信です。
+対象 artifact が S3 にある場合も、API がセッション権限、実行 ID、S3 key を検証したうえで S3 から読み出し、API レスポンスとして返します。
 
 ### `GET /api/verification/bundles/:sessionId/:executionId`
 
 秘密データを含まない配布対象アーカイブ `bundle.zip` を返します。
+S3-backed bundle が大きい場合は `Range` リクエストが必要になり、API は `206 Partial Content` の range response を返します。
 
 レスポンス:
 
 - `200`: ZIP バイナリ
-- `302`: S3 presigned URL へリダイレクト
+- `206`: S3-backed bundle の range response
+- `413`: bundle が大きく、range download が必要
 
 主なエラー:
 
@@ -400,16 +414,20 @@ S3 配信条件が揃っている場合（対象 artifact が S3 にアップロ
 - `SESSION_CAPABILITY_EXPIRED` (`401`)
 - `400`: パラメータ不正
 - `404`: バンドル未検出
-- `500`: ダウンロード URL 生成失敗 / 読み込み失敗
+- `416`: invalid `Range` header
+- `500`: artifact 読み込み失敗
 
 ### `GET /api/verification/bundles/:sessionId/:executionId/report`
 
-検証レポート `verification.json` を返します。非公開レポートであり、配布対象アーカイブ `bundle.zip` には含まれません。
+検証レポート `verification.json` を返します。
+protected report artifact であり、配布対象アーカイブ `bundle.zip` には含まれません。
+S3-backed report も API が保護された本文として返します。
+現在のインライン上限を超える report は fail-closed で拒否され、raw S3 URL や presigned URL は通常契約として公開されません。
 
 レスポンス:
 
 - `200`: JSON
-- `302`: S3 presigned URL へリダイレクト
+- `413`: report が認証済みインライン配信の上限を超過
 
 主なエラー:
 
@@ -418,15 +436,18 @@ S3 配信条件が揃っている場合（対象 artifact が S3 にアップロ
 - `SESSION_CAPABILITY_EXPIRED` (`401`)
 - `400`: パラメータ不正
 - `404`: レポート未検出
-- `500`: ダウンロード URL 生成失敗 / 読み込み失敗
-
----
+- `500`: artifact 読み込み失敗
 
 ## 掲示板 API
 
 ### `GET /api/bulletin`
 
 掲示板一覧を返します。
+
+補足:
+
+- 現行 retained owner-scoped inspection route です。
+- 通常の public browser と CLI の主導線ではなく、owner-scoped inspection や tooling surface として扱います。
 
 要件:
 
@@ -487,7 +508,7 @@ RFC6962 整合性証明を返します。
 
 補足:
 
-- `/verify` の最終判定は内部チェックパイプライン（`recorded_consistency_proof` を含む）で行うため、この HTTP エンドポイントは検証ツール・点検用途として扱います。
+- `/verify` の最終判定は内部チェックパイプライン（`recorded_consistency_proof` を含む）で行うため、この HTTP エンドポイントは検証 tooling と点検用途として扱います。
 
 要件:
 
@@ -505,39 +526,8 @@ RFC6962 整合性証明を返します。
 
 主なエラー（handler 固有、独自形式）:
 
-- `400`: `oldSize` / `newSize` 欠落・不正・範囲外、掲示板未初期化、proof 生成失敗
+- `400`: `oldSize` / `newSize` 欠落、不正、範囲外、掲示板未初期化、proof 生成失敗
 - `500`: consistency proof 生成中の内部エラー
-
-### `GET /api/botdata/:id`
-
-ボット投票（`1..63`）のデータと証明を返します。
-
-補足:
-
-- 将来の bot verification UI の building block であり、現行 `/verify` ページの最終判定には参加しません
-
-要件:
-
-- セッション finalized 必須
-
-レスポンス（`200`）:
-
-- `data.id`
-- `data.vote`
-- `data.random`
-- `data.commitment`
-- `data.voteId`
-- `data.timestamp`
-- `data.proof`（`leafIndex`, `merklePath`, `treeSize`, `bulletinRootAtCast`）
-
-主なエラー:
-
-- `INVALID_BOT_ID` (`400`)
-- `SESSION_NOT_FINALIZED` (`400`)
-- `BOT_DATA_NOT_FOUND` (`404`)
-- `INTERNAL_ERROR` (`500`; CT proof を組み立てられない場合を含む)
-
----
 
 ## 補助 API
 
@@ -602,18 +592,21 @@ STH スナップショットを返します。
 ### `GET /api/zkvm-input-hash`
 
 セッション由来の zkVM 入力コミットメントを返します。
+active public contract は hash-only です。
+
+`sessionId` と `X-Session-Capability` で capability 検証し、finalized/current artifact 状態を確認したうえで `inputCommitment` だけを返します。
+private input data、raw witness values、vote opening は返しません。
+`includeData=true`, `1`, `yes` などの truthy variant は retired private-data variant であり、通常のブラウザと CLI の契約ではありません。
 
 要件:
 
 - クエリ: `sessionId` 必須
 - ヘッダー: `X-Session-Capability` 必須
-- クエリ: `includeData` 任意（`true` / `1` / `yes` で有効）
-- `includeData=true` は debug authorization が必要
+- クエリ: `includeData` は active schema では受理しません
 
 レスポンス（`200`）:
 
 - `inputCommitment`
-- `data`（`includeData` 有効時のみ）
 
 主なエラー:
 
@@ -627,13 +620,27 @@ handler 固有エラー（独自形式）:
 - `SESSION_NOT_FOUND` (`404`)
 - `SESSION_NOT_FINALIZED` (`400`)
 - `CT_PROOF_UNAVAILABLE` (`400`)
-- `INCLUDE_DATA_FORBIDDEN` (`403`)
+- `ROUTE_RETIRED` (`410`; truthy `includeData` variant)
 - `INTERNAL_ERROR` (`500`)
+
+## Retired route と internal surface の扱い
+
+以下は active browser と CLI contract ではありません。
+
+- `GET /api/debug/enable`: retired debug route。
+  現行 Hono route inventory には登録されず、公開 API として説明しません。
+- `GET /api/botdata/:id`: retired private inspection route。
+  bot vote opening 相当の private data を返し得た legacy surface であり、active external API として扱いません。
+  現行 route definitions には登録されず、API contract metadata では `410 ROUTE_RETIRED` 扱いです。
+- `POST /api/finalize/callback`: async finalize worker callback 用の internal/operator-only route。
+  通常のブラウザと CLI から呼び出す API ではありません。
+- `GET /api/zkvm-input-hash?includeData=<truthy>`: retired private-data variant。
+  active `GET /api/zkvm-input-hash` は `inputCommitment` のみを返します。
 
 ## 関連する章
 
-- [セッションライフサイクル](./session-lifecycle.md) — セッション・capability・finalize の状態遷移
-- [チェック一覧](../verification/checks-catalog.md) — 各 API レスポンスがどの検証チェックに使われるか
-- [用語集](../appendix/glossary.md) — `voteReceipt`、`bundle.zip`、`STH`、capability などの用語定義
+- [セッションライフサイクル](./session-lifecycle.md): セッション、capability、finalize の状態遷移
+- [チェック一覧](../verification/checks-catalog.md): 各 API レスポンスがどの検証チェックに使われるか
+- [用語集](../appendix/glossary.md): `voteReceipt`、`bundle.zip`、`STH`、capability などの用語定義
 
-<!-- source: src/server/api/routes/registry.ts, src/server/api/handlers/*, src/lib/validation/apiSchemas.ts, src/server/api/middleware/session.ts, src/server/api/middleware/rateLimit.ts, src/server/api/middleware/turnstile.ts, src/lib/store/mockSessionStore.ts, src/lib/store/fileMockSessionStore.ts, src/lib/store/amplifySessionStore.ts -->
+<!-- source: apps/api/src/server/api/routes/definitions.ts, apps/api/src/server/api/handlers/*, packages/api-contract/src/validation/apiSchemas.ts, apps/api/src/server/api/middleware/session.ts, apps/api/src/server/api/middleware/rateLimit.ts, apps/api/src/server/api/middleware/turnstile.ts, packages/aws-adapters/src/store/mockSessionStore.ts, packages/aws-adapters/src/store/fileMockSessionStore.ts, packages/aws-adapters/src/store/dynamoSessionStore.ts -->

@@ -39,12 +39,50 @@ pnpm test:cli:real-prod:all -- --user-choice B --skip-build
 
 Notes:
 
-- The harness runs `next build` and `next start` unless `STARK_BALLOT_CLI_BASE_URL` is already set.
+- The harness runs `pnpm build:ci`, then spawns `scripts/dev/static-hono-server.ts` directly unless
+  `STARK_BALLOT_CLI_BASE_URL` is already set. `pnpm start` is the equivalent manual wrapper.
 - Real zkVM modes require built Rust binaries.
-- `--skip-build` only works when a fresh enough Next.js build output already exists.
-- When the harness starts its own production Next.js server, it also fills a test-only local
+- `--skip-build` only works when a fresh enough Vite dist output already exists.
+- When the harness starts its own production Vite static frontend plus Hono API server, it also fills a test-only local
   `SESSION_CAPABILITY_SECRET` from `scripts/tests/.env.test.defaults` if neither the shell nor
   `.env.local` already provides one.
+
+### Develop gated smoke
+
+`scripts/tests/develop-gated-smoke.ts` is the Plan 03 operator-gated develop
+smoke runner. It must run through the gated CloudFront hostname and also probe
+the direct API origin for fail-closed rejection. The positive owner flow uses
+the CLI real-zkVM production verifier-service path, so deployed develop must
+produce and verify production-mode STARK evidence. Develop differs from
+production only by access gating, Cloudflare bypass posture, and artifact
+retention policy.
+
+Use signed-cookie values from the approved operator procedure. The cookie must
+be generated from the current develop operator private key in the approved
+secret store and the CloudFront public key ID created by the app Terraform
+lane. Do not generate cookies from repository files or Terraform state.
+
+```bash
+STARK_BALLOT_DEVELOP_BASE_URL=https://develop.stark-ballot-sim.hwatanabe.dev \
+STARK_BALLOT_DIRECT_API_ORIGIN=https://<api-id>.execute-api.<region>.amazonaws.com \
+STARK_BALLOT_OPERATOR_AUTH_HEADER=Cookie \
+STARK_BALLOT_OPERATOR_AUTH_VALUE='CloudFront-Policy=<policy>; CloudFront-Signature=<signature>; CloudFront-Key-Pair-Id=<key-pair-id>' \
+pnpm test:develop:gated-smoke
+```
+
+The documented operator-gated command does not require
+`STARK_BALLOT_SESSION_TURNSTILE_TOKEN`, `STARK_BALLOT_VOTE_TURNSTILE_TOKEN`,
+or `STARK_BALLOT_FINALIZE_TURNSTILE_TOKEN`: in target develop, the API skips
+server-side session/vote/finalize Turnstile only after the outer CloudFront
+operator gate and origin verification have admitted the request. Browser
+bypass flags such as `VITE_TURNSTILE_BYPASS` remain disabled in target static
+artifacts.
+
+Do not put private key material, raw origin-header secrets, unsigned policy
+payloads, or full signed-cookie values in tracked docs, logs, public handoff
+summaries, or release artifacts. Local non-acceptance runs may set
+`STARK_BALLOT_ALLOW_LOCAL_GATED_SMOKE=1`; Plan 03 acceptance must set
+`STARK_BALLOT_DIRECT_API_ORIGIN`.
 
 ### Batch real-proof run
 
@@ -68,7 +106,7 @@ This is a real STARK proof run and is expected to take roughly 3.5 hours.
 
 ### `setup-cli-test.sh`
 
-Starts `pnpm dev` inside a tmux session named `nextjs`.
+Starts `pnpm dev` inside a tmux session named `vite`.
 
 Usage:
 
@@ -81,7 +119,10 @@ Notes:
 
 - Use this when you want a long-lived local dev server and plan to point the CLI harness at it with `STARK_BALLOT_CLI_BASE_URL=http://127.0.0.1:3000`.
 - The file is not executable in the current repo, so invoke it with `bash`.
-- Current limitation: this helper starts `pnpm dev`, and the `dev` script in `package.json` hardcodes `USE_MOCK_ZKVM=true`. In practice this makes the helper a mock-server setup, even if `--real` is passed.
+- `pnpm dev` reads local defaults from `.env.local`. With the checked-in
+  `.env.local.example` defaults, this helper starts a mock local UI. For genuine
+  real-zkVM runs, use the CLI-managed `test:cli:real-*` scripts or point the CLI
+  at a separately configured server.
 
 ### `teardown-cli-test.sh`
 
@@ -154,22 +195,6 @@ Notes:
 - `scripts/tests/rfc6962-golden-vectors.ts` builds the deterministic cases used by the generator and Vitest coverage.
 - Rust tests in `zkvm/contract-core/src/inclusion_proof.rs` consume the generated fixture to check cross-language RFC6962 compatibility.
 
-### `test-journal-parser.ts`
-
-Parses journal bytes from pre-existing receipt fixtures under `zkvm/test-data/`.
-
-Usage:
-
-```bash
-pnpm tsx scripts/tests/test-journal-parser.ts
-```
-
-Notes:
-
-- This script looks for files like `zkvm/test-data/test-s0-notamper-receipt.json`.
-- Those scenario receipt files are not checked into the repo by default.
-- Generate or copy the receipts first, or the script will fail with `ENOENT`.
-
 ### `tamper-stark-proof.ts`
 
 Creates a tampered copy of a valid receipt to check proof tamper-evidence behavior.
@@ -194,26 +219,10 @@ Notes:
 - Writes `zkvm/test-data/test-fixture-tampered-stark-receipt.json`
 - Requires a real `Composite` receipt. `pnpm test:stark-tamper` regenerates one first.
 
-### `test-s3-tamper.ts`
-
-Legacy low-level tamper experiment.
-
-Usage:
-
-```bash
-pnpm tsx scripts/tests/test-s3-tamper.ts
-```
-
-Notes:
-
-- Despite the name, it does not call S3.
-- It constructs synthetic vote data in-process and runs the local zkVM host through the TypeScript executor.
-- This script is best treated as a manual investigation helper, not a maintained CI entrypoint.
-
 ### `entrypoint-bundle.test.sh`
 
 Smoke test for the public bundle/archive contract and host timeout wrapper exposed by
-`docker/entrypoint.sh`.
+`infra/docker/entrypoint.sh`.
 
 Usage:
 
@@ -254,6 +263,23 @@ Notes:
 - It is intentionally excluded from `pnpm test:run` because VM/CI timing noise makes fixed thresholds flaky.
 - Use it for local regression checks or before/after comparisons when optimizing hot paths.
 
+### `zkvm-full-guest-benchmark.ts`
+
+Opt-in production-mode full-guest zkVM benchmark for the Rust host.
+
+Usage:
+
+```bash
+pnpm tsx scripts/tests/zkvm-full-guest-benchmark.ts
+pnpm tsx scripts/tests/zkvm-full-guest-benchmark.ts -- --iterations 3 --slots 64 --output .tmp/zkvm-full-guest-benchmark.json
+```
+
+Notes:
+
+- Requires a built host binary; use `pnpm build:zkvm` first.
+- Runs with `RISC0_DEV_MODE` unset and writes a structured JSON report.
+- Use `--keep-artifacts` only when you need to inspect the generated input, output, receipt, and bitmap artifacts.
+
 ### `__tests__/`
 
 Vitest regression coverage for the CLI harness lives under `scripts/tests/__tests__/`.
@@ -265,11 +291,12 @@ Current files:
 - `read-image-id.test.ts`
 - `rfc6962-golden-vectors.test.ts`
 - `zkvm-fixtures.test.ts`
+- `zkvm-full-guest-benchmark.test.ts`
 
-Run them with the rest of the Vitest suite:
+Run them with the rest of the one-shot Vitest suite:
 
 ```bash
-pnpm test
+pnpm test:run
 ```
 
 or target them directly:
@@ -280,11 +307,11 @@ pnpm vitest run scripts/tests/__tests__
 
 ## Prerequisites
 
-- `pnpm i`
+- `pnpm install --frozen-lockfile` for reproducible setup, or `pnpm install` for local development
 - `pnpm build:zkvm` for scripts that invoke the Rust host binary
 - `pnpm build:verifier-service` for real CLI bundle verification
-- an existing `next build` output if you pass `--skip-build`
-- generated receipt fixtures for `test-journal-parser.ts` and `tamper-stark-proof.ts`
+- an existing `pnpm build:ci` output if you pass `--skip-build`
+- generated receipt fixtures for `tamper-stark-proof.ts`
 - `jq` for `test-zkvm.sh`
 - `tmux` and `nc` for `setup-cli-test.sh`
 - `python3`, `timeout`, and `unzip` for `entrypoint-bundle.test.sh`
@@ -292,5 +319,5 @@ pnpm vitest run scripts/tests/__tests__
 ## Current Guidance
 
 - Prefer the `pnpm test:cli*` commands for end-to-end validation.
-- Treat `test-zkvm.sh`, `test-s3-tamper.ts`, and `test-journal-parser.ts` as low-level diagnostics.
+- Treat `test-zkvm.sh` as a low-level diagnostic.
 - When reusing a long-lived dev server, set `STARK_BALLOT_CLI_BASE_URL` explicitly before running the CLI harness.

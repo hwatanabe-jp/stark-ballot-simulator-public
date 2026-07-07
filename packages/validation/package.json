@@ -1,0 +1,17 @@
+{
+  "name": "@stark-ballot/validation",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./definedProperties": "./src/definedProperties.ts",
+    "./duplicate-detector": "./src/duplicate-detector.ts",
+    "./duplicate-detector-cache": "./src/duplicate-detector-cache.ts",
+    "./image-id-policy": "./src/image-id-policy.ts",
+    "./safe-verifier-segment": "./src/safe-verifier-segment.ts",
+    "./schema": "./src/schema.ts"
+  },
+  "devDependencies": {
+    "vitest": "4.1.9"
+  }
+}

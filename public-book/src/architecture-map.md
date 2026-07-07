@@ -1,10 +1,12 @@
-# アーキテクチャ語彙マップ（試験的）
+# アーキテクチャ語彙マップ（参考）
 
-> **注意**: このページは試験的な語彙整理であり、`overview.md` のような確定仕様ではありません。
-> Bounded context の切り方や Aggregate / Value Object の対応付けは PoC 進行に合わせて変更される可能性があります。
-> 実装上の真実は各章（`protocol/`, `zkvm/`, `verification/`）および現行コードを優先してください。
+> **注意**: このページは、実装を読むときの補助になる語彙マップです。
+> `overview.md` のような主要仕様ではありません。
+> Bounded Context の分け方や Aggregate / Value Object の対応付けは、PoC の進行に合わせて変わる可能性があります。
+> 実装上の根拠は、各章（`protocol/`, `zkvm/`, `verification/`）と現行コードを優先してください。
 
-この図は、`STARK Ballot Simulator` の bounded context を 1 枚の context map にまとめた語彙地図です。中心には「必要な証拠が揃い、required checks が成功するまで `Verified` と表示しない」という中核の約束があります。
+この図は、`STARK Ballot Simulator` の Bounded Context を 1 枚の context map にまとめた語彙地図です。
+中心には、「必要な証拠が揃い、required checks が成功するまで `Verified` と表示しない」という中核の約束を置いています。
 
 ```mermaid
 %%{init: {"flowchart": {"nodeSpacing": 36, "rankSpacing": 58, "curve": "basis"}}}%%
@@ -79,10 +81,10 @@ flowchart TB
   subgraph ADAPTERS["Adapters / delivery mechanisms"]
     direction TB
     Browser["Browser UI<br/>/ /vote /aggregate /result /verify"]
-    SharedApi["Shared API<br/>Next route wrappers と Hono route registry"]
-    VoteStore["VoteStore implementations<br/>Mock / FileMock / Amplify"]
+    SharedApi["Shared API<br/>Hono route definitions"]
+    VoteStore["VoteStore implementations<br/>Mock / FileMock / DynamoDB"]
     SyncProver["Sync finalize<br/>local zkVM executor + ProofBundleService"]
-    AsyncAws["Async AWS<br/>SQS / Step Functions / ECS / S3 / callback runners"]
+    AsyncAws["Async AWS<br/>SQS / Step Functions / ECS / S3 / target workers"]
     ReportDelivery["Bundle and report delivery<br/>public bundle.zip<br/>protected verification.json"]
 
     Browser --> SharedApi
@@ -103,7 +105,7 @@ flowchart TB
   PROOF -- "Published Language<br/>journal + RISC Zero receipt + inputCommitment" --> AUDIT
   VOTE -- "Private knowledge<br/>opening recomputes commitment" --> AUDIT
   BOARD -- "Evidence<br/>inclusion + consistency + optional STH" --> AUDIT
-  POLICY -- "Demo policy<br/>exclusion scenarios affect proof input" --> PROOF
+  POLICY -- "Demo policy<br/>input-tamper scenarios affect proof input" --> PROOF
   POLICY -- "Mismatch becomes audit evidence" --> AUDIT
 
   ADAPTERS -. "drives use cases" .-> VOTE
@@ -114,14 +116,14 @@ flowchart TB
   AUDIT --> Promise
 ```
 
-## DDD としての読み方
+## DDD 語彙としての読み方
 
-- Bounded Context は 4 つ（投票セッション / 公開掲示板 / 集計証明 / 検証監査）。
-- 各 context の内側は Ubiquitous Language を頭に、Aggregate Root / Value Objects / Conceptual Domain Events / Invariants の 4 段で表す。
-- **Published Language** ラベル付きの太矢印は公開契約を示し、同じ単語でも context が違えば意味を分ける（例：「投票レシート」は VOTE の語彙、「RISC Zero receipt」は PROOF の語彙）。
-- 教育的シナリオ S0–S5 は bounded context ではなく **Domain Policy** として外側に置き、claimed tally と verified tally の不一致を AUDIT へ伝える。
-- UI / API / Store / AWS は別ドメインの言語ではなくアダプタなので、`Adapters / delivery mechanisms` として図の下部に分離する。
+- Bounded Context は、投票セッション、公開掲示板、集計証明、検証監査の 4 つです。
+- 各 context は、Ubiquitous Language を起点に Aggregate Root、Value Objects、Conceptual Domain Events、Invariants の 4 段で表します。
+- **Published Language** ラベル付きの太矢印は公開契約を示し、同じ単語でも context が違えば意味を分けます（例：「投票レシート」は VOTE の語彙、「RISC Zero receipt」は PROOF の語彙）。
+- 教育的シナリオ S0–S5 は bounded context ではなく **Domain Policy** として外側に置き、claimed tally と verified tally の不一致を AUDIT へ伝えます。
+- UI、API、Store、AWS は別ドメインの言語ではなくアダプタなので、`Adapters / delivery mechanisms` として図の下部に分離します。
 
 `Verified` を表示してよい厳密な条件は [ゲーティングロジック](verification/gating-logic.md) を参照してください。
 
-<!-- source: README.md, public-book docs, src/server/api/routes/*, src/server/api/handlers/*, src/lib/finalize/*, src/lib/verification/*, src/lib/zkvm/types.ts, zkvm/*, verifier-service/*, amplify/*, docker/entrypoint.sh -->
+<!-- source: README.md, public-book docs, apps/api/src/server/api/routes/*, apps/api/src/server/api/handlers/*, packages/application/src/finalize/*, packages/domain/src/lib/finalize/*, packages/verification/src/verification/*, packages/zkvm-contract/src/zkvm/types.ts, zkvm/*, verifier-service/*, infra/docker/entrypoint.sh -->

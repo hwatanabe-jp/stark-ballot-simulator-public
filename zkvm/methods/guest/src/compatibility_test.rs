@@ -15,16 +15,16 @@ mod tests {
         // Test Vector 1 from TypeScript
         let log_id = [0x01u8; 32];
         let tree_size = 64u32;
-        let timestamp = 1234567890u64;
+        let timestamp = 1_234_567_890_000u64;
         let bulletin_root = [0xAAu8; 32];
 
         let sth_digest = compute_sth_digest(&log_id, tree_size, timestamp, &bulletin_root);
 
-        // Expected from TypeScript: 0x1a17180975ad39b6eac807cd6a619677d4401b72248dd2fb240873c5f089254d
+        // Expected from TypeScript: 0xaedbecefc2c4aec2f8b73a44af53a4d87fc20567d74802c608b5069d26f19e18
         let expected: [u8; 32] = [
-            0x1a, 0x17, 0x18, 0x09, 0x75, 0xad, 0x39, 0xb6, 0xea, 0xc8, 0x07, 0xcd, 0x6a, 0x61,
-            0x96, 0x77, 0xd4, 0x40, 0x1b, 0x72, 0x24, 0x8d, 0xd2, 0xfb, 0x24, 0x08, 0x73, 0xc5,
-            0xf0, 0x89, 0x25, 0x4d,
+            0xae, 0xdb, 0xec, 0xef, 0xc2, 0xc4, 0xae, 0xc2, 0xf8, 0xb7, 0x3a, 0x44, 0xaf, 0x53,
+            0xa4, 0xd8, 0x7f, 0xc2, 0x05, 0x67, 0xd7, 0x48, 0x02, 0xc6, 0x08, 0xb5, 0x06, 0x9d,
+            0x26, 0xf1, 0x9e, 0x18,
         ];
 
         assert_eq!(
@@ -64,7 +64,8 @@ mod tests {
             tree_size,
             total_expected,
             &[vote],
-        );
+        )
+        .expect("compatibility input commitment should encode");
 
         // Expected from TypeScript: 0xbeaa8d53c5c49f3bf66ed3910a96e0c382b5efbb2fc5d37e0f87c9b5b708a100
         let expected: [u8; 32] = [
@@ -124,7 +125,8 @@ mod tests {
             tree_size,
             total_expected,
             &votes,
-        );
+        )
+        .expect("compatibility input commitment should encode");
 
         // Expected from TypeScript: 0x41b500cbc58e121a4b0b03ee386073b739293f9397b1cd75b0bdf555c1afb32d
         let expected: [u8; 32] = [
@@ -179,7 +181,8 @@ mod tests {
             tree_size,
             total_expected,
             &[vote_a, vote_b, vote_c],
-        );
+        )
+        .expect("compatibility input commitment should encode");
 
         let expected: [u8; 32] = [
             0xd0, 0x97, 0xe1, 0x51, 0xb6, 0xe9, 0xe8, 0x61, 0x46, 0xbe, 0x5a, 0xf1, 0xa0, 0xd0,

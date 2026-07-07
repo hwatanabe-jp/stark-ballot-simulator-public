@@ -1,141 +1,270 @@
-# AWS Architecture (Current)
+# AWS Architecture (Current Target)
 
-本ドキュメントは、STARK Ballot Simulator の **現在の AWS 構成** を「よくある図」として俯瞰できるようにまとめたものです。
-（最終確認: 2026-01-04）
+本ドキュメントは、STARK Ballot Simulator の target AWS 構成を俯瞰するための概要です。
+上の図は実行時の一般的な構成だけを示し、下の図は同じ実行時構成に GitHub OIDC、AWS-native deployment pipeline、Terraform state 分離を足したものです。
+上の図は下の図の runtime 部分集合です。
+
+最終確認: 2026-07-06
+
+## Runtime Architecture
+
+デプロイフローを除いた、ユーザー操作とアプリ実行時の構成です。
 
 ```text
-┌──────────────────┐
-│ Users / Browsers │
-└────────┬─────────┘
-         │ (web/SSR)
-         ▼
-┌──────────────────────────────┐
-│ Amplify Hosting              │
-│ Next.js 16 (App Router)      │
-│ static + SSR                 │
-└──────────────┬───────────────┘
-               │ served app bundle (JS)
-               ▼
-┌──────────────────────────────┐
-│ Frontend Runtime (Browser)   │
-└──────────────┬───────────────┘
-               │ API calls (NEXT_PUBLIC_API_BASE_URL)
-               ▼
-┌──────────────────────────────┐     ┌──────────────────────────────┐
-│ API Gateway (HTTP API)       │────▶│ Lambda: hono-api             │
-│ /api/*                       │     │ (Node.js 22)                 │
-└──────────────────────────────┘     └──────────────┬───────────────┘
-                                                    │
-                     ┌──────────────────────────────┼──────────────────────────────┐
-                     │                              │                              │
-                     ▼                              ▼                              ▼
-         ┌───────────────────────┐    ┌───────────────────────┐    ┌────────────────────────────────────────────┐
-         │ AppSync GraphQL       │    │ Lambda: verifier-     │    │ SQS: prover-work queue                    │
-         │ (Amplify Data)        │    │ service-runner (Layer)│    │ (`stark-ballot-simulator-prover-work-<env>`) │
-         └───────────┬───────────┘    └───────────┬───────────┘    └───────────┬───────────┘
-                     │                            │                            │
-                     ▼                            ▼                            ▼
-         ┌───────────────────────┐    ┌───────────────────────┐    ┌───────────────────────────────┐
-         │ DynamoDB (GraphQL)    │    │ S3 Proof Bundles      │    │ Lambda: prover-dispatch-proxy │
-         │ • Session tables      │    │ bundle.zip (~15MB)    │    │ (Reserved Concurrency = 2)    │
-         └───────────────────────┘    └───────────────────────┘    └───────────────┬───────────────┘
-                                                                                   │
-         ┌───────────────────────┐                                                 │
-         │ DynamoDB (Direct SDK) │ ◀── hono-api Lambda                             │
-         │ • RateLimitEvents     │                                                 │
-         │ • RateLimitCounters   │                                                 │
-         └───────────────────────┘                                                 │
-                                                                                   │
-                                                                                   ▼
-                                                                   ┌────────────────────────────────────────────────────┐
-                                                                   │ Step Functions: prover-dispatcher                 │
-                                                                   │ (`stark-ballot-simulator-prover-dispatcher-<env>`) │
-                                                                   └───────────────┬───────────────┘
-                                                                                   │
-                                                                   ┌───────────────┴───────────────┐
-                                                                   │                               │
-                                                                   ▼                               ▼
-                                                   ┌───────────────────────────┐   ┌───────────────────────────┐
-                                                   │ Lambda: check-image-      │   │ Lambda: finalize-         │
-                                                   │ signature (ECR gate)      │   │ callback-runner           │
-                                                   └─────────────┬─────────────┘   └─────────────┬─────────────┘
-                                                                 │                               │
-                                                                 ▼                               ▼
-                                                   ┌───────────────────────────┐   ┌───────────────────────────┐
-                                                   │ ECS Fargate (ARM64)       │   │ AppSync GraphQL           │
-                                                   │ zkVM Prover Task          │   │ finalizationState         │
-                                                   └─────────────┬─────────────┘   └───────────────────────────┘
-                                                                 │
-                                                                 ▼
-                                                   ┌───────────────────────────┐
-                                                   │ S3 Proof Bundles          │
-                                                   └───────────────────────────┘
+┌──────────────────────────────────────────────┐
+│ Users / Browsers                             │
+└───────────────────────┬──────────────────────┘
+                        │ HTTPS
+                        ▼
+┌──────────────────────────────────────────────┐
+│ CloudFront                                   │
+│ - static frontend origin                     │
+│ - /api and /api/* origin                     │
+└──────────────┬───────────────────┬───────────┘
+               │ static assets     │ /api and /api/*
+               ▼                   ▼
+┌──────────────────────────────┐   ┌──────────────────────────────┐
+│ S3 private static frontend   │   │ API Gateway HTTP API         │
+│ Vite + React Router bundle   │   │ ANY /api, ANY /api/{proxy+}  │
+└──────────────────────────────┘   └──────────────┬───────────────┘
+                                                   │
+                                                   ▼
+                                      ┌──────────────────────────────┐
+                                      │ Lambda: Hono API             │
+                                      │ session-scoped API authority │
+                                      └──────────────┬───────────────┘
+                                                     │
+            ┌────────────────────────────────────────┼────────────────────────────────────────┐
+            │                                        │                                        │
+            ▼                                        ▼                                        ▼
+┌──────────────────────────────┐        ┌──────────────────────────────┐        ┌──────────────────────────────┐
+│ DynamoDB                     │        │ Lambda: verification-worker      │        │ SQS prover-work queue        │
+│ sessions                     │        │ verification run / reports   │        │ async finalization work      │
+│ votes                        │        └──────────────┬───────────────┘        └──────────────┬───────────────┘
+│ rate-limit-events            │                       │                                       │
+│ rate-limit-counters          │                       ▼                                       ▼
+└──────────────────────────────┘        ┌──────────────────────────────┐        ┌──────────────────────────────┐
+                                        │ S3 private proof/report      │        │ Lambda: proof-dispatcher      │
+                                        │ artifacts                    │        │ starts Step Functions        │
+                                        │ - public bundle allowlist    │        └──────────────┬───────────────┘
+                                        │ - owner-scoped report        │                       │
+                                        └──────────────────────────────┘                       ▼
+                                                                               ┌──────────────────────────────┐
+                                                                               │ Step Functions finalization  │
+                                                                               │ async prover orchestration   │
+                                                                               └──────────────┬───────────────┘
+                                                                                              │
+                                                    ┌─────────────────────────────────────────┼─────────────────────────────────────────┐
+                                                    │                                         │                                         │
+                                                    ▼                                         ▼                                         ▼
+                                      ┌──────────────────────────────┐        ┌──────────────────────────────┐        ┌──────────────────────────────┐
+                                      │ Lambda: image-signature-gate│        │ ECS Fargate zkVM prover      │        │ Lambda: finalization-writer    │
+                                      │ digest-pinned image trust    │        │ proof generation task        │        │ completion state update      │
+                                      └──────────────────────────────┘        └──────────────┬───────────────┘        └──────────────┬───────────────┘
+                                                                                              │                                       │
+                                                                                              ▼                                       ▼
+                                                                               ┌──────────────────────────────┐        ┌──────────────────────────────┐
+                                                                               │ S3 private proof artifacts   │        │ DynamoDB session/finalization│
+                                                                               │ prover input/output objects  │        │ update                       │
+                                                                               └──────────────────────────────┘        └──────────────────────────────┘
 ```
 
+## Runtime + Deployment Architecture
+
+同じ runtime 構成に、GitHub から AWS への deployment control plane と Terraform state 分離を足した構成です。
+
 ```text
-┌────────┐   ┌───────────────────────┐   ┌─────────────────────┐   ┌────────────────────────┐
-│ User   │──▶│ Amplify Hosting       │──▶│ Browser Runtime     │──▶│ API Gateway (HTTP API) │
-│        │   │ Next.js 16            │   │                     │   │                        │
-└────────┘   └───────────────────────┘   └─────────────────────┘   └───────────┬────────────┘
-                                                                               │
-                                                                               ▼
-                                                                   ┌───────────────────────┐
-                                                                   │ Lambda: hono-api      │
-                                                                   └───────────┬───────────┘
-                                                                               │
-                     ┌─────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────┐
-                     │                                                         │                                                         │
-                     ▼                                                         ▼                                                         ▼
-         ┌───────────────────────┐                             ┌───────────────────────────────┐                         ┌────────────────────────────────────────────┐
-         │ AppSync GraphQL       │                             │ Lambda: verifier-service-     │                         │ SQS: prover-work queue                    │
-         │                       │                             │ runner (Layer)                │                         │ (`stark-ballot-simulator-prover-work-<env>`) │
-         └───────────┬───────────┘                             └───────────────┬───────────────┘                         └─────────────┬─────────────┘
-                     │                                                         │                                                       │
-                     ▼                                                         ▼                                                       ▼
-         ┌───────────────────────┐                             ┌───────────────────────────────┐                         ┌───────────────────────────┐
-         │ DynamoDB (GraphQL)    │                             │ S3 Proof Bundles              │                         │ Lambda: prover-dispatch-  │
-         │ • Session tables      │                             │                               │                         │ proxy                     │
-         └───────────────────────┘                             └───────────────────────────────┘                         └─────────────┬─────────────┘
-                                                                                                                                       │
-         ┌───────────────────────┐                                                                                                     │
-         │ DynamoDB (Direct SDK) │ ◀── hono-api Lambda                                                                                 │
-         │ • RateLimitEvents     │                                                                                                     │
-         │ • RateLimitCounters   │                                                                                                     │
-         └───────────────────────┘                                                                                                     │
-                                                                                                                                       │
-                                                                                                                                       ▼
-                                                                                                                         ┌────────────────────────────────────────────────────┐
-                                                                                                                         │ Step Functions: prover-dispatcher                 │
-                                                                                                                         │ (`stark-ballot-simulator-prover-dispatcher-<env>`) │
-                                                                                                                         └─────────────┬─────────────┘
-                                                                                                                                       │
-                                                                                                         ┌─────────────────────────────┴─────────────────────────────┐
-                                                                                                         │                                                           │
-                                                                                                         ▼                                                           ▼
-                                                                                         ┌───────────────────────────────┐                           ┌───────────────────────────────┐
-                                                                                         │ Lambda: check-image-signature │                           │ Lambda: finalize-callback-    │
-                                                                                         │                               │                           │ runner                        │
-                                                                                         └───────────────┬───────────────┘                           └───────────────┬───────────────┘
-                                                                                                         │                                                           │
-                                                                                                         ▼                                                           ▼
-                                                                                         ┌───────────────────────────────┐                           ┌───────────────────────────────┐
-                                                                                         │ ECS Fargate zkVM Prover       │                           │ AppSync GraphQL               │
-                                                                                         │ (ARM64, 16 vCPU / 32 GB)      │                           │ finalizationState             │
-                                                                                         └───────────────┬───────────────┘                           └───────────────────────────────┘
-                                                                                                         │
-                                                                                                         ▼
-                                                                                         ┌───────────────────────────────┐
-                                                                                         │ S3 Proof Bundles              │
-                                                                                         └───────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│ AWS Organizations                            │
+└───────────────────────┬──────────────────────┘
+                        │
+      ┌─────────────────┼─────────────────┐
+      │                 │                 │
+      ▼                 ▼                 ▼
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│ management   │  │ stark-dev    │  │ stark-prod   │
+│ account      │  │ account      │  │ account      │
+├──────────────┤  ├──────────────┤  ├──────────────┤
+│ Organizations│  │ develop env  │  │ main env     │
+│ Billing      │  │ branch:      │  │ branch:      │
+│ IAM Identity │  │ develop      │  │ main         │
+│ Center       │  │              │  │ protected    │
+│ Guardrails   │  │ bootstrap    │  │ production   │
+│ No workloads │  │ foundation   │  │ path         │
+│              │  │ app state    │  │              │
+└──────────────┘  └──────┬───────┘  └──────┬───────┘
+                         │                 │
+                         └────────┬────────┘
+                                  │ selected member account
+                                  ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ Target AWS member account                                             │
+│ state identity: <account-alias>/<environment>/<state-scope>           │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   │
+                                   │
+┌──────────────────────────────────▼───────────────────────────────────┐
+│ GitHub repository                                                     │
+├──────────────────────────────────────────────────────────────────────┤
+│ CI evidence                                                           │
+│ lint / type-check / tests / e2e / Rust / formal / public safety       │
+├──────────────────────────────────────────────────────────────────────┤
+│ GitHub Actions deploy trigger                                         │
+│ OIDC: token.actions.githubusercontent.com                             │
+│ aud: sts.amazonaws.com                                                │
+│ sub: repo:<owner>/<repo>:ref:refs/heads/<branch>                      │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   │ AssumeRoleWithWebIdentity
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ AWS IAM role: GitHub trigger                                          │
+│ allowed only to start and observe selected CodePipeline execution     │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ AWS CodePipeline                                                      │
+├──────────────────────────────────────────────────────────────────────┤
+│ 1. Source                                                             │
+│    CodeConnections GitHub source                                      │
+│    exact branch / source SHA evidence                                 │
+│                                                                      │
+│ 2. Validate                                                           │
+│    CodeBuild validate role                                            │
+│    source preflight / CI evidence / config checks                     │
+│                                                                      │
+│ 3. Terraform Plan                                                     │
+│    CodeBuild plan role                                                │
+│    saved tfplan / human summary / checksum                            │
+│                                                                      │
+│ 4. Manual Approval                                                    │
+│    AWS-native approval record                                         │
+│    required for protected production path                             │
+│                                                                      │
+│ 5. Terraform Apply                                                    │
+│    CodeBuild apply role                                               │
+│    applies reviewed saved plan only                                   │
+│                                                                      │
+│ 6. Static Frontend Deploy                                             │
+│    CodeBuild static deploy role                                       │
+│    pnpm build:ci / dist scan / S3 sync / CloudFront invalidation      │
+│                                                                      │
+│ 7. Post-Deploy Smoke                                                  │
+│    CodeBuild smoke role                                               │
+│    CloudFront/API/security/boundary/data-plane evidence               │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ Terraform state and deployment ownership                              │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   │
+             ┌─────────────────────┼─────────────────────┐
+             │                     │                     │
+             ▼                     ▼                     ▼
+┌──────────────────────────┐ ┌──────────────────────────┐ ┌──────────────────────────┐
+│ bootstrap state          │ │ foundation state         │ │ app state                │
+├──────────────────────────┤ ├──────────────────────────┤ ├──────────────────────────┤
+│ key:                     │ │ key:                     │ │ key:                     │
+│ stark-ballot-simulator/  │ │ stark-ballot-simulator/  │ │ stark-ballot-simulator/  │
+│ <account>/<env>/         │ │ <account>/<env>/         │ │ <account>/<env>/         │
+│ bootstrap/               │ │ foundation/              │ │ app/                     │
+│ terraform.tfstate        │ │ terraform.tfstate        │ │ terraform.tfstate        │
+│                          │ │                          │ │                          │
+│ lock:                    │ │ lock:                    │ │ lock:                    │
+│ terraform.tfstate.tflock │ │ terraform.tfstate.tflock │ │ terraform.tfstate.tflock │
+├──────────────────────────┤ ├──────────────────────────┤ ├──────────────────────────┤
+│ owns deployment control  │ │ owns Plan 02             │ │ owns runtime resources   │
+│ plane and backend grants │ │ prerequisites only:      │ │ below and consumes       │
+│ - remote-state bucket    │ │ - ECR repositories       │ │ foundation handoff       │
+│ - state KMS/policies     │ │ - signing/provenance     │ │                          │
+│ - CodeConnections/OIDC   │ │   policy                 │ │                          │
+│ - CodePipeline/Build     │ │ - release-manifest store │ │                          │
+│ - deploy roles           │ │ - prover networking      │ │                          │
+│ - artifact buckets       │ │ - secret containers      │ │                          │
+│ - backend grants         │ │ - non-secret config      │ │                          │
+│                          │ │ - DNS/ACM prerequisites  │ │                          │
+└──────────────────────────┘ └──────────────────────────┘ └────────────┬─────────────┘
+                                                                        │
+                                                                        │ owns / deploys
+                                                                        ▼
+┌──────────────────────────────────────────────┐
+│ Users / Browsers                             │
+└───────────────────────┬──────────────────────┘
+                        │ HTTPS
+                        ▼
+┌──────────────────────────────────────────────┐
+│ CloudFront                                   │
+│ - static frontend origin                     │
+│ - /api and /api/* origin                     │
+└──────────────┬───────────────────┬───────────┘
+               │ static assets     │ /api and /api/*
+               ▼                   ▼
+┌──────────────────────────────┐   ┌──────────────────────────────┐
+│ S3 private static frontend   │   │ API Gateway HTTP API         │
+│ Vite + React Router bundle   │   │ ANY /api, ANY /api/{proxy+}  │
+└──────────────────────────────┘   └──────────────┬───────────────┘
+                                                   │
+                                                   ▼
+                                      ┌──────────────────────────────┐
+                                      │ Lambda: Hono API             │
+                                      │ session-scoped API authority │
+                                      └──────────────┬───────────────┘
+                                                     │
+            ┌────────────────────────────────────────┼────────────────────────────────────────┐
+            │                                        │                                        │
+            ▼                                        ▼                                        ▼
+┌──────────────────────────────┐        ┌──────────────────────────────┐        ┌──────────────────────────────┐
+│ DynamoDB                     │        │ Lambda: verification-worker      │        │ SQS prover-work queue        │
+│ sessions                     │        │ verification run / reports   │        │ async finalization work      │
+│ votes                        │        └──────────────┬───────────────┘        └──────────────┬───────────────┘
+│ rate-limit-events            │                       │                                       │
+│ rate-limit-counters          │                       ▼                                       ▼
+└──────────────────────────────┘        ┌──────────────────────────────┐        ┌──────────────────────────────┐
+                                        │ S3 private proof/report      │        │ Lambda: proof-dispatcher      │
+                                        │ artifacts                    │        │ starts Step Functions        │
+                                        │ - public bundle allowlist    │        └──────────────┬───────────────┘
+                                        │ - owner-scoped report        │                       │
+                                        └──────────────────────────────┘                       ▼
+                                                                               ┌──────────────────────────────┐
+                                                                               │ Step Functions finalization  │
+                                                                               │ async prover orchestration   │
+                                                                               └──────────────┬───────────────┘
+                                                                                              │
+                                                    ┌─────────────────────────────────────────┼─────────────────────────────────────────┐
+                                                    │                                         │                                         │
+                                                    ▼                                         ▼                                         ▼
+                                      ┌──────────────────────────────┐        ┌──────────────────────────────┐        ┌──────────────────────────────┐
+                                      │ Lambda: image-signature-gate│        │ ECS Fargate zkVM prover      │        │ Lambda: finalization-writer    │
+                                      │ digest-pinned image trust    │        │ proof generation task        │        │ completion state update      │
+                                      └──────────────────────────────┘        └──────────────┬───────────────┘        └──────────────┬───────────────┘
+                                                                                              │                                       │
+                                                                                              ▼                                       ▼
+                                                                               ┌──────────────────────────────┐        ┌──────────────────────────────┐
+                                                                               │ S3 private proof artifacts   │        │ DynamoDB session/finalization│
+                                                                               │ prover input/output objects  │        │ update                       │
+                                                                               └──────────────────────────────┘        └──────────────────────────────┘
 ```
 
 ## Notes
 
-- **フロントアクセス**: 画面表示のアクセス先は **Amplify Hosting**。API Gateway は **API 呼び出し時のみ**（`NEXT_PUBLIC_API_BASE_URL` を設定している場合）にブラウザからアクセスされます。
-- **アプリ層**: Amplify Hosting（Next.js）+ AppSync（Amplify Data）が中心。Hono API は API Gateway 経由で Lambda 実行。
-- **証明生成パイプライン**: `/api/finalize` → SQS → Lambda Proxy → Step Functions → ECS Fargate → S3 → Finalize Callback。
-- **署名・検証**: ECR 署名が存在することの検証は Step Functions の `check-image-signature` で実行。署名検証する機能は公式で配布されておらず、未実装。
-- **データアクセス**: Session は AppSync GraphQL 経由、Rate Limit は直接 DynamoDB SDK (`@aws-sdk/client-dynamodb`)。
-- **レート制限**: DynamoDB テーブル (RateLimitEvents/Counters) で per-IP + global 制限を永続化。Hono Lambda と同一スタックで自動作成。
-- **監視**: Lambda / Step Functions / ECS は CloudWatch Logs に集約。
-- **IaC**: Amplify はアプリ層、Terraform はインフラ層（VPC/ECS/SQS/Step Functions/ECR/S3）を管理。
+- **Current target status**: `infra/terraform/app` defines the target runtime resources, post-merge Plan 02 repository/foundation provisioning and immutable private handoff are complete, and Plan 03 is complete for `stark-dev/develop/app`. The app saved-plan pipeline first succeeded on 2026-07-05 JST through Source, Validate, TerraformPlan, ManualApproval, TerraformApply, StaticFrontendDeploy, and PostApplySmoke. A later read-only check observed a subsequent successful app execution on 2026-07-06 JST for source `f06af647...`; the latest foundation pipeline was paused at ManualApproval after a successful plan, while its last full apply/smoke success remained the 2026-07-04 JST accepted foundation evidence. Owner/operator manual validation of the gated develop path is accepted as sufficient to close Plan 03. Production bootstrap, production DNS cutover, normal public admission, and legacy AWS retirement remain pending follow-up.
+- **Account boundary**: `management` is only for AWS Organizations, IAM Identity Center, billing, and guardrails. Application workloads, Terraform backends, pipeline artifacts, and runtime resources live in member accounts.
+- **Branch mapping**: `develop` maps to `stark-dev/develop`; `main` maps to `stark-prod/main`.
+- **State separation**: `bootstrap` owns deployment infrastructure and backend grants. `foundation` owns only Plan 02 prerequisites consumed by the app lane: ECR repositories plus signing/provenance policy, release-manifest storage, prover networking, secret containers and non-secret config records, and DNS/ACM prerequisites. `app` owns CloudFront/S3, API Gateway/Hono Lambda, DynamoDB, private proof artifacts, SQS, Step Functions, ECS/Fargate, callback, verifier, and observability resources. It consumes the immutable foundation handoff and must not repair missing foundation authority during Plan 03.
+- **GitHub boundary**: GitHub Actions may trigger or observe CodePipeline through the narrow OIDC trigger role. It must not run Terraform apply, read Terraform state, mutate application resources directly, or read production secrets.
+- **Frontend boundary**: CloudFront serves Vite / React Router static assets from a private S3 bucket through OAC and routes `/api/*` to API Gateway. Browser-public `VITE_*` configuration must remain safe for public download.
+- **API boundary**: Hono API runs behind API Gateway and remains the only browser/CLI authority for session-scoped state, bundle downloads, reports, verification runs, and mutations.
+- **Data boundary**: session, vote, finalization, and rate-limit state use target DynamoDB tables. Non-mock target runtime does not depend on Amplify Data/AppSync.
+- **Artifact boundary**: the proof/report S3 bucket is private. Public bundles are allowlisted evidence only; `input.json`, `verification.json`, `included-bitmap.json`, `seen-bitmap.json`, raw bitmap sidecars, vote openings, and private locators must not be public bundle members or static frontend artifacts.
+- **Proof pipeline**: `/api/finalize` dispatches async work through SQS, `proof-dispatcher`, Step Functions, image-signature checking, ECS Fargate zkVM proving, private S3 artifacts, and `finalization-writer`.
+- **Retired surfaces**: Amplify Hosting, Amplify Data/AppSync, and Next.js route wrappers are historical surfaces, not current target runtime or deployment authority.
+
+## Related Source-of-Truth Documents
+
+- [`docs/current/aws-account-migration/index.md`](../../aws-account-migration/index.md)
+- [`docs/current/aws-account-migration/01-target-architecture-plan.md`](../../aws-account-migration/01-target-architecture-plan.md)
+- [`docs/current/aws-account-migration/04-terraform-state-and-account-migration-plan.md`](../../aws-account-migration/04-terraform-state-and-account-migration-plan.md)
+- [`docs/current/aws-account-migration/08-ci-cd-and-deployment-flow-plan.md`](../../aws-account-migration/08-ci-cd-and-deployment-flow-plan.md)
+- [`infra/terraform/bootstrap/README.md`](../../../../infra/terraform/bootstrap/README.md)
+- [`infra/terraform/app/README.md`](../../../../infra/terraform/app/README.md)

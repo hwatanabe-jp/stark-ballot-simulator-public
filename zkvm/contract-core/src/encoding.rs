@@ -1,3 +1,4 @@
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use risc0_zkvm::sha::{Impl, Sha256};
@@ -13,18 +14,18 @@ pub fn compute_input_commitment_v4(
     tree_size: u32,
     total_expected: u32,
     votes: &[VoteWithProof],
-) -> [u8; 32] {
+) -> Result<[u8; 32], String> {
     let data = encode_input_commitment_preimage(
         election_id,
         bulletin_root,
         tree_size,
         total_expected,
         votes,
-    );
+    )?;
     let digest = Impl::hash_bytes(&data);
     let mut result = [0u8; 32];
     result.copy_from_slice(digest.as_bytes());
-    result
+    Ok(result)
 }
 
 fn encode_input_commitment_preimage(
@@ -33,7 +34,7 @@ fn encode_input_commitment_preimage(
     tree_size: u32,
     total_expected: u32,
     votes: &[VoteWithProof],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, String> {
     let mut data = Vec::with_capacity(encoded_prefix_len() + encoded_votes_len(votes));
 
     data.extend_from_slice(INPUT_DOMAIN_TAG);
@@ -42,39 +43,47 @@ fn encode_input_commitment_preimage(
     data.extend_from_slice(bulletin_root);
     data.extend_from_slice(&tree_size.to_le_bytes());
     data.extend_from_slice(&total_expected.to_le_bytes());
-    data.extend_from_slice(&checked_vote_count(votes.len()).to_le_bytes());
+    data.extend_from_slice(&checked_vote_count(votes.len())?.to_le_bytes());
 
-    let mut sorted_indices: Vec<usize> = (0..votes.len()).collect();
-    sorted_indices.sort_by(|&a, &b| compare_votes(&votes[a], &votes[b]));
+    if is_sorted_by_canonical_ordering(votes) {
+        for vote in votes {
+            encode_vote(&mut data, vote)?;
+        }
+    } else {
+        let mut sorted_indices: Vec<usize> = (0..votes.len()).collect();
+        sorted_indices.sort_by(|&a, &b| compare_votes(&votes[a], &votes[b]));
 
-    for index in sorted_indices {
-        let vote = &votes[index];
-        encode_vote(&mut data, vote);
+        for index in sorted_indices {
+            let vote = &votes[index];
+            encode_vote(&mut data, vote)?;
+        }
     }
 
-    data
+    Ok(data)
 }
 
-fn encode_vote(data: &mut Vec<u8>, vote: &VoteWithProof) {
+fn encode_vote(data: &mut Vec<u8>, vote: &VoteWithProof) -> Result<(), String> {
     data.extend_from_slice(&vote.index.to_le_bytes());
     data.extend_from_slice(&32u16.to_le_bytes());
     data.extend_from_slice(&vote.commitment);
-    data.extend_from_slice(&checked_merkle_path_len(vote.merkle_path.len()).to_le_bytes());
+    data.extend_from_slice(&checked_merkle_path_len(vote.merkle_path.len())?.to_le_bytes());
 
     for node in &vote.merkle_path {
         data.extend_from_slice(node);
     }
+
+    Ok(())
 }
 
-fn checked_vote_count(len: usize) -> u32 {
-    u32::try_from(len).expect("input commitment vote count exceeds u32 encoding")
+fn checked_vote_count(len: usize) -> Result<u32, String> {
+    u32::try_from(len).map_err(|_| "input commitment vote count exceeds u32 encoding".to_string())
 }
 
-fn checked_merkle_path_len(len: usize) -> u16 {
-    u16::try_from(len).expect("input commitment merkle path length exceeds u16 encoding")
+fn checked_merkle_path_len(len: usize) -> Result<u16, String> {
+    u16::try_from(len)
+        .map_err(|_| "input commitment merkle path length exceeds u16 encoding".to_string())
 }
 
-#[cfg(test)]
 fn is_sorted_by_canonical_ordering(votes: &[VoteWithProof]) -> bool {
     votes
         .windows(2)
@@ -161,7 +170,8 @@ mod tests {
             tree_size,
             total_expected,
             &votes_unsorted,
-        );
+        )
+        .expect("input commitment should encode");
 
         let commitment2 = compute_input_commitment_v4(
             &election_id,
@@ -169,7 +179,8 @@ mod tests {
             tree_size,
             total_expected,
             &votes_sorted,
-        );
+        )
+        .expect("input commitment should encode");
 
         assert_eq!(commitment1, commitment2);
     }
@@ -196,7 +207,8 @@ mod tests {
             tree_size,
             total_expected,
             &votes_first,
-        );
+        )
+        .expect("input commitment should encode");
 
         let commitment2 = compute_input_commitment_v4(
             &election_id,
@@ -204,7 +216,8 @@ mod tests {
             tree_size,
             total_expected,
             &votes_second,
-        );
+        )
+        .expect("input commitment should encode");
 
         assert_eq!(commitment1, commitment2);
     }
@@ -228,16 +241,20 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "input commitment merkle path length exceeds u16 encoding")]
     fn test_input_commitment_rejects_u16_path_length_overflow() {
-        checked_merkle_path_len(usize::from(u16::MAX) + 1);
+        assert_eq!(
+            checked_merkle_path_len(usize::from(u16::MAX) + 1),
+            Err("input commitment merkle path length exceeds u16 encoding".to_string())
+        );
     }
 
     #[test]
     #[cfg(target_pointer_width = "64")]
-    #[should_panic(expected = "input commitment vote count exceeds u32 encoding")]
     fn test_input_commitment_rejects_u32_vote_count_overflow() {
-        checked_vote_count(u32::MAX as usize + 1);
+        assert_eq!(
+            checked_vote_count(u32::MAX as usize + 1),
+            Err("input commitment vote count exceeds u32 encoding".to_string())
+        );
     }
 
     #[derive(Deserialize)]
@@ -327,14 +344,16 @@ mod tests {
                 case.tree_size,
                 case.total_expected,
                 &votes,
-            );
+            )
+            .expect("formal input commitment preimage should encode");
             let commitment = compute_input_commitment_v4(
                 &election_id,
                 &bulletin_root,
                 case.tree_size,
                 case.total_expected,
                 &votes,
-            );
+            )
+            .expect("formal input commitment should encode");
             let expected_digest: [u8; 32] = Sha256::digest(&expected_encoded_bytes).into();
 
             assert_eq!(canonical_ids, case.expected_canonical_order);

@@ -1,14 +1,18 @@
 # バンドル構造
 
-証明バンドルの内訳と公開許可リスト、同期・非同期それぞれのモードでの差分を扱う章です。
+この章は、証明バンドルのファイル構造と、同期モードと非同期モードの差分を説明します。
+公開可能アーティファクトと保護対象アーティファクトの境界は [公開境界](public-boundary.md) に集約しています。
 
 ## 概要
 
-[証明バンドル](../appendix/glossary.md#証明バンドルproof-bundle) は、zkVM の実行結果を検証可能な形で保存・配布するためのアーティファクト群です。実際に配布される [`bundle.zip`](../appendix/glossary.md#配布対象アーカイブbundlezip) は、厳格な許可リストによって公開可能アーティファクトだけを含める配布対象アーカイブです。
+[証明バンドル](../appendix/glossary.md#証明バンドルproof-bundle) は、zkVM の実行結果を検証可能な形で保存し、配布するためのアーティファクト群です。
+実際に配布される [`bundle.zip`](../appendix/glossary.md#配布対象アーカイブbundlezip) は、厳格な許可リストによって公開可能アーティファクトだけを含める配布対象アーカイブです。
 
-本書で `public` / 「公開可能」と記述する場合、秘密情報を含まず第三者検証に利用可能であるという機密性の分類を指します。無認証で誰でも取得できるという意味ではなく、アクセス経路は [バンドルのアクセス方法](#バンドルのアクセス方法) を参照してください。
+この章でいう `public` / 「公開可能」は「秘密を含まず第三者検証に使える」という機密性の分類であり、無認証公開を意味しません。
+アクセス経路は [バンドルのアクセス方法](#バンドルのアクセス方法) を参照してください。
 
-`bundle.zip` 自体は監査用成果物であり、`/verify` 画面の最終判定を単体で完全再現することは目的としていません。UI 最終判定に必要な追加材料は [第三者検証ガイド](../reproducibility/index.md) を参照してください。
+`bundle.zip` は監査用成果物であり、`/verify` 画面の最終判定を単体で完全再現することは目的としていません。
+UI 最終判定に必要な追加材料は [第三者検証ガイド](../reproducibility/index.md) を参照してください。
 
 ```mermaid
 flowchart TB
@@ -48,41 +52,38 @@ flowchart TB
   SB -.-x BZ
 ```
 
-## 公開許可リスト
+## 公開境界の要約
 
 バンドルアーカイブ（`bundle.zip`）に含められるファイルは、許可リストによって厳格に制限されています。
+この節は構造を読むための要約です。
 
-### 公開可能なアーティファクト
+### `bundle.zip` に入る公開可能アーティファクト
 
-| ファイル                 | 内容                                                               | 用途                                         |
-| ------------------------ | ------------------------------------------------------------------ | -------------------------------------------- |
-| `public-input.json`      | zkVM 検証に使う秘密データを含まない検証用レコード                  | 第三者が入力コミットメントを再計算するため   |
-| `election-manifest.json` | 選挙設定の公開監査用スナップショット                               | 選挙設定と `electionConfigHash` の照合       |
-| `close-statement.json`   | 集計締切時点のログ境界を表す公開監査レコード                       | `logId` / `treeSize` / `bulletinRoot` の照合 |
-| `receipt.json`           | ホストが出力する `{ receipt, image_id }` ラッパー JSON             | 第三者がレシートを独立に検証するため         |
-| `journal.json`           | zkVM ゲストの公開出力（集計結果、除外情報、ビットマップルート等）  | 集計結果と整合性データの確認                 |
-| `metadata.json`          | バンドルの作成日時、セッション ID、メソッドバージョン（sync のみ） | バンドルの来歴追跡                           |
-| `sth.json`               | 第三者 STH 検証のスナップショット（任意）                          | STH 合意の再現可能な証拠                     |
-| `consistency-proof.json` | RFC 6962 整合性証明（任意）                                        | 追記専用性の独立検証                         |
+| ファイル                 | 内容                                                               | 用途                                       |
+| ------------------------ | ------------------------------------------------------------------ | ------------------------------------------ |
+| `public-input.json`      | zkVM 検証に使う秘密データを含まない検証用レコード                  | 第三者が入力コミットメントを再計算するため |
+| `election-manifest.json` | 選挙設定の公開監査用スナップショット                               | 選挙設定と `electionConfigHash` の照合     |
+| `close-statement.json`   | 集計締切時点のログ境界を表す公開監査レコード                       | `logId`、`treeSize`、`bulletinRoot` の照合 |
+| `receipt.json`           | ホストが出力する `{ receipt, image_id }` ラッパー JSON             | 第三者がレシートを独立に検証するため       |
+| `journal.json`           | zkVM ゲストの公開出力（集計結果、除外情報、ビットマップルート等）  | 集計結果と整合性データの確認               |
+| `metadata.json`          | バンドルの作成日時、セッション ID、メソッドバージョン（sync のみ） | バンドルの来歴追跡                         |
+| `sth.json`               | 第三者 STH 検証のスナップショット（任意）                          | STH 合意の再現可能な証拠                   |
+| `consistency-proof.json` | RFC 6962 整合性証明（任意）                                        | 追記専用性の独立検証                       |
 
+`receipt.json` が含まれていても、それだけで production STARK proof として成功扱いにはなりません。
+`RISC0_DEV_MODE=1` の receipt は production STARK proof ではなく、production 検証では fail-closed に扱います。
 `sth.json` と `consistency-proof.json` は許可リストに含まれますが、現行フローでは通常生成されません。
 
-### 非公開アーティファクト
+### `bundle.zip` に入れない保護対象アーティファクト
 
-| ファイル               | 内容                                                               | 非公開の理由                                                             |
-| ---------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------ |
-| `input.json`           | zkVM への完全な入力（選択肢・乱数・コミットメント・Merkle パス等） | 投票の秘匿入力（ウィットネス）を含む                                     |
-| `verification.json`    | 検証サービスの詳細レポート                                         | `bundle.zip` の許可リスト外（必要時は専用エンドポイントで参照）          |
-| `included-bitmap.json` | 厳密な counted bitmap artifact                                     | 個票 explainability 用の非公開アーティファクトであり `bundle.zip` 対象外 |
-| `seen-bitmap.json`     | 厳密な presented bitmap artifact                                   | 個票 explainability 用の非公開アーティファクトであり `bundle.zip` 対象外 |
-
-`input.json` が公開されると投票の秘匿性が失われます。`verification.json` は必要時のみ専用の capability 保護エンドポイント経由で扱います。`included-bitmap.json` と `seen-bitmap.json` は `/api/bitmap-proof` の trusted source ですが、配布対象アーカイブ `bundle.zip` には含めません。
-
----
+`input.json`、`verification.json`、`included-bitmap.json`、`seen-bitmap.json` は `bundle.zip` のメンバーではありません。
+`verification.json` は検証サービスの protected report artifact であり、必要時のみ `bundle.zip` とは別の capability 保護 report エンドポイントで扱います。
+各ファイルを除外する理由は [公開境界](public-boundary.md#bundlezip-に入れないファイル) を参照してください。
 
 ## 公開入力の構造
 
-`public-input.json` は、第三者検証に必要で、かつ選択肢と乱数を含まない入力側レコードです。`input.json` の単純なサブセットではありません。
+`public-input.json` は、第三者検証に必要で、かつ選択肢と乱数を含まない入力側レコードです。
+`input.json` の単純なサブセットではありません。
 
 | フィールド           | 説明                                                    |
 | -------------------- | ------------------------------------------------------- |
@@ -99,36 +100,44 @@ flowchart TB
 | `methodVersion`      | zkVM メソッドバージョン                                 |
 | `votes`              | 各投票のインデックス、コミットメント、Merkle パスの配列 |
 
-`votes` 配列には各投票のインデックスとコミットメント、Merkle パスが含まれますが、選択肢と乱数は含まれません。これにより、入力コミットメントの再計算が可能でありながら、投票内容の秘匿性は維持されます。
+`votes` 配列には各投票のインデックス、コミットメント、Merkle パスが含まれます。
+選択肢と乱数は含まれません。
+これにより、入力コミットメントを再計算でき、同時に選択肢と乱数はこのファイルに載りません。
 
-`public-input.json` と `inputCommitment` は同一ではなく、後者が直接束縛するのはこのレコードの一部です。計算対象フィールドと非対象フィールドの整理は [入力コミットメント](../protocol/input-commitment.md) を参照してください。
-
----
+`public-input.json` と `inputCommitment` は同一ではありません。
+後者が直接束縛するのはこのレコードの一部です。
+計算対象フィールドと非対象フィールドの整理は [入力コミットメント](../protocol/input-commitment.md) を参照してください。
 
 ## 同期バンドルと非同期バンドルの違い
 
-証明生成には 2 つのパスがあります。**同期モード** はローカルプロセス / Lambda 上で TypeScript がアーティファクトを生成し、検証サービスから戻った verification.json を含めて bundle.zip を作成します。**非同期モード** は ECS Fargate コンテナの `entrypoint.sh` が公開可能アーティファクトを生成し、bundle.zip を S3 に置いた後コールバック Lambda がセッションに結果を反映します。両モードとも、`public-input.json` / `election-manifest.json` / `close-statement.json` は `journal.json` と正準な proof-bound data との整合性検査を通過した場合にのみ bundle 化されます。不一致があれば [fail-closed](../appendix/glossary.md#fail-closed) で処理を中断します。
+証明生成には 2 つのパスがあります。
+**同期モード** では、ローカルプロセスまたは Lambda 上で TypeScript が公開可能アーティファクトを生成します。
+検証サービスから戻った `verification.json` は、protected report artifact として `bundle.zip` の外に保存します。
+**非同期モード** では、ECS Fargate コンテナの `entrypoint.sh` が公開可能アーティファクトを生成します。
+その後、`bundle.zip` を S3 に置き、コールバック Lambda がセッションに結果を反映します。
+両モードとも、`public-input.json`、`election-manifest.json`、`close-statement.json` は `journal.json` と正準な proof-bound data との整合性検査を通過した場合にのみ bundle 化されます。
+不一致があれば [fail-closed](../appendix/glossary.md#fail-closed) で処理を中断します。
 
-| 項目                     | 同期モード                                  | 非同期モード                                                                                                             |
-| ------------------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| 実行環境                 | ローカルプロセス / Lambda                   | ECS Fargate コンテナ                                                                                                     |
-| `input.json`             | 生成される（非公開保存）                    | ワーク入力として S3 に置かれる（配布対象外）                                                                             |
-| `public-input.json`      | TypeScript で生成                           | entrypoint.sh 内で生成                                                                                                   |
-| `election-manifest.json` | TypeScript で生成                           | entrypoint.sh 内で生成                                                                                                   |
-| `close-statement.json`   | TypeScript で生成                           | entrypoint.sh 内で生成                                                                                                   |
-| `journal.json`           | TypeScript で生成                           | `*-output.json` から `bundle.zip` 用に生成                                                                               |
-| `receipt.json`           | ホストの `{ receipt, image_id }` 出力を保存 | `*-receipt.json` を `receipt.json` としてコピーして同梱                                                                  |
-| `included-bitmap.json`   | 生成される場合は private に保持             | 生成される場合は隣接オブジェクト（sibling object）として保持                                                             |
-| `seen-bitmap.json`       | 生成される場合は private に保持             | 生成される場合は隣接オブジェクトとして保持                                                                               |
-| `metadata.json`          | 生成される                                  | 生成されない                                                                                                             |
-| `verification.json`      | 検証サービス呼び出し後に保存                | finalize コールバック時点では生成されない。後続の `/api/verification/run` で report が保存された場合に限り参照可能       |
-| `bundle.zip`             | 許可リストに基づき作成                      | `receipt.json` / `journal.json` / `public-input.json` / `election-manifest.json` / `close-statement.json` を同梱して作成 |
-| 保存先                   | ローカルファイルシステム（+ 任意で S3）     | S3                                                                                                                       |
-| presigned URL            | S3 アップロード時に生成                     | コールバック Lambda が生成                                                                                               |
+| 項目                     | 同期モード                                                 | 非同期モード                                                                                                         |
+| ------------------------ | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| 実行環境                 | ローカルプロセスまたは Lambda                              | ECS Fargate コンテナ                                                                                                 |
+| `input.json`             | 生成される（非公開保存）                                   | ワーク入力として S3 に置かれる（配布対象外）                                                                         |
+| `public-input.json`      | TypeScript で生成                                          | entrypoint.sh 内で生成                                                                                               |
+| `election-manifest.json` | TypeScript で生成                                          | entrypoint.sh 内で生成                                                                                               |
+| `close-statement.json`   | TypeScript で生成                                          | entrypoint.sh 内で生成                                                                                               |
+| `journal.json`           | TypeScript で生成                                          | `*-output.json` から `bundle.zip` 用に生成                                                                           |
+| `receipt.json`           | ホストの `{ receipt, image_id }` 出力を保存                | `*-receipt.json` を `receipt.json` としてコピーして同梱                                                              |
+| `included-bitmap.json`   | 生成される場合は private に保持                            | 生成される場合は隣接オブジェクト（sibling object）として保持                                                         |
+| `seen-bitmap.json`       | 生成される場合は private に保持                            | 生成される場合は隣接オブジェクトとして保持                                                                           |
+| `metadata.json`          | 生成される                                                 | 生成されない                                                                                                         |
+| `verification.json`      | 検証サービス呼び出し後に保存                               | finalize コールバック時点では生成されず、後続の `/api/verification/run` で report が保存された場合に限り参照可能     |
+| `bundle.zip`             | 許可リストに基づき作成                                     | `receipt.json`、`journal.json`、`public-input.json`、`election-manifest.json`、`close-statement.json` を同梱して作成 |
+| 保存先                   | ローカルファイルシステム（+ 任意で S3）                    | S3                                                                                                                   |
+| 配信方法                 | capability 保護 API がローカルまたは S3 から読み出して返す | capability 保護 API が S3 から読み出して返す。大きい bundle は range response で配信                                 |
 
 ### 非同期バンドルの生成フロー
 
-非同期モードでは、ECS Fargate コンテナの `entrypoint.sh` が以下の手順でバンドルを構築します。
+非同期モードでは、ECS Fargate コンテナの `entrypoint.sh` が次の手順でバンドルを構築します。
 
 1. S3 から入力 JSON をダウンロード
 2. ホストバイナリを実行し、レシートと出力を生成
@@ -136,13 +145,20 @@ flowchart TB
 4. 入力と出力から `public-input.json`、`election-manifest.json`、`close-statement.json` を構築
 5. 整合性検査（本節冒頭参照）を通過したものだけを bundle に含める
 6. `receipt.json`、`journal.json`、`public-input.json`、`election-manifest.json`、`close-statement.json` を `bundle.zip` にアーカイブ
-7. `*-receipt.json` / `*-output.json` / `public-input.json` / `election-manifest.json` / `close-statement.json` / `included-bitmap.json` / `seen-bitmap.json` / `bundle.zip` などを S3 にアップロード
+7. 次を S3 にアップロード
+   - ホストの生出力: `*-receipt.json`、`*-output.json`
+   - 公開可能アーティファクト: `public-input.json`、`election-manifest.json`、`close-statement.json`
+   - 非公開の隣接 artifact: `included-bitmap.json`、`seen-bitmap.json`
+   - 配布対象アーカイブ: `bundle.zip`
 
-コールバック Lambda は S3 の `bundle.zip` からジャーナル、レシート、`public-input.json`、`election-manifest.json`、`close-statement.json` を復元します。利用可能な場合は隣接オブジェクトの bitmap artifact も取り込み、presigned URL の生成と監査用データの保存を行います。
+コールバック Lambda は S3 の `bundle.zip` からジャーナル、レシート、`public-input.json`、`election-manifest.json`、`close-statement.json` を復元します。
+利用可能な場合は隣接オブジェクトの bitmap artifact も取り込み、bundle locator と監査用データを保存します。
+report locator は後続の `/api/verification/run` で report が保存された場合に記録されます。
+ブラウザと CLI への通常配信は capability 保護 API が担当します。
 
-`docker/entrypoint.sh` は methodVersion 14 のホスト出力を検証し、`journal.json` / `public-input.json` / `election-manifest.json` / `close-statement.json` の methodVersion と `inputCommitment` が一致することを確認してから `bundle.zip` を生成します。methodVersion が現行契約と一致しない出力は fail-closed で停止します。
-
----
+`infra/docker/entrypoint.sh` は methodVersion 14 のホスト出力を検証します。
+`journal.json` と `public-input.json` の methodVersion および `inputCommitment` が一致し、`election-manifest.json` と `close-statement.json` が各自の公開監査フィールドと整合することを確認してから `bundle.zip` を生成します。
+methodVersion が現行契約と一致しない出力は fail-closed で停止します。
 
 ## バンドルディレクトリ構造
 
@@ -184,46 +200,37 @@ s3://{BUCKET}/sessions/{sessionId}/{executionId}/
 
 ### 補足
 
-- 非同期モードの S3 オブジェクト名は固定の `receipt.json` / `journal.json` になりません。`inputBase` がコンテナ実行時に生成される一時入力ファイル名に依存するためです。
-- 非同期モードの `verification.json` は `bundle.zip` の構成要素ではなく、report エンドポイントから参照する別アーティファクトです。S3 上の report がこのセッションの配信対象として記録されていれば短命な presigned URL にリダイレクトされ、未記録ならローカル report を探し、いずれもなければ `404` を返します。
-
----
+- 非同期モードの S3 オブジェクト名は、コンテナ実行時に生成される一時入力ファイル名 `inputBase` に依存するため、固定の `receipt.json` / `journal.json` になりません。
+- `verification.json` は同期モードと非同期モードのどちらでも `bundle.zip` の構成要素ではなく、report エンドポイントから参照する別アーティファクトです。
+- S3 上の report がこのセッションの配信対象として記録されていれば、capability 保護 API が S3 から読み出して保護された本文として返します。
+- 未記録ならローカル report を探し、いずれもなければ `404` を返します。
 
 ## バンドルのアクセス方法
 
 ### ダウンロードエンドポイント
 
-| エンドポイント                                                 | 内容                        |
-| -------------------------------------------------------------- | --------------------------- |
-| `GET /api/verification/bundles/:sessionId/:executionId`        | `bundle.zip` のダウンロード |
-| `GET /api/verification/bundles/:sessionId/:executionId/report` | `verification.json` の取得  |
+取得経路は capability 保護 API の 2 endpoint です（一覧は [公開境界 > bundle と report の取得経路](public-boundary.md#bundle-と-report-の取得経路)）。
 
-両エンドポイントとも `X-Session-Capability` ヘッダーが必須です。つまり、ダウンロードは capability 保護 API から開始されます。
-
-加えて、`executionId` はそのセッションで現在許可されている `verificationExecutionId` と一致しなければなりません。不一致や未設定の場合、API は `404` を返します。
-
-S3 バンドルは capability 保護済みのダウンロードエンドポイント経由でのみ配布されます。エンドポイントは現在の `verificationExecutionId` と S3 key を確認したうえで、そのつど短命な presigned URL にリダイレクトします。
+`executionId` がそのセッションで現在許可されている `verificationExecutionId` と一致しない、または未設定の場合、API は `404` を返します。
+S3 バンドルもこの endpoint 経由でのみ配布され、大きい bundle は `Range` リクエストに対する `206 Partial Content` の range response で配信されます。
+raw S3 URL や presigned URL へのリダイレクトは、通常のブラウザと CLI の契約ではありません。
 
 ### アーカイブの再現性
 
-同期モード（`verification-bundle.ts`）の `bundle.zip` は再現性を確保するため、以下の措置を講じています。
+同期モード（`verification-bundle.ts`）の `bundle.zip` は再現性を確保するため、次の措置を講じています。
 
 - エントリのタイムスタンプをゼロに固定
 - 許可リストに一致するファイルのみを含める
 - ファイル名のアルファベット順でエントリを追加
 
-非同期モード（`docker/entrypoint.sh`）は `zip -r` で作成され、上記の再現性制御とは実装が異なります。
-
----
+非同期モード（`infra/docker/entrypoint.sh`）は `zip -r` で作成されます。
+そのため、上記の再現性制御とは実装が異なります。
 
 ## セキュリティ上の制約
 
 ### パストラバーサル防止
 
-バンドルのパスセグメント（セッション ID、実行 ID）は英数字とハイフンのみに制限されています。`..` を含むパスや許可されていない文字を含むパスは拒否されます。
+バンドルのパスセグメント（セッション ID、実行 ID）は英数字とハイフンのみに制限されています。
+`..` を含むパスや許可されていない文字を含むパスは拒否されます。
 
-### 非公開ファイルの保護
-
-`input.json`、`verification.json`、`included-bitmap.json`、`seen-bitmap.json` は `bundle.zip` には含まれません。
-
-<!-- source: src/lib/verification/verification-bundle.ts, docker/entrypoint.sh, amplify/functions/finalize-callback-runner/handler.ts, src/lib/aws/bundle-restore.ts, amplify/functions/verifier-service-runner/handler.ts, src/server/api/routes/registry.ts, src/server/api/handlers/verificationBundles.ts -->
+<!-- source: packages/verification/src/verification/verification-bundle.ts, infra/docker/entrypoint.sh, infra/lambdas/finalization-writer/handler.ts, packages/aws-adapters/src/aws/bundle-restore.ts, infra/lambdas/verification-worker/handler.ts, apps/api/src/server/api/routes/definitions.ts, apps/api/src/server/api/handlers/verificationBundles.ts -->

@@ -1,23 +1,23 @@
 # STARK Ballot Simulator 検証バンドル & 検証フロー（現行実装）
 
 このドキュメントは **現行コードに基づく実装仕様** をまとめたものです。設計案や計画ではなく、
-`src/` / `docker/` / `amplify/` が示す挙動を唯一の真実とします。
+`apps/` / `packages/` / `infra/docker/` / `infra/terraform/` が示す挙動を唯一の真実とします。
 
 ## 参照ポイント（実装の出典）
 
-- 検証ステップ/チェック生成: `src/lib/verification/build-verification-steps.ts`, `src/lib/verification/build-verification-checks.ts`
-- チェックIDの単一ソース: `src/lib/verification/verification-checks.ts`
-- `/api/verify` 実装: `src/server/api/handlers/verify.ts`
-- バンドル生成（同期）: `src/lib/verification/verification-bundle.ts`
-- バンドル生成（非同期）: `docker/entrypoint.sh`
-- `/api/verification/run` 実装: `src/server/api/handlers/verificationRun.ts`
-- `/api/verification/bundles/*` 実装: `src/server/api/handlers/verificationBundles.ts`
-- `/api/bitmap-proof` 実装: `src/server/api/handlers/bitmapProof.ts`
-- `/api/sth` 実装: `src/server/api/handlers/sth.ts`
+- 検証ステップ/チェック生成: `packages/verification/src/verification/build-verification-steps.ts`, `packages/verification/src/verification/build-verification-checks.ts`
+- チェックIDの単一ソース: `packages/verification/src/verification/verification-checks.ts`
+- `/api/verify` 実装: `apps/api/src/server/api/handlers/verify.ts`
+- バンドル生成（同期）: `packages/verification/src/verification/verification-bundle.ts`
+- バンドル生成（非同期）: `infra/docker/entrypoint.sh`
+- `/api/verification/run` 実装: `apps/api/src/server/api/handlers/verificationRun.ts`
+- `/api/verification/bundles/*` 実装: `apps/api/src/server/api/handlers/verificationBundles.ts`
+- `/api/bitmap-proof` 実装: `apps/api/src/server/api/handlers/bitmapProof.ts`
+- `/api/sth` 実装: `apps/api/src/server/api/handlers/sth.ts`
 
 ## 用語
 
-- **receipt**: zkVM 実行の STARK 証明（`Receipt::verify(expectedImageId)` 対象）
+- **receipt**: zkVM 実行の receipt artifact（`Receipt::verify(expectedImageId)` 対象）。`RISC0_DEV_MODE=1` の fake receipt は開発用 artifact であり、production STARK proof evidence ではない。Production STARK proof evidence として扱えるのは、dev-mode ではない verifier success のみ。
 - **journal**: zkVM の公開出力（集計結果・整合性情報など）
 - **input**: zkVM 入力（witness を含む。公開禁止）
 - **public-input**: input から witness を除いた公開入力
@@ -36,10 +36,13 @@
 補助エンドポイント:
 
 - verification-support: `GET /api/bulletin/:voteId/proof`（その session の本人票、または S3/S4 で `affectedBotIds` に含まれる Bot 票のみ）
-- inspection/debug: `GET /api/bulletin`
-- secondary tooling / building blocks: `GET /api/bulletin/consistency-proof`, `GET /api/botdata/:id`
+- current retained owner-scoped inspection/debug: `GET /api/bulletin`（Target AWS migration の通常 browser/CLI contract では full-bulletin inspection を public surface として扱わず、残す場合は retained owner-scoped または internal/operator-only として分類する）
+- secondary tooling / building blocks: `GET /api/bulletin/consistency-proof`
 - `GET /api/bitmap-proof?i=`（個別票の bitmap 証明）
 - `GET /api/sth`（第三者 STH 取得用）
+
+Retired endpoint contract metadata remains for fail-closed checks, but
+`GET /api/botdata/:id` is no longer registered by the Hono route inventory.
 
 ## Session-scoped auth
 
@@ -51,13 +54,12 @@
   - `POST /api/finalize/cancel`
   - `GET /api/verify`
   - `POST /api/verification/run`
-  - `GET /api/bulletin`
+  - `GET /api/bulletin`（現行 retained owner-scoped inspection; target full-bulletin inspection は public surface ではなく分類必須）
   - `GET /api/bulletin/:voteId/proof`
   - `GET /api/bulletin/consistency-proof`
-  - `GET /api/botdata/:id`
   - `GET /api/bitmap-proof`
   - `GET /api/sth`
-  - `GET /api/zkvm-input-hash`
+  - `GET /api/zkvm-input-hash`（hash-only owner-scoped evidence; truthy private `includeData` variants は target retired/rejected）
   - `GET /api/sessions/:id/status`
   - `GET /api/verification/bundles/*`
 - ヘッダー形式:
@@ -67,9 +69,9 @@ X-Session-ID: <sessionId>
 X-Session-Capability: <capabilityToken>
 ```
 
-- `POST /api/vote` / `GET /api/progress` / `POST /api/finalize` / `POST /api/finalize/cancel` / `GET /api/verify` / `POST /api/verification/run` / `GET /api/bulletin` / `GET /api/bulletin/:voteId/proof` / `GET /api/bulletin/consistency-proof` / `GET /api/botdata/:id` / `GET /api/bitmap-proof` / `GET /api/sth` は `X-Session-ID` と `X-Session-Capability` の両方を使って session を解決します。
+- `POST /api/vote` / `GET /api/progress` / `POST /api/finalize` / `POST /api/finalize/cancel` / `GET /api/verify` / `POST /api/verification/run` / `GET /api/bulletin`（現行 retained owner-scoped inspection） / `GET /api/bulletin/:voteId/proof` / `GET /api/bulletin/consistency-proof` / `GET /api/bitmap-proof` / `GET /api/sth` は `X-Session-ID` と `X-Session-Capability` の両方を使って session を解決します。
 - `/api/sessions/:id/status` と `GET /api/verification/bundles/*` は path の sessionId を使って session scope を確定し、`X-Session-Capability` を検証します。現行 handler ではこれらの endpoint で `X-Session-ID` は必須ではありません。
-- `GET /api/zkvm-input-hash?sessionId=...` は query の `sessionId` で session scope を確定し、`X-Session-Capability` を検証します。現行 handler では `X-Session-ID` は必須ではありません。
+- `GET /api/zkvm-input-hash?sessionId=...` の hash-only path は retained owner-scoped evidence として query の `sessionId` で session scope を確定し、`X-Session-Capability` を検証します。現行 handler では `X-Session-ID` は必須ではありません。Truthy private `includeData` variants は target では `ROUTE_RETIRED` として fail closed します。
 - `GET /api/bulletin/:voteId/proof` は session capability に加えて対象 `voteId` の ownership 制約があります。現行実装では、その session の user vote か、S3/S4 の `tamperSummary.affectedBotIds` に対応する Bot vote だけを返し、それ以外は `VOTE_NOT_FOUND` で fail-closed します。
 - STH の third-party 照合では、same-origin の `/api/sth` にだけ session auth headers を転送します。外部 STH source には capability token を送信しません。
 
@@ -79,7 +81,7 @@ X-Session-Capability: <capabilityToken>
 
 - `includeJournal=1`: `journal` を含める。現行 handler では `journalStatus=available`
 - 省略時: `journal` を含めず `journalStatus=omitted`
-- `refreshS3=1`: 現行 handler はこの query parameter を見ず、raw S3 URL の再発行もしない
+- `refreshS3` は現行 public contract 外であり、strict route validation で rejected になります
 
 `includeBulletin` は存在しません。Bulletin 取得は `/api/bulletin`（inspection）または `/api/bulletin/:voteId/proof`（session-authorized な個票 proof）を使用します。
 
@@ -111,7 +113,7 @@ current-generation の finalized authority では、安全な top-level
 現行 `/api/verify` の public contract には含まれません。
 
 `verificationSteps` / `verificationChecks` は常に生成されます。ID の定義は
-`src/lib/verification/verification-checks.ts` が単一ソースです。
+`packages/verification/src/verification/verification-checks.ts` が単一ソースです。
 
 - `recorded_as_cast` / `counted_as_recorded` / `stark_verification` の `verificationSteps[].status` は、その stage で required 扱いになるチェック群から server-side に導出されます
 - `cast_as_intended` は現行 `/api/verify` では `castSource='client'` のため server-side では `not_run` を返し、verify page 側がブラウザ保存済みの receipt/opening から local check を再計算して上書きします
@@ -152,7 +154,7 @@ artifact contract は `verify.ts` / `verificationRun.ts` / `sessionStatus.ts` / 
 - Counted-as-Recorded
 - STARK Verification
 
-チェック ID は `src/lib/verification/verification-checks.ts` を唯一の真実とし、
+チェック ID は `packages/verification/src/verification/verification-checks.ts` を唯一の真実とし、
 ドキュメント内のリストは参照用です。
 
 ```text
@@ -175,7 +177,7 @@ STARK:   stark_image_id_match, stark_receipt_verify
 
 ## STH（第三者照合）
 
-- 設定は `NEXT_PUBLIC_STH_SOURCES` と `NEXT_PUBLIC_STH_MIN_MATCHES`
+- 設定は `VITE_STH_SOURCES` と `VITE_STH_MIN_MATCHES`
 - 相対URL（`/api/sth`）は検証時のリクエスト origin に対して解決
 - same-origin の `/api/sth` は `X-Session-ID` / `X-Session-Capability` 付きで取得される
 - cross-origin の STH source には session capability を送らない
@@ -190,6 +192,7 @@ STARK:   stark_image_id_match, stark_receipt_verify
 - `included` は「counted された index」、`seen` は「prover に提示された index」を表す
 - bitmap は LSB-first で pack され、bit `i` は byte `i / 8` の bit position `i % 8` に対応する
 - `X-Session-ID` と `X-Session-Capability` を用いて保存済み private bitmap artifact を取得
+- 通常の API usage では、`i` は session の user vote index に限定される。隣接 slot や任意 index の検査 route は現行 contract にはない
 - 現行 PoC では、proof source がある場合に検証フローから自動取得されうる。明示同意ゲートは実装していない
 - 取得した `leafChunk` から bit の解釈はクライアント側で実施
 - 保存された bitmap の root が journal と一致しない場合は proof を無効化
@@ -250,12 +253,12 @@ input.json, verification.json, included-bitmap.json, seen-bitmap.json
 
 ## STARK 検証
 
-- `POST /api/verification/run` は、authoritative な `s3BundleKey` がある場合は `verifier-service-runner` 経由で、ない場合は trusted local bundle を直接 `verifier-service` に渡して `Receipt::verify(expectedImageId)` を実行する
+- `POST /api/verification/run` は、authoritative な `s3BundleKey` がある場合は `verification-worker` 経由で、ない場合は trusted local bundle を直接 `verifier-service` に渡して `Receipt::verify(expectedImageId)` を実行する
 - 結果は `verification.json` に保存され、`/api/verify` で参照可能
 
 ## 検証結果サマリー
 
-- 生成元: `src/lib/verification/verification-summary.ts`
+- 生成元: `packages/verification/src/verification/verification-summary.ts`
 - 入力: `verificationChecks` に加えて `missingSlots/invalidPresentedSlots/rejectedRecords/excludedSlots` の文脈。legacy mirror は `/api/verify` の boundary で canonical field に畳み込まれ、summary logic には渡しません
 - 方針:
   - **必須チェック欠落は missing_evidence**

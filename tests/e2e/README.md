@@ -59,13 +59,14 @@ pnpm test:cli:real-prod:s0
 - ここで `pnpm test:e2e:axe` と `pnpm test:e2e:mock --grep @smoke --reporter=list` を実行します。
 - `pnpm test:e2e:axe` は現在 `/vote`, `/aggregate`, `/privacy`, `/terms` の high-impact (`serious` / `critical`) axe violation を確認する smoke です。
 - この smoke セットは現在 S0 と S2 で、正常系と「proof は正しいが claimed tally は壊れている」系の両方をカバーします。
-- 公開 CI は生成済み public workflow だけを使い、private repository の build artifact には依存しません。
+- 手動再実行は repository CI の `playwright-mock` job を `workflow_dispatch`
+  で起動します。
 
 ## Playwright 設定の前提
 
 - active project は `chromium` のみです。
 - `workers` は `1` 固定です。`fullyParallel: true` は定義されていますが、現行設定では実質直列実行です。
-- mock 実行時は `webServer.command` が `scripts/start-test-server.sh` を使い、production build の `next start` を立ち上げます。
+- mock 実行時は `webServer.command` が `scripts/start-test-server.sh` を使い、production build の `pnpm start` を立ち上げます。
 - failure 時は Playwright 標準の screenshot / video が残ります。trace は `trace: 'on-first-retry'` のため、retry が走ったケースで残ります。
 
 ## 検証戦略
@@ -79,7 +80,7 @@ expect(tallySum).toBe(totalVotes);
 
 このため、mock 環境では選択肢ごとの固定分布ではなく、総数と verify check の整合性を見ます。
 
-さらに smoke では verify 画面の `data-status` を読み、S0 で `counted_expected_vs_tree_size` / `counted_election_manifest_consistent` / `counted_close_statement_consistent` / `stark_receipt_verify` の success を、S2 で `counted_tally_consistent` failed と `stark_verification` success を確認します。
+さらに smoke では verify 画面の `data-status` を読み、S0 / S2 ともに tally・missing indices・manifest・close statement・STH・receipt・step status の主要 check を確認します。S2 では特に `counted_tally_consistent=failed` と `stark_verification=success` を確認し、「proof は正しいが claimed tally は壊れている」状態を固定します。
 
 ## `data-testid` の使い方
 
@@ -130,19 +131,19 @@ page.locator('text=/Tamper.*YES|Tamper.*NO|改ざん.*あり|改ざん.*なし/i
 
 ## 実行環境と mock store
 
-`pnpm test:e2e:mock` / `pnpm test:e2e:axe` は `package.json` で以下を事前セットします。
+`pnpm test:e2e:mock` / `pnpm test:e2e:axe` は Playwright の web server として
+`scripts/start-test-server.sh` を使います。この script が mock 用の production
+server 起動前に以下を固定または補完します。
 
-- `NEXT_PUBLIC_TURNSTILE_BYPASS=1`
-- `TURNSTILE_BYPASS=1`
-- `RUNTIME_DEPLOYMENT_ENV=develop`
-- `DISABLE_STRICT_CSP=1`
-- `USE_MOCK_ZKVM=true`
-- `USE_MOCK_STORE=true`
-
-さらに `scripts/start-test-server.sh` が mock 用の production server 起動前に以下を補完します。
-
+- `USE_MOCK_ZKVM=true` / `USE_MOCK_STORE=true` を固定
+- `NODE_ENV=production` を固定
 - `ALLOW_INSECURE_ZKVM=true` を必要時に付与
+- `EXPECTED_IMAGE_ID_VARIANT=x86_64` を必要時に補完
 - `VERIFIER_PUBLIC_BASE_URL=http://localhost:3000` を既定化
+- `VITE_STH_SOURCES=/api/sth,/api/sth?auditor=b` を既定化
+- `LOG_LEVEL=error` を必要時に補完
+- `VITE_TURNSTILE_BYPASS=1` / `TURNSTILE_BYPASS=1` を補完し、`pnpm build:local-mock` で mock 専用の Vite artifact scan を実行
+- `RUNTIME_DEPLOYMENT_ENV=develop` を必要時に補完
 - `SESSION_CAPABILITY_SECRET` が未設定なら `scripts/tests/.env.test.defaults` の test-only 値を補完
 - `PERSIST_MOCK_STORE=1` を有効化
 - `FINALIZE_ASYNC_MODE=false` を固定
@@ -162,14 +163,14 @@ page.locator('text=/Tamper.*YES|Tamper.*NO|改ざん.*あり|改ざん.*なし/i
 
 ## CSP 緩和と Turnstile bypass
 
-headless E2E では strict CSP と Turnstile がそのままだと初期化を阻害することがあります。mock 用 script は必要な env を preset 済みです。Playwright を直接叩く場合も、少なくとも以下は mock UI テストと合わせてください。
+headless E2E では strict CSP と Turnstile がそのままだと初期化を阻害することがあります。mock 用 script は必要な env を preset 済みです。Playwright を `scripts/start-test-server.sh` なしで直接叩く場合も、少なくとも以下は mock UI テストと合わせてください。
 
 - `DISABLE_STRICT_CSP=1`
-- `NEXT_PUBLIC_TURNSTILE_BYPASS=1`
+- `VITE_TURNSTILE_BYPASS=1`
 - `TURNSTILE_BYPASS=1`
 - `RUNTIME_DEPLOYMENT_ENV=develop`
 
-本番運用ではこれらを設定しません。
+本番運用や reusable/deployable な `pnpm build:ci` artifact ではこれらを設定しません。
 
 ## 出力物
 

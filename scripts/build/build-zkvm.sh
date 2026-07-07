@@ -9,12 +9,12 @@ cd zkvm
 
 # Build in release mode (incremental build enabled)
 echo "Building zkVM host program..."
-cargo build --release
+cargo build --release -p host --features production
 
 if [ -f target/release/host ]; then
-    echo "✅ zkVM build completed successfully"
+    echo "[OK] zkVM build completed successfully"
     echo "Binary location: zkvm/target/release/host"
 else
-    echo "❌ zkVM build failed"
+    echo "[FAIL] zkVM build failed"
     exit 1
 fi

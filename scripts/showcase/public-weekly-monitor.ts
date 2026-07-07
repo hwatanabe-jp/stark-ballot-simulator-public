@@ -3,6 +3,14 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+
+function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
+  if (value === undefined || value === null) {
+    throw new Error(`Expected ${label} to be defined`);
+  }
+  return value;
+}
 
 const DEFAULT_MAX_AGE_HOURS = 14 * 24;
 const MS_PER_HOUR = 60 * 60 * 1000;
@@ -147,10 +155,10 @@ function readPublicMarker(): PublicMarker {
     .filter((entry): entry is readonly [string, string] => entry !== undefined);
 
   const values = new Map(entries);
-  return {
-    sourceSha: values.get('SOURCE_SHA'),
+  return omitUndefinedProperties({
+    ...omitUndefinedProperties({ sourceSha: values.get('SOURCE_SHA') }),
     generatedAt: values.get('GENERATED_AT'),
-  };
+  });
 }
 
 function readPublicManifestSummary(): PublicManifestSummary {
@@ -163,10 +171,10 @@ function readPublicManifestSummary(): PublicManifestSummary {
     return {};
   }
 
-  return {
+  return omitUndefinedProperties({
     copiedFileCount: readNumber(parsed, 'copiedFileCount'),
-    generatedFileCount: Array.isArray(parsed.generatedFiles) ? parsed.generatedFiles.length : undefined,
-  };
+    generatedFileCount: Array.isArray(parsed['generatedFiles']) ? parsed['generatedFiles'].length : undefined,
+  });
 }
 
 function readNumber(record: Record<string, unknown>, key: string): number | undefined {
@@ -179,12 +187,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function resolveRepository(options: CliOptions): string | undefined {
-  return options.repository ?? process.env.GH_REPO ?? process.env.GITHUB_REPOSITORY;
+  return options.repository ?? process.env['GH_REPO'] ?? process.env['GITHUB_REPOSITORY'];
 }
 
 function resolveCurrentRunUrl(repository: string | undefined): string | undefined {
-  const serverUrl = process.env.GITHUB_SERVER_URL ?? 'https://github.com';
-  const runId = process.env.GITHUB_RUN_ID;
+  const serverUrl = process.env['GITHUB_SERVER_URL'] ?? 'https://github.com';
+  const runId = process.env['GITHUB_RUN_ID'];
   if (!repository || !runId) {
     return undefined;
   }
@@ -199,7 +207,7 @@ function buildReport(options: CliOptions): MonitorReport {
   const overall = deriveOverallStatus(allChecks);
   const week = formatIsoWeek(options.now);
 
-  return {
+  return omitUndefinedProperties({
     title: `Weekly public monitor: ${week}`,
     week,
     overall,
@@ -207,11 +215,11 @@ function buildReport(options: CliOptions): MonitorReport {
     manifest: readPublicManifestSummary(),
     directChecks,
     workflowChecks,
-    repository,
+    ...omitUndefinedProperties({ repository: repository }),
     currentRunUrl: resolveCurrentRunUrl(repository),
-    liveDemoUrl: process.env.PUBLIC_LIVE_DEMO_URL,
-    specsUrl: process.env.PUBLIC_SPECS_URL,
-  };
+    liveDemoUrl: process.env['PUBLIC_LIVE_DEMO_URL'],
+    specsUrl: process.env['PUBLIC_SPECS_URL'],
+  });
 }
 
 export function deriveOverallStatus(checks: readonly Pick<MonitorCheck, 'status'>[]): OverallStatus {
@@ -219,7 +227,7 @@ export function deriveOverallStatus(checks: readonly Pick<MonitorCheck, 'status'
 }
 
 export function buildDirectChecks(): MonitorCheck[] {
-  const publicSafetyOutcome = process.env.WEEKLY_PUBLIC_SAFETY_SCAN_OUTCOME;
+  const publicSafetyOutcome = process.env['WEEKLY_PUBLIC_SAFETY_SCAN_OUTCOME'];
   if (!publicSafetyOutcome) {
     return [];
   }
@@ -269,7 +277,7 @@ function queryWorkflowCheck(
         detail: 'no workflow runs found',
       };
     }
-    return summarizeWorkflowRun(check.label, runs[0], options);
+    return summarizeWorkflowRun(check.label, strictDefined(runs[0]), options);
   } catch (error) {
     return {
       label: check.label,
@@ -300,13 +308,13 @@ function isGhWorkflowRun(value: unknown): value is GhWorkflowRun {
   }
 
   return (
-    (typeof value.conclusion === 'string' || value.conclusion === null) &&
-    typeof value.status === 'string' &&
-    typeof value.createdAt === 'string' &&
-    typeof value.updatedAt === 'string' &&
-    typeof value.url === 'string' &&
-    (typeof value.headSha === 'string' || value.headSha === undefined) &&
-    (typeof value.event === 'string' || value.event === undefined)
+    (typeof value['conclusion'] === 'string' || value['conclusion'] === null) &&
+    typeof value['status'] === 'string' &&
+    typeof value['createdAt'] === 'string' &&
+    typeof value['updatedAt'] === 'string' &&
+    typeof value['url'] === 'string' &&
+    (typeof value['headSha'] === 'string' || value['headSha'] === undefined) &&
+    (typeof value['event'] === 'string' || value['event'] === undefined)
   );
 }
 
@@ -468,7 +476,7 @@ function writeOutputFile(outputPath: string, markdown: string): void {
 }
 
 function writeGithubOutputs(report: MonitorReport): void {
-  const outputPath = process.env.GITHUB_OUTPUT;
+  const outputPath = process.env['GITHUB_OUTPUT'];
   if (!outputPath) {
     return;
   }
@@ -507,7 +515,8 @@ function main(): void {
 }
 
 function isDirectInvocation(): boolean {
-  return path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  const entrypoint = process.argv[1];
+  return entrypoint !== undefined && path.resolve(entrypoint) === fileURLToPath(import.meta.url);
 }
 
 if (isDirectInvocation()) {

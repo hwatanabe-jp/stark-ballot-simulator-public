@@ -29,10 +29,11 @@ consumed by the existing TypeScript and Rust tests.
 
 For the user-facing "never show Verified" claim, summary-model vectors are not
 enough by themselves. The generated cases should also exercise the verify page's
-overall-status gate, either through a small extracted pure helper or focused
-page-level tests, because `src/app/(routes)/verify/page.tsx` combines summary
-results with explicit proof failures, hard-failure checks, pending state, and
-render timing before passing `verified` to the UI.
+overall-status gate in `apps/web/src/routes/verify/lib/overall-status.ts`, and
+focused page-level behavior where needed in
+`apps/web/src/routes/verify/page.tsx`, because the page combines summary results
+with explicit proof failures, hard-failure checks, pending state, and render
+timing before passing `verified` to the UI.
 
 ## Workspace
 

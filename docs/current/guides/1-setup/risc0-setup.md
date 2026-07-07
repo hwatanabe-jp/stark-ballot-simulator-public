@@ -48,7 +48,7 @@ pnpm build:zkvm
 
 # もしくは zkvm/ 直下で
 cd zkvm
-cargo build --release
+cargo build --release -p host --features production
 ```
 
 ## 5. 動作確認（任意）

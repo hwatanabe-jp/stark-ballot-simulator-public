@@ -5,5 +5,9 @@ public-book/book/
 public-book/fzf.umd.js
 public-book/mermaid.min.js
 
+# Repo-local agent instruction symlink; CodePipeline source artifacts may
+# materialize this as a plain symlink target file.
+AGENTS.md
+
 # Lean/Lake build output
 formal/.lake/

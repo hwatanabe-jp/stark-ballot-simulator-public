@@ -105,7 +105,7 @@ FULL_IMAGE="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPOSITORY@$DIGES
 
 echo "Digest: $DIGEST"
 echo "Use it locally with:"
-echo '  docker build --build-arg RISC0_TOOLCHAIN_IMAGE="$RISC0_TOOLCHAIN_IMAGE" -f docker/Dockerfile.fargate-prover .'
+echo '  docker build --build-arg RISC0_TOOLCHAIN_IMAGE="$RISC0_TOOLCHAIN_IMAGE" -f infra/docker/Dockerfile.fargate-prover .'
 
 if [ -n "$write_env_path" ]; then
   mkdir -p "$(dirname "$write_env_path")"

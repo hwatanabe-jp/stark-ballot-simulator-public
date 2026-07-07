@@ -6,8 +6,8 @@ usage() {
   cat <<'EOF'
 Usage:
   scripts/terraform/render-admin-iam-docs.sh [--env-file .env.local] \
-    [--policy-output terraform/terraform-admin-policy.local.json] \
-    [--trust-output terraform/terraform-admin-trust-policy.local.json]
+    [--policy-output infra/terraform/legacy/terraform-admin-policy.local.json] \
+    [--trust-output infra/terraform/legacy/terraform-admin-trust-policy.local.json]
 
 Reads Terraform admin IAM values from an optional .env-style file and writes
 git-ignored local IAM policy documents. The command reports variable names only,
@@ -115,8 +115,8 @@ render_template() {
 
 env_file=".env.local"
 env_file_explicit=0
-policy_output="terraform/terraform-admin-policy.local.json"
-trust_output="terraform/terraform-admin-trust-policy.local.json"
+policy_output="infra/terraform/legacy/terraform-admin-policy.local.json"
+trust_output="infra/terraform/legacy/terraform-admin-trust-policy.local.json"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -177,8 +177,8 @@ reject_placeholder "TERRAFORM_STATE_BUCKET" "$state_bucket"
 validate_account_id "$account_id"
 validate_bucket_name "$state_bucket"
 
-render_template "terraform/terraform-admin-policy.json" "$policy_output"
-render_template "terraform/terraform-admin-trust-policy.json" "$trust_output"
+render_template "infra/terraform/legacy/terraform-admin-policy.json" "$policy_output"
+render_template "infra/terraform/legacy/terraform-admin-trust-policy.json" "$trust_output"
 
 echo "Wrote local Terraform admin IAM documents."
 echo "Policy output: $policy_output"

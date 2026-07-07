@@ -1,6 +1,8 @@
 use alloc::vec::Vec;
 use risc0_zkvm::sha::{Impl, Sha256};
 
+use crate::domain::{BulletinIndex, TreeSize, ValidatedAuditPath};
+
 /// Verify inclusion proof following RFC 6962 / CT semantics.
 pub fn verify_inclusion_proof_rfc6962(
     leaf_data: &[u8; 32],
@@ -9,10 +11,27 @@ pub fn verify_inclusion_proof_rfc6962(
     tree_root: &[u8; 32],
     tree_size: u32,
 ) -> bool {
-    match fold_inclusion_proof(leaf_data, leaf_index, audit_path, tree_size) {
-        Some(computed_root) => computed_root == *tree_root,
-        None => false,
-    }
+    let Ok(tree_size) = TreeSize::new(tree_size) else {
+        return false;
+    };
+    let Ok(leaf_index) = BulletinIndex::new(leaf_index, tree_size) else {
+        return false;
+    };
+    let Ok(validated_path) = ValidatedAuditPath::validate(tree_size, leaf_index, audit_path) else {
+        return false;
+    };
+
+    verify_validated_inclusion_proof_rfc6962(leaf_data, validated_path, tree_root)
+}
+
+/// Verify an inclusion proof after tree size, leaf index, and path shape have
+/// already been validated together.
+pub fn verify_validated_inclusion_proof_rfc6962(
+    leaf_data: &[u8; 32],
+    audit_path: ValidatedAuditPath<'_>,
+    tree_root: &[u8; 32],
+) -> bool {
+    fold_validated_inclusion_proof(leaf_data, audit_path) == *tree_root
 }
 
 /// Hash a leaf node with CT-style domain separation.
@@ -50,23 +69,34 @@ pub fn fold_inclusion_proof(
     audit_path: &[[u8; 32]],
     tree_size: u32,
 ) -> Option<[u8; 32]> {
-    if tree_size == 0 || leaf_index >= tree_size {
-        return None;
-    }
+    let tree_size = TreeSize::new(tree_size).ok()?;
+    let leaf_index = BulletinIndex::new(leaf_index, tree_size).ok()?;
+    let audit_path = ValidatedAuditPath::validate(tree_size, leaf_index, audit_path).ok()?;
 
+    Some(fold_validated_inclusion_proof(leaf_data, audit_path))
+}
+
+fn fold_validated_inclusion_proof(
+    leaf_data: &[u8; 32],
+    audit_path: ValidatedAuditPath<'_>,
+) -> [u8; 32] {
     let mut current_hash = hash_leaf(leaf_data);
-    let mut index = leaf_index;
-    let mut level_size = tree_size;
-    let mut path_iter = audit_path.iter();
+    let mut index = audit_path.leaf_index().get();
+    let mut level_size = audit_path.tree_size().get();
+    let mut path_iter = audit_path.nodes().iter();
 
     while level_size > 1 {
         if index % 2 == 1 {
-            let sibling = path_iter.next()?;
+            let sibling = path_iter
+                .next()
+                .expect("validated RFC6962 audit path should contain left sibling");
             current_hash = hash_internal(sibling, &current_hash);
         } else if index + 1 == level_size {
             // No sibling on this level; promote current hash unchanged.
         } else {
-            let sibling = path_iter.next()?;
+            let sibling = path_iter
+                .next()
+                .expect("validated RFC6962 audit path should contain right sibling");
             current_hash = hash_internal(&current_hash, sibling);
         }
 
@@ -74,11 +104,7 @@ pub fn fold_inclusion_proof(
         level_size = level_size.div_ceil(2);
     }
 
-    if path_iter.next().is_some() {
-        return None;
-    }
-
-    Some(current_hash)
+    current_hash
 }
 
 /// Compute the root from a leaf and its audit path.

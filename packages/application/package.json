@@ -1,0 +1,22 @@
+{
+  "name": "@stark-ballot/application",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./bot/*": "./src/bot/*",
+    "./finalize/*": "./src/finalize/*",
+    "./zkvm-input/*": "./src/zkvm-input/*"
+  },
+  "dependencies": {
+    "@stark-ballot/diagnostics": "workspace:*",
+    "@stark-ballot/domain": "workspace:*",
+    "@stark-ballot/validation": "workspace:*",
+    "@stark-ballot/verification": "workspace:*",
+    "@stark-ballot/zkvm-contract": "workspace:*"
+  },
+  "devDependencies": {
+    "@stark-ballot/test-support": "workspace:*",
+    "vitest": "4.1.9"
+  }
+}

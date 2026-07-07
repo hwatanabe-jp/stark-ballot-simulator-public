@@ -2,13 +2,16 @@
 
 自票が集計に含まれたかを Merkle 証明で開示するためのビットマップツリーを扱う章です。
 
-zkVM ゲスト内で計算されるビットマップにより、各投票インデックスが集計に含まれたかどうかを個別に検証可能にします。Merkle 証明により、自分の投票が含まれていることをサーバーを信頼せずに確認できます。
+zkVM ゲスト内で計算されるビットマップにより、各投票インデックスが集計に含まれたかどうかを個別に検証可能にします。
+Merkle 証明により、自分の投票が含まれていることをサーバーを信頼せずに確認できます。
 
 ## 概要
 
 Counted-as-Recorded 段階の検証では、zkVM に提示された入力に対する集計の正しさは STARK 証明で保証されますが、個々の投票者にとって「自分の票が集計に含まれたか」を直接確認する手段が別途必要です。
 
-ビットマップ Merkle ツリーは、この「個別のカウント証明」を提供します。zkVM ゲストは投票ごとの状態をビットマップとしてエンコードし、その Merkle ルートをジャーナルにコミットします。投票者は自分のインデックスに対応するビットの Merkle 証明を取得し、「自分の票がカウントされたか」「そもそも prover に提示されたか」を独立に検証できます。
+ビットマップ Merkle ツリーは、この「個別のカウント証明」を提供します。
+zkVM ゲストは投票ごとの状態をビットマップとしてエンコードし、その Merkle ルートをジャーナルにコミットします。
+投票者は自分のインデックスに対応するビットの Merkle 証明を取得し、「自分の票がカウントされたか」「そもそも prover に提示されたか」を独立に検証できます。
 
 ```mermaid
 flowchart TD
@@ -27,7 +30,8 @@ flowchart TD
 
 ### ビットマップの定義
 
-ビットマップは、ツリーサイズ（投票数）と同じ長さのブール配列です。現行実装では同じエンコーディング規則を持つ 2 種類のビットマップを扱います。
+ビットマップは、ツリーサイズ（投票数）と同じ長さのブール配列です。
+現行実装では同じエンコーディング規則を持つ 2 種類のビットマップを扱います。
 
 - `includedBitmap[i] = true`: インデックス i の投票が正常に検証され、集計に含まれた
 - `includedBitmap[i] = false`: インデックス i の投票が除外された
@@ -59,7 +63,8 @@ flowchart TD
 
 ### 32 バイトチャンク分割
 
-パッキングされたバイト列は 32 バイト（256 ビット）単位のチャンクに分割されます。各チャンクが Merkle ツリーの 1 つのリーフとなります。
+パッキングされたバイト列は 32 バイト（256 ビット）単位のチャンクに分割されます。
+各チャンクが Merkle ツリーの 1 つのリーフとなります。
 
 - 1 チャンク = 32 バイト = 256 ビット分の投票カウント状態
 - 最後のチャンクが 32 バイトに満たない場合はゼロパディング
@@ -120,14 +125,17 @@ graph TD
 | leafChunk  | 対象ビットを含む 32 バイトチャンク（16 進数）            |
 | auditPath  | ルートまでの兄弟ハッシュ配列（各要素にハッシュ値と位置） |
 
-`leafIndex`（`floor(bitIndex / 256)`）と `bitOffset`（`bitIndex mod 256`）は、クライアント側で `bitIndex` クエリから導出します。サーバーは返しません。
+`leafIndex`（`floor(bitIndex / 256)`）と `bitOffset`（`bitIndex mod 256`）は、クライアント側で `bitIndex` クエリから導出します。
+サーバーは返しません。
 
 `kind` は省略可能で、既定値は `included` です。
 
 - `kind=included`: `includedBitmapRoot` に対する証明を返す
 - `kind=seen`: `seenBitmapRoot` に対する証明を返す
 
-このエンドポイントは無認証の公開 API ではなく、セッション ID と capability token を要する証明材料 API です（仕様は外部クライアント向けに文書化されています）。
+このエンドポイントは無認証の公開 API ではありません。
+セッション ID と capability token を要する証明材料 API です。
+仕様は外部クライアント向けに文書化されています。
 
 ### ビット抽出
 
@@ -141,7 +149,8 @@ bit_in_byte = bit_offset mod 8
 included = (chunk[byte_index] AND (1 << bit_in_byte)) != 0
 ```
 
-`kind=included` で `included = true` なら、自分の投票がカウントされたことを意味します。`kind=seen` で `included = true` なら、自分の投票が prover に提示されたことを意味します。
+`kind=included` で `included = true` なら、自分の投票がカウントされたことを意味します。
+`kind=seen` で `included = true` なら、自分の投票が prover に提示されたことを意味します。
 
 ### 検証手順
 
@@ -177,21 +186,26 @@ flowchart TD
 5. CT スタイルのハッシュ規則で Merkle ルートを計算
 6. `seenBitmapRoot` と `includedBitmapRoot` をジャーナルにコミット
 
-この計算はゲスト内で行われるため、STARK 証明がビットマップの正しさも保証します。サーバーが事後的にビットマップを改ざんしても、ジャーナルのルート値と一致しなくなるため検出されます。
+この計算はゲスト内で行われるため、STARK 証明がビットマップの正しさも保証します。
+サーバーが事後的にビットマップを改ざんしても、ジャーナルのルート値と一致しなくなるため検出されます。
 
 ## サーバーのビットマップデータ管理
 
-サーバーは `/api/bitmap-proof` 用に、最終化時の zkVM 出力（`includedBitmap`、ある場合は `seenBitmap` / `seenBitmapRoot`）を非公開 sidecar として保持します。これらは配布対象アーカイブ `bundle.zip` には含まれず、async finalize 経路では必要に応じて S3 の sibling object から復元されます。
+サーバーは `/api/bitmap-proof` 用に、最終化時の zkVM 出力（`includedBitmap`、ある場合は `seenBitmap` / `seenBitmapRoot`）を非公開 sidecar として保持します。
+これらは配布対象アーカイブ `bundle.zip` には含まれません。
+async finalize 経路では、必要に応じて S3 の sibling object から復元されます。
 
 ### 安全性ゲートと検証結果の分岐
 
 採用前と採用後で、`counted_my_vote_included` の判定が次の 2 つに分岐します。
 
-- **採用前に弾かれる、または証明材料が取得できない** → `counted_my_vote_included` は `not_run`（証拠不足による [fail-closed](../appendix/glossary.md#fail-closed)）。例:
+- **採用前に弾かれる、または証明材料が取得できない** → `counted_my_vote_included` は `not_run`（証拠不足による [fail-closed](../appendix/glossary.md#fail-closed)）。
+  例:
   - zkVM 出力に bitmap データが無い
-  - 保存・復元時の root 一致ゲートで採用されなかった
+  - 保存や復元時の root 一致ゲートで採用されなかった
   - cast-time 証跡（`voteReceipt` / `userVote.proof`）が store から再構成できず `voteReceipt.bulletinIndex` が確定しない
-- **採用後にクライアント側の root 照合が失敗** → `counted_my_vote_included` は `failed`。サーバーが返した chunk と audit path から再計算したルートが、ジャーナルの `includedBitmapRoot`（または `seenBitmapRoot`）と一致しない。
+- **採用後にクライアント側の root 照合が失敗** → `counted_my_vote_included` は `failed`。
+  サーバーが返した chunk と audit path から再計算したルートが、ジャーナルの `includedBitmapRoot`（または `seenBitmapRoot`）と一致しない。
 
 採用前ゲートおよび `counted_my_vote_included` の評価詳細は [チェック一覧 > `counted_my_vote_included`](../verification/checks-catalog.md#counted_my_vote_included) を参照してください。
 
@@ -209,10 +223,13 @@ flowchart TD
 
 ## プライバシーに関する注意
 
-ビットマップ Merkle 証明では、対象ビットを含む 32 バイトチャンク全体がクライアントに提供されます。1 チャンクは 256 ビット分のカウント状態を含むため、近傍のインデックスのカウント状態が同時に開示されます。
+ビットマップ Merkle 証明では、対象ビットを含む 32 バイトチャンク全体がクライアントに提供されます。
+1 チャンクは 256 ビット分のカウント状態を含むため、近傍のインデックスのカウント状態が同時に開示されます。
 
-本 PoC では 64 票が 1 チャンクに収まるため、チャンクを受け取った投票者は全 64 票のカウント状態を知ることができます。これは 63 票がボットのためチャンク漏洩の情報価値が限定的という割り切りで成立しています。影響評価と将来の緩和策は [PoC の意図的な制約 > ビットマップチャンク漏洩](../decisions/poc-relaxations.md#2-ビットマップチャンク漏洩) を参照してください。
+本 PoC では 64 票が 1 チャンクに収まるため、チャンクを受け取った投票者は全 64 票のカウント状態を知ることができます。
+この設計は、63 票がボットでありチャンク漏洩の情報価値が限定的である、という割り切りに基づきます。
+影響評価と将来の緩和策は [PoC の意図的な制約 > ビットマップチャンク漏洩](../decisions/poc-relaxations.md#2-ビットマップチャンク漏洩) を参照してください。
 
 LSB-first packing とビット境界の扱いは、[Property-based Testing](../quality/property-based-testing.md) で生成入力を使って境界条件を探索し、[Lean による形式化](../quality/lean-formalization.md) の bitmap vectors で抽象モデルとの対応を検査します。
 
-<!-- source: src/lib/zkvm/bitmap.ts, src/lib/zkvm/types.ts, src/lib/merkle/bitmap-merkle-tree.ts, src/server/api/handlers/bitmapProof.ts, src/lib/finalize/usecases/finalize-sync.ts, src/lib/aws/bundle-restore.ts -->
+<!-- source: packages/zkvm-contract/src/zkvm/bitmap.ts, packages/zkvm-contract/src/zkvm/types.ts, packages/verification/src/merkle/bitmap-merkle-tree.ts, apps/api/src/server/api/handlers/bitmapProof.ts, packages/application/src/finalize/usecases/finalize-sync.ts, packages/aws-adapters/src/aws/bundle-restore.ts -->

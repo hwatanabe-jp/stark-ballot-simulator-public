@@ -6,11 +6,11 @@ This section contains system design and architecture documentation for the STARK
 
 ### 🇯🇵 [AWS構成のよくある図（現状スナップショット）](./aws-architecture.md)
 
-**Purpose**: Current AWS architecture overview (Amplify + Hono + proof pipeline)  
+**Purpose**: Current target AWS architecture overview (CloudFront/S3 + Hono + DynamoDB + proof pipeline)
 **Contents**:
 
 - Frontend + API Gateway + Hono Lambda
-- Amplify Data (AppSync/DynamoDB) + S3 proof bundles
+- DynamoDB session/vote/rate-limit state + S3 proof bundles
 - SQS → Step Functions → ECS Fargate prover pipeline
 - Server-side STARK verification Lambda
 

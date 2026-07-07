@@ -15,28 +15,28 @@ const projectRoot = path.resolve(__dirname, '../..');
 config({ path: path.join(projectRoot, '.env.local'), quiet: true });
 config({ path: path.join(projectRoot, 'scripts/tests/.env.test.defaults'), quiet: true });
 
-console.log('[CLI] Amplify auth mode: SigV4 (IAM) with default credential chain');
+console.log('[CLI] AWS auth mode: SigV4 (IAM) with default credential chain');
 
 import {
   CLITestHelpers,
   resolveFinalizationCountDiagnostics,
   type TestResult,
-} from '../../src/lib/testing/cli-test-helpers';
-import type { VoteChoice } from '../../src/shared/constants';
+} from '@stark-ballot/test-support/testing/cli-test-helpers';
+import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
 import { parseArgs } from 'util';
 import net from 'net';
 import { spawn } from 'child_process';
 import { setTimeout as delay } from 'timers/promises';
-import { detectTampering } from '../../src/lib/verification/tamperDetection';
-import type { ImageIdMapping } from '../../src/lib/verification/image-id-types';
+import { detectTampering } from '@stark-ballot/verification/tamper-detection';
+import type { ImageIdMapping } from '@stark-ballot/verification/image-id-types';
 import {
   resolveConfiguredImageIdVariant,
   resolveExpectedImageIdFromMapping,
   type ImageIdVariant,
-} from '../../src/lib/verification/image-id-policy.js';
+} from '@stark-ballot/verification/image-id-policy';
 import imageIdMappingJson from '../../public/imageId-mapping.json';
-import { persistCliReport, extractBundleArchive } from '../../src/lib/testing/cli-artifacts';
-import { buildVerifierUrl, isSafeVerifierSegment } from '../../src/lib/finalize/finalize-urls';
+import { persistCliReport, extractBundleArchive } from '@stark-ballot/test-support/testing/cli-artifacts';
+import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
 import {
   collectCliVerificationContractErrors,
   isCtProofMissing,
@@ -45,14 +45,96 @@ import {
   resolveTallyResult,
   resolveUserVoteProof,
   shouldFetchVoteProof,
-} from '../../src/lib/testing/cli-voting-flow-helpers';
-import { isRecord } from '../../src/lib/utils/guards';
+} from '@stark-ballot/test-support/testing/cli-voting-flow-helpers';
+import { isRecord } from '@stark-ballot/domain/utils/guards';
+import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 const imageIdMapping = imageIdMappingJson as ImageIdMapping;
 const currentMethodVersion = imageIdMapping.current;
 const AUTHENTICATED_ENDPOINT_DELIVERY = 'authenticated-endpoint' as const;
 const DEFAULT_BUNDLE_RANGE_CHUNK_BYTES = 4 * 1024 * 1024;
 const BUNDLE_RANGE_CHUNK_HEADER = 'x-stark-bundle-range-chunk-size';
+
+function buildVerifierUrl(baseUrl: string, sessionId: string, executionId: string, ...segments: string[]): string {
+  const relative = ['api', 'verification', 'bundles', sessionId, executionId, ...segments].filter(Boolean).join('/');
+  return new URL(`/${relative}`, baseUrl).toString();
+}
+
+const CLI_BUILD_RUNTIME_ENV_KEYS = [
+  'APPDATA',
+  'CI',
+  'ComSpec',
+  'COREPACK_ENABLE_STRICT',
+  'COREPACK_HOME',
+  'FORCE_COLOR',
+  'GITHUB_ACTIONS',
+  'GITHUB_BASE_REF',
+  'GITHUB_EVENT_NAME',
+  'GITHUB_EVENT_PATH',
+  'GITHUB_HEAD_REF',
+  'GITHUB_REF',
+  'GITHUB_REF_NAME',
+  'GITHUB_REPOSITORY',
+  'GITHUB_RUN_ATTEMPT',
+  'GITHUB_RUN_ID',
+  'GITHUB_RUN_NUMBER',
+  'GITHUB_SHA',
+  'GITHUB_WORKFLOW',
+  'GITHUB_WORKSPACE',
+  'HOME',
+  'INIT_CWD',
+  'LANG',
+  'LC_ALL',
+  'LOCALAPPDATA',
+  'LOGNAME',
+  'NODE_EXTRA_CA_CERTS',
+  'NODE_OPTIONS',
+  'NO_COLOR',
+  'PATH',
+  'PATHEXT',
+  'PNPM_HOME',
+  'RUNNER_ARCH',
+  'RUNNER_OS',
+  'RUNNER_TEMP',
+  'RUNNER_TOOL_CACHE',
+  'SHELL',
+  'SystemRoot',
+  'TEMP',
+  'TMP',
+  'TMPDIR',
+  'TZ',
+  'USER',
+  'XDG_CACHE_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+  'npm_command',
+  'npm_config_cache',
+  'npm_config_globalconfig',
+  'npm_config_node_gyp',
+  'npm_config_prefix',
+  'npm_config_registry',
+  'npm_config_store_dir',
+  'npm_config_user_agent',
+  'npm_config_userconfig',
+  'npm_execpath',
+  'npm_node_execpath',
+  'npm_package_json',
+] as const;
+const CLI_SAFE_FRONTEND_BUILD_ENV_KEYS = [
+  'VITE_API_BASE_URL',
+  'VITE_APP_ENV',
+  'VITE_SESSION_CREATE_TURNSTILE_REQUIRED',
+  'VITE_STH_MIN_MATCHES',
+  'VITE_STH_SOURCES',
+  'VITE_TURNSTILE_SITE_KEY',
+  'VITE_API_BASE_URL',
+  'VITE_APP_ENV',
+  'VITE_CONTRACT_GENERATION',
+  'VITE_SESSION_CREATE_TURNSTILE_REQUIRED',
+  'VITE_STH_MIN_MATCHES',
+  'VITE_STH_SOURCES',
+  'VITE_TURNSTILE_SITE_KEY',
+] as const;
 
 interface ParsedContentRange {
   start: number;
@@ -72,9 +154,11 @@ interface AuthenticatedArtifactDownload {
   hash: string;
 }
 
+export type CommandSpawner = typeof spawn;
+
 export function resolveDefaultCliExpectedImageId(
   mapping: ImageIdMapping,
-  variant: ImageIdVariant = resolveConfiguredImageIdVariant(process.env.EXPECTED_IMAGE_ID_VARIANT),
+  variant: ImageIdVariant = resolveConfiguredImageIdVariant(process.env['EXPECTED_IMAGE_ID_VARIANT']),
 ): { imageId: string; variant: ImageIdVariant } {
   return {
     imageId: resolveExpectedImageIdFromMapping(mapping, Number(mapping.current), variant),
@@ -82,12 +166,29 @@ export function resolveDefaultCliExpectedImageId(
   };
 }
 
-const defaultCliExpectedImageId = resolveDefaultCliExpectedImageId(imageIdMapping);
-
-if (!process.env.EXPECTED_IMAGE_ID) {
+if (!process.env['EXPECTED_IMAGE_ID']) {
+  const defaultCliExpectedImageId = resolveDefaultCliExpectedImageId(imageIdMapping);
   const sourceLabel = `imageId-mapping.json (methodVersion ${currentMethodVersion}, variant ${defaultCliExpectedImageId.variant})`;
   console.warn(`[CLI] EXPECTED_IMAGE_ID not set. Resolving from ${sourceLabel}.`);
-  process.env.EXPECTED_IMAGE_ID = defaultCliExpectedImageId.imageId;
+  process.env['EXPECTED_IMAGE_ID'] = defaultCliExpectedImageId.imageId;
+}
+
+function copyPresentEnvValue(target: NodeJS.ProcessEnv, source: NodeJS.ProcessEnv, key: string): void {
+  const value = source[key];
+  if (typeof value === 'string') {
+    target[key] = value;
+  }
+}
+
+export function createCliBuildEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { NODE_ENV: 'production' };
+  for (const key of CLI_BUILD_RUNTIME_ENV_KEYS) {
+    copyPresentEnvValue(env, source, key);
+  }
+  for (const key of CLI_SAFE_FRONTEND_BUILD_ENV_KEYS) {
+    copyPresentEnvValue(env, source, key);
+  }
+  return env;
 }
 
 // Test configuration
@@ -107,32 +208,32 @@ export interface CLITestConfig {
 const testCases = [
   {
     name: 'S0: Normal case (no tampering)',
-    scenario: [] as string[],
+    ...omitUndefinedProperties({ scenario: [] as string[] }),
     expectedTamper: false,
   },
   {
     name: 'S1: Ignore user vote',
-    scenario: ['S1'],
+    ...omitUndefinedProperties({ scenario: ['S1'] }),
     expectedTamper: true,
   },
   {
     name: 'S2: Tamper claimed tally for your vote',
-    scenario: ['S2'],
+    ...omitUndefinedProperties({ scenario: ['S2'] }),
     expectedTamper: true,
   },
   {
     name: 'S3: Ignore bot votes',
-    scenario: ['S3'],
+    ...omitUndefinedProperties({ scenario: ['S3'] }),
     expectedTamper: true,
   },
   {
     name: 'S4: Tamper claimed tally for bot votes',
-    scenario: ['S4'],
+    ...omitUndefinedProperties({ scenario: ['S4'] }),
     expectedTamper: true,
   },
   {
     name: 'S5: Random errors',
-    scenario: ['S5'],
+    ...omitUndefinedProperties({ scenario: ['S5'] }),
     expectedTamper: true,
   },
 ];
@@ -147,9 +248,9 @@ function isBotTamperInfo(
   if (!isRecord(value)) {
     return false;
   }
-  const originalChoice = value.originalChoice;
-  const recountedTo = value.recountedTo;
-  const count = value.count;
+  const originalChoice = value['originalChoice'];
+  const recountedTo = value['recountedTo'];
+  const count = value['count'];
   return isVoteChoice(originalChoice) && isVoteChoice(recountedTo) && typeof count === 'number';
 }
 
@@ -167,7 +268,7 @@ Options:
   --all-scenarios     Run the full S0-S5 scenario matrix
   --output, -o        Report format (table | json | markdown). Default: table
   --verbose, -v       Enable verbose logging
-  --skip-build        Reuse existing Next.js build output (skips \`next build\`)
+  --skip-build        Reuse existing Vite dist output (skips \`pnpm build:ci\`)
   --help, -h          Show this help message
 
 Examples:
@@ -181,11 +282,11 @@ export class CLIVotingTest {
   private helpers: CLITestHelpers | null;
   private config: CLITestConfig;
   private baseUrl: string | null;
-  private nextProcess: ReturnType<typeof spawn> | null = null;
+  private serverProcess: ReturnType<typeof spawn> | null = null;
 
   constructor(config: CLITestConfig, helpers?: CLITestHelpers) {
     this.config = config;
-    this.baseUrl = process.env.STARK_BALLOT_CLI_BASE_URL ?? null;
+    this.baseUrl = process.env['STARK_BALLOT_CLI_BASE_URL'] ?? null;
     this.helpers = helpers ?? null;
   }
 
@@ -199,92 +300,85 @@ export class CLIVotingTest {
       return;
     }
 
-    await this.startNextServer();
+    await this.startStaticHonoServer();
   }
 
   async teardown(): Promise<void> {
-    if (this.nextProcess) {
-      this.nextProcess.kill();
-      await new Promise<void>((resolve) => this.nextProcess?.once('exit', () => resolve()));
-      this.nextProcess = null;
+    if (this.serverProcess) {
+      this.serverProcess.kill();
+      await new Promise<void>((resolve) => this.serverProcess?.once('exit', () => resolve()));
+      this.serverProcess = null;
     }
   }
 
-  private async startNextServer(): Promise<void> {
+  private async startStaticHonoServer(): Promise<void> {
     const projectDir = path.resolve(__dirname, '../..');
 
-    if (!process.env.USE_MOCK_STORE) {
-      process.env.USE_MOCK_STORE = 'true';
+    if (!process.env['USE_MOCK_STORE']) {
+      process.env['USE_MOCK_STORE'] = 'true';
     }
-    if (!process.env.USE_MOCK_ZKVM) {
-      process.env.USE_MOCK_ZKVM = this.config.useRealZkVM ? 'false' : 'true';
+    if (!process.env['USE_MOCK_ZKVM']) {
+      process.env['USE_MOCK_ZKVM'] = this.config.useRealZkVM ? 'false' : 'true';
     }
 
     if (this.config.useRealZkVM) {
       if (this.config.realMode === 'dev') {
-        process.env.RISC0_DEV_MODE = '1';
+        process.env['RISC0_DEV_MODE'] = '1';
       } else {
-        delete process.env.RISC0_DEV_MODE;
+        delete process.env['RISC0_DEV_MODE'];
       }
     } else {
-      process.env.RISC0_DEV_MODE = '1';
+      process.env['RISC0_DEV_MODE'] = '1';
     }
 
     const insecureZkvmRequested =
-      process.env.USE_MOCK_ZKVM === 'true' ||
-      process.env.RISC0_DEV_MODE === '1' ||
-      process.env.FORCE_DEV_MODE === 'true';
-    if (insecureZkvmRequested && typeof process.env.ALLOW_INSECURE_ZKVM === 'undefined') {
-      process.env.ALLOW_INSECURE_ZKVM = 'true';
+      process.env['USE_MOCK_ZKVM'] === 'true' ||
+      process.env['RISC0_DEV_MODE'] === '1' ||
+      process.env['FORCE_DEV_MODE'] === 'true';
+    if (insecureZkvmRequested && typeof process.env['ALLOW_INSECURE_ZKVM'] === 'undefined') {
+      process.env['ALLOW_INSECURE_ZKVM'] = 'true';
     }
 
     if (!this.config.skipBuild) {
-      console.log('[CLI] Running next build (pass --skip-build to reuse the previous output)');
-      await runCommand(getNextBinary(), ['build'], projectDir);
+      console.log('[CLI] Running pnpm build:ci (pass --skip-build to reuse the previous dist output)');
+      await runBuildCiCommand(projectDir);
     } else {
-      console.log('[CLI] Skipping next build (reusing existing output)');
+      console.log('[CLI] Skipping Vite build (reusing existing dist output)');
     }
 
     const port = await reservePort();
     const host = '127.0.0.1';
-    const nextBinary = getNextBinary();
-
-    if (!process.env.TURNSTILE_BYPASS) {
-      process.env.TURNSTILE_BYPASS = '1';
-    }
-    if (process.env.TURNSTILE_BYPASS === '1') {
+    process.env['TURNSTILE_BYPASS'] = '1';
+    if (process.env['TURNSTILE_BYPASS'] === '1') {
       // Fail-closed bypass validation requires an explicit non-production runtime marker.
       const hasRuntimeMarker =
-        Boolean(process.env.AWS_BRANCH?.trim()) ||
-        Boolean(process.env.AMPLIFY_BRANCH?.trim()) ||
-        Boolean(process.env.RUNTIME_DEPLOYMENT_ENV?.trim()) ||
-        Boolean(process.env.ENV_NAME?.trim()) ||
-        Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME?.trim());
+        Boolean(process.env['RUNTIME_DEPLOYMENT_ENV']?.trim()) ||
+        Boolean(process.env['ENV_NAME']?.trim()) ||
+        Boolean(process.env['AWS_LAMBDA_FUNCTION_NAME']?.trim());
       if (!hasRuntimeMarker) {
-        process.env.RUNTIME_DEPLOYMENT_ENV = 'develop';
+        process.env['RUNTIME_DEPLOYMENT_ENV'] = 'develop';
       }
     }
-    if (process.env.USE_S3 !== 'false') {
-      process.env.USE_S3 = 'false';
+    if (process.env['USE_S3'] !== 'false') {
+      process.env['USE_S3'] = 'false';
     }
-    process.env.VERIFIER_PUBLIC_BASE_URL = `http://${host}:${port}`;
+    process.env['VERIFIER_PUBLIC_BASE_URL'] = `http://${host}:${port}`;
 
-    this.nextProcess = spawn(nextBinary, ['start', '-p', String(port), '-H', host], {
+    this.serverProcess = spawn(getTsxBinary(projectDir), ['scripts/dev/static-hono-server.ts'], {
       cwd: projectDir,
       env: {
         ...process.env,
+        PORT: String(port),
       },
       stdio: ['ignore', 'inherit', 'inherit'],
     });
-    process.once('exit', () => this.nextProcess?.kill());
+    process.once('exit', () => this.serverProcess?.kill());
 
-    process.env.STARK_BALLOT_WASM_MODULE_PATH =
-      process.env.STARK_BALLOT_WASM_MODULE_PATH ?? path.join(projectDir, 'public/wasm/risc0_wasm_wrapper.js');
-    process.env.STARK_BALLOT_WASM_BASE_URL = `http://${host}:${port}`;
+    process.env['STARK_BALLOT_WASM_BASE_URL'] = `http://${host}:${port}`;
 
     this.baseUrl = `http://${host}:${port}`;
     await waitForService(this.baseUrl);
-    console.log(`[CLI] Started Next.js production server on ${this.baseUrl}`);
+    console.log(`[CLI] Started Vite static frontend plus Hono API server on ${this.baseUrl}`);
 
     this.helpers = new CLITestHelpers(this.baseUrl);
   }
@@ -295,9 +389,9 @@ export class CLIVotingTest {
     const timestamp = new Date().toISOString();
     const prefix = {
       info: '  ',
-      success: '✅',
-      error: '❌',
-      warning: '⚠️',
+      success: '[OK]',
+      error: '[ERROR]',
+      warning: '[WARN]',
     }[level];
 
     console.log(`[${timestamp}] ${prefix} ${message}`);
@@ -343,30 +437,30 @@ export class CLIVotingTest {
       // Set zkVM mode based on config
       if (!this.config.useRealZkVM) {
         // Use Mock zkVM (JavaScript implementation)
-        process.env.USE_MOCK_ZKVM = 'true';
-        process.env.RISC0_DEV_MODE = '1';
+        process.env['USE_MOCK_ZKVM'] = 'true';
+        process.env['RISC0_DEV_MODE'] = '1';
         this.log('Using Mock zkVM (JavaScript, no STARK proofs)');
       } else {
         // Use Real zkVM (Rust binary)
-        process.env.USE_MOCK_ZKVM = 'false';
+        process.env['USE_MOCK_ZKVM'] = 'false';
 
         if (this.config.realMode === 'dev') {
-          process.env.RISC0_DEV_MODE = '1';
+          process.env['RISC0_DEV_MODE'] = '1';
           this.log('Using Real zkVM dev mode (Rust binary, Fake receipts, ~0.04s)');
         } else {
-          delete process.env.RISC0_DEV_MODE;
-          this.log('⚠️ Using Real zkVM production mode (Rust binary, STARK proofs)');
-          this.log('⏱️ This will take approximately 6 minutes (366 seconds) per test case');
+          delete process.env['RISC0_DEV_MODE'];
+          this.log('Using Real zkVM production mode (Rust binary, STARK proofs)', 'warning');
+          this.log('This will take approximately 6 minutes (366 seconds) per test case', 'warning');
           console.log('─────────────────────────────────────────');
         }
 
         console.log(
-          `[CLI] Real zkVM mode: ${this.config.realMode.toUpperCase()} (RISC0_DEV_MODE=${process.env.RISC0_DEV_MODE ?? 'unset'}), EXPECTED_IMAGE_ID=${process.env.EXPECTED_IMAGE_ID}`,
+          `[CLI] Real zkVM mode: ${this.config.realMode.toUpperCase()} (RISC0_DEV_MODE=${process.env['RISC0_DEV_MODE'] ?? 'unset'}), EXPECTED_IMAGE_ID=${process.env['EXPECTED_IMAGE_ID']}`,
         );
       }
 
       const zkStartTime = Date.now();
-      const scenarioId = testCase.scenario.length > 0 ? testCase.scenario[0] : 'S0';
+      const scenarioId = testCase.scenario[0] ?? 'S0';
       const finalizeResult = await helpers.finalizeWithScenarios(sessionId, scenarioId);
       const zkDuration = Date.now() - zkStartTime;
       this.log(`zkVM executed in ${(zkDuration / 1000).toFixed(1)}s`, 'success');
@@ -406,7 +500,9 @@ export class CLIVotingTest {
       const finalizationExecutionId = finalizeResult.meta?.executionId;
       const finalizationHistory = finalizeResult.meta?.finalizationHistory;
       const finalizationStepFunctions = finalizeResult.meta?.stepFunctions;
-      const verificationContractErrors = collectCliVerificationContractErrors(finalizeResult.data);
+      const verificationContractErrors = collectCliVerificationContractErrors(finalizeResult.data, {
+        requireRequiredChecksSuccess: !testCase.expectedTamper,
+      });
 
       if (finalizationMode === 'async' && finalizationExecutionId) {
         this.log(`Finalization executionId: ${finalizationExecutionId}`, 'info');
@@ -479,12 +575,10 @@ export class CLIVotingTest {
       this.log('Verifying STARK proof...');
       const starkOptions: NonNullable<Parameters<typeof helpers.verifySTARK>[1]> = {
         useRealZkVM: this.config.useRealZkVM,
-        imageId: proofPayload.imageId ?? finalizeResult.data.imageId,
-        verificationStatus: finalizeResult.data.verificationStatus,
-        verificationReport: finalizeResult.data.verificationReport,
-        allowDevMode:
-          this.config.useRealZkVM &&
-          (this.config.realMode === 'dev' || finalizeResult.data.verificationStatus === 'dev_mode'),
+        ...omitUndefinedProperties({ imageId: proofPayload.imageId ?? finalizeResult.data.imageId }),
+        ...omitUndefinedProperties({ verificationStatus: finalizeResult.data.verificationStatus }),
+        ...omitUndefinedProperties({ verificationReport: finalizeResult.data.verificationReport }),
+        allowDevMode: this.config.useRealZkVM && this.config.realMode === 'dev',
       };
 
       if (this.config.useRealZkVM && verificationBundlePath) {
@@ -527,7 +621,7 @@ export class CLIVotingTest {
             sessionId,
             bundlePath: verificationBundlePath,
             delivery: verificationBundleDelivery ?? AUTHENTICATED_ENDPOINT_DELIVERY,
-            executionId: verificationExecutionId,
+            ...omitUndefinedProperties({ executionId: verificationExecutionId }),
           });
           this.log(`Verification bundle extracted to ${bundleExtractionDir}`);
         } catch (extractError) {
@@ -645,29 +739,31 @@ export class CLIVotingTest {
           invalidPresentedSlots: invalidPresentedSlots ?? 0,
           validVotes: validVotes ?? 0,
           excludedSlots: excludedSlots ?? 0,
-          verifiedTally: verifiedTallyFromResponse,
-          botTamperInfo: (() => {
-            const proof = finalizeResult.data.proof;
-            if (!proof || !isBotTamperInfo(proof.recountedBotInfo)) {
-              return undefined;
-            }
-            return proof.recountedBotInfo;
-          })(),
-          randomError:
-            typeof finalizeResult.data.proof?.randomError === 'boolean'
-              ? finalizeResult.data.proof.randomError
-              : undefined,
+          ...omitUndefinedProperties({ verifiedTally: verifiedTallyFromResponse }),
+          ...omitUndefinedProperties({
+            botTamperInfo: (() => {
+              const proof = finalizeResult.data.proof;
+              if (!proof || !isBotTamperInfo(proof.recountedBotInfo)) {
+                return undefined;
+              }
+              return proof.recountedBotInfo;
+            })(),
+            randomError:
+              typeof finalizeResult.data.proof?.randomError === 'boolean'
+                ? finalizeResult.data.proof.randomError
+                : undefined,
+          }),
         },
         {
           commitment: voteResult.commitment,
           path: Array.isArray(detectionPath) ? detectionPath : [],
           leafIndex: leafIndexToUse,
-          choice: userChoice,
+          ...omitUndefinedProperties({ choice: userChoice }),
           random: voteResult.random,
           treeSize: treeSizeForProof,
         },
         {
-          expectedTotalVotes: finalizeResult.data.totalExpected,
+          ...omitUndefinedProperties({ expectedTotalVotes: finalizeResult.data.totalExpected }),
           scenarios: testCase.scenario,
         },
       );
@@ -708,7 +804,7 @@ export class CLIVotingTest {
           }, validVotes=${validVotes ?? 'n/a'}, excludedSlots=${excludedSlots ?? 'n/a'}`,
         );
       }
-      console.log(`- Tamper detected: ${tamperDetected ? '✅ YES' : '❌ NO'}`);
+      console.log(`- Tamper detected: ${tamperDetected ? 'YES' : 'NO'}`);
 
       // Check if user vote was affected
       if (tamperDetected && verifiedTallyForLog) {
@@ -723,24 +819,27 @@ export class CLIVotingTest {
         passed: errors.length === 0,
         duration: Date.now() - startTime,
         details: {
-          verifiedTally: verifiedTallyForLog,
-          missingSlots,
-          invalidPresentedSlots,
-          validVotes,
-          excludedSlots,
-          tamperDetected,
-          verificationStatus: finalizeResult.data.verificationStatus,
-          verificationExecutionId,
-          verificationBundleDelivery,
-          verificationHash,
-          verificationReportHash,
-          verificationReportPath,
-          bundleExtractionDir,
-          errors: errors.length > 0 ? errors : undefined,
-          finalizationMode,
-          finalizationExecutionId,
-          finalizationHistory: finalizationHistory && finalizationHistory.length > 0 ? finalizationHistory : undefined,
-          finalizationStepFunctions: finalizationStepFunctions ?? undefined,
+          ...omitUndefinedProperties({
+            verifiedTally: verifiedTallyForLog,
+            missingSlots,
+            invalidPresentedSlots,
+            validVotes,
+            excludedSlots,
+            tamperDetected,
+            verificationStatus: finalizeResult.data.verificationStatus,
+            verificationExecutionId,
+            verificationBundleDelivery,
+            verificationHash,
+            verificationReportHash,
+            verificationReportPath,
+            bundleExtractionDir,
+            errors: errors.length > 0 ? errors : undefined,
+            finalizationMode,
+            finalizationExecutionId,
+            finalizationHistory:
+              finalizationHistory && finalizationHistory.length > 0 ? finalizationHistory : undefined,
+            finalizationStepFunctions: finalizationStepFunctions ?? undefined,
+          }),
         },
       };
     } catch (error) {
@@ -972,15 +1071,31 @@ function resolveAdvertisedChunkSize(value: string | null): number {
   return parsed;
 }
 
-function getNextBinary(): string {
-  const projectDir = path.resolve(__dirname, '../..');
-  const binName = process.platform === 'win32' ? 'next.cmd' : 'next';
-  return path.join(projectDir, 'node_modules', '.bin', binName);
+function getPnpmBinary(): string {
+  return process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 }
 
-async function runCommand(command: string, args: string[], cwd: string): Promise<void> {
+function getTsxBinary(projectDir: string): string {
+  return path.join(projectDir, 'node_modules', '.bin', process.platform === 'win32' ? 'tsx.cmd' : 'tsx');
+}
+
+export async function runBuildCiCommand(
+  projectDir: string,
+  spawnImpl: CommandSpawner = spawn,
+  sourceEnv: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  await runCommand(getPnpmBinary(), ['build:ci'], projectDir, createCliBuildEnvironment(sourceEnv), spawnImpl);
+}
+
+async function runCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  spawnImpl: CommandSpawner,
+): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { cwd, stdio: 'inherit', env: { ...process.env } });
+    const child = spawnImpl(command, args, { cwd, stdio: 'inherit', env });
     child.on('error', reject);
     child.on('exit', (code) => {
       if (code === 0) {
@@ -1021,7 +1136,7 @@ async function waitForService(baseUrl: string, retries = 60): Promise<void> {
     }
     await delay(1000);
   }
-  throw new Error(`Next.js server did not become ready at ${baseUrl}`);
+  throw new Error(`Vite static frontend plus Hono API server did not become ready at ${baseUrl}`);
 }
 
 // Parse command line arguments
@@ -1086,7 +1201,7 @@ function parseConfig(): CLITestConfig {
 
   return {
     scenarios: [],
-    scenario: values.scenario,
+    ...omitUndefinedProperties({ scenario: values.scenario }),
     allScenarios: values['all-scenarios'] || false,
     useRealZkVM,
     realMode,
@@ -1096,8 +1211,8 @@ function parseConfig(): CLITestConfig {
     skipBuild: Boolean(
       values['skip-build'] ||
       skipBuildFromPositionals ||
-      process.env.STARK_BALLOT_CLI_SKIP_BUILD === 'true' ||
-      process.env.CLI_SKIP_BUILD === 'true',
+      process.env['STARK_BALLOT_CLI_SKIP_BUILD'] === 'true' ||
+      process.env['CLI_SKIP_BUILD'] === 'true',
     ),
   };
 }

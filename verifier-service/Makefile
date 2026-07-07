@@ -9,7 +9,8 @@ VALID_FIXTURE_PATH ?= ../zkvm/test-data/test-fixture-valid-receipt.json
 VALID_FIXTURE_OUTPUT_PATH ?= ../zkvm/test-data/test-fixture-valid-output.json
 TAMPERED_FIXTURE_PATH ?= ../zkvm/test-data/test-fixture-tampered-stark-receipt.json
 IMAGE_ID_READER ?= ./scripts/read-image-id.mjs
-CURRENT_IMAGE_ID ?= $(shell node $(IMAGE_ID_READER) ../public/imageId-mapping.json 2>/dev/null)
+CURRENT_IMAGE_ID_VARIANT ?= x86_64
+CURRENT_IMAGE_ID ?= $(shell EXPECTED_IMAGE_ID_VARIANT=$(CURRENT_IMAGE_ID_VARIANT) node $(IMAGE_ID_READER) ../public/imageId-mapping.json 2>/dev/null)
 
 help:
 	@echo "verifier-service - RISC Zero Receipt Verification Service"
@@ -29,6 +30,7 @@ help:
 	@echo ""
 	@echo "Environment variables:"
 	@echo "  CURRENT_IMAGE_ID      - Current mapping ImageID (default: $(CURRENT_IMAGE_ID))"
+	@echo "  CURRENT_IMAGE_ID_VARIANT - Mapping variant for CURRENT_IMAGE_ID (default: $(CURRENT_IMAGE_ID_VARIANT))"
 	@echo "  HOST_BIN              - Path to zkVM host binary (default: ../zkvm/target/release/host)"
 	@echo "  FIXTURE_INPUT_PATH    - zkVM fixture input JSON (default: ../zkvm/test-data/test-fixture-valid.json)"
 	@echo "  VALID_FIXTURE_PATH    - Regenerated valid receipt path (default: ../zkvm/test-data/test-fixture-valid-receipt.json)"

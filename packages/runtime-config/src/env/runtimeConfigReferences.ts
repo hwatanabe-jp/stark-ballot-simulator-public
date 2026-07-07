@@ -1,0 +1,248 @@
+import { isUnresolvedRuntimeSecretPlaceholder } from '@stark-ballot/runtime-config/env/runtimeSecretPlaceholders';
+
+export type RuntimeConfigReferenceName =
+  | 'SESSION_CAPABILITY_SECRET'
+  | 'VOTE_SECRET_ENCRYPTION_KEY'
+  | 'SESSION_CAPABILITY_TTL_SECONDS'
+  | 'TURNSTILE_SECRET_KEY'
+  | 'LOG_IP_HASH_SALT'
+  | 'EXPECTED_ORIGIN_VERIFY_HEADER'
+  | 'VITE_TURNSTILE_SITE_KEY';
+
+export interface RuntimeConfigReference {
+  name: RuntimeConfigReferenceName;
+  reference: string;
+}
+
+export interface RuntimeConfigReferenceResolver {
+  resolve(reference: RuntimeConfigReference): string | undefined;
+}
+
+let activeResolver: RuntimeConfigReferenceResolver | undefined;
+
+interface RuntimeConfigReferenceValidationOptions {
+  expectedAccountId?: string;
+  expectedDeploymentEnvironment?: string;
+  expectedRegion?: string;
+}
+
+type OmitUndefinedProperties<T extends object> = {
+  [K in keyof T as undefined extends T[K] ? K : never]?: Exclude<T[K], undefined>;
+} & {
+  [K in keyof T as undefined extends T[K] ? never : K]: T[K];
+};
+
+const TARGET_RUNTIME_REFERENCE_IDENTITIES = [
+  { accountAlias: 'stark-dev', deploymentEnvironment: 'develop' },
+  { accountAlias: 'stark-prod', deploymentEnvironment: 'main' },
+] as const;
+
+const TARGET_RUNTIME_REFERENCE_SUFFIXES: Record<RuntimeConfigReferenceName, string> = {
+  SESSION_CAPABILITY_SECRET: 'secrets/session-capability-secret',
+  VOTE_SECRET_ENCRYPTION_KEY: 'secrets/vote-secret-encryption-key',
+  SESSION_CAPABILITY_TTL_SECONDS: 'config/session-capability-ttl-seconds',
+  TURNSTILE_SECRET_KEY: 'secrets/turnstile-secret-key',
+  LOG_IP_HASH_SALT: 'secrets/log-ip-hash-salt',
+  EXPECTED_ORIGIN_VERIFY_HEADER: 'secrets/expected-origin-verify-header',
+  VITE_TURNSTILE_SITE_KEY: 'config/vite-turnstile-site-key',
+};
+
+function normalizeAbsolutePath(path: string): string {
+  return path.startsWith('/') ? path : `/${path}`;
+}
+
+function secretNameMatchesExpectedPath(secretResource: string, expectedPath: string): boolean {
+  const secretName = normalizeAbsolutePath(secretResource);
+  return secretName === expectedPath || new RegExp(`^${escapeRegExp(expectedPath)}-[A-Za-z0-9]{6}$`).test(secretName);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function readTrimmedEnv(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const value = env[name]?.trim();
+  return value && value.length > 0 ? value : undefined;
+}
+
+function omitUndefinedProperties<T extends object>(value: T): OmitUndefinedProperties<T> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entryValue]) => entryValue !== undefined),
+  ) as OmitUndefinedProperties<T>;
+}
+
+function requiredMatchGroup(match: RegExpExecArray, index: number, errorMessage: string): string {
+  const value = match[index];
+  if (!value) {
+    throw new Error(errorMessage);
+  }
+  return value;
+}
+
+function runtimeReferenceValidationOptions(
+  env: NodeJS.ProcessEnv = process.env,
+): RuntimeConfigReferenceValidationOptions {
+  return omitUndefinedProperties({
+    expectedAccountId: readTrimmedEnv('AWS_ACCOUNT_ID', env),
+    expectedDeploymentEnvironment: readTrimmedEnv('RUNTIME_DEPLOYMENT_ENV', env),
+    expectedRegion: readTrimmedEnv('AWS_REGION', env) ?? readTrimmedEnv('AWS_DEFAULT_REGION', env),
+  });
+}
+
+export function expectedRuntimeConfigReferencePath(name: RuntimeConfigReferenceName): string {
+  return expectedRuntimeConfigReferencePaths(name)[0] ?? '';
+}
+
+function expectedRuntimeConfigReferencePaths(
+  name: RuntimeConfigReferenceName,
+  options: RuntimeConfigReferenceValidationOptions = {},
+): string[] {
+  const identities = TARGET_RUNTIME_REFERENCE_IDENTITIES.filter(
+    (identity) =>
+      !options.expectedDeploymentEnvironment ||
+      identity.deploymentEnvironment === options.expectedDeploymentEnvironment,
+  );
+  const selectedIdentities = identities.length > 0 ? identities : TARGET_RUNTIME_REFERENCE_IDENTITIES;
+  const suffix = TARGET_RUNTIME_REFERENCE_SUFFIXES[name];
+  return selectedIdentities.map(
+    (identity) => `/stark-ballot-simulator/${identity.accountAlias}/${identity.deploymentEnvironment}/app/${suffix}`,
+  );
+}
+
+function formatExpectedReferencePaths(paths: readonly string[]): string {
+  return paths.length === 1 ? (paths[0] ?? '') : `one of ${paths.join(', ')}`;
+}
+
+function assertExpectedReferencePath(
+  name: RuntimeConfigReferenceName,
+  actualPath: string,
+  expectedPaths: string[],
+): void {
+  if (!expectedPaths.includes(actualPath)) {
+    throw new Error(`${name}_REF must reference ${formatExpectedReferencePaths(expectedPaths)}.`);
+  }
+}
+
+export function validateRuntimeConfigReferenceSource(
+  name: RuntimeConfigReferenceName,
+  rawReference: string | undefined,
+  options: RuntimeConfigReferenceValidationOptions = {},
+): string {
+  const value = rawReference?.trim();
+  if (!value) {
+    throw new Error(`${name}_REF must be set to an SSM parameter path or approved secret/config ARN.`);
+  }
+  if (isUnresolvedRuntimeSecretPlaceholder(value)) {
+    throw new Error(`${name}_REF must not be an unresolved runtime secret placeholder.`);
+  }
+
+  const lowered = value.toLowerCase();
+  if (
+    lowered.includes('amplify') ||
+    lowered.includes('legacy') ||
+    lowered.includes('placeholder') ||
+    lowered.startsWith('change-me')
+  ) {
+    throw new Error(`${name}_REF must reference a target-account SSM or Secrets Manager source.`);
+  }
+
+  const expectedPaths = expectedRuntimeConfigReferencePaths(name, options);
+  if (value.startsWith('/')) {
+    assertExpectedReferencePath(name, value, expectedPaths);
+    return value;
+  }
+
+  const arnMatch = /^arn:aws:(ssm|secretsmanager):([^:]+):([0-9]{12}):(.+)$/.exec(value);
+  if (arnMatch) {
+    const service = requiredMatchGroup(
+      arnMatch,
+      1,
+      `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`,
+    );
+    const region = requiredMatchGroup(
+      arnMatch,
+      2,
+      `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`,
+    );
+    const accountId = requiredMatchGroup(
+      arnMatch,
+      3,
+      `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`,
+    );
+    const resource = requiredMatchGroup(
+      arnMatch,
+      4,
+      `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`,
+    );
+    if (options.expectedRegion && region !== options.expectedRegion) {
+      throw new Error(`${name}_REF region must match AWS_REGION/AWS_DEFAULT_REGION.`);
+    }
+    if (options.expectedAccountId && accountId !== options.expectedAccountId) {
+      throw new Error(`${name}_REF account must match AWS_ACCOUNT_ID.`);
+    }
+    if (service === 'ssm') {
+      if (!resource.startsWith('parameter/')) {
+        throw new Error(`${name}_REF must reference an SSM parameter or Secrets Manager secret.`);
+      }
+      const parameterPath = normalizeAbsolutePath(resource.slice('parameter/'.length));
+      assertExpectedReferencePath(name, parameterPath, expectedPaths);
+      return value;
+    }
+    if (!resource.startsWith('secret:')) {
+      throw new Error(`${name}_REF must reference an SSM parameter or Secrets Manager secret.`);
+    }
+    const secretName = resource.slice('secret:'.length);
+    if (!expectedPaths.some((expectedPath) => secretNameMatchesExpectedPath(secretName, expectedPath))) {
+      throw new Error(`${name}_REF must reference ${formatExpectedReferencePaths(expectedPaths)}.`);
+    }
+    return value;
+  }
+
+  throw new Error(`${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`);
+}
+
+function normalizeReference(reference: RuntimeConfigReference): RuntimeConfigReference {
+  try {
+    const value = validateRuntimeConfigReferenceSource(
+      reference.name,
+      reference.reference,
+      runtimeReferenceValidationOptions(),
+    );
+    return { name: reference.name, reference: value };
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith(`${reference.name}_REF must be set`)) {
+      throw new Error(`${reference.name}_REF must be set before resolving ${reference.name}.`);
+    }
+    throw error;
+  }
+}
+
+export function setRuntimeConfigReferenceResolver(resolver: RuntimeConfigReferenceResolver | undefined): void {
+  activeResolver = resolver;
+}
+
+export function clearRuntimeConfigReferenceResolver(): void {
+  activeResolver = undefined;
+}
+
+export function installStaticRuntimeConfigReferenceResolver(values: ReadonlyMap<string, string>): void {
+  setRuntimeConfigReferenceResolver({
+    resolve(reference) {
+      return values.get(reference.reference);
+    },
+  });
+}
+
+export function resolveRuntimeConfigReference(reference: RuntimeConfigReference): string {
+  const normalized = normalizeReference(reference);
+  const resolved = activeResolver?.resolve(normalized)?.trim();
+
+  if (!resolved) {
+    throw new Error(`${normalized.name}_REF is configured but no target runtime resolver returned a value.`);
+  }
+  if (resolved === normalized.reference || isUnresolvedRuntimeSecretPlaceholder(resolved)) {
+    throw new Error(`${normalized.name}_REF resolved to an unresolved or invalid ${normalized.name} value.`);
+  }
+
+  return resolved;
+}

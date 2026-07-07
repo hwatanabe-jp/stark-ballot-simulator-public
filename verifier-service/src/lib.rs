@@ -620,6 +620,28 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "production")]
+    fn production_feature_rejects_risc0_dev_mode_env() {
+        let _env_lock = lock_env();
+        let _guard = EnvGuard::new(&["RISC0_DEV_MODE"]);
+        unsafe {
+            std::env::set_var("RISC0_DEV_MODE", "1");
+        }
+
+        let result = std::panic::catch_unwind(|| {
+            #[allow(deprecated)]
+            {
+                let _ = risc0_zkvm::is_dev_mode();
+            }
+        });
+
+        assert!(
+            result.is_err(),
+            "production verifier builds must reject inherited RISC0_DEV_MODE"
+        );
+    }
+
+    #[test]
     fn verify_bundle_reports_dev_mode_with_fixture_receipt() {
         let dir = tempdir().expect("temp dir");
         let target = dir.path().join("valid-receipt.json");

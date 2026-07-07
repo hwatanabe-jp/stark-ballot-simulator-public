@@ -7,6 +7,13 @@ import path from 'node:path';
 import { readdirSync, statSync } from 'node:fs';
 import { format, resolveConfig, type Options } from 'prettier';
 
+function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
+  if (value === undefined || value === null) {
+    throw new Error(`Expected ${label} to be defined`);
+  }
+  return value;
+}
+
 interface FormalReport {
   theorems: Array<{ name: string; source: string; claim: string }>;
   generatedVectorArtifacts: string[];
@@ -192,10 +199,10 @@ function parsePrintAxiomsOutput(output: string): Map<string, string[]> {
   const noDependencyPattern = /'StarkBallotFormal\.([^']+)' does not depend on any axioms/g;
 
   for (const match of output.matchAll(dependencyPattern)) {
-    dependenciesByName.set(match[1], parseAxiomList(match[2]));
+    dependenciesByName.set(strictDefined(match[1]), parseAxiomList(strictDefined(match[2])));
   }
   for (const match of output.matchAll(noDependencyPattern)) {
-    dependenciesByName.set(match[1], []);
+    dependenciesByName.set(strictDefined(match[1]), []);
   }
 
   return dependenciesByName;

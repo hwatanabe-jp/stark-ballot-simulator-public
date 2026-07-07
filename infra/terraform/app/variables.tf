@@ -1,0 +1,377 @@
+variable "aws_region" {
+  description = "AWS Region for app resources."
+  type        = string
+  default     = "ap-northeast-1"
+
+  validation {
+    condition     = can(regex("^[a-z]{2}-[a-z]+-[0-9]{1}$", var.aws_region))
+    error_message = "aws_region must be a valid AWS region name."
+  }
+}
+
+variable "aws_account_id" {
+  description = "Expected AWS account ID for the selected account alias."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9]{12}$", var.aws_account_id))
+    error_message = "aws_account_id must be a 12-digit AWS account ID."
+  }
+}
+
+variable "account_alias" {
+  description = "Target AWS account alias for the app state."
+  type        = string
+
+  validation {
+    condition     = contains(["stark-dev", "stark-prod"], var.account_alias)
+    error_message = "account_alias must be stark-dev or stark-prod for the app state."
+  }
+}
+
+variable "deployment_environment" {
+  description = "Deployment environment name carried in the state identity."
+  type        = string
+
+  validation {
+    condition     = contains(["develop", "main"], var.deployment_environment)
+    error_message = "deployment_environment must be develop or main for the app state."
+  }
+
+  validation {
+    condition = (
+      (var.account_alias == "stark-dev" && var.deployment_environment == "develop")
+      || (var.account_alias == "stark-prod" && var.deployment_environment == "main")
+    )
+    error_message = "app state identity must map develop to stark-dev or main to stark-prod."
+  }
+}
+
+variable "state_scope" {
+  description = "Terraform state scope. This app root supports app only."
+  type        = string
+  default     = "app"
+
+  validation {
+    condition     = var.state_scope == "app"
+    error_message = "infra/terraform/app supports only the app state scope."
+  }
+}
+
+variable "project_name" {
+  description = "Project name used for identity checks and tags."
+  type        = string
+  default     = "stark-ballot-simulator"
+}
+
+variable "state_backend_key" {
+  description = "Expected S3 backend key for this app state."
+  type        = string
+
+  validation {
+    condition     = var.state_backend_key == "stark-ballot-simulator/${var.account_alias}/${var.deployment_environment}/app/terraform.tfstate"
+    error_message = "state_backend_key must match stark-ballot-simulator/<account_alias>/<deployment_environment>/app/terraform.tfstate."
+  }
+}
+
+variable "enable_dynamodb_deletion_protection" {
+  description = "Whether development DynamoDB tables should enable deletion protection."
+  type        = bool
+  default     = true
+}
+
+variable "session_live_ttl_seconds" {
+  description = "Live-session retention used by target runtime config."
+  type        = number
+  default     = 1800
+
+  validation {
+    condition     = var.session_live_ttl_seconds > 0 && floor(var.session_live_ttl_seconds) == var.session_live_ttl_seconds
+    error_message = "session_live_ttl_seconds must be a positive integer."
+  }
+}
+
+variable "verification_artifact_ttl_seconds" {
+  description = "Finalized verification/artifact retention used by target runtime config."
+  type        = number
+  default     = 7200
+
+  validation {
+    condition = (
+      var.verification_artifact_ttl_seconds > 0
+      && floor(var.verification_artifact_ttl_seconds) == var.verification_artifact_ttl_seconds
+      && var.verification_artifact_ttl_seconds >= var.session_live_ttl_seconds
+    )
+    error_message = "verification_artifact_ttl_seconds must be a positive integer greater than or equal to session_live_ttl_seconds."
+  }
+}
+
+variable "proof_artifact_lifecycle_days" {
+  description = "S3 lifecycle retention in days for target private proof/artifact objects."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.proof_artifact_lifecycle_days > 0 && floor(var.proof_artifact_lifecycle_days) == var.proof_artifact_lifecycle_days
+    error_message = "proof_artifact_lifecycle_days must be a positive integer."
+  }
+}
+
+variable "vote_duplicate_detector_ttl_seconds" {
+  description = "Per-session duplicate-vote detector retention used by target runtime config."
+  type        = number
+  default     = 1800
+
+  validation {
+    condition     = var.vote_duplicate_detector_ttl_seconds > 0 && floor(var.vote_duplicate_detector_ttl_seconds) == var.vote_duplicate_detector_ttl_seconds
+    error_message = "vote_duplicate_detector_ttl_seconds must be a positive integer."
+  }
+}
+
+variable "lambda_runtime" {
+  description = "Node.js Lambda runtime for target-owned packages."
+  type        = string
+  default     = "nodejs22.x"
+
+  validation {
+    condition     = contains(["nodejs22.x"], var.lambda_runtime)
+    error_message = "lambda_runtime must be nodejs22.x for the current target runtime."
+  }
+}
+
+variable "lambda_artifacts" {
+  description = "Immutable target-owned Lambda package artifacts produced by the app pipeline."
+  type = map(object({
+    s3_bucket         = string
+    s3_key            = string
+    s3_object_version = string
+    source_code_hash  = string
+  }))
+
+  validation {
+    condition = alltrue([
+      for name in ["public_api", "finalization_writer", "proof_dispatcher", "verification_worker", "image_signature_gate", "semaphore_janitor"] :
+      contains(keys(var.lambda_artifacts), name)
+    ])
+    error_message = "lambda_artifacts must include public_api, finalization_writer, proof_dispatcher, verification_worker, image_signature_gate, and semaphore_janitor."
+  }
+
+  validation {
+    condition = alltrue([
+      for artifact in values(var.lambda_artifacts) :
+      can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", artifact.s3_bucket))
+      && !can(regex("\\.\\.", artifact.s3_bucket))
+      && trimspace(artifact.s3_key) != ""
+      && !startswith(artifact.s3_key, "/")
+      && trimspace(artifact.s3_object_version) != ""
+      && can(regex("^[A-Za-z0-9+/]{43}=$", artifact.source_code_hash))
+    ])
+    error_message = "Each lambda_artifacts entry must include a valid S3 bucket, nonempty S3 key, nonempty S3 object version, and base64 SHA-256 source_code_hash."
+  }
+}
+
+variable "prover_max_concurrent_provers" {
+  description = "Maximum number of target Fargate prover tasks admitted through the DynamoDB semaphore."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = floor(var.prover_max_concurrent_provers) == var.prover_max_concurrent_provers && var.prover_max_concurrent_provers >= 1
+    error_message = "prover_max_concurrent_provers must be a positive integer."
+  }
+}
+
+variable "fargate_vcpu_alarm_threshold" {
+  description = "Passive alarm threshold for account-level Fargate On-Demand vCPU usage."
+  type        = number
+  default     = 40
+
+  validation {
+    condition     = floor(var.fargate_vcpu_alarm_threshold) == var.fargate_vcpu_alarm_threshold && var.fargate_vcpu_alarm_threshold >= 1
+    error_message = "fargate_vcpu_alarm_threshold must be a positive integer."
+  }
+}
+
+variable "verifier_service_bin_path" {
+  description = "Executable path for the Rust verifier-service binary inside the immutable verification worker Lambda package."
+  type        = string
+  default     = "/var/task/verifier-service"
+
+  validation {
+    condition     = var.verifier_service_bin_path == "/var/task/verifier-service"
+    error_message = "verifier_service_bin_path must point to the verifier-service executable packaged in the verification worker zip."
+  }
+}
+
+variable "prover_image_uri" {
+  description = "Pinned target prover container image URI with digest."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9]{12}\\.dkr\\.ecr\\.[a-z]{2}-[a-z]+-[0-9]\\.amazonaws\\.com\\/[A-Za-z0-9._\\/-]+@sha256:[0-9a-f]{64}$", var.prover_image_uri))
+    error_message = "prover_image_uri must be a digest-pinned ECR URI."
+  }
+}
+
+variable "expected_image_id" {
+  description = "Expected zkVM ImageID for the target runtime."
+  type        = string
+
+  validation {
+    condition     = can(regex("^0x[0-9a-fA-F]{64}$", var.expected_image_id))
+    error_message = "expected_image_id must be a 32-byte 0x-prefixed hex string."
+  }
+}
+
+variable "image_id_mapping_evidence" {
+  description = "Repository ImageID mapping evidence used to authorize expected_image_id."
+  type = object({
+    mapping_path               = string
+    mapping_sha256             = string
+    current_method_version     = number
+    current_method_version_key = string
+    variant                    = string
+    field                      = string
+    expected_image_id          = string
+  })
+
+  validation {
+    condition = (
+      var.image_id_mapping_evidence.mapping_path == "public/imageId-mapping.json"
+      && can(regex("^[0-9a-f]{64}$", var.image_id_mapping_evidence.mapping_sha256))
+      && tostring(var.image_id_mapping_evidence.current_method_version) == var.image_id_mapping_evidence.current_method_version_key
+      && contains(["default", "x86_64"], var.image_id_mapping_evidence.variant)
+      && var.image_id_mapping_evidence.field == (var.image_id_mapping_evidence.variant == "x86_64" ? "expectedImageID_x86_64" : "expectedImageID")
+      && lower(var.image_id_mapping_evidence.expected_image_id) == lower(var.expected_image_id)
+    )
+    error_message = "image_id_mapping_evidence must describe the active current public/imageId-mapping.json entry that matches expected_image_id."
+  }
+}
+
+variable "verifier_public_base_url" {
+  description = "Public verifier/API base URL used by target runtime link generation."
+  type        = string
+  default     = "https://develop.stark-ballot-sim.hwatanabe.dev"
+
+  validation {
+    condition = (
+      can(regex("^https://[^/?#]+/?$", var.verifier_public_base_url))
+      && !can(regex("[?#]", var.verifier_public_base_url))
+    )
+    error_message = "verifier_public_base_url must be an https origin without path, query, or fragment."
+  }
+}
+
+variable "public_hostname_disposition" {
+  description = "Plan 02 public hostname disposition consumed by the app root."
+  type        = string
+  default     = "external-dns-acm"
+
+  validation {
+    condition = contains([
+      "generated-cloudfront-hostname",
+      "external-dns-acm",
+      "foundation-owned-dns-acm",
+    ], var.public_hostname_disposition)
+    error_message = "public_hostname_disposition must be generated-cloudfront-hostname, external-dns-acm, or foundation-owned-dns-acm."
+  }
+}
+
+variable "public_hostname" {
+  description = "Develop public hostname used for CloudFront alias, Turnstile host allowlist, and runtime public URL evidence."
+  type        = string
+  default     = "develop.stark-ballot-sim.hwatanabe.dev"
+
+  validation {
+    condition = (
+      can(regex("^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$", var.public_hostname))
+      && !can(regex("^https?://", var.public_hostname))
+      && !can(regex("[/?#]", var.public_hostname))
+    )
+    error_message = "public_hostname must be a hostname, not a URL."
+  }
+}
+
+variable "cloudfront_acm_certificate_arn" {
+  description = "us-east-1 ACM certificate ARN for the externally owned or foundation-owned CloudFront alias."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.cloudfront_acm_certificate_arn == null
+      || can(regex("^arn:aws:acm:us-east-1:[0-9]{12}:certificate/[A-Za-z0-9-]+$", var.cloudfront_acm_certificate_arn))
+    )
+    error_message = "cloudfront_acm_certificate_arn must be a us-east-1 ACM certificate ARN when set."
+  }
+}
+
+variable "develop_operator_gate_enabled" {
+  description = "Enable the outer operator/tester CloudFront gate for the develop hostname."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = var.deployment_environment == "develop" || !var.develop_operator_gate_enabled
+    error_message = "develop_operator_gate_enabled may be true only for the develop app lane."
+  }
+}
+
+variable "develop_operator_gate_public_key_pem" {
+  description = "PEM-encoded CloudFront public key used by the develop operator/tester signed-cookie gate."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.develop_operator_gate_public_key_pem == null
+      || can(regex("^-----BEGIN PUBLIC KEY-----[\\s\\S]+-----END PUBLIC KEY-----\\s*$", var.develop_operator_gate_public_key_pem))
+    )
+    error_message = "develop_operator_gate_public_key_pem must be a PEM-encoded public key when set."
+  }
+}
+
+variable "prover_subnet_ids" {
+  description = "Public or controlled subnet IDs used by the target Fargate prover task."
+  type        = list(string)
+
+  validation {
+    condition     = length(var.prover_subnet_ids) > 0 && alltrue([for id in var.prover_subnet_ids : can(regex("^subnet-[0-9a-f]+$", id))])
+    error_message = "prover_subnet_ids must contain at least one subnet ID."
+  }
+}
+
+variable "prover_security_group_ids" {
+  description = "Security group IDs used by the target Fargate prover task."
+  type        = list(string)
+
+  validation {
+    condition     = length(var.prover_security_group_ids) > 0 && alltrue([for id in var.prover_security_group_ids : can(regex("^sg-[0-9a-f]+$", id))])
+    error_message = "prover_security_group_ids must contain at least one security group ID."
+  }
+}
+
+variable "prover_cpu" {
+  description = "Fargate CPU units for the target prover task."
+  type        = number
+  default     = 16384
+}
+
+variable "prover_memory" {
+  description = "Fargate memory MiB for the target prover task."
+  type        = number
+  default     = 32768
+}
+
+variable "prover_task_timeout_seconds" {
+  description = "Maximum runtime for the target async prover ECS task before Step Functions records a timeout callback."
+  type        = number
+  default     = 1800
+
+  validation {
+    condition     = var.prover_task_timeout_seconds > 0 && floor(var.prover_task_timeout_seconds) == var.prover_task_timeout_seconds
+    error_message = "prover_task_timeout_seconds must be a positive integer."
+  }
+}

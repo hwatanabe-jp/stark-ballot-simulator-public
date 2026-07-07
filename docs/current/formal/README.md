@@ -49,10 +49,10 @@ Generated vectors in `generated-vectors/` connect the formal summary/display,
 input commitment, bitmap, check-definition, and guest models to targeted
 TypeScript and Rust coverage. The input commitment vectors include canonical
 vote order and the exact pre-hash byte sequence. The bitmap vectors cover 0, 1,
-7, 8, 9, 31, 32, 33, and 257 bit boundaries and document bit `i` as byte
-`i / 8`, bit position `i % 8`. The guest-model vectors are consumed through the
-Rust guest's checked inspection surface, which shares the same validation and
-fold logic used by `guest_main`.
+7, 8, 9, 31, 32, 33, 255, 256, 257, 511, 512, 513, and 1025 bit boundaries and
+document bit `i` as byte `i / 8`, bit position `i % 8`. The guest-model vectors
+are consumed through the Rust guest's checked inspection surface, which shares
+the same validation and fold logic used by `guest_main`.
 
 The check-definition vector is emitted by Lean from the summary-model metadata
 and compared with `VERIFICATION_CHECK_DEFINITIONS` in TypeScript. For the fields
@@ -72,12 +72,12 @@ statement hashes, generated vector hashes, checked `#print axioms` dependency
 summaries, the proof-hygiene scan summary, and the native-decision allowlist.
 `pnpm formal:report` regenerates the report; `pnpm formal:audit` regenerates the
 audit artifact; `pnpm formal:verify` checks the Lean build, report freshness,
-generated-vector freshness, audit freshness, and formatting/drift checks on the
-stable outputs. Dedicated
+generated-vector freshness, audit freshness, the explicit TypeScript vector
+consumers, and formatting/drift checks on the stable outputs. Dedicated
 formal CI workflows run the same `pnpm formal:verify` gate for changes to the
 Lean workspace, stable formal artifacts, and implementation files guarded by
 formal vectors, including in the generated public repository snapshot. The
-vector-consuming TypeScript tests run in the core test gate; the Rust
+vector-consuming TypeScript tests also run in the core test gate; the Rust
 input-commitment, bitmap, and guest-model vector consumers run in the zkVM Rust
 test gate.
 

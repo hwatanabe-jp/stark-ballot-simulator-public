@@ -1,0 +1,18 @@
+{
+  "name": "@stark-ballot/merkle",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./consistency-proof": "./src/consistency-proof.ts",
+    "./rfc6962-merkle-tree": "./src/rfc6962-merkle-tree.ts",
+    "./rfc6962-proof": "./src/rfc6962-proof.ts"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.2.0"
+  },
+  "devDependencies": {
+    "fast-check": "4.8.0",
+    "vitest": "4.1.9"
+  }
+}

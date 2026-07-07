@@ -1,8 +1,7 @@
 # PoC の意図的な制約
 
-本章では、公開版 PoC で意図的に受け入れている制約を 3 点に絞って説明します。
-
-「バグではなく設計上の割り切り」であることを明確化します。
+公開版 PoC は、検証可能投票の成立条件を示すために、スケーラビリティ、プライバシー、実行基盤で制約を受け入れています。
+これらは実装漏れではなく、デモの範囲を限定する設計判断です。
 
 ## 制約の全体像
 
@@ -12,19 +11,16 @@
 | プライバシー     | ビットマップチャンク漏洩              |
 | 実行基盤         | 非 GPU 前提の証明実行（ECS Fargate）  |
 
----
-
 ## 1. 固定票数 64（1 ユーザー + 63 ボット）
 
 | 項目           | 内容                                                                                |
 | -------------- | ----------------------------------------------------------------------------------- |
 | 制約の内容     | `BOT_COUNT=63`、`MERKLE_TREE_DEPTH=6`（2^6 = 64 リーフ）で固定                      |
-| 受け入れた理由 | 単一ユーザーでも掲示板・Merkle・zkVM・検証 UI までの E2E フローを再現できる最小構成 |
+| 受け入れた理由 | 単一ユーザーでも掲示板、Merkle、zkVM、検証 UI までの E2E フローを再現できる最小構成 |
 | 影響範囲       | 入力サイズ、証明時間、ツリー深度、検証表示                                          |
 
-PoC の主目的は「検証可能投票の成立条件を end-to-end で示すこと」であり、まずは 64 票固定でパイプライン全体の再現性を優先しています。
-
----
+PoC の主目的は、検証可能投票の成立条件を end-to-end で示すことです。
+そのため、まずは 64 票固定でパイプライン全体の再現性を優先しています。
 
 ## 2. ビットマップチャンク漏洩
 
@@ -34,11 +30,10 @@ PoC の主目的は「検証可能投票の成立条件を end-to-end で示す�
 | 受け入れた理由 | 64 票が 1 チャンクに収まり、63 票がボットのため情報価値が限定的                                                   |
 | 漏洩する情報   | 現行の 64 票構成では、全 64 票が集計に含まれたか否か                                                              |
 
-本来はチャンクを小さくし、木を深くすることで漏洩を抑制できます。PoC では zkVM 実行時間とのトレードオフを優先し、現在のチャンク設計を採用しています。
+本来はチャンクを小さくし、木を深くすることで漏洩を抑制できます。
+PoC では zkVM 実行時間とのトレードオフを優先し、現在のチャンク設計を採用しています。
 
 詳細: [ビットマップ Merkle](../protocol/bitmap-merkle.md)
-
----
 
 ## 3. 非 GPU 前提の証明実行（ECS Fargate）
 
@@ -48,8 +43,8 @@ PoC の主目的は「検証可能投票の成立条件を end-to-end で示す�
 | 受け入れた理由 | GPU インスタンスは高価かつ起動に時間がかかるため、非同期キュー + Fargate が現実的だった                               |
 | 影響範囲       | 公開 AWS 構成では `FINALIZE_ASYNC_MODE=true` を前提に `POST /api/finalize` が非同期化され、証明完了まで数分待機が発生 |
 
-コードベース自体は同期パスも保持しており、`FINALIZE_ASYNC_MODE=false` のローカル・テスト構成では同期レスポンスを返せます。
+コードベース自体は同期パスも保持しており、`FINALIZE_ASYNC_MODE=false` のローカルまたはテスト構成では同期レスポンスを返せます。
 
 詳細: [AWS アーキテクチャ](../aws/index.md)、[非同期プローバー](../aws/async-prover.md)
 
-<!-- source: src/shared/constants.ts, src/lib/zkvm/bitmap.ts, public-book/src/protocol/bitmap-merkle.md, public-book/src/aws/index.md, public-book/src/aws/async-prover.md, public-book/src/verification/gating-logic.md -->
+<!-- source: packages/domain/src/shared/constants.ts, packages/zkvm-contract/src/zkvm/bitmap.ts, public-book/src/protocol/bitmap-merkle.md, public-book/src/aws/index.md, public-book/src/aws/async-prover.md, public-book/src/verification/gating-logic.md -->

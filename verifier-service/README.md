@@ -13,8 +13,8 @@ top-level `image_id` metadata field.
 It is used in three places:
 
 - local/manual bundle verification
-- app-side server verification via `src/lib/verification/verifier-service-client.ts`
-- Amplify `verifier-service-runner` Lambda via a Lambda layer
+- app-side server verification via `packages/node-adapters/src/verifier-service-client.ts`
+- Terraform-managed target `verification-worker` Lambda package
 
 ## Supported App Path vs Bridge-Only Surfaces
 
@@ -22,7 +22,7 @@ The supported application contract is authenticated bundle-backed verification.
 That means the app chooses verification by `(sessionId, verificationExecutionId)`
 and then either:
 
-- invokes `verifier-service-runner` with an authoritative S3 bundle reference, or
+- invokes `verification-worker` with an authoritative S3 bundle reference, or
 - verifies a trusted local bundle in-process through `verifier-service-client`
 
 Bridge-only runner payloads that pass raw zkVM inputs or receipts directly are
@@ -110,11 +110,14 @@ For deployed or bundle-based flows, you can resolve the mapped ImageID from
 - `default` (default): always uses `expectedImageID`
 - `x86_64`: requires `expectedImageID_x86_64`
 
-```bash
-# Deployed / AWS-native verification
-export EXPECTED_IMAGE_ID="$(node verifier-service/scripts/read-image-id.mjs public/imageId-mapping.json --variant default)"
+For the current methodVersion `14`, the checked-in mapping retains both the
+target-account default/ARM64 ImageID and the local `x86_64` ImageID. The
+develop app handoff helpers treat `default` / `expectedImageID` as the active
+deployment evidence when multiple variants are present. Use `x86_64`
+explicitly for local receipts produced by the local x86_64 guest build.
 
-# Local x86_64 verification
+```bash
+# Current local x86_64 verification
 export EXPECTED_IMAGE_ID="$(node verifier-service/scripts/read-image-id.mjs public/imageId-mapping.json --variant x86_64)"
 
 # Or let read-image-id.mjs consume the shared variant env first
@@ -217,27 +220,28 @@ This workflow:
 2. flips bits in the STARK seal
 3. confirms that `verifier-service verify` exits with `3`
 
-## AWS Lambda Layer Packaging
+## Target Lambda Packaging
 
-The Amplify `verifier-service-runner` Lambda expects the Rust binary to be provided via a Lambda layer.
+The Terraform-managed target runtime packages the verifier binary directly into the
+Terraform-managed `verification-worker` Lambda zip. The app pipeline invokes:
 
 ```bash
-cd verifier-service
-./scripts/build-lambda-layer.sh
-zip -r verifier-layer.zip lambda-layer
+pnpm terraform:build-lambda:target-runtime
 ```
 
-This stages `lambda-layer/bin/verifier-service` for `x86_64-unknown-linux-gnu`.
-`lambda-layer/` is a generated build artifact and should not be committed.
-Amplify mounts the layer so the binary is available at `/opt/bin/verifier-service`.
+That command builds `verifier-service` and stages the executable at
+`/var/task/verifier-service` inside the immutable verification worker package.
+`infra/terraform/app` consumes the package coordinates and checksum through
+`lambda_artifacts["verification_worker"]`; no Amplify layer is authoritative for the
+target runtime.
 
 ## Integration with the App
 
-The app already wraps the CLI in `src/lib/verification/verifier-service-client.ts`.
+The app already wraps the CLI in `packages/node-adapters/src/verifier-service-client.ts`.
 Prefer that helper over spawning the process manually:
 
 ```ts
-import { invokeVerifierService } from '@/lib/verification/verifier-service-client';
+import { invokeVerifierService } from '@stark-ballot/node-adapters/verifier-service-client';
 
 const result = await invokeVerifierService({
   bundlePath,
@@ -263,7 +267,6 @@ verifier-service/
 ├── README.md
 ├── rust-toolchain.toml
 ├── scripts/
-│   ├── build-lambda-layer.sh
 │   └── read-image-id.mjs
 ├── tests/
 │   └── cli_verify.rs

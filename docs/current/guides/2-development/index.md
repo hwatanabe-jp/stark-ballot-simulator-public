@@ -30,7 +30,7 @@ This section contains implementation guides and development workflows for the ST
 
 ## Key Topics Covered
 
-- **Server verification**: Lambda B orchestration, S3 bundling, signed URL issuance
+- **Server verification**: Lambda B orchestration, S3 bundling, authenticated bundle/report API delivery
 - **Cryptographic consistency**: SHA-256 commitments + RFC6962 CT Merkle
 - **Receipts**: Dev vs production STARK receipts and ImageID checks
 - **Testing**: CLI harness and zkVM smoke tests

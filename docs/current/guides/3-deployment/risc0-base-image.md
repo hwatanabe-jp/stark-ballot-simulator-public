@@ -14,7 +14,7 @@
 
 ## 概要
 
-**ファイル**: `docker/Dockerfile.risc0-toolchain-arm64`
+**ファイル**: `infra/docker/Dockerfile.risc0-toolchain-arm64`
 **目的**: RISC Zero zkVM ツールチェーンを事前ビルドし、CI/CD の高速化とコスト削減を実現
 **対象アーキテクチャ**: `linux/arm64` (aarch64)
 **ビルド時間**:
@@ -22,6 +22,22 @@
 - **CodeBuild ARM_CONTAINER (ARM64 native)**: 初回 100-120 分（ツールチェーンビルド）、以降のアプリケーションビルドは 5-10 分
 - **ローカル (x86_64 + QEMU emulation)**: ⚠️ **非推奨**（12時間以上でも未完了、10-20x 遅い）
 - **推奨**: すべてのベースイメージビルドは CodeBuild を使用
+
+> **Plan 02/03 guardrail:** This guide preserves technical background for
+> building and digest-pinning the RISC Zero ARM64 toolchain image. It is not
+> the current `stark-dev/develop/app` Plan 02 release-candidate authority and
+> is not Plan 03 handoff evidence. Direct local Docker builds, direct ad hoc
+> `aws codebuild start-build` invocations, legacy Terraform/CodeBuild
+> resources, mutable tags, and operator-authored manifest assertions are not
+> accepted Plan 02/03 handoff evidence. CodeBuild evidence is accepted for
+> Plan 03 only when produced by the required separate target-account develop
+> toolchain/prover release artifact pipelines with retained build, scan,
+> signing, provenance, promotion/channel records, and a selected prover
+> release/app deployment record. Any different authority would
+> require a future formally approved superseding decision. For the current
+> target-develop handoff contract, use
+> [`develop-target-image-authority.md`](../../internal/guides/3-deployment/develop-target-image-authority.md)
+> and the post-merge Plan 02/03 documents.
 
 ### バージョン情報（2026-03-21 時点）
 
@@ -35,14 +51,15 @@
 
 ### 管理境界
 
-現在の標準経路では、RISC Zero toolchain 用 ECR repository と CodeBuild project は Terraform で管理します。
-このドキュメントは toolchain image の設計、ビルド、digest 解決、更新運用を説明します。Terraform 管理リソースの作成・変更は
-`docs/current/guides/7-terraform/README.md` を優先してください。
+このドキュメント内の Terraform / CodeBuild resource references は、retained legacy/shared build path の背景情報です。
+Plan 02/03 の target develop image authority では、foundation-owned ECR repository と承認済み AWS-controlled
+release-candidate path が優先されます。Terraform 管理リソースの作成・変更は
+`docs/current/guides/7-terraform/README.md` と current post-merge handoff contract を優先してください。
 
-- ECR repository: `terraform/ecr.tf` の `aws_ecr_repository.risc0_toolchain`
-- CodeBuild project: `terraform/codebuild.tf` の `aws_codebuild_project.risc0_toolchain`
-- version pin: `terraform/variables.tf` の `risc0_version` / `risc0_commit` / `risc0_rust_version` / `risc0_rust_toolchain_tag`
-- application image build: `buildspec.yml` が ECR 上の toolchain tag から digest-pinned image URI を解決して `docker/Dockerfile.fargate-prover` に渡す
+- ECR repository: `infra/terraform/legacy/ecr.tf` の `aws_ecr_repository.risc0_toolchain`
+- CodeBuild project: `infra/terraform/legacy/codebuild.tf` の `aws_codebuild_project.risc0_toolchain`
+- version pin: `infra/terraform/legacy/variables.tf` の `risc0_version` / `risc0_commit` / `risc0_rust_version` / `risc0_rust_toolchain_tag`
+- application image build: `buildspec.yml` が ECR 上の toolchain tag から digest-pinned image URI を解決して `infra/docker/Dockerfile.fargate-prover` に渡す
 
 ---
 
@@ -98,18 +115,20 @@ Multi-stage の Final stage にランタイム依存関係のみを含め、ビ�
 
 ## 初回セットアップ
 
-### 標準: Terraform で管理リソースを作成
+### Retained legacy/shared path: Terraform で管理リソースを作成
 
-RISC Zero toolchain の ECR repository と CodeBuild project は shared resource として Terraform で管理します。手動で `aws ecr create-repository`
+RISC Zero toolchain の legacy/shared ECR repository と CodeBuild project は Terraform で管理します。手動で `aws ecr create-repository`
 や `aws codebuild create-project` を実行する前に、対象 workspace と tfvars を確認してください。
+この path は current Plan 02/03 handoff authority ではありません。
 
-```bash
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace show
-pnpm terraform:backend
-pnpm terraform:tfvars:develop # or pnpm terraform:tfvars:main
-aws-vault exec terraform-admin -- terraform -chdir=terraform plan -var-file="develop.local.tfvars"
-aws-vault exec terraform-admin -- terraform -chdir=terraform apply -var-file="develop.local.tfvars"
-```
+Do not use the removed `pnpm terraform:tfvars:*` package scripts or direct
+legacy Terraform `plan/apply` examples as current operator guidance. For
+post-merge `stark-dev/develop`, create toolchain release evidence through the
+separate toolchain release artifact pipeline and accepted channel pointer
+required by
+[`develop-target-image-authority.md`](../../internal/guides/3-deployment/develop-target-image-authority.md).
+Legacy/shared Terraform changes require a separately authorized guarded
+Terraform operation outside the Plan 03 acceptance path.
 
 関連 Terraform 入力:
 
@@ -154,7 +173,16 @@ aws ecr get-login-password --region "$AWS_REGION" \
 
 ## ビルド手順
 
-### Option A: ローカルビルド（ARM64 環境のみ / 参考）
+### Option A: ローカルビルド（retained legacy/diagnostic only）
+
+This local build/push example is retained only for legacy investigation or
+isolated diagnostics. It tags and pushes `latest`, which is not compatible with
+the Plan 02/03 target-develop authority model. Do not run this as current
+release guidance, and do not cite its output as handoff evidence. Current
+target-develop toolchain images must come from the separate target-account
+toolchain release artifact pipeline, accepted channel pointer, and retained
+artifact record required by
+[`develop-target-image-authority.md`](../../internal/guides/3-deployment/develop-target-image-authority.md).
 
 **前提条件**:
 
@@ -172,7 +200,7 @@ IMAGE_TAG="3.0.5-arm64"
 IMAGE_URI="${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
 docker build --platform linux/arm64 \
   -t "$IMAGE_URI" \
-  -f docker/Dockerfile.risc0-toolchain-arm64 \
+  -f infra/docker/Dockerfile.risc0-toolchain-arm64 \
   .
 
 # ビルド完了後、タグ付け
@@ -190,7 +218,7 @@ docker run --rm "$IMAGE_URI" r0vm --version
 docker run --rm "$IMAGE_URI" rustc --version
 ```
 
-### Option B: CodeBuild でビルド（推奨）
+### Option B: CodeBuild でビルド（legacy/shared path）
 
 **前提条件**:
 
@@ -205,22 +233,33 @@ docker run --rm "$IMAGE_URI" rustc --version
 
 現行 buildspec は次を行います。
 
-- `IMAGE_REPO_NAME` / `RISC0_VERSION` / `RUST_VERSION` / `RUST_TOOLCHAIN_TAG` / `RISC0_COMMIT` を CodeBuild env から受け取り、不足時は既定値を使う
+- `IMAGE_REPO_NAME` を CodeBuild env から必ず受け取る（未指定なら fail
+  closed）。`RISC0_VERSION` / `RUST_VERSION` / `RUST_TOOLCHAIN_TAG` / `RISC0_COMMIT`
+  は CodeBuild env から受け取り、不足時は既定値を使う
 - `SOURCE_REPOSITORY` を `CODEBUILD_SOURCE_REPO_URL` から渡し、Docker image label に private repository URL を固定しない
-- `docker/Dockerfile.risc0-toolchain-arm64` に build args を渡して ARM64 toolchain image を build
+- `infra/docker/Dockerfile.risc0-toolchain-arm64` に build args を渡して ARM64 toolchain image を build
 - `rustc --version` / `cargo risczero --version` / `r0vm --version` / `rzup --version` を image 内で smoke test
-- `latest` tag も push する
+- `latest` tag も push する（legacy/shared behavior only; not target-develop
+  Plan 02/03 authority）
 - ECR image scan の HIGH/CRITICAL finding を確認する
   - toolchain base image では finding があっても build は fail しない
   - production 利用前に `docs/current/runbooks/security.md` の運用で確認する
-- `/tmp/image-info.json` に `imageTag` / `imageDigest` / `imageUri` / version metadata を出力する
+- `/tmp/image-info.json` に `imageTag` / `imageDigest` / `imageUri` / version metadata に加えて
+  `sourceSha` / `requestedSourceSha` / `buildId` / `timestamp` を出力する
+  （CodeBuild artifact としては `base-directory: /tmp` の `image-info.json`）
+- `REQUESTED_SOURCE_SHA` は任意。明示した場合は resolved source と不一致なら
+  pre_build で fail-closed、未設定なら resolved branch head をビルドして
+  `sourceShaMode: "branch-head"` として記録する。通常は
+  `development_toolchain_release` レーン（`ApproveToolchainBuild` 承認で
+  ビルド発火）経由で実行する
 
 #### B-2. Terraform 設定の確認
 
-```bash
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace show
-aws-vault exec terraform-admin -- terraform -chdir=terraform plan -var-file="develop.local.tfvars"
-```
+Do not use legacy Terraform plan output as current Plan 02/03 acceptance
+evidence. For target-develop release candidates, verify the corresponding
+source version, CodeBuild project configuration, and version pins through the
+retained outputs of the toolchain release artifact pipeline and accepted
+channel pointer.
 
 確認ポイント:
 
@@ -231,31 +270,22 @@ aws-vault exec terraform-admin -- terraform -chdir=terraform plan -var-file="dev
 
 #### B-3. ビルド実行
 
-```bash
-PROJECT_NAME="stark-ballot-simulator-risc0-toolchain-builder"
-BUILD_ID=$(aws-vault exec terraform-admin -- aws codebuild start-build \
-  --project-name "$PROJECT_NAME" \
-  --query 'build.id' \
-  --output text)
+Direct `aws codebuild start-build` is not current Plan 02/03 handoff guidance.
+For target-develop, the toolchain image must be built or pipeline-selected by
+the target-account toolchain release artifact pipeline, and the successful
+candidate/promotion execution IDs plus retained outputs are the evidence.
 
-echo "Build started: $BUILD_ID"
-aws-vault exec terraform-admin -- aws logs tail "/aws/codebuild/${PROJECT_NAME}" --follow
-```
-
-一時的に version pin を上書きして検証したい場合は、CodeBuild の environment variable override を使えます。標準運用に戻す前に、Terraform の pin と Dockerfile の既定値を一致させてください。
-
-```bash
-PROJECT_NAME="<codebuild-project-name>"
-aws-vault exec terraform-admin -- aws codebuild start-build \
-  --project-name "$PROJECT_NAME" \
-  --environment-variables-override \
-    name=RISC0_VERSION,value=3.1.0,type=PLAINTEXT \
-    name=RISC0_COMMIT,value=<new-commit-hash>,type=PLAINTEXT \
-    name=RUST_VERSION,value=<rust-version>,type=PLAINTEXT \
-    name=RUST_TOOLCHAIN_TAG,value=<risc0-rust-toolchain-tag>,type=PLAINTEXT
-```
+Do not use environment-variable override `start-build` commands as current
+target-develop release guidance. Version pins for a Plan 02/03 release
+candidate must be captured by the release artifact pipeline inputs, accepted
+channel pointer, and retained outputs.
 
 #### B-4. ビルド完了後の確認
+
+The tag lookup below is only a local diagnostic for resolving the pushed
+toolchain digest. It is not release acceptance evidence; accepted toolchain or
+prover evidence must be bound to immutable digests and retained artifact
+records.
 
 ```bash
 export AWS_ACCOUNT_ID="<aws-account-id>"
@@ -282,22 +312,35 @@ docker run --rm "$IMAGE_URI" rustc --version
 
 ## ダイジェスト固定
 
-### 標準: application image build で自動解決
+### Retained legacy: application image build tag resolution
 
-`docker/Dockerfile.fargate-prover` は private ECR URI を既定値として持たず、`ARG RISC0_TOOLCHAIN_IMAGE` を必須 build arg として受け取ります。
+This section describes the retained legacy/shared `buildspec.yml` behavior. It
+is not the target-develop Plan 02/03 authority. Current target-develop prover
+builds must resolve the toolchain from an accepted or pinned immutable
+toolchain artifact record before the prover release artifact pipeline starts.
+The app deployment pipeline must select a prover release record generated from
+that pipeline output; it must not resolve a toolchain tag as deployment
+authority.
+
+`infra/docker/Dockerfile.fargate-prover` は private ECR URI を既定値として持たず、`ARG RISC0_TOOLCHAIN_IMAGE` を必須 build arg として受け取ります。
 CodeBuild の application image build (`buildspec.yml`) は、ECR 上の toolchain tag から digest を解決し、`<registry>/<repo>@sha256:<digest>` の形にして Docker build に渡します。
 
 標準の解決順:
 
 1. `RISC0_TOOLCHAIN_IMAGE` が CodeBuild env に明示されていれば、それを使う
-2. 未指定なら `RISC0_TOOLCHAIN_REPO_NAME` と `RISC0_TOOLCHAIN_IMAGE_TAG` を使って ECR から digest を取得する
+2. 未指定なら必須の `RISC0_TOOLCHAIN_REPO_NAME` と `RISC0_TOOLCHAIN_IMAGE_TAG` を使って
+   ECR から digest を取得する（repository name 未指定は fail closed）
 3. `RISC0_TOOLCHAIN_IMAGE_TAG` 未指定時は `${RISC0_VERSION:-3.0.5}-arm64` を使う
 4. 解決後の `RISC0_TOOLCHAIN_IMAGE` が `@sha256:<64 lowercase hex chars>` でなければ build を fail する
 5. `image-metadata.json` に `risc0ToolchainImage` と `risc0ToolchainTag` を記録する
 
-このため、通常の application image build では `docker/Dockerfile.fargate-prover` を編集して digest を更新しません。
+このため、通常の application image build では `infra/docker/Dockerfile.fargate-prover` を編集して digest を更新しません。
 
 ### 手動でダイジェストを取得する
+
+This manual lookup is a diagnostic path only. Do not use tag-derived output as
+Plan 02/03 acceptance evidence unless the digest is independently recorded in
+the release artifact authority.
 
 ```bash
 # ECR からダイジェストを取得
@@ -313,7 +356,7 @@ echo "Image digest: $DIGEST"
 
 ### Dockerfile での固定
 
-`docker/Dockerfile.fargate-prover` では **`ARG RISC0_TOOLCHAIN_IMAGE` をビルド時に渡し**、`FROM ${RISC0_TOOLCHAIN_IMAGE}` で参照します。公開リポジトリに private ECR URI を固定しないため、build arg は実行環境側で明示してください。
+`infra/docker/Dockerfile.fargate-prover` では **`ARG RISC0_TOOLCHAIN_IMAGE` をビルド時に渡し**、`FROM ${RISC0_TOOLCHAIN_IMAGE}` で参照します。公開リポジトリに private ECR URI を固定しないため、build arg は実行環境側で明示してください。
 
 ```dockerfile
 ARG RISC0_TOOLCHAIN_IMAGE
@@ -323,7 +366,7 @@ FROM ${RISC0_TOOLCHAIN_IMAGE} AS build
 ```bash
 docker build \
   --build-arg RISC0_TOOLCHAIN_IMAGE=<ecr-registry>/stark-ballot-simulator/risc0-toolchain@sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890 \
-  -f docker/Dockerfile.fargate-prover .
+  -f infra/docker/Dockerfile.fargate-prover .
 ```
 
 ### ローカル build arg 生成スクリプト
@@ -334,10 +377,10 @@ docker build \
 
 ```bash
 chmod +x scripts/update-risc0-digest.sh
-export AWS_ACCOUNT_ID=123456789012
+export AWS_ACCOUNT_ID=000000000000
 ./scripts/update-risc0-digest.sh --write-env .tmp/risc0-toolchain-image.env
 source .tmp/risc0-toolchain-image.env
-docker build --build-arg RISC0_TOOLCHAIN_IMAGE="$RISC0_TOOLCHAIN_IMAGE" -f docker/Dockerfile.fargate-prover .
+docker build --build-arg RISC0_TOOLCHAIN_IMAGE="$RISC0_TOOLCHAIN_IMAGE" -f infra/docker/Dockerfile.fargate-prover .
 ```
 
 ---
@@ -361,7 +404,7 @@ docker build --build-arg RISC0_TOOLCHAIN_IMAGE="$RISC0_TOOLCHAIN_IMAGE" -f docke
 
 #### 1. Dockerfile と Terraform pin の更新
 
-`docker/Dockerfile.risc0-toolchain-arm64` の build args を更新します。
+`infra/docker/Dockerfile.risc0-toolchain-arm64` の build args を更新します。
 
 ```dockerfile
 ARG RUST_VERSION=1.91.1
@@ -382,9 +425,9 @@ risc0_rust_toolchain_tag = "<new-toolchain-tag>"
 
 対象:
 
-- `terraform/variables.tf` の既定値
-- `terraform/terraform.tfvars.example` の sanitized example
-- 必要に応じて `.env.local` から生成する `terraform/<env>.local.tfvars`
+- `infra/terraform/legacy/variables.tf` の既定値
+- `infra/terraform/legacy/terraform.tfvars.example` の sanitized example
+- 必要に応じて `.env.local` から生成する `infra/terraform/legacy/<env>.local.tfvars`
 
 > **Note**: `RUST_TOOLCHAIN_TAG` は `risc0/rust` リポジトリの `r0.x.xx.x` タグを参照します。新しいリリースで Rust ツールチェーンが更新された場合は、このタグも必ず更新してください。
 
@@ -394,22 +437,23 @@ risc0_rust_toolchain_tag = "<new-toolchain-tag>"
 
 toolchain builder は shared resource で、既定では `risc0_toolchain_source_version = "refs/heads/main"` を参照します。Dockerfile や buildspec の変更を使って build するには、その Git ref に変更が push 済みである必要があります。
 
-```bash
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace show
-pnpm terraform:tfvars:develop # or pnpm terraform:tfvars:main
-aws-vault exec terraform-admin -- terraform -chdir=terraform plan -var-file="develop.local.tfvars"
-aws-vault exec terraform-admin -- terraform -chdir=terraform apply -var-file="develop.local.tfvars"
-```
+Do not use the removed `pnpm terraform:tfvars:*` package scripts or direct
+legacy Terraform `plan/apply` commands for current target-develop release
+candidate work. The target-develop update path is the separate
+toolchain/prover release artifact pipelines, promotion/channel records, and
+immutable handoff described in
+[`develop-target-image-authority.md`](../../internal/guides/3-deployment/develop-target-image-authority.md).
 
 #### 3. 新バージョンのビルド
 
-```bash
-PROJECT_NAME="stark-ballot-simulator-risc0-toolchain-builder"
-aws-vault exec terraform-admin -- aws codebuild start-build \
-  --project-name "$PROJECT_NAME"
-```
+Do not directly start the legacy/shared toolchain builder for current Plan
+02/03 evidence. Run the target-account toolchain release artifact pipeline and
+retain its successful candidate/promotion execution IDs, accepted channel
+pointer, and outputs.
 
-ローカル ARM64 環境で検証する場合だけ、次のように直接 build/push できます。
+ローカル ARM64 環境で legacy/diagnostic 検証をする場合だけ、次のように直接
+build/push できます。この path は target-develop Plan 02/03 handoff
+authority ではありません。
 
 ```bash
 IMAGE_TAG="3.1.0-arm64"
@@ -421,7 +465,7 @@ docker build --platform linux/arm64 \
   --build-arg RISC0_COMMIT=<new-commit-hash> \
   --build-arg RUST_TOOLCHAIN_TAG=<new-toolchain-tag> \
   -t "$IMAGE_URI" \
-  -f docker/Dockerfile.risc0-toolchain-arm64 \
+  -f infra/docker/Dockerfile.risc0-toolchain-arm64 \
   .
 
 docker push "$IMAGE_URI"
@@ -436,7 +480,7 @@ RISC0_VERSION=3.1.0 \
 ./scripts/update-risc0-digest.sh --write-env .tmp/risc0-toolchain-image.env
 ```
 
-application image の CodeBuild では `buildspec.yml` が同等の digest 解決を自動実行します。ローカルで `docker/Dockerfile.fargate-prover` を build する場合だけ、この env file を `source` してください。
+application image の CodeBuild では `buildspec.yml` が同等の digest 解決を自動実行します。ローカルで `infra/docker/Dockerfile.fargate-prover` を build する場合だけ、この env file を `source` してください。
 
 #### 5. スモークテスト（ビルド後必須）
 
@@ -481,24 +525,22 @@ source .tmp/risc0-toolchain-image.env
 docker build \
   --build-arg RISC0_TOOLCHAIN_IMAGE="$RISC0_TOOLCHAIN_IMAGE" \
   -t test-app \
-  -f docker/Dockerfile.fargate-prover .
+  -f infra/docker/Dockerfile.fargate-prover .
 
 # zkVM host バイナリの動作確認
 docker run --rm test-app /opt/zkvm/bin/host --version
 ```
 
-CodeBuild で application image を build する場合は、対象環境の prover builder を実行します。`buildspec.yml` が toolchain digest を解決し、`image-metadata.json` に記録します。
-
-```bash
-aws-vault exec terraform-admin -- aws codebuild start-build \
-  --project-name stark-ballot-simulator-fargate-prover-develop \
-  --environment-variables-override name=IMAGE_TAG,value=v1.1.0,type=PLAINTEXT
-```
+For target-develop, do not start the prover builder directly. The prover image
+must be built by the target-account prover release artifact pipeline so the
+digest, scan/signing evidence, ImageID evidence, accepted prover pointer,
+selected prover release/app deployment record, and generated bridge inputs come
+from retained pipeline outputs.
 
 #### 7. コミットとデプロイ
 
 ```bash
-git add docker/Dockerfile.risc0-toolchain-arm64 terraform/variables.tf terraform/terraform.tfvars.example
+git add infra/docker/Dockerfile.risc0-toolchain-arm64 infra/terraform/legacy/variables.tf infra/terraform/legacy/terraform.tfvars.example
 git commit -m "chore(docker): update RISC Zero toolchain to v3.1.0"
 git push origin <branch-used-by-risc0_toolchain_source_version>
 ```
@@ -520,14 +562,13 @@ git push origin <branch-used-by-risc0_toolchain_source_version>
 
 **解決策**:
 
-1. `terraform/codebuild.tf` の toolchain builder が `build_timeout = 120` になっていることを確認
+1. `infra/terraform/legacy/codebuild.tf` の toolchain builder が `build_timeout = 120` になっていることを確認
 2. `compute_type = "BUILD_GENERAL1_LARGE"`（7 GB / 4 vCPU）になっていることを確認
 3. 手動変更ではなく Terraform で差分を反映
 
-```bash
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace show
-aws-vault exec terraform-admin -- terraform -chdir=terraform plan -var-file="develop.local.tfvars"
-```
+For target-develop, confirm CodeBuild timeout and compute settings through the
+retained release artifact pipeline definition and outputs, not by citing a
+legacy Terraform plan as acceptance evidence.
 
 ### Error 2: Docker layer キャッシュが効かない
 
@@ -541,7 +582,7 @@ aws-vault exec terraform-admin -- terraform -chdir=terraform plan -var-file="dev
 
 ```bash
 # Dockerfile 内の RUN --mount=type=cache 行を確認
-grep "mount=type=cache" docker/Dockerfile.risc0-toolchain-arm64
+grep "mount=type=cache" infra/docker/Dockerfile.risc0-toolchain-arm64
 ```
 
 ### Error 3: ECR プッシュ時に "denied" エラー
@@ -554,14 +595,11 @@ denied: User: arn:aws:sts::<aws-account-id>:assumed-role/<codebuild-role>/... is
 
 **原因**: Terraform-managed CodeBuild role に ECR push/pull 権限が反映されていない、または手動変更で drift している
 
-**解決策**: `terraform/iam.tf` の `aws_iam_role_policy.codebuild_risc0_toolchain` を確認し、Terraform で反映する
+**解決策**: `infra/terraform/legacy/iam.tf` の `aws_iam_role_policy.codebuild_risc0_toolchain` を確認し、Terraform で反映する
 
-確認:
-
-```bash
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace show
-aws-vault exec terraform-admin -- terraform -chdir=terraform plan -var-file="develop.local.tfvars"
-```
+For target-develop, confirm ECR push/pull permissions through the
+release artifact pipeline IAM definition and retained execution evidence, not
+by citing a legacy Terraform plan as acceptance evidence.
 
 ### Error 4: "Unsupported architecture: linux/aarch64"
 

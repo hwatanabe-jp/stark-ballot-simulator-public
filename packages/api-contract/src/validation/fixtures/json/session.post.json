@@ -1,0 +1,10 @@
+{
+  "data": {
+    "sessionId": "2b9efb8c-7fb1-41e5-9fc9-0026054eeda6",
+    "electionId": "550e8400-e29b-41d4-a716-446655440000",
+    "electionConfigHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "logId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "contractGeneration": "2026-04-zkvm-current-v1",
+    "capabilityToken": "v1.mock-session-capability-token"
+  }
+}

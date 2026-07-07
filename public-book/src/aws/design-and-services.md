@@ -1,99 +1,156 @@
-# 現行構成とサービス一覧
+# AWS runtime の構成とサービス責務
 
-現行の AWS 構成（管理境界・環境分離・利用サービス）を整理する章です。ハイブリッド構成に至った経緯と改善候補は [設計ふりかえり § 6](../decisions/design-retrospective.md#6-amplify-単独構成からハイブリッド構成への移行) を参照してください。
+AWS runtime の管理境界、環境分離、主要サービスの責務を整理します。
+このページは公開仕様として runtime の責務を説明します。
+個別デプロイの承認記録や内部運用証跡は扱いません。
+前提となる公開境界は [AWS runtime boundary](runtime-boundary.md) を参照してください。
 
-## 現行の管理境界
+## Terraform root ごとの管理境界
 
-Amplify Gen 2 がアプリ層、Terraform が非同期プローバー基盤を担う 2 系統管理になっています。
+AWS runtime は Terraform の root ごとに責務を分けて管理します。
+静的フロントエンド、API、DynamoDB、非同期プローバー、プローバー concurrency semaphore、検証 worker は `infra/terraform/app` の app runtime に属します。
+ECR repository、runtime secret/config container、prover networking、manifest storage などの前提リソースは `infra/terraform/foundation` に属します。
+State backend と guarded deployment lane は `infra/terraform/bootstrap` が管理します。
 
-| 管理系        | 現行の役割                                                                               | 残る制約                                                                         |
-| ------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Amplify Gen 2 | Web ホスティング、API（Lambda）、データ（AppSync + DynamoDB）、認証基盤（Cognito + IAM） | branch override、環境変数同期、Amplify 管理リソース名への依存が残る              |
-| Terraform     | ECS Fargate、Step Functions、SQS、S3、ECR、CodeBuild、SSM Parameter Store、VPC、IAM      | Amplify 側リソース ARN を入力として受け取るため、完全な単独 IaC にはなっていない |
+| 管理系                       | 公開仕様上の役割                                                                                                               | 境界                                                                                           |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `infra/terraform/foundation` | ECR repository、versioned manifest storage、Secrets Manager container、non-secret SSM config、prover networking                | API、Lambda、DynamoDB、SQS、Step Functions、ECS task、CloudFront、proof artifact S3 は作らない |
+| `infra/terraform/app`        | CloudFront + private S3 frontend、API Gateway + `public-api`、DynamoDB、target Lambdas、SQS/SFN/ECS/S3、logs、runtime SSM refs | ECR repository や image publication は所有せず、digest 固定の prover image URI を消費する      |
+| `infra/terraform/bootstrap`  | Terraform state backend と deployment control lane                                                                             | Runtime workload resource は所有しない                                                         |
+| `infra/terraform/legacy`     | retained historical context                                                                                                    | 現行 runtime の authority ではない                                                             |
 
 ## 環境分離
 
-`develop` と `main` の 2 環境を運用し、主要なアプリケーション実行系リソースは Terraform ワークスペースと Amplify ブランチデプロイで分離しています。両環境とも証明モードは実 STARK 証明（代表実測は[ECS Fargate タスク仕様](async-prover.md#ecs-fargate-タスク仕様)参照）で、`RISC0_DEV_MODE=1` / `USE_MOCK_ZKVM=true` はローカル同期実行用の設定です。
+`develop` と `main` は source branch / account alias / deployment environment / state scope を分けて扱います。
+現在の live target app lane は `stark-dev/develop/app` です。
+`stark-prod/main/app` は protected production contract の repository evidence として render されますが、非変更 evidence であり live production deployment はまだ承認しません。
+証明モードは実 STARK 証明を前提にし、`RISC0_DEV_MODE=1` / `USE_MOCK_ZKVM=true` はローカル同期実行用の設定です。
 
-| 項目              | develop | main              |
-| ----------------- | ------- | ----------------- |
-| S3 ライフサイクル | 7 日    | 30 日             |
-| ログ保持期間      | 7 日    | 14 日             |
-| CloudTrail        | 無効    | 有効（90 日保持） |
+| 項目                                                     | 現在の app runtime default                                              |
+| -------------------------------------------------------- | ----------------------------------------------------------------------- |
+| private proof artifact S3 lifecycle                      | `proof_artifact_lifecycle_days = 7`                                     |
+| Lambda / API access / Step Functions / ECS log retention | 30 日                                                                   |
+| CloudTrail                                               | app / foundation / bootstrap runtime root の workload resource ではない |
 
-ただし全リソースが環境ごとに二重化されているわけではなく、RISC Zero ツールチェーン用の ECR リポジトリと CodeBuild プロジェクトは `aws.shared` provider で共有されます。環境別に分かれるのは prover 用 ECR、証明バンドル S3、prover image metadata S3、SSM current metadata parameter、SQS、Step Functions、ECS、CloudTrail などの実行系リソースです。
+環境別に分かれるものは、app runtime state、proof artifact storage、DynamoDB、queue / worker、Step Functions、ECS task definition、runtime SSM refs、CloudWatch logs / alarms などです。
+CloudTrail などの account-plane audit guardrail は、この app / foundation / bootstrap runtime root の workload resource としては扱いません。
+ECR repository や manifest storage など、app 実行の前提になるリソースは foundation root の責務として扱います。
 
 ## 全体構成図
 
-![AWS 全体構成図](./images/aws-architecture-overview.png)
-_図: STARK Ballot Simulator の AWS 全体構成。現行では Amplify 管理領域（上）と Terraform 管理領域（下）に分かれている。_
+[![AWS 全体構成図](./images/aws-architecture-overview.png)](./images/aws-architecture-overview.png)
+_図: STARK Ballot Simulator の AWS 全体構成（クリックで拡大）。_
+_AWS runtime は Terraform-managed frontend / API / data / prover 構成です。_
+_デプロイ制御の図は [Deployment control](#deployment-control) を参照してください。_
 
 ## サービス一覧
 
-本システムで使用する主要な AWS サービスと、その役割の概要です。
+この runtime が使う主要な AWS サービスと役割です。
 
-### Amplify 管理
+### App runtime
 
-| サービス               | リソース                            | 役割                                                     |
-| ---------------------- | ----------------------------------- | -------------------------------------------------------- |
-| Amplify Hosting        | Web アプリ                          | Next.js のビルド・ホスティング                           |
-| API Gateway (HTTP API) | `stark-ballot-simulator-hono-api`   | `/api/*` ルートのプロキシ                                |
-| Lambda                 | `hono-api`                          | Hono フレームワークによる API 処理                       |
-| Lambda                 | `prover-dispatch-proxy`             | SQS 受信 → `input.json` を S3 保存 → Step Functions 起動 |
-| Lambda                 | `finalize-callback-runner`          | Step Functions コールバック → セッション更新             |
-| Lambda                 | `verifier-service-runner`           | STARK レシート検証の実行                                 |
-| AppSync + DynamoDB     | データモデル                        | セッション・投票・集計結果の永続化                       |
-| DynamoDB               | RateLimitEvents / RateLimitCounters | `hono-api` の API レート制限状態                         |
-| Cognito                | Identity Pool / User Pool           | 認証基盤（未認証 ID 無効）                               |
+| サービス               | リソース                          | 役割                                                                        |
+| ---------------------- | --------------------------------- | --------------------------------------------------------------------------- |
+| CloudFront + S3        | static frontend                   | Vite/React の静的配信、`/api/*` origin routing、SPA fallback                |
+| API Gateway (HTTP API) | `/api/{proxy+}`                   | capability 保護 API の公開入口                                              |
+| Lambda                 | `public-api`                      | Hono route inventory を実行する API runtime                                 |
+| DynamoDB               | sessions / votes                  | セッション、投票、集計結果の永続化                                          |
+| DynamoDB               | rate-limit events / counters      | API rate limit state                                                        |
+| DynamoDB               | prover semaphore                  | Step Functions が `RunProver` 前に取得する concurrency slot                 |
+| Lambda                 | `proof-dispatcher`                | SQS 受信 → artifact key / pending state 検証 → Step Functions 起動          |
+| Lambda                 | `finalization-writer`             | Step Functions 結果を session state に反映                                  |
+| Lambda                 | `verification-worker`             | S3 bundle locator を受け取り `verifier-service` で STARK レシート検証を実行 |
+| Lambda                 | `image-signature-gate`            | ECR イメージ署名ステータスの実行前確認                                      |
+| Lambda                 | `semaphore-janitor`               | terminal execution event と定期 sweep による semaphore slot cleanup         |
+| SQS                    | `prover-work` + DLQ               | 非同期証明リクエストのバッファリング                                        |
+| SQS                    | `verification-work` + DLQ         | durable verification run のバッファリング                                   |
+| Step Functions         | `finalization`                    | 署名ゲート → semaphore 取得 → ECS 実行 → slot release / finalization writer |
+| ECS Fargate            | prover task                       | zkVM host binary による STARK 証明生成                                      |
+| S3                     | proof artifacts / static frontend | private proof artifacts、public bundle の読み出し元、frontend artifacts     |
+| SSM Parameter Store    | runtime refs                      | non-secret runtime wiring と secret/config reference name の保持            |
+| EventBridge            | semaphore janitor triggers        | Step Functions terminal status event と 30 分 sweep                         |
+| CloudWatch             | logs / alarms                     | runtime logs、access logs、DLQ / Step Functions / Lambda / Fargate alarms   |
 
-### Terraform 管理
+`public bundle` は「秘密を含まず第三者検証に使える」配布対象アーカイブの分類であり、無認証公開を意味しません（詳細は [公開境界](../verification/public-boundary.md)）。
+`input.json`、`verification.json`、`included-bitmap.json`、`seen-bitmap.json` は `bundle.zip` に含めず、`verification.json` は capability 保護 API の report endpoint から扱います。
 
-| サービス            | リソース                                  | 役割                                                                         |
-| ------------------- | ----------------------------------------- | ---------------------------------------------------------------------------- |
-| ECS Fargate         | プローバータスク                          | zkVM ホストバイナリによる STARK 証明生成                                     |
-| Step Functions      | プローバーディスパッチャー                | イメージ署名検証 → ECS 実行 → コールバック                                   |
-| SQS                 | ワークキュー + DLQ                        | 非同期証明リクエストのバッファリング                                         |
-| S3                  | 証明バンドルバケット / prover metadata    | 入力・実行成果物・検証用バンドル、prover image metadata の保存               |
-| ECR                 | イメージリポジトリ                        | プローバーコンテナイメージの管理                                             |
-| CodeBuild           | 環境別プローバー + 共有 toolchain builder | Docker イメージのビルド、ARM64 ImageID / methodVersion metadata の抽出と公開 |
-| SSM Parameter Store | current metadata pointer                  | 現行 prover image metadata candidate JSON の保持                             |
-| Lambda              | `check-image-signature`                   | ECR イメージ署名の実行前検証                                                 |
-| VPC                 | パブリックサブネット                      | ECS タスクのネットワーク                                                     |
-| CloudWatch          | ログ群                                    | ECS / Step Functions / CodeBuild などのログ                                  |
-| CloudTrail          | 監査証跡（main のみ）                     | API 呼び出しの監査ログ                                                       |
+### Foundation resources
 
-これらのサービスに紐づく IAM ロール / ポリシーも同じ Terraform 管理下にあります。詳細は [Terraform > IAM 設計](terraform.md#iam-設計) を参照してください。
+| サービス            | リソース                     | 役割                                                              |
+| ------------------- | ---------------------------- | ----------------------------------------------------------------- |
+| ECR                 | prover / RISC Zero toolchain | プローバーコンテナと RISC Zero toolchain image の repository 管理 |
+| S3                  | versioned manifest storage   | image / deployment manifest 系メタデータの非公開保存              |
+| Secrets Manager     | runtime secret containers    | app runtime が参照する secret container の作成                    |
+| SSM Parameter Store | non-secret config records    | Turnstile site key など、app runtime が参照する non-secret config |
+| VPC / subnet / SG   | prover networking inputs     | ECS prover task が利用する networking input                       |
 
-## Amplify と Terraform の境界
+Prover image metadata、promotion evidence、release record / accepted pointer は proof artifact bucket ではなく、image build / signing と runtime wiring の境界に属します。
+旧構成の SSM current pointer は候補 metadata lookup であり、target topology の release authority ではありません。
+このページでは責務帰属だけを扱います。
+Image build、digest 固定、署名ステータス確認、ImageID との関係は [イメージ署名](image-signing.md) に集約します。
 
-2 つのインフラ管理ツール間の連携は、ARN と環境変数によって行われます。
+### Deployment control
+
+| サービス     | リソース                | 役割                                                                                  |
+| ------------ | ----------------------- | ------------------------------------------------------------------------------------- |
+| S3 + KMS     | Terraform state backend | Terraform state と lockfile の保護                                                    |
+| CodePipeline | deployment lanes        | app / foundation root の制御された実行経路                                            |
+| CodeBuild    | app build / deploy jobs | frontend、Lambda package、Terraform plan/apply/smoke job                              |
+| CodeBuild    | image release jobs      | toolchain / prover candidate build、ImageID/signing/scan evidence、promotion evidence |
+| IAM          | deploy roles            | root ごとの最小権限実行                                                               |
+
+[![AWS deployment control](./images/aws-deployment-control.png)](./images/aws-deployment-control.png)
+_図: GitHub から CodePipeline deployment lanes を経て app runtime に到達するデプロイ制御フロー（クリックで拡大）。_
+_ManualApproval ゲートと、accepted pointer による digest 固定 prover image URI の受け渡しを含みます。_
+
+この表は deployment control の責務を示します。
+個別の承認手順、証跡、昇格判断の詳細は公開仕様の範囲外です。
+
+## Runtime wiring
+
+Runtime の連携は Terraform output、SSM reference、Lambda environment、S3 / SQS / Step Functions locator によって行われます。
 
 ```mermaid
 flowchart TB
-  subgraph TF["Terraform 管理"]
-    OUT["Amplify 同期出力<br/>SFN ARN / SQS ARN / SQS URL / 証明バンドル S3 名"]
-    OPS["運用出力<br/>metadata S3 名 / SSM parameter 名"]
-    IN["入力変数<br/>finalize_callback_lambda_arn"]
+  subgraph FOUNDATION["infra/terraform/foundation"]
+    ECR["ECR repositories<br/>prover / toolchain"]
+    MANIFEST["Manifest storage<br/>release records / promotion evidence"]
+    CONFIG["Secret/config containers<br/>Secrets Manager / SSM"]
+    NET["Prover networking inputs"]
   end
 
-  subgraph AMP["Amplify Gen 2 管理"]
-    ENV["環境変数"]
-    CB["finalize-callback-runner<br/>Lambda ARN"]
+  subgraph APP["infra/terraform/app"]
+    OUT["Terraform outputs<br/>API / bucket / queue / lambda names"]
+    PARAM["SSM refs<br/>runtime config"]
+    RUNTIME["Runtime resources<br/>CloudFront / API / DDB / SQS / SFN / ECS"]
+    SEM["Prover semaphore<br/>DDB lock row / janitor"]
+    ARTIFACTS["Private proof artifact S3<br/>bundle source / protected report"]
   end
 
-  OUT -.対応する値.-> ENV
-  CB -.ARN を入力変数へ設定.-> IN
+  subgraph BOOT["infra/terraform/bootstrap"]
+    CONTROL["Deployment control lane"]
+  end
+
+  ECR --> RUNTIME
+  MANIFEST --> RUNTIME
+  CONFIG --> PARAM
+  NET --> RUNTIME
+  CONTROL --> RUNTIME
+  PARAM --> RUNTIME
+  RUNTIME --> SEM
+  SEM --> RUNTIME
+  RUNTIME --> ARTIFACTS
+  RUNTIME --> OUT
 ```
 
-Terraform の出力値（Step Functions ARN、SQS ARN、SQS URL、S3 バケット名など）は Amplify の環境変数に手動で反映する運用で、`PROVER_STATE_MACHINE_ARN` と `PROVER_WORK_QUEUE_ARN` は Amplify backend のデプロイ時にも必須（未設定で fail-closed）です。同期手順と一覧は [Terraform > Amplify との連携ポイント](terraform.md#amplify-との連携ポイント) を参照してください。
-
-なお、prover image metadata bucket 名と current metadata SSM parameter 名は CodeBuild / 運用確認向けの Terraform 出力であり、Amplify 環境変数へ同期する実行時契約ではありません。
+`public-api`、`proof-dispatcher`、`finalization-writer`、`verification-worker`、`image-signature-gate`、`semaphore-janitor` は canonical runtime component names です。
+`hono-api`、`prover-dispatch-proxy`、`finalize-callback-runner`、`verifier-service-runner`、`check-image-signature` は legacy/historical names としてのみ扱います。
 
 ## 関連する章
 
-- [トポロジー](topology.md) — リクエスト経路とコンポーネント間の通信フロー
-- [非同期プローバー](async-prover.md) — SQS → Step Functions → ECS の実行時フロー
-- [Terraform](terraform.md#amplify-との連携ポイント) — Amplify との連携ポイント（ARN / 環境変数名）
-- [設計ふりかえり § Amplify 単独構成からハイブリッド構成への移行](../decisions/design-retrospective.md#6-amplify-単独構成からハイブリッド構成への移行) — 現行構成に至った設計判断
+- [トポロジー](topology.md)：リクエスト経路とコンポーネント間の通信フロー
+- [非同期プローバー](async-prover.md)：SQS → Step Functions → ECS の実行時フロー
+- [Terraform](terraform.md)：target app/bootstrap state と runtime wiring
+- [設計ふりかえり § Amplify 単独構成からハイブリッド構成への移行](../decisions/design-retrospective.md#6-amplify-単独構成からハイブリッド構成への移行)：現行構成に至った設計判断
 
-<!-- source: terraform/, amplify/backend.ts, docker/ -->
+<!-- source: infra/terraform/, infra/lambdas/, infra/docker/ -->

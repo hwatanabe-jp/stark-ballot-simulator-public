@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Simplified setup script for CLI E2E testing.
-# Starts the Next.js dev server under tmux with mock store defaults.
+# Starts the Vite dev server under tmux with mock store defaults.
 
 set -euo pipefail
 
@@ -78,8 +78,8 @@ wait_for_port() {
     return 1
 }
 
-if session_exists "nextjs"; then
-    tmux kill-session -t nextjs
+if session_exists "vite"; then
+    tmux kill-session -t vite
 fi
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -99,8 +99,8 @@ if [[ -n "$OVERRIDE_IMAGE_ID" ]]; then
     export EXPECTED_IMAGE_ID="$OVERRIDE_IMAGE_ID"
 fi
 
-tmux new-session -d -s nextjs "cd '$PROJECT_ROOT' && pnpm dev"
+tmux new-session -d -s vite "cd '$PROJECT_ROOT' && pnpm dev"
 
-wait_for_port 127.0.0.1:3000 "Next.js"
+wait_for_port 127.0.0.1:3000 "Vite"
 
-echo "Next.js dev server running in tmux session 'nextjs'"
+echo "Vite dev server running in tmux session 'vite'"

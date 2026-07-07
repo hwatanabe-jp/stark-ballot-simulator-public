@@ -2,10 +2,12 @@
   "mappings": {
     "14": {
       "methodVersion": 14,
-      "expectedImageID": "0x08aa256ee9120045bbdbe2152723ff657cf1cd7329cba46715954d183caa84de",
-      "expectedImageID_x86_64": "0x9d8597046043ce510ac3f61415891fcad3577bda98afd46d43e450c9c6e996c6",
-      "description": "v1.4 Phase 4 formal correspondence hardening - ARM64 AWS deployment confirmed, x86_64 local build differs",
-      "compiledAt": "2026-05-23T02:55:41Z",
+      "expectedImageID": "0x4db926db832cc19d84af84cfb2e64b2be02c9ce6966bdd4ed824d269d8f3b232",
+      "expectedImageID_x86_64": "0xf0ea09b47949a8610f4ba13e5ec36d791983edb899d62eed21bf5bfb6f54e94b",
+      "supportedVariants": ["default", "x86_64"],
+      "description": "v1.4 Phase 4 hardening - active ARM64 target-account prover ImageID plus retained local production-feature x86_64 ImageID",
+      "trustStatus": "default-arm64-and-x86_64-active",
+      "compiledAt": "2026-07-02T12:38:15Z",
       "rustVersion": "1.91.1",
       "risc0Version": "3.0.5",
       "guestToolchain": "r0.1.91.1",
@@ -21,7 +23,11 @@
         "Bitmap-based individual verification",
         "Phase 4 guest model vector correspondence",
         "Checked guest tally counters",
-        "Formal guest bounds validation"
+        "Formal guest bounds validation",
+        "Output-only production guest tally path",
+        "Sorted input-commitment fast path",
+        "Guest work-budget preflight",
+        "Bitmap proof parity vectors"
       ]
     },
     "13": {
@@ -144,9 +150,9 @@
   "current": "14",
   "deprecated": ["8", "9", "10", "11", "12", "13"],
   "metadata": {
-    "lastUpdated": "2026-05-23T02:55:41Z",
+    "lastUpdated": "2026-07-02T12:38:15Z",
     "format": "v1.0",
     "purpose": "ImageID to methodVersion mapping for STARK Ballot Simulator",
-    "notes": "This file must be secured with GPG signatures and served from multiple sources (CDN, IPFS, Git) for security."
+    "notes": "Method version 14 is current. Its default/ARM64 trust material was refreshed from the target-account prover image build `stark-ballot-simulator-pipeline-stark-dev-develop-release-candidate-prover:8b4ffd83-7b55-447b-991d-5d7bd3461906`; that build ID is provenance context for this public compatibility ledger, not proof of prover image promotion or release authority. Its x86_64 variant remains the local production-feature host build from 2026-06-21. Version 13 and earlier are historical trust material retained for audit context only; current verification paths reject non-current method versions."
   }
 }

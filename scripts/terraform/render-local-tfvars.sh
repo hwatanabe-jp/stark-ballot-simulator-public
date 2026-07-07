@@ -5,7 +5,7 @@ IFS=$'\n\t'
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/terraform/render-local-tfvars.sh <develop|main> [--env-file .env.local] [--output terraform/<env>.local.tfvars]
+  scripts/terraform/render-local-tfvars.sh <develop|main> [--env-file .env.local] [--output infra/terraform/legacy/<env>.local.tfvars]
 
 Reads Terraform deployment values from an .env-style file and writes a git-ignored
 local tfvars file. The command reports variable names only, not secret or account values.
@@ -231,7 +231,7 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$repo_root"
 
 if [ -z "$output_file" ]; then
-  output_file="terraform/${env_name}.local.tfvars"
+  output_file="infra/terraform/legacy/${env_name}.local.tfvars"
 fi
 
 env_source="shell environment"
@@ -269,11 +269,11 @@ if [ -z "$ecr_signing_profile_arn" ]; then
   fi
 fi
 
-finalize_callback_lambda_arn="$(first_nonempty "TERRAFORM_FINALIZE_CALLBACK_LAMBDA_ARN_${env_upper}" TERRAFORM_FINALIZE_CALLBACK_LAMBDA_ARN || true)"
-if [ -z "$finalize_callback_lambda_arn" ]; then
+finalization_writer_lambda_arn="$(first_nonempty "TERRAFORM_FINALIZE_CALLBACK_LAMBDA_ARN_${env_upper}" TERRAFORM_FINALIZE_CALLBACK_LAMBDA_ARN || true)"
+if [ -z "$finalization_writer_lambda_arn" ]; then
   callback_function_name="$(first_nonempty "TERRAFORM_FINALIZE_CALLBACK_FUNCTION_NAME_${env_upper}" TERRAFORM_FINALIZE_CALLBACK_FUNCTION_NAME || true)"
   if [ -n "$account_id" ] && [ -n "$callback_function_name" ]; then
-    finalize_callback_lambda_arn="arn:aws:lambda:${aws_region}:${account_id}:function:${callback_function_name}"
+    finalization_writer_lambda_arn="arn:aws:lambda:${aws_region}:${account_id}:function:${callback_function_name}"
   fi
 fi
 
@@ -300,7 +300,7 @@ fi
 if [ -z "$ecr_signing_profile_arn" ]; then
   missing+=("TERRAFORM_ECR_SIGNING_PROFILE_ARN or TERRAFORM_ECR_SIGNING_PROFILE_NAME")
 fi
-if [ -z "$finalize_callback_lambda_arn" ]; then
+if [ -z "$finalization_writer_lambda_arn" ]; then
   missing+=("TERRAFORM_FINALIZE_CALLBACK_LAMBDA_ARN_${env_upper} or TERRAFORM_FINALIZE_CALLBACK_FUNCTION_NAME_${env_upper}")
 fi
 if [ -z "$codestar_connection_arn" ]; then
@@ -319,7 +319,7 @@ if [ "${#missing[@]}" -gt 0 ]; then
   exit 2
 fi
 
-for label in aws_region project_name ecs_image_uri ecr_signing_profile_arn finalize_callback_lambda_arn codestar_connection_arn codebuild_source_location; do
+for label in aws_region project_name ecs_image_uri ecr_signing_profile_arn finalization_writer_lambda_arn codestar_connection_arn codebuild_source_location; do
   reject_placeholder "$label" "${!label}"
 done
 reject_placeholder "aws_account_id" "$account_id"
@@ -343,7 +343,7 @@ mkdir -p "$(dirname "$output_file")"
   printf 'ecs_image_uri           = %s\n' "$(hcl_quote "$ecs_image_uri")"
   printf 'ecr_signing_profile_arn = %s\n' "$(hcl_quote "$ecr_signing_profile_arn")"
   echo
-  printf 'finalize_callback_lambda_arn = %s\n' "$(hcl_quote "$finalize_callback_lambda_arn")"
+  printf 'finalization_writer_lambda_arn = %s\n' "$(hcl_quote "$finalization_writer_lambda_arn")"
   printf 'codestar_connection_arn      = %s\n' "$(hcl_quote "$codestar_connection_arn")"
   echo
   printf 's3_cors_allowed_origins = %s\n' "$(render_origins "$s3_cors_allowed_origins")"

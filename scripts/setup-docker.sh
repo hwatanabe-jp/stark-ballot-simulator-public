@@ -15,13 +15,13 @@ NC='\033[0m' # No Color
 # 1. Remove old versions
 echo -e "${YELLOW}Step 1/8: Removing old Docker versions...${NC}"
 sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
-echo -e "${GREEN}✓ Done${NC}"
+echo -e "${GREEN}[OK] Done${NC}"
 echo ""
 
 # 2. Update package index
 echo -e "${YELLOW}Step 2/8: Updating package index...${NC}"
 sudo apt-get update
-echo -e "${GREEN}✓ Done${NC}"
+echo -e "${GREEN}[OK] Done${NC}"
 echo ""
 
 # 3. Install prerequisites
@@ -31,7 +31,7 @@ sudo apt-get install -y \
     curl \
     gnupg \
     lsb-release
-echo -e "${GREEN}✓ Done${NC}"
+echo -e "${GREEN}[OK] Done${NC}"
 echo ""
 
 # 4. Add Docker's official GPG key
@@ -39,7 +39,7 @@ echo -e "${YELLOW}Step 4/8: Adding Docker GPG key...${NC}"
 sudo install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
-echo -e "${GREEN}✓ Done${NC}"
+echo -e "${GREEN}[OK] Done${NC}"
 echo ""
 
 # 5. Set up the repository
@@ -48,7 +48,7 @@ echo \
   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
   $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-echo -e "${GREEN}✓ Done${NC}"
+echo -e "${GREEN}[OK] Done${NC}"
 echo ""
 
 # 6. Install Docker Engine
@@ -60,19 +60,19 @@ sudo apt-get install -y \
     containerd.io \
     docker-buildx-plugin \
     docker-compose-plugin
-echo -e "${GREEN}✓ Done${NC}"
+echo -e "${GREEN}[OK] Done${NC}"
 echo ""
 
 # 7. Start Docker daemon
 echo -e "${YELLOW}Step 7/8: Starting Docker daemon...${NC}"
 sudo service docker start
-echo -e "${GREEN}✓ Done${NC}"
+echo -e "${GREEN}[OK] Done${NC}"
 echo ""
 
 # 8. Add user to docker group
 echo -e "${YELLOW}Step 8/8: Adding user to docker group...${NC}"
 sudo usermod -aG docker $USER
-echo -e "${GREEN}✓ Done${NC}"
+echo -e "${GREEN}[OK] Done${NC}"
 echo ""
 
 echo "================================================"

@@ -19,25 +19,25 @@ kill_session() {
     if tmux has-session -t "$session" 2>/dev/null; then
         echo "Stopping $session..."
         tmux kill-session -t "$session"
-        echo -e "${GREEN}✓${NC} $session stopped"
+        echo -e "${GREEN}[OK]${NC} $session stopped"
     else
         echo "$session not running"
     fi
 }
 
-kill_session "nextjs"
+kill_session "vite"
 
 # Clean up temporary files
 echo "Cleaning up temporary files..."
 if [ -d ".zkvm-temp" ]; then
     rm -rf .zkvm-temp
-    echo -e "${GREEN}✓${NC} Removed .zkvm-temp directory"
+    echo -e "${GREEN}[OK]${NC} Removed .zkvm-temp directory"
 fi
 
 if [ -d "zkvm/test-data" ]; then
     # Remove only output and receipt files, keep test input files
     find zkvm/test-data -name "*-output.json" -o -name "*-receipt.json" | xargs rm -f 2>/dev/null || true
-    echo -e "${GREEN}✓${NC} Cleaned zkVM test outputs"
+    echo -e "${GREEN}[OK]${NC} Cleaned zkVM test outputs"
 fi
 
 echo ""

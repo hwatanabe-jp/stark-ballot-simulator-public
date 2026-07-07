@@ -22,7 +22,7 @@ displaying results, and independently checking the evidence needed to verify the
 The goal is not to provide production election infrastructure. The goal is to integrate several security
 and cryptography concepts into one inspectable application:
 
-- a Next.js / React user experience for vote, tally, result, and verification flows
+- a Vite / React Router user experience for vote, tally, result, and verification flows
 - TypeScript API, session, verification, and artifact-handling logic
 - Hono-compatible route handlers for the API Gateway bridge path
 - Rust / RISC Zero zkVM proof generation and receipt verification
@@ -61,7 +61,7 @@ For a short review pass:
 2. Read the Public Specs overview and verification model.
 3. Run the local mock flow from this README.
 4. Review [`SECURITY.md`](./SECURITY.md) for live-demo testing limits.
-5. Inspect `src/`, `zkvm/`, `verifier-service/`, `formal/`, and `tests/` as needed.
+5. Inspect `apps/`, `packages/`, `infra/`, `zkvm/`, `verifier-service/`, `formal/`, and `tests/` as needed.
 
 The core product invariant is simple: the UI must never show "Verified" unless all required
 cryptographic and consistency checks pass.
@@ -83,12 +83,12 @@ verification paths and must not be counted as production STARK proofs.
 
 ## Architecture at a Glance
 
-- **Frontend / app shell:** Next.js 16, React 19, TypeScript, Tailwind CSS, App Router
-- **API surface:** Next route handlers backed by a shared route registry and Hono-compatible handlers
-- **Validation:** Zod schemas and explicit response-shape tests
+- **Frontend / app shell:** Vite, React 19, React Router, TypeScript, Tailwind CSS
+- **API surface:** Hono route handlers backed by a framework-neutral route definition inventory
+- **Validation:** local schema validators and explicit response-shape tests
 - **Proof stack:** RISC Zero zkVM guest/host plus a standalone Rust `verifier-service`
 - **Formal scope:** Lean 4 models for selected summary, count, bitmap, input-commitment, and guest-model contracts
-- **AWS path:** Amplify Gen2 for app/data/Lambda surfaces and Terraform for async prover infrastructure
+- **AWS path:** Terraform-managed static frontend, Hono/API, DynamoDB store, and async prover infrastructure
 - **Public docs:** mdBook in `public-book/`, published as the Public Specs
 
 ## Local Quick Start
@@ -99,7 +99,7 @@ external services.
 ### Prerequisites
 
 - Node.js 24
-- Corepack with pnpm 11.5.0, as pinned by `packageManager`
+- Corepack with pnpm 11.7.0, as pinned by `packageManager`
 - Rust 1.91.1 only if you want Rust builds or real zkVM flows
 - RISC Zero tooling only if you want real zkVM flows
 - Lean / `elan` only if you want to run the formal verification gate
@@ -133,16 +133,19 @@ Then open:
 http://localhost:3000
 ```
 
-`pnpm dev` enables these local-only defaults:
+`pnpm dev` starts the Vite frontend shell. The script supplies browser-only
+development flags, while `.env.local` generated from `.env.local.example`
+supplies local runtime defaults:
 
-- `NEXT_PUBLIC_USE_MOCK_API=true`
+- `VITE_USE_MOCK_API=true`
+- `VITE_TURNSTILE_BYPASS=1`
 - `USE_MOCK_STORE=true`
 - `USE_MOCK_ZKVM=true`
-- local Turnstile bypass
 - `RUNTIME_DEPLOYMENT_ENV=develop`
-- `DISABLE_STRICT_CSP=1`
 
-These settings are for local development only and must not be reused for production or public hosting.
+These settings are for local development only. `pnpm build:ci` and the normal
+frontend build force target-safe browser flags before building and scanning
+`dist/`.
 
 ## Local Checks
 
@@ -154,7 +157,7 @@ Use the narrowest check that proves the change. For reviewer smoke tests, start 
 | Public-safe Vitest subset | `pnpm test:public`                                 |
 | Full Vitest suite         | `pnpm test:run`                                    |
 | CLI mock voting flow      | `pnpm test:cli:mock`                               |
-| Next.js-only build        | `pnpm build:ci`                                    |
+| Static frontend build     | `pnpm build:ci`                                    |
 | Mock E2E smoke            | `pnpm test:e2e:mock --grep @smoke --reporter=list` |
 | Accessibility smoke       | `pnpm test:e2e:axe`                                |
 | Public safety scan        | `pnpm public-safety:scan`                          |
@@ -164,8 +167,8 @@ Use the narrowest check that proves the change. For reviewer smoke tests, start 
 
 Notes:
 
-- `pnpm build:ci` checks the Next.js UI/API build without building Rust zkVM and verifier-service components.
-- Mock Playwright uses a production-mode `next start` test server, not the same runtime path as `pnpm dev`.
+- `pnpm build:ci` checks the Vite static frontend, browser import boundary, and generated `dist/` artifact scan. It is the reusable/deployable artifact path and rejects browser mock API or Turnstile bypass flags.
+- Mock Playwright uses a production-mode Vite static frontend plus local Hono API test server, not the same runtime path as `pnpm dev`.
 - `pnpm formal:verify` requires the pinned Lean toolchain under `formal/`.
 
 ## Optional: Real zkVM Checks
@@ -220,7 +223,9 @@ For scope and claim boundaries, see [`docs/current/formal/README.md`](./docs/cur
 
 ```text
 .
-|- src/                 Next.js app, API routes, UI components, and shared TypeScript logic
+|- apps/web/            Vite/React browser app, routes, components, and presentation state
+|- apps/api/            Hono/API Gateway route binding and HTTP adapters
+|- packages/            TypeScript API contract, domain, verification, zkVM contract, and test support packages
 |- zkvm/                RISC Zero zkVM guest/host workspace
 |- verifier-service/    Rust receipt verification service
 |- formal/              Lean 4 formal model and generated vectors/reports
@@ -228,9 +233,8 @@ For scope and claim boundaries, see [`docs/current/formal/README.md`](./docs/cur
 |- scripts/             Test, build, docs, security, formal, Terraform, and utility scripts
 |- public-book/         mdBook source for the Public Specs
 |- docs/                Current documentation and supporting notes
-|- amplify/             Sanitized Amplify Gen2 backend source
-|- terraform/           Sanitized async prover infrastructure source
-|- docker/              Prover container files
+|- infra/terraform/     Terraform-managed infrastructure source
+|- infra/docker/         Prover container files
 `- public/              Static assets and public mappings
 ```
 

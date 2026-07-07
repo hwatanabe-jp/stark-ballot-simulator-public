@@ -8,7 +8,8 @@
 - 実際のSTARK証明は **数分（64票で約6分）** かかります。
 - まずは `pnpm build:zkvm` と `pnpm build:verifier-service` を済ませておくとスムーズです。
 - カスタム host input を使う場合、現行 guest は `tree_size` / `total_expected` / 提示 vote 数 / 各候補 tally を
-  `1,000,000` 以下、各 Merkle path を `u16::MAX` 長以下に制限します。超過入力は journal field を出す前に fail-closed します。
+  `1,000,000` 以下、各 Merkle path を `u16::MAX` 長以下、aggregate Merkle path node 数を `1,000,000` 以下、
+  structural/serialized input budget を `64 MiB` 以下に制限します。超過入力は journal field を出す前に fail-closed します。
 
 ## 1. 推奨: CLI E2E テスト
 
@@ -33,7 +34,7 @@ pnpm test:cli -- --user-choice A
 - `pnpm test:cli -- --user-choice A` はデフォルトで S0 + S1 を実行します。
 - `pnpm test:cli:mock` は package script 側で `--scenario S0` を指定しています。モックの S0-S5 matrix を回す場合は
   `docs/current/tests/cli.md` の直接ハーネス例を参照してください。
-- `--skip-build` は既存の `next build` 出力を再利用するオプションです。出力がない場合は指定しないでください。
+- `--skip-build` は既存の `pnpm build:ci` 出力を再利用するオプションです。出力がない場合は指定しないでください。
 
 ## 2. zkVM 単体スモークテスト（dev mode）
 
@@ -47,10 +48,10 @@ pnpm test:cli -- --user-choice A
 
 ### 3.1 Journal の正しいパース方法
 
-Journal の byte-level 解析は `src/lib/verification/journal-parser.ts` が **正** です。現行 contract の確認はまず `src/lib/verification/journal-parser.test.ts` を使ってください。
+Journal の byte-level 解析は `packages/verification/src/verification/journal-parser.ts` が **正** です。現行 contract の確認はまず `packages/verification/src/verification/journal-parser.test.ts` を使ってください。
 
 ```bash
-pnpm vitest run src/lib/verification/journal-parser.test.ts
+pnpm vitest run packages/verification/src/verification/journal-parser.test.ts
 ```
 
 `zkvm/test-data/*-receipt.json` と `*-output.json` は checked-in fixture ではなく、host 実行で生成されるローカル artifact です。現行の
@@ -63,11 +64,7 @@ pnpm vitest run src/lib/verification/journal-parser.test.ts
 pnpm tsx -e "import fs from 'node:fs'; const output = JSON.parse(fs.readFileSync('zkvm/test-data/test-fixture-valid-output.json','utf-8')); console.log({ methodVersion: output.methodVersion, excludedSlots: output.excludedSlots, rejectedRecords: output.rejectedRecords, inputCommitment: output.inputCommitment });"
 ```
 
-`parseJournalBytes()` を手元で直接叩く対象は、unit test と同じ 272-byte 固定レイアウトの journal bytes に限ってください。RISC Zero の receipt 内部 journal や bundle の `receipt.json` は serde / receipt wrapper 由来の形式を含むため、272-byte parser の入力としては扱わないでください。
-
-> `scripts/analyze-stark-receipt.js`、`scripts/verification/test-cli.sh`、`scripts/verification/verify-single.js` は
-> legacy / manual helper です。`test-cli.sh` は意図的に disabled で、`verify-single.js` は fixture 形状確認のみを行います。現行の
-> `{ receipt: ..., image_id: ... }` wrapper、journal layout、receipt 種別、数値、または暗号学的検証の判断には使わないでください。
+`parseJournalBytes()` を手元で直接叩く対象は、unit test と同じ 272-byte 固定レイアウトの journal bytes に限ってください。RISC Zero の receipt 内部 journal や bundle の `receipt.json` は serde / receipt wrapper 由来の形式を含むため、272-byte parser の入力としては扱わないでください。古い手動 receipt inspection helper は退役済みです。
 
 ### 3.2 Journal フォーマット（現行: methodVersion 14）
 
@@ -98,16 +95,13 @@ pnpm tsx -e "import fs from 'node:fs'; const output = JSON.parse(fs.readFileSync
 `verifier-service` で bundle を検証できます。bundle は `/verify` ページやCLIの出力URLから取得します。
 
 ```bash
-# default variant: expectedImageID
-export EXPECTED_IMAGE_ID="$(node verifier-service/scripts/read-image-id.mjs public/imageId-mapping.json --variant default)"
-
-# x86_64 variant: expectedImageID_x86_64
+# local x86_64 proof/receipt を検証するときは x86_64 variant を明示します。
 export EXPECTED_IMAGE_ID="$(node verifier-service/scripts/read-image-id.mjs public/imageId-mapping.json --variant x86_64)"
 
 ./verifier-service/target/release/verifier-service verify /path/to/bundle-or-receipt
 ```
 
-`public/imageId-mapping.json` には `expectedImageID` と `expectedImageID_x86_64` の両方があります。現行 methodVersion では値が同じ場合もありますが、
+現行 methodVersion `14` は target-account `default` / ARM64 と local `x86_64` の trust material を保持します。
 検証対象 bundle の実際の guest build / deployment と一致する variant を明示して選んでください。詳細は `verifier-service/README.md` を参照してください。
 
 ## トラブルシューティング

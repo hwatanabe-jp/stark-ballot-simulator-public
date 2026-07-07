@@ -7,6 +7,7 @@ export {
   VerifyPage,
   type VerificationResult,
   type CheckStatus,
+  type SummaryStatus,
   type VerificationCheckId,
   type VerificationStepId,
 } from './VerifyPage';

@@ -1,9 +1,23 @@
 # Terraform Infrastructure Guide
 
-`develop` / `main` の async prover インフラを Terraform で管理するためのガイドです。
+Legacy/root `develop` / `main` async prover Terraform notes plus target-runtime handoff references.
 
 > 公開版の注記:
 > 環境固有の ID / ARN / バケット名は `<...>` 形式のプレースホルダで表記しています。
+
+> **Migration warning:** This guide describes the retained legacy hybrid
+> Amplify/Terraform workflow and `develop` / `main` Terraform workspace model.
+> It is not target-account migration guidance and does not describe the
+> `infra/terraform/app` target runtime. For the proposed greenfield target-state
+> direction, use
+> [`docs/current/aws-account-migration/04-terraform-state-and-account-migration-plan.md`](../../aws-account-migration/04-terraform-state-and-account-migration-plan.md)
+> and
+> [`docs/current/aws-account-migration/08-ci-cd-and-deployment-flow-plan.md`](../../aws-account-migration/08-ci-cd-and-deployment-flow-plan.md).
+> For the Terraform-managed target API and async runtime, use
+> [`docs/current/aws-account-migration/implementation-plans/05-terraform-managed-api-and-async-runtime-plan.md`](../../aws-account-migration/implementation-plans/05-terraform-managed-api-and-async-runtime-plan.md)
+> and [`infra/terraform/app/README.md`](../../../../infra/terraform/app/README.md).
+> The legacy commands shown below are not migration authorization; any
+> legacy-account mutation during migration still requires explicit approval.
 
 ## 目次
 
@@ -20,26 +34,28 @@
 
 ## 概要
 
-STARK Ballot Simulator の AWS 構成は、**Amplify** と **Terraform** の 2 つで分担管理します。
+この retained legacy/root Terraform workflow では、STARK Ballot Simulator の AWS 構成は **Amplify** と
+**Terraform** の 2 つで分担管理していました。Target `infra/terraform/app` runtime は Terraform が
+public API、finalization writer、proof dispatcher、verification worker、SQS、Step Functions、private artifact bucket を管理し、Amplify-managed finalize callback ARN を要求しません。
 
-| サービス           | 管理ツール  | 役割                                                                 |
-| ------------------ | ----------- | -------------------------------------------------------------------- |
-| アプリケーション層 | AWS Amplify | Next.js Hosting、AppSync、DynamoDB、API Gateway、Amplify 管理 Lambda |
-| インフラ層         | Terraform   | VPC、ECS、Step Functions、SQS、S3、ECR、CodeBuild、IAM               |
+| サービス           | 管理ツール  | 役割                                                                                 |
+| ------------------ | ----------- | ------------------------------------------------------------------------------------ |
+| アプリケーション層 | AWS Amplify | Retired legacy: Next.js Hosting、AppSync、DynamoDB、API Gateway、Amplify 管理 Lambda |
+| インフラ層         | Terraform   | VPC、ECS、Step Functions、SQS、S3、ECR、CodeBuild、IAM                               |
 
-### Amplify が管理するもの
+### Retired legacy Amplify-owned inventory
 
 - Amplify Hosting
 - Amplify Data (AppSync + DynamoDB)
 - Cognito
-- API Gateway (HTTP API, `hono-api` integration)
-- Lambda Functions (`prover-dispatch-proxy`, `verifier-service-runner`, `finalize-callback-runner`, `hono-api`)
+- API Gateway (HTTP API, `public-api` integration)
+- Lambda Functions (`verification-worker`, `finalization-writer`, `public-api`, and the legacy Amplify proof-dispatcher proxy)
 
 ### Terraform が管理するもの
 
 - VPC / Public Subnets / Route Tables / Security Groups
 - ECS Cluster / Fargate Task Definition
-- Step Functions (`prover-dispatcher`)
+- Step Functions (`proof-dispatcher`)
 - SQS (`prover-work`, `prover-dlq`)
 - S3 proof bundle bucket
 - S3 prover image metadata bucket
@@ -51,8 +67,8 @@ STARK Ballot Simulator の AWS 構成は、**Amplify** と **Terraform** の 2 �
   - 共通: `stark-ballot-simulator-risc0-toolchain-builder`
 - IAM Roles / Policies
 - CloudWatch Logs
-- SSM parameter for the current prover image metadata candidate
-- `check-image-signature` Lambda
+- SSM parameter for the retained legacy/current prover image metadata candidate
+- `image-signature-gate` Lambda
 - CloudTrail (`main` のみ)
 
 ### 設計の特徴
@@ -83,15 +99,29 @@ aws-vault --version
 
 ### 認証の使い分け
 
-- Terraform 実行: `aws-vault exec terraform-admin -- ...`
-- 手動の AWS CLI 操作: `aws login` 済みのデフォルト認証を使い、`--profile` は指定しない
-- CodeBuild / ECR / SSM / CloudWatch Logs の確認や起動も Terraform 操作ではないため、plain `aws ...` を使う
+- Retained legacy/root Terraform inspection: `aws-vault exec terraform-admin -- ...`
+  commands below are legacy-environment guidance and are not target-account
+  mutation authority.
+- Target-account AWS inspection or operation: choose the explicit IAM Identity
+  Center profile, account, and region first, for example
+  `--profile stark-dev-admin --region ap-northeast-1`. Do not rely on implicit
+  default AWS credentials for account-targeted work.
+- Direct CodeBuild / ECR / SSM / CloudWatch Logs commands in this file are
+  retained legacy or diagnostic examples. They are not Plan 02 release-candidate
+  handoff evidence, not Plan 03 app-execution evidence, and not a substitute for
+  the separate target-account toolchain/prover release artifact pipelines,
+  promotion/channel records, selected prover release/app deployment record, and
+  immutable handoff required by the post-merge plans.
 
-Terraform provider は明示 profile を指定せず、`aws-vault exec terraform-admin -- ...` で渡される
-一時 credentials を使います。plan / apply / destroy は `scripts/terraform/terraform-guarded.sh`
-経由で実行し、AWS caller、account ID、workspace、tfvars の `environment` を事前確認してください。
-`terraform/principal_guard.tf` も補助的な fail-fast guard として残していますが、`-target` などの
-特殊操作では wrapper 側の確認を source of truth として扱います。
+For the retained legacy/root Terraform path, the Terraform provider does not
+set an explicit profile and uses the temporary credentials supplied by
+`aws-vault exec terraform-admin -- ...`. Legacy plan / apply / destroy commands
+must go through `scripts/terraform/terraform-guarded.sh` and confirm AWS
+caller, account ID, workspace, and tfvars `environment` before execution.
+`infra/terraform/legacy/principal_guard.tf` remains as an auxiliary fail-fast
+guard, but for special operations such as `-target`, treat the wrapper check as
+the source of truth. These legacy checks do not authorize target-account
+Plan 02/03 acceptance.
 
 ### Terraform backend
 
@@ -103,13 +133,13 @@ terraform {
 }
 ```
 
-実 bucket 名や region は tracked ファイルに置かず、`.env.local` から `terraform/backend.local.hcl` を生成して `terraform init` に渡します。
+実 bucket 名や region は tracked ファイルに置かず、`.env.local` から `infra/terraform/legacy/backend.local.hcl` を生成して `terraform init` に渡します。
 
 既存 checkout でこの partial backend への変更を取り込んだ後は、一度だけ local backend config を生成して再初期化してください。
 
 ```bash
 pnpm terraform:backend
-aws-vault exec terraform-admin -- terraform -chdir=terraform init -reconfigure -backend-config=backend.local.hcl
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy init -reconfigure -backend-config=backend.local.hcl
 ```
 
 `use_lockfile` を使うため、backend 用 principal には state object に加えて `.tflock` に対する `s3:GetObject` / `s3:PutObject` / `s3:DeleteObject` が必要です。
@@ -122,39 +152,41 @@ cd <REPO_ROOT>
 
 # 2. backend config を生成して初期化
 pnpm terraform:backend
-aws-vault exec terraform-admin -- terraform -chdir=terraform init -backend-config=backend.local.hcl
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy init -backend-config=backend.local.hcl
 # backend 設定を変更した後は再初期化
-# aws-vault exec terraform-admin -- terraform -chdir=terraform init -reconfigure -backend-config=backend.local.hcl
+# aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy init -reconfigure -backend-config=backend.local.hcl
 
 # 3. workspace を選択
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace show
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace select develop
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace show
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace select develop
 # 存在しない場合のみ
-# aws-vault exec terraform-admin -- terraform -chdir=terraform workspace new develop
+# aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace new develop
 
 # 4. .env.local の Terraform 用値を確認し、git 管理外 tfvars を生成
 # 必要キーは .env.local.example の "Terraform local tfvars generation" を参照。
-pnpm terraform:tfvars:develop
+./scripts/terraform/render-local-tfvars.sh develop
 
 # 5. Terraform-managed Lambda artifacts を生成
 pnpm terraform:build-lambdas
 
-# 6. 標準の local tfvars 生成で要求される値を確認
+# 6. legacy/root local tfvars 生成で要求される値を確認
 # - environment = "develop"
 # - aws_account_id
 # - ecs_image_uri
 # - ecr_signing_profile_arn
-# - finalize_callback_lambda_arn
+# - finalization_writer_lambda_arn
 # - codestar_connection_arn
 # - codebuild_source_location
 # - s3_cors_allowed_origins（Terraform 変数としては空配列可。標準ヘルパーでは必須）
 
 # 7. plan / apply
-aws-vault exec terraform-admin -- pnpm terraform:plan:develop
-aws-vault exec terraform-admin -- pnpm terraform:apply:develop
+aws-vault exec terraform-admin -- ./scripts/terraform/terraform-guarded.sh develop plan -var-file=develop.local.tfvars
+# Legacy workspace apply is not exposed as a package script during Phase 04.
+# Use the direct guarded script only after explicit approval:
+# aws-vault exec terraform-admin -- ./scripts/terraform/terraform-guarded.sh develop apply -var-file=develop.local.tfvars
 
 # 8. outputs を確認
-aws-vault exec terraform-admin -- terraform -chdir=terraform output
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy output
 ```
 
 `main` も同様ですが、workspace と `var.environment` の両方を `main` にそろえてください。
@@ -162,7 +194,7 @@ aws-vault exec terraform-admin -- terraform -chdir=terraform output
 ## ディレクトリ構成
 
 ```text
-terraform/
+infra/terraform/legacy/
 ├── backend.tf                      # S3 backend (lockfile)
 ├── versions.tf                     # Terraform / provider versions
 ├── main.tf                         # 共通 locals / environment settings
@@ -186,14 +218,14 @@ terraform/
 ├── principal_guard.tf              # Terraform execution principal guard
 ├── lambda_check_image_signature.tf # ECR signing status checker Lambda
 ├── cloudtrail.tf                   # CloudTrail (main only)
-└── lambda/check-image-signature/   # Lambda source
+└── lambda/image-signature-gate/   # Lambda source
 ```
 
 注:
 
-- 実運用値は `.env.local` またはシェル環境に置き、`pnpm terraform:backend` と `pnpm terraform:tfvars:develop` / `pnpm terraform:tfvars:main` で `terraform/*.local.*` を生成します。
-- `check-image-signature` Lambda は `pnpm terraform:build-lambdas` で `terraform/.tmp/check-image-signature/` に bundle してから Terraform が zip 化します。
-- `terraform/*.local.hcl`、`terraform/*.local.tfvars`、`terraform/*.local.json` は git 管理外です。アカウント ID、ARN、実ドメイン、digest-pinned image URI、state bucket 名を tracked ファイルに戻さないでください。
+- 実運用値は `.env.local` またはシェル環境に置き、`pnpm terraform:backend` と direct `scripts/terraform/render-local-tfvars.sh` 実行で `infra/terraform/legacy/*.local.*` を生成します。
+- `image-signature-gate` Lambda は `pnpm terraform:build-lambdas` で `infra/terraform/legacy/.tmp/image-signature-gate/` に bundle してから Terraform が zip 化します。
+- `infra/terraform/legacy/*.local.hcl`、`infra/terraform/legacy/*.local.tfvars`、`infra/terraform/legacy/*.local.json` は git 管理外です。アカウント ID、ARN、実ドメイン、digest-pinned image URI、state bucket 名を tracked ファイルに戻さないでください。
 
 ## State と環境分離
 
@@ -223,34 +255,36 @@ backend の `key` は `terraform.tfstate` 固定ですが、S3 backend は named
 
 ```bash
 # まず現在の workspace を確認
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace show
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace show
 
 # develop へ切り替え
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace select develop
-aws-vault exec terraform-admin -- pnpm terraform:plan:develop
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace select develop
+aws-vault exec terraform-admin -- ./scripts/terraform/terraform-guarded.sh develop plan -var-file=develop.local.tfvars
 
 # main へ切り替え
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace select main
-aws-vault exec terraform-admin -- pnpm terraform:plan:main
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace select main
+aws-vault exec terraform-admin -- ./scripts/terraform/terraform-guarded.sh main plan -var-file=main.local.tfvars
 ```
 
 `default` workspace のまま `*.local.tfvars` を適用しないでください。
 
 ## 主要な入力変数
 
-現在の Terraform と標準の local tfvars 生成で特に重要なのは次の変数です。
+この legacy/root Terraform と標準の local tfvars 生成で特に重要なのは次の変数です。Target
+`infra/terraform/app` の immutable Lambda artifact inputs や direct callback runtime には
+[`infra/terraform/app/README.md`](../../../../infra/terraform/app/README.md) を使ってください。
 
-| 変数                           | 必須性                               | 用途                                           |
-| ------------------------------ | ------------------------------------ | ---------------------------------------------- |
-| `aws_account_id`               | 必須                                 | provider の account guard                      |
-| `environment`                  | 必須                                 | `develop` または `main`                        |
-| `ecs_image_uri`                | 必須                                 | digest pin された prover image URI             |
-| `ecr_signing_profile_arn`      | 必須                                 | AWS Signer profile ARN                         |
-| `finalize_callback_lambda_arn` | 必須                                 | Amplify 管理 `finalize-callback-runner` の ARN |
-| `codestar_connection_arn`      | 必須                                 | GitHub 接続用 CodeStar connection ARN          |
-| `codebuild_source_location`    | 必須                                 | CodeBuild が clone する GitHub repository URL  |
-| `s3_cors_allowed_origins`      | 標準ヘルパーで必須、Terraform は任意 | proof bundle ダウンロード用 CORS               |
-| `risc0_toolchain_*`            | 任意                                 | shared toolchain builder の pin 設定           |
+| 変数                             | 必須性                                           | 用途                                              |
+| -------------------------------- | ------------------------------------------------ | ------------------------------------------------- |
+| `aws_account_id`                 | 必須                                             | provider の account guard                         |
+| `environment`                    | 必須                                             | `develop` または `main`                           |
+| `ecs_image_uri`                  | 必須                                             | digest pin された prover image URI                |
+| `ecr_signing_profile_arn`        | 必須                                             | AWS Signer profile ARN                            |
+| `finalization_writer_lambda_arn` | legacy/root では必須                             | Amplify 管理 `finalization-writer` の ARN         |
+| `codestar_connection_arn`        | 必須                                             | GitHub 接続用 CodeStar connection ARN             |
+| `codebuild_source_location`      | 必須                                             | CodeBuild が clone する GitHub repository URL     |
+| `s3_cors_allowed_origins`        | legacy/root 標準ヘルパーで必須、Terraform は任意 | legacy direct-S3 proof bundle ダウンロード用 CORS |
+| `risc0_toolchain_*`              | 任意                                             | shared toolchain builder の pin 設定              |
 
 ### `terraform.tfvars.example`
 
@@ -268,33 +302,51 @@ ecs_image_uri = "<AWS_ACCOUNT_ID>.dkr.ecr.ap-northeast-1.amazonaws.com/stark-bal
 # ECR managed signing
 ecr_signing_profile_arn = "arn:aws:signer:ap-northeast-1:<AWS_ACCOUNT_ID>:/signing-profiles/<SIGNING_PROFILE_NAME>"
 
-# Amplify-managed Lambda
-finalize_callback_lambda_arn = "arn:aws:lambda:ap-northeast-1:<AWS_ACCOUNT_ID>:function:<AMPLIFY_FINALIZE_CALLBACK_FUNCTION>"
+# Legacy/root Amplify-managed Lambda. Target infra/terraform/app does not use this input.
+finalization_writer_lambda_arn = "arn:aws:lambda:ap-northeast-1:<AWS_ACCOUNT_ID>:function:<AMPLIFY_FINALIZE_CALLBACK_FUNCTION>"
 
 # GitHub access for CodeBuild
 codestar_connection_arn = "arn:aws:codestar-connections:ap-northeast-1:<AWS_ACCOUNT_ID>:connection/<CONNECTION_ID>"
 
 # Terraform 変数としては任意。空配列なら CORS 設定を作成しない。
-# 標準の pnpm terraform:tfvars:<env> ヘルパーでは、ブラウザからの bundle 取得を壊さないよう非空値を要求する。
+# Phase 04 では package script ではなく scripts/terraform/render-local-tfvars.sh <env> を直接使う。
+# その renderer はブラウザからの bundle 取得を壊さないよう非空値を要求する。
 s3_cors_allowed_origins = ["<AMPLIFY_APP_ORIGIN>"]
 ```
 
 補足:
 
 - 現在の Terraform 入力として `cognito_identity_pool_id` や `amplify_graphql_api_arn` は要求していません。
-- Amplify 由来で Terraform 側に必要なのは、現状は `finalize_callback_lambda_arn` です。
-- 実運用では、`.env.local` から生成した `terraform/<env>.local.tfvars` の repo 名、digest、CORS origin を確認してください。
+- legacy/root Terraform で Amplify 由来として必要なのは、現状は `finalization_writer_lambda_arn` です。Target `infra/terraform/app` は Terraform-managed direct callback Lambda を使います。
+- 実運用では、`.env.local` から生成した `infra/terraform/legacy/<env>.local.tfvars` の repo 名、digest、CORS origin を確認してください。
 
 ## CodeBuild とコンテナイメージ運用
 
-### 現在の前提
+### Retained legacy / diagnostic premise
+
+The bullets in this section describe retained legacy/root Terraform and
+diagnostic lookup behavior. They are not Plan 02/03 release-candidate
+authority. For the target develop handoff, use the successor authority model in
+[`../../internal/guides/3-deployment/develop-target-image-authority.md`](../../internal/guides/3-deployment/develop-target-image-authority.md):
+separate toolchain/prover artifact records, accepted channel pointers, selected
+prover release/app deployment records, generated app inputs, and any generated
+release-manifest bridge required by current helpers.
 
 - zkVM prover image は **環境別 ECR repository** に push する
-- toolchain image は **shared ECR repository** を使う
-- deploy 時は **tag ではなく digest** を `ecs_image_uri` に設定する
-- runtime では Step Functions が `check-image-signature` Lambda を通して **ECR signing status** を確認する
+  legacy/diagnostic path
+- toolchain image は **shared ECR repository** を使う legacy/diagnostic path
+- deploy 時は **tag ではなく digest** を `ecs_image_uri` に設定する retained
+  legacy/root Terraform path
+- runtime では Step Functions が `image-signature-gate` Lambda を通して **ECR signing status** を確認する
 
-### 手動ビルド例
+### 手動ビルド例（retained legacy / diagnostic only）
+
+The following direct `aws codebuild start-build` examples describe the retained
+legacy/shared build path. They are not current Plan 02/03 release-candidate
+authority, do not produce accepted handoff evidence, and must not be used as a
+substitute for the required separate target-account toolchain/prover release
+artifact pipelines, promotion/channel records, selected prover release/app
+deployment record, and retained outputs.
 
 `develop` 用 prover image:
 
@@ -315,26 +367,44 @@ aws codebuild start-build \
 署名ステータス確認:
 
 ```bash
+TRUSTED_SIGNING_PROFILE_VERSION_ARN="arn:aws:signer:ap-northeast-1:<AWS_ACCOUNT_ID>:/signing-profiles/<SIGNING_PROFILE_NAME>/<PROFILE_VERSION>"
+
 aws ecr describe-image-signing-status \
   --repository-name stark-ballot-simulator/zkvm-prover-develop \
-  --image-id imageTag=v1.1.0 \
-  --query 'signingStatuses[0].status'
+  --image-id imageDigest=sha256:<64-hex> \
+  --query "length(signingStatuses[?signingProfileVersionArn=='${TRUSTED_SIGNING_PROFILE_VERSION_ARN}' && status=='COMPLETE'])" \
+  --output text
 ```
 
-### デプロイに使う値
+The command must return `1`. Tag-based signing checks or
+`signingStatuses[0]` checks are not acceptance evidence.
+
+### デプロイに使う値（retained legacy only）
+
+This digest-promotion flow is retained legacy/root Terraform guidance. Direct
+local `terraform apply`, operator-selected image digests, and local tfvars
+promotion are not Plan 02/03 acceptance evidence for the target account.
 
 1. CodeBuild ログに出力された `image-metadata.json` または ECR から digest を確認する
 2. `.env.local` の `TERRAFORM_ECS_IMAGE_URI_<ENV>` または `TERRAFORM_ZKVM_PROVER_DIGEST_<ENV>` を更新する
-3. `pnpm terraform:tfvars:<env>` で `terraform/<env>.local.tfvars` を再生成する
+3. `./scripts/terraform/render-local-tfvars.sh <env>` で `infra/terraform/legacy/<env>.local.tfvars` を再生成する
 4. 対応する workspace / tfvars で `terraform apply` する
 
 `latest` や semver tag のまま `ecs_image_uri` に渡さないでください。
 
-### ARM64 Image ID の確認
+### ARM64 Image ID の確認（retained legacy / diagnostic only）
 
-zkVM guest を更新したあと、AWS 上で動く ARM64 の Image ID はローカル x86_64 と一致しないことがあります。標準経路では、prover image の CodeBuild が build 済み ARM64 container から `host --print-image-id --json` を実行し、ImageID を candidate metadata として保存します。
+zkVM guest を更新したあと、AWS 上で動く ARM64 の Image ID はローカル
+x86_64 と一致しないことがあります。この retained legacy/shared path
+では、prover image の CodeBuild が build 済み ARM64 container から
+`host --print-image-id --json` を実行し、ImageID を candidate metadata
+として保存していました。Target develop Plan 02/03 では、この SSM
+`current` lookup、`latest.json`、または手動 mapping 反映は authority
+ではありません。ImageID/method-version facts must come from the selected
+prover release metadata and app deployment record; `public/imageId-mapping.json`
+is compatibility/public-ledger evidence.
 
-確認先:
+Diagnostic lookup point:
 
 ```bash
 aws ssm get-parameter \
@@ -351,23 +421,31 @@ prover-images/<env>/by-digest/sha256-<digest>.json
 prover-images/<env>/by-git-sha/<sha>.json
 ```
 
-`image-metadata.json` と SSM の current JSON には、ECR digest、digest-pinned image URI、Git SHA、RISC Zero toolchain image、`methodVersion`、ARM64 `risc0ImageId`、S3 metadata URI が含まれます。SSM は current pointer として 1 つの JSON parameter だけを更新し、ImageID と image URI が別々にずれないようにします。
+`image-metadata.json` と SSM の current JSON には、ECR digest、
+digest-pinned image URI、Git SHA、RISC Zero toolchain image、
+`methodVersion`、ARM64 `risc0ImageId`、S3 metadata URI が含まれます。
+This is a diagnostic current pointer for the retained legacy/shared path, not
+an accepted channel pointer and not selected prover release authority.
 
-更新先をそろえる:
+Retained legacy compatibility update targets, not Plan 02/03 authority:
 
 - `public/imageId-mapping.json` の `mappings[current].expectedImageID`
-- `src/lib/verification/expected-image-id.ts` の fallback 定数
+- `packages/verification/src/verification/expected-image-id.ts` の fallback 定数
 - `EXPECTED_IMAGE_ID` を使っている Amplify / CI / 手元シェルの override
 
 補足:
 
 - `expectedImageID_x86_64` は、x86_64 build の実測値があるときだけ更新します
 - Amplify に `EXPECTED_IMAGE_ID` が残っている場合、runtime では mapping より **env override が優先**されます
-- CodeBuild metadata は昇格前の candidate です。ECR signing status と必要な real/prod proof smoke を確認してから mapping / Terraform 値へ反映します
+- CodeBuild metadata は昇格前の candidate です。Retained legacy/root
+  Terraform では ECR signing status と必要な real/prod proof smoke を確認してから
+  mapping / Terraform 値へ反映します。Target develop Plan 02/03 では、
+  selected prover release/app deployment record が deployed ImageID facts を供給し、
+  mapping は compatibility/public-ledger evidence として照合します。
 
 ## Amplify との連携
 
-Terraform outputs は、Amplify で管理している次の環境変数と対応します。
+Retained legacy Terraform outputs mapped to the following Amplify-managed environment variables.
 
 | Terraform output           | Amplify env var            |
 | -------------------------- | -------------------------- |
@@ -376,13 +454,13 @@ Terraform outputs は、Amplify で管理している次の環境変数と対応
 | `prover_work_queue_url`    | `PROVER_WORK_QUEUE_URL`    |
 | `s3_bucket_name`           | `S3_PROOF_BUCKET`          |
 
-Terraform は CodeBuild が使う prover image metadata bucket と current metadata JSON の SSM parameter name も output します。これらは運用確認用の lookup point であり、Amplify runtime env var ではありません。
+Terraform は CodeBuild が使う prover image metadata bucket と current metadata JSON の SSM parameter name も output します。これらは運用確認用の lookup point であり、retired Amplify runtime env var ではありません。
 
-### 現在の方針
+### Retained legacy policy
 
 - このリポジトリの Terraform / CLI ワークフローから **Amplify の環境変数を更新しません**
 - CLI や補助スクリプトは、必要に応じて Amplify の環境変数を**参照**しますが、**変更**はしません
-- 運用上、Amplify の環境変数は **app-level を基底**に管理します
+- Retained legacy 運用上、Amplify の環境変数は **app-level を基底**に管理していました
 - `develop` / `main` で値が異なる項目だけを **branch-level override** で上書きします
 - app-level に存在しないキーを特定 branch 専用の値として扱う前提にはしません。差分が必要なキーも、まず app-level に定義してから branch override を設定します
 
@@ -413,7 +491,7 @@ jq -n \
 
 補足:
 
-- `appLevel` が Amplify app-level の基底値です
+- `appLevel` が retired legacy Amplify app-level の基底値です
 - `branchOverride` は branch-level で上書きしている項目です
 - `effective` が、その branch で実際に効く値です
 
@@ -424,26 +502,28 @@ jq -n \
 ```bash
 cd <REPO_ROOT>
 pnpm terraform:backend
-pnpm terraform:tfvars:develop
+./scripts/terraform/render-local-tfvars.sh develop
 pnpm terraform:build-lambdas
 
-aws-vault exec terraform-admin -- terraform -chdir=terraform init -backend-config=backend.local.hcl
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace select develop
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy init -backend-config=backend.local.hcl
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace select develop
 # 初回のみ:
-# aws-vault exec terraform-admin -- terraform -chdir=terraform workspace new develop
+# aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace new develop
 
-aws-vault exec terraform-admin -- pnpm terraform:plan:develop
-aws-vault exec terraform-admin -- pnpm terraform:apply:develop
+aws-vault exec terraform-admin -- ./scripts/terraform/terraform-guarded.sh develop plan -var-file=develop.local.tfvars
+# Legacy workspace apply is not exposed as a package script during Phase 04.
+# Use the direct guarded script only after explicit approval:
+# aws-vault exec terraform-admin -- ./scripts/terraform/terraform-guarded.sh develop apply -var-file=develop.local.tfvars
 ```
 
 apply 後の確認:
 
 ```bash
-cd <REPO_ROOT>/terraform
+cd <REPO_ROOT>
 
-STATE_MACHINE_ARN=$(aws-vault exec terraform-admin -- terraform output -raw prover_state_machine_arn)
-QUEUE_URL=$(aws-vault exec terraform-admin -- terraform output -raw prover_work_queue_url)
-BUCKET_NAME=$(aws-vault exec terraform-admin -- terraform output -raw s3_bucket_name)
+STATE_MACHINE_ARN=$(aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy output -raw prover_state_machine_arn)
+QUEUE_URL=$(aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy output -raw prover_work_queue_url)
+BUCKET_NAME=$(aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy output -raw s3_bucket_name)
 
 aws stepfunctions describe-state-machine \
   --state-machine-arn "$STATE_MACHINE_ARN" \
@@ -464,26 +544,28 @@ aws s3api head-bucket \
 ```bash
 cd <REPO_ROOT>
 pnpm terraform:backend
-pnpm terraform:tfvars:main
+./scripts/terraform/render-local-tfvars.sh main
 pnpm terraform:build-lambdas
 
-aws-vault exec terraform-admin -- terraform -chdir=terraform init -backend-config=backend.local.hcl
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace select main
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy init -backend-config=backend.local.hcl
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace select main
 # 初回のみ:
-# aws-vault exec terraform-admin -- terraform -chdir=terraform workspace new main
+# aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace new main
 
-aws-vault exec terraform-admin -- pnpm terraform:plan:main
-aws-vault exec terraform-admin -- pnpm terraform:apply:main
+aws-vault exec terraform-admin -- ./scripts/terraform/terraform-guarded.sh main plan -var-file=main.local.tfvars
+# Legacy workspace apply is not exposed as a package script during Phase 04.
+# Use the direct guarded script only after explicit approval:
+# aws-vault exec terraform-admin -- ./scripts/terraform/terraform-guarded.sh main apply -var-file=main.local.tfvars
 ```
 
 apply 後の確認:
 
 ```bash
-cd <REPO_ROOT>/terraform
+cd <REPO_ROOT>
 
-STATE_MACHINE_ARN=$(aws-vault exec terraform-admin -- terraform output -raw prover_state_machine_arn)
-QUEUE_URL=$(aws-vault exec terraform-admin -- terraform output -raw prover_work_queue_url)
-BUCKET_NAME=$(aws-vault exec terraform-admin -- terraform output -raw s3_bucket_name)
+STATE_MACHINE_ARN=$(aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy output -raw prover_state_machine_arn)
+QUEUE_URL=$(aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy output -raw prover_work_queue_url)
+BUCKET_NAME=$(aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy output -raw s3_bucket_name)
 
 aws stepfunctions describe-state-machine \
   --state-machine-arn "$STATE_MACHINE_ARN" \
@@ -501,7 +583,7 @@ aws s3api head-bucket \
 
 補足:
 
-- `pnpm test:cli:real-dev` / `pnpm test:cli:real-prod:s0` はアプリケーション回帰確認には有用ですが、`STARK_BALLOT_CLI_BASE_URL` を明示しない限りローカルで `next build` / `next start` を起動するため、Terraform で構築した AWS リソースの疎通確認にはなりません。
+- `pnpm test:cli:real-dev` / `pnpm test:cli:real-prod:s0` はアプリケーション回帰確認には有用ですが、`STARK_BALLOT_CLI_BASE_URL` を明示しない限りローカルで Vite static frontend と local Hono server を起動するため、Terraform で構築した AWS リソースの疎通確認にはなりません。
 - Terraform apply 後の一次確認は、まず Terraform outputs と AWS API で存在確認し、その後に必要に応じて Amplify 側で管理している実効 env 値と照合してから E2E を実施してください。
 
 ### 更新デプロイ
@@ -509,12 +591,14 @@ aws s3api head-bucket \
 ```bash
 cd <REPO_ROOT>
 pnpm terraform:backend
-pnpm terraform:tfvars:main
+./scripts/terraform/render-local-tfvars.sh main
 pnpm terraform:build-lambdas
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace select main
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace show # main であることを確認
-aws-vault exec terraform-admin -- pnpm terraform:plan:main
-aws-vault exec terraform-admin -- pnpm terraform:apply:main
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace select main
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace show # main であることを確認
+aws-vault exec terraform-admin -- ./scripts/terraform/terraform-guarded.sh main plan -var-file=main.local.tfvars
+# Legacy workspace apply is not exposed as a package script during Phase 04.
+# Use the direct guarded script only after explicit approval:
+# aws-vault exec terraform-admin -- ./scripts/terraform/terraform-guarded.sh main apply -var-file=main.local.tfvars
 ```
 
 ### リソース削除
@@ -522,10 +606,10 @@ aws-vault exec terraform-admin -- pnpm terraform:apply:main
 ```bash
 cd <REPO_ROOT>
 pnpm terraform:backend
-pnpm terraform:tfvars:develop
+./scripts/terraform/render-local-tfvars.sh develop
 pnpm terraform:build-lambdas
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace select develop
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace show # develop であることを確認
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace select develop
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace show # develop であることを確認
 aws-vault exec terraform-admin -- ./scripts/terraform/terraform-guarded.sh develop destroy -var-file=develop.local.tfvars
 ```
 
@@ -536,24 +620,25 @@ aws-vault exec terraform-admin -- ./scripts/terraform/terraform-guarded.sh devel
 まず workspace を確認してください。
 
 ```bash
-aws-vault exec terraform-admin -- terraform -chdir=terraform workspace show
+aws-vault exec terraform-admin -- terraform -chdir=infra/terraform/legacy workspace show
 ```
 
 `var.environment` と workspace が食い違っていると、誤った state に対して plan/apply してしまいます。
 
 ### Q: `terraform plan` が必須変数不足で失敗する
 
-標準の `pnpm terraform:tfvars:<env>` 経由では、主に次の値が必要です。
+Phase 04/legacy root では app/prover workspace の tfvars 生成 package script は公開していません。直接
+`./scripts/terraform/render-local-tfvars.sh <env>` を実行する場合、主に次の値が必要です。
 
 - `ecs_image_uri`
 - `aws_account_id`
 - `ecr_signing_profile_arn`
-- `finalize_callback_lambda_arn`
+- `finalization_writer_lambda_arn`
 - `codestar_connection_arn`
 - `codebuild_source_location`
 - `s3_cors_allowed_origins`
 
-Terraform 変数としての `s3_cors_allowed_origins` は default `[]` で、空なら S3 CORS 設定を作成しません。標準ヘルパーは proof bundle download のブラウザ導線を誤って無効化しないため、非空の CORS origin を要求します。
+Terraform 変数としての `s3_cors_allowed_origins` は default `[]` で、空なら S3 CORS 設定を作成しません。legacy/root 標準ヘルパーは proof bundle download のブラウザ導線を誤って無効化しないため、非空の CORS origin を要求します。Target `infra/terraform/app` の bundle/report delivery は public bucket CORS ではなく capability-checked Hono API endpoint 経由です。
 
 古い手順にあった `cognito_identity_pool_id` や `amplify_graphql_api_arn` は、現行 Terraform の必須入力ではありません。
 
@@ -589,16 +674,24 @@ Step Functions role に少なくとも次の権限が必要です。
 
 ### Q: 署名検証で止まる
 
-`check-image-signature` Lambda は `ecr:DescribeImageSigningStatus` を使って、対象 digest の signing status を確認します。
+`image-signature-gate` Lambda は `ecr:DescribeImageSigningStatus` を使って、対象 digest の signing status を確認します。
 
 ```bash
+TRUSTED_SIGNING_PROFILE_VERSION_ARN="arn:aws:signer:ap-northeast-1:<AWS_ACCOUNT_ID>:/signing-profiles/<SIGNING_PROFILE_NAME>/<PROFILE_VERSION>"
+
 aws ecr describe-image-signing-status \
   --repository-name stark-ballot-simulator/zkvm-prover-main \
-  --image-id imageTag=v1.1.0 \
-  --query 'signingStatuses[0].status'
+  --image-id imageDigest=sha256:<64-hex> \
+  --query "length(signingStatuses[?signingProfileVersionArn=='${TRUSTED_SIGNING_PROFILE_VERSION_ARN}' && status=='COMPLETE'])" \
+  --output text
 ```
 
-`COMPLETE` になる前に `terraform apply` しても、実行時検証で弾かれます。
+The command must return `1`; otherwise the digest is not signed by the trusted
+profile for acceptance purposes.
+
+Retained legacy/root Terraform では、`COMPLETE` になる前に
+`terraform apply` しても、実行時検証で弾かれます。この確認は Plan 02/03
+acceptance evidence ではありません。
 
 ### Q: Amplify の env vars と Terraform outputs が食い違う
 

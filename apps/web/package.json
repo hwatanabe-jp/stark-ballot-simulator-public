@@ -1,0 +1,46 @@
+{
+  "name": "@stark-ballot/web",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./api/*": "./src/api/*",
+    "./components/*": "./src/components/*",
+    "./finalize/*": "./src/finalize/*",
+    "./hooks": "./src/hooks/index.ts",
+    "./hooks/*": "./src/hooks/*",
+    "./i18n": "./src/i18n/index.ts",
+    "./i18n/*": "./src/i18n/*",
+    "./knowledge": "./src/knowledge/index.ts",
+    "./knowledge/*": "./src/knowledge/*",
+    "./mock-api/*": "./src/mock-api/*",
+    "./navigation/*": "./src/navigation/*",
+    "./routes/*": "./src/routes/*",
+    "./session": "./src/session/index.ts",
+    "./session/*": "./src/session/*",
+    "./shared/*": "./src/shared/*",
+    "./styles/*": "./src/styles/*",
+    "./verification/*": "./src/verification/*",
+    "./vote/*": "./src/vote/*"
+  },
+  "dependencies": {
+    "@marsidev/react-turnstile": "1.5.3",
+    "@stark-ballot/api-contract": "workspace:*",
+    "@stark-ballot/merkle": "workspace:*",
+    "@stark-ballot/runtime-config": "workspace:*",
+    "@stark-ballot/validation": "workspace:*",
+    "@stark-ballot/verification": "workspace:*",
+    "@stark-ballot/zkvm-contract": "workspace:*",
+    "lucide-react": "1.23.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-router": "8.1.0"
+  },
+  "devDependencies": {
+    "@stark-ballot/test-support": "workspace:*",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.9"
+  }
+}

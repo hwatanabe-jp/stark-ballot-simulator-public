@@ -1,9 +1,16 @@
 #!/usr/bin/env tsx
 
 import { performance } from 'node:perf_hooks';
-import { DuplicateDetector } from '../../src/lib/validation/duplicate-detector';
-import { RFC6962MerkleTree } from '../../src/lib/merkle/rfc6962-merkle-tree';
-import { BatchProcessor } from '../../src/lib/performance/batch-processor';
+import { DuplicateDetector } from '@stark-ballot/validation/duplicate-detector';
+import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
+import { BatchProcessor } from '@stark-ballot/domain/performance/batch-processor';
+
+function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
+  if (value === undefined || value === null) {
+    throw new Error(`Expected ${label} to be defined`);
+  }
+  return value;
+}
 
 type BenchmarkRow = {
   name: string;
@@ -22,6 +29,9 @@ function parseIterationCount(): number {
 
   for (let index = 0; index < argv.length; index++) {
     const value = argv[index];
+    if (!value) {
+      continue;
+    }
     if (value === '--iterations' || value === '-n') {
       rawIterations = argv[index + 1];
       break;
@@ -50,15 +60,21 @@ function formatDuration(value: number): string {
 
 function summarizeDurations(name: string, durations: number[]): BenchmarkRow {
   const sorted = [...durations].sort((left, right) => left - right);
+  if (sorted.length === 0) {
+    throw new Error('Cannot summarize an empty duration set');
+  }
   const middleIndex = Math.floor(sorted.length / 2);
-  const median = sorted.length % 2 === 0 ? (sorted[middleIndex - 1] + sorted[middleIndex]) / 2 : sorted[middleIndex];
+  const median =
+    sorted.length % 2 === 0
+      ? (strictDefined(sorted[middleIndex - 1]) + strictDefined(sorted[middleIndex])) / 2
+      : strictDefined(sorted[middleIndex]);
 
   return {
     name,
     iterations: durations.length,
     medianMs: formatDuration(median),
-    minMs: formatDuration(sorted[0]),
-    maxMs: formatDuration(sorted[sorted.length - 1]),
+    minMs: formatDuration(strictDefined(sorted[0])),
+    maxMs: formatDuration(strictDefined(sorted[sorted.length - 1])),
   };
 }
 
@@ -68,8 +84,13 @@ function buildDuplicateVotes(size: number): Array<{ voteId: string; commitment: 
     commitment: `0x${index.toString(16).padStart(64, '0')}`,
   }));
 
-  votes.push(votes[Math.floor(size / 2)]);
-  votes.push(votes[Math.floor((size * 3) / 4)]);
+  const firstDuplicate = votes[Math.floor(size / 2)];
+  const secondDuplicate = votes[Math.floor((size * 3) / 4)];
+  if (!firstDuplicate || !secondDuplicate) {
+    throw new Error('Duplicate vote fixtures were not generated');
+  }
+  votes.push(firstDuplicate);
+  votes.push(secondDuplicate);
 
   return votes;
 }

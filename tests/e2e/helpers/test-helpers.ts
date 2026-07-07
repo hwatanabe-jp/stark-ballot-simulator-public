@@ -2,6 +2,7 @@ import type {
   VerificationResult,
   TamperScenario,
   CheckStatus,
+  SummaryStatus,
   VerificationCheckId,
   VerificationStepId,
 } from '../pages';
@@ -10,6 +11,7 @@ export interface TestScenario {
   name: string;
   scenarioId: TamperScenario;
   userChoice: 'A' | 'B' | 'C' | 'D' | 'E';
+  expectedSummaryStatus: SummaryStatus;
   expectedCheckStatuses: Partial<Record<VerificationCheckId, CheckStatus>>;
   expectedStepStatuses?: Partial<Record<VerificationStepId, CheckStatus>>;
   smoke?: boolean;
@@ -20,12 +22,14 @@ export const TEST_SCENARIOS: TestScenario[] = [
     name: 'S0: Normal case (no tampering)',
     scenarioId: 'S0',
     userChoice: 'A',
+    expectedSummaryStatus: 'demo_only',
     expectedCheckStatuses: {
       counted_tally_consistent: 'success',
       counted_missing_indices_zero: 'success',
       counted_expected_vs_tree_size: 'success',
       counted_election_manifest_consistent: 'success',
       counted_close_statement_consistent: 'success',
+      recorded_sth_third_party: 'success',
       stark_receipt_verify: 'success',
     },
     expectedStepStatuses: {
@@ -38,20 +42,26 @@ export const TEST_SCENARIOS: TestScenario[] = [
     name: 'S1: Ignore user vote',
     scenarioId: 'S1',
     userChoice: 'A',
+    expectedSummaryStatus: 'failed',
     expectedCheckStatuses: {
       counted_missing_indices_zero: 'failed',
+    },
+    expectedStepStatuses: {
+      counted_as_recorded: 'failed',
     },
   },
   {
     name: 'S2: Tamper claimed tally for your vote',
     scenarioId: 'S2',
     userChoice: 'A',
+    expectedSummaryStatus: 'failed',
     expectedCheckStatuses: {
       counted_tally_consistent: 'failed',
       counted_missing_indices_zero: 'success',
       counted_expected_vs_tree_size: 'success',
       counted_election_manifest_consistent: 'success',
       counted_close_statement_consistent: 'success',
+      recorded_sth_third_party: 'success',
       stark_receipt_verify: 'success',
     },
     expectedStepStatuses: {
@@ -64,14 +74,19 @@ export const TEST_SCENARIOS: TestScenario[] = [
     name: 'S3: Ignore a bot vote',
     scenarioId: 'S3',
     userChoice: 'A',
+    expectedSummaryStatus: 'failed',
     expectedCheckStatuses: {
       counted_missing_indices_zero: 'failed',
+    },
+    expectedStepStatuses: {
+      counted_as_recorded: 'failed',
     },
   },
   {
     name: 'S4: Tamper claimed tally for a bot vote',
     scenarioId: 'S4',
     userChoice: 'A',
+    expectedSummaryStatus: 'failed',
     expectedCheckStatuses: {
       counted_missing_indices_zero: 'success',
     },
@@ -80,8 +95,12 @@ export const TEST_SCENARIOS: TestScenario[] = [
     name: 'S5: Random errors',
     scenarioId: 'S5',
     userChoice: 'A',
+    expectedSummaryStatus: 'failed',
     expectedCheckStatuses: {
       counted_missing_indices_zero: 'failed',
+    },
+    expectedStepStatuses: {
+      counted_as_recorded: 'failed',
     },
   },
 ];
@@ -94,6 +113,9 @@ export function validateVerificationResult(
 
   if (!result.summaryVisible) {
     errors.push('Verification summary was not visible');
+  }
+  if (result.summaryStatus !== scenario.expectedSummaryStatus) {
+    errors.push(`Expected summary to be ${scenario.expectedSummaryStatus}, got ${result.summaryStatus ?? 'unknown'}`);
   }
 
   for (const [checkId, expectedStatus] of Object.entries(scenario.expectedCheckStatuses) as Array<

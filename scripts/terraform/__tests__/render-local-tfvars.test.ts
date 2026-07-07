@@ -87,7 +87,8 @@ describe('render-local-tfvars.sh', () => {
           TERRAFORM_ZKVM_PROVER_DIGEST_DEVELOP:
             'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           TERRAFORM_ECR_SIGNING_PROFILE_NAME: 'stark_ballot_simulator_ecr_signing',
-          TERRAFORM_FINALIZE_CALLBACK_FUNCTION_NAME_DEVELOP: 'amplify-example-de-finalizecallbackrunnerla-ABC123',
+          TERRAFORM_FINALIZE_CALLBACK_FUNCTION_NAME_DEVELOP:
+            'stark-ballot-simulator-stark-dev-develop-finalization-writer',
           TERRAFORM_CODESTAR_CONNECTION_ID: '00000000-1111-2222-3333-444444444444',
           TERRAFORM_CODEBUILD_SOURCE_LOCATION: 'https://github.com/example/stark-ballot-simulator.git',
           TERRAFORM_S3_CORS_ALLOWED_ORIGINS_DEVELOP: 'https://develop.example.test',
@@ -112,7 +113,7 @@ describe('render-local-tfvars.sh', () => {
           'TERRAFORM_AWS_REGION=ap-northeast-1',
           'TERRAFORM_ZKVM_PROVER_DIGEST_DEVELOP=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           'TERRAFORM_ECR_SIGNING_PROFILE_NAME=stark_ballot_simulator_ecr_signing',
-          'TERRAFORM_FINALIZE_CALLBACK_FUNCTION_NAME_DEVELOP=amplify-example-de-finalizecallbackrunnerla-ABC123',
+          'TERRAFORM_FINALIZE_CALLBACK_FUNCTION_NAME_DEVELOP=stark-ballot-simulator-stark-dev-develop-finalization-writer',
           'TERRAFORM_CODESTAR_CONNECTION_ID=00000000-1111-2222-3333-444444444444',
           'TERRAFORM_CODEBUILD_SOURCE_LOCATION=https://github.com/example/stark-ballot-simulator.git',
           'TERRAFORM_S3_CORS_ALLOWED_ORIGINS_DEVELOP=https://develop.example.test, https://preview.example.test',
@@ -139,7 +140,7 @@ describe('render-local-tfvars.sh', () => {
         'ecr_signing_profile_arn = "arn:aws:signer:ap-northeast-1:111122223333:/signing-profiles/stark_ballot_simulator_ecr_signing"',
       );
       expect(rendered).toContain(
-        'finalize_callback_lambda_arn = "arn:aws:lambda:ap-northeast-1:111122223333:function:amplify-example-de-finalizecallbackrunnerla-ABC123"',
+        'finalization_writer_lambda_arn = "arn:aws:lambda:ap-northeast-1:111122223333:function:stark-ballot-simulator-stark-dev-develop-finalization-writer"',
       );
       expect(rendered).toContain(
         'codestar_connection_arn      = "arn:aws:codestar-connections:ap-northeast-1:111122223333:connection/00000000-1111-2222-3333-444444444444"',
@@ -277,7 +278,7 @@ describe('render-local-tfvars.sh', () => {
           'TERRAFORM_AWS_PROFILE=default',
           'TERRAFORM_ZKVM_PROVER_DIGEST_DEVELOP=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           'TERRAFORM_ECR_SIGNING_PROFILE_NAME=stark_ballot_simulator_ecr_signing',
-          'TERRAFORM_FINALIZE_CALLBACK_FUNCTION_NAME_DEVELOP=amplify-example-de-finalizecallbackrunnerla-ABC123',
+          'TERRAFORM_FINALIZE_CALLBACK_FUNCTION_NAME_DEVELOP=stark-ballot-simulator-stark-dev-develop-finalization-writer',
           'TERRAFORM_CODESTAR_CONNECTION_ID=00000000-1111-2222-3333-444444444444',
           'TERRAFORM_CODEBUILD_SOURCE_LOCATION=https://github.com/example/stark-ballot-simulator.git',
           'TERRAFORM_S3_CORS_ALLOWED_ORIGINS_DEVELOP=https://develop.example.test',
@@ -309,7 +310,7 @@ describe('render-local-tfvars.sh', () => {
           'TERRAFORM_AWS_ACCOUNT_ID=111122223333',
           'TERRAFORM_ZKVM_PROVER_DIGEST_DEVELOP=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           'TERRAFORM_ECR_SIGNING_PROFILE_NAME=stark_ballot_simulator_ecr_signing',
-          'TERRAFORM_FINALIZE_CALLBACK_FUNCTION_NAME_DEVELOP=amplify-example-de-finalizecallbackrunnerla-ABC123',
+          'TERRAFORM_FINALIZE_CALLBACK_FUNCTION_NAME_DEVELOP=stark-ballot-simulator-stark-dev-develop-finalization-writer',
           'TERRAFORM_CODESTAR_CONNECTION_ID=00000000-1111-2222-3333-444444444444',
           'TERRAFORM_CODEBUILD_SOURCE_LOCATION=https://github.com/hwatanabe-jp/<REPO_NAME>.git',
           'TERRAFORM_S3_CORS_ALLOWED_ORIGINS_DEVELOP=https://develop.example.test',

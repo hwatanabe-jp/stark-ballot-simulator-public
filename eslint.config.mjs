@@ -1,9 +1,11 @@
 import js from '@eslint/js';
-import nextCoreWebVitals from 'eslint-config-next/core-web-vitals';
 import prettierConfig from 'eslint-config-prettier/flat';
+import importPlugin from 'eslint-plugin-import';
 import globals from 'globals';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
+import reactPlugin from 'eslint-plugin-react';
+import reactHooksPlugin from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -14,7 +16,6 @@ const ignores = [
   '**/.next/**',
   '**/.tmp/**',
   '**/.turbo/**',
-  '**/amplify/**',
   '**/amplify_outputs/**',
   '**/amplify_outputs.json',
   '**/coverage/**',
@@ -33,20 +34,19 @@ const ignores = [
 const jsFiles = ['**/*.{js,jsx}'];
 const tsFiles = ['**/*.{ts,tsx}'];
 const nodeFiles = ['**/*.{js,cjs,mjs}'];
-const serverConsoleFiles = [
-  'src/server/**/*.{ts,tsx}',
-  'src/lib/aws/**/*.ts',
-  'src/lib/finalize/usecases/**/*.ts',
-  'src/lib/finalize/finalization-queue.ts',
-  'src/lib/finalize/proof-bundle-service.ts',
-  'src/lib/zkvm/executor.ts',
-  'src/lib/zkvm/executor-factory.ts',
-  'src/lib/zkvm/input-builder.ts',
-  'src/lib/store/amplifySessionStore.ts',
-  'src/lib/store/storeInstance.ts',
-  'src/lib/verification/verification-bundle.ts',
-  'src/lib/verification/expected-image-id.ts',
-  'src/lib/errors/errorPayload.ts',
+export const serverConsoleFiles = [
+  'apps/api/src/server/**/*.{ts,tsx}',
+  'packages/aws-adapters/src/aws/**/*.ts',
+  'packages/application/src/finalize/usecases/**/*.ts',
+  'packages/application/src/finalize/finalization-queue.ts',
+  'packages/application/src/finalize/proof-bundle-service.ts',
+  'packages/node-adapters/src/zkvm/executor.ts',
+  'packages/node-adapters/src/zkvm/executor-factory.ts',
+  'packages/application/src/zkvm-input/input-builder.ts',
+  'packages/aws-adapters/src/store/storeInstance.ts',
+  'packages/verification/src/verification/verification-bundle.ts',
+  'packages/verification/src/verification/expected-image-id.ts',
+  'packages/api-contract/src/errors/errorPayload.ts',
 ];
 const typeCheckedConfigs = tseslint.configs.recommendedTypeChecked.map((config) => {
   const configWithoutPlugins = { ...config };
@@ -58,7 +58,6 @@ const typeCheckedConfigs = tseslint.configs.recommendedTypeChecked.map((config) 
 });
 
 const rulesCommon = {
-  '@next/next/no-assign-module-variable': 'error',
   'import/no-anonymous-default-export': 'error',
   'no-case-declarations': 'error',
   'no-empty': 'error',
@@ -85,8 +84,28 @@ const eslintConfig = tseslint.config(
   { ignores },
   { linterOptions: { reportUnusedDisableDirectives: true } },
   js.configs.recommended,
-  ...nextCoreWebVitals,
   ...typeCheckedConfigs,
+  {
+    plugins: {
+      '@typescript-eslint': tseslint.plugin,
+      import: importPlugin,
+      react: reactPlugin,
+      'react-hooks': reactHooksPlugin,
+    },
+    settings: {
+      react: {
+        version: 'detect',
+      },
+    },
+  },
+  {
+    files: ['**/*.{jsx,tsx}'],
+    rules: {
+      ...reactPlugin.configs.flat.recommended.rules,
+      ...reactPlugin.configs.flat['jsx-runtime'].rules,
+      ...reactHooksPlugin.configs.recommended.rules,
+    },
+  },
   {
     files: jsFiles,
     rules: rulesCommon,

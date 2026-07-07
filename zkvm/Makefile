@@ -44,7 +44,7 @@ test-dev: test
 
 test-prod:
 	@echo "Running tests (production mode, real STARK proofs)..."
-	@echo "⚠️  Warning: This will take ~6 minutes per test"
+	@echo "[WARN] This will take ~6 minutes per test"
 	cargo test --release
 
 clean:

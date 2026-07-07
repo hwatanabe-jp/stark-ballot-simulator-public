@@ -46,5 +46,5 @@ zkVM（集計）の進捗表示に関する仕様。**進捗は実測値では�
 
 ## 実装メモ
 
-- 補間関数は `src/lib/finalize/progress-interpolation.ts` を参照。
-- サーバ側の参考値生成は `src/server/api/utils/finalizationProgress.ts` を参照。
+- 補間関数は `packages/domain/src/lib/finalize/progress-interpolation.ts` を参照。
+- サーバ側の参考値生成は `apps/api/src/server/api/utils/finalizationProgress.ts` を参照。

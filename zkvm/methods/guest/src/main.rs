@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::format;
 use contract_core::AggregatorInput;
 use risc0_zkvm::guest::env;
-use tally::verify_and_tally_checked;
+use tally::verify_and_tally_checked_output;
 
 #[cfg(feature = "profiling")]
 mod profiling;
@@ -60,9 +60,8 @@ pub fn guest_main() {
     profiler.checkpoint("read input");
     log_message(&format!("Processing {} votes", input.votes.len()));
 
-    let output = verify_and_tally_checked(&input)
-        .unwrap_or_else(|e| panic!("Input validation failed: {}", e))
-        .output;
+    let output = verify_and_tally_checked_output(&input)
+        .unwrap_or_else(|e| panic!("Input validation failed: {}", e));
     profiler.checkpoint("process and verify");
 
     env::commit(&output);

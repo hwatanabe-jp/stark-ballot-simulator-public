@@ -2,7 +2,7 @@
 
 **Version**: 2.0
 **Status**: 現行実装契約 / コード例なし版
-**Last reviewed**: 2026-04-25
+**Last reviewed**: 2026-07-03
 
 ---
 
@@ -20,27 +20,30 @@
 
 ## Source Of Truth
 
-| 領域                                  | 参照先                                                                                                |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| zkVM 型・コミットメント計算           | `src/lib/zkvm/types.ts`                                                                               |
-| zkVM guest 集計ロジック               | `zkvm/methods/guest/src/main.rs`                                                                      |
-| Journal パース                        | `src/lib/verification/journal-parser.ts`                                                              |
-| 検証チェック ID / required 判定の基礎 | `src/lib/verification/verification-checks.ts`                                                         |
-| 検証チェック評価                      | `src/lib/verification/build-verification-checks.ts`, `src/lib/verification/engine/evaluate-checks.ts` |
-| 検証ステップ生成                      | `src/lib/verification/build-verification-steps.ts`                                                    |
-| overall verdict                       | `src/lib/verification/verification-summary.ts`, `src/app/(routes)/verify/page.tsx`                    |
-| `/api/verify`                         | `src/server/api/handlers/verify.ts`                                                                   |
-| server-side receipt verification      | `src/server/api/handlers/verificationRun.ts`, `verifier-service/`                                     |
-| bitmap proof                          | `src/server/api/handlers/bitmapProof.ts`, `src/lib/verification/bitmap-verifier.ts`                   |
-| 公開 bundle 生成                      | `src/lib/verification/verification-bundle.ts`, `docker/entrypoint.sh`                                 |
-| bundle/report 配布                    | `src/server/api/handlers/verificationBundles.ts`                                                      |
-| ImageID mapping / variant policy      | `public/imageId-mapping.json`, `src/lib/verification/image-id-policy.js`                              |
+| 領域                                  | 参照先                                                                                                                                     |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| zkVM 型・コミットメント計算           | `packages/zkvm-contract/src/zkvm/types.ts`, `zkvm/contract-core/`                                                                          |
+| zkVM guest entrypoint                 | `zkvm/methods/guest/src/main.rs`                                                                                                           |
+| zkVM guest 集計ロジック               | `zkvm/methods/guest/src/tally.rs`                                                                                                          |
+| Rust shared contract core             | `zkvm/contract-core/`                                                                                                                      |
+| Journal パース                        | `packages/verification/src/verification/journal-parser.ts`                                                                                 |
+| 検証チェック ID / required 判定の基礎 | `packages/verification/src/verification/verification-checks.ts`                                                                            |
+| 検証チェック評価                      | `packages/verification/src/verification/build-verification-checks.ts`, `packages/verification/src/verification/engine/evaluate-checks.ts`  |
+| 検証ステップ生成                      | `packages/verification/src/verification/build-verification-steps.ts`                                                                       |
+| overall verdict                       | `packages/verification/src/verification/verification-summary.ts`, `apps/web/src/routes/verify/page.tsx`                                    |
+| `/api/verify`                         | `apps/api/src/server/api/handlers/verify.ts`                                                                                               |
+| server-side receipt verification      | `apps/api/src/server/api/handlers/verificationRun.ts`, `verifier-service/`                                                                 |
+| bitmap proof                          | `apps/api/src/server/api/handlers/bitmapProof.ts`, `packages/verification/src/verification/bitmap-verifier.ts`                             |
+| 公開 bundle 生成                      | `packages/verification/src/verification/verification-bundle.ts`, `infra/docker/entrypoint.sh`                                              |
+| bundle/report 配布                    | `apps/api/src/server/api/handlers/verificationBundles.ts`                                                                                  |
+| ImageID mapping / variant policy      | `public/imageId-mapping.json`, `packages/validation/src/image-id-policy.ts`, `packages/verification/src/verification/expected-image-id.ts` |
 
-Contract cross-check (2026-04-25):
+Contract cross-check (2026-06-29):
 
-- `methodVersion = 14` and current ImageID mapping were checked against `public/imageId-mapping.json`.
+- `methodVersion = 14` and the current ARM64/default plus x86_64 ImageID mapping were checked against `public/imageId-mapping.json`.
 - Slot/record count names (`missingSlots`, `invalidPresentedSlots`, `rejectedRecords`, `excludedSlots`) were checked against the current TypeScript/Rust contract.
-- Required verification check IDs were checked against `src/lib/verification/verification-checks.ts`.
+- Guest work-budget bounds were checked against `packages/zkvm-contract/src/zkvm/work-budget.ts` and `zkvm/contract-core/src/work_budget.rs`.
+- Required verification check IDs were checked against `packages/verification/src/verification/verification-checks.ts`.
 - Public/private bundle boundaries were checked against `docs/current/verification/README.md`.
 
 ## 最重要不変条件
@@ -96,6 +99,10 @@ zkVM input は witness を含む private artifact であり、public bundle に�
 
 `choice` と `random` は proof generation 時に host が zkVM に渡すため、現行 PoC ではサーバー秘匿ではない。
 一方で、receipt と Journal を公開しても個票内容は公開されない。
+
+現行 input contract は bounded である。`treeSize`、`totalExpected`、提示 vote 数、Merkle path node 数、
+serialized / structural input size が guest work budget を超える場合、host / adapter は proving 前に拒否し、
+guest 側も Journal を emit する前に fail-closed する。
 
 ### 2.2 Journal
 
@@ -179,8 +186,8 @@ vote commitment は domain-separated SHA-256 commitment である。domain tag �
 - `treeSize` と `totalExpected` は little-endian 32-bit integer として固定する。
 - commitment は 32 バイト固定、Merkle path は node count と 32 バイト node 列で固定する。
 
-詳細な byte layout と互換テストは `src/lib/zkvm/types.ts` と
-`src/lib/zkvm/__tests__/ts-rust-compatibility.test.ts` を参照する。
+詳細な byte layout と互換テストは `packages/zkvm-contract/src/zkvm/types.ts` と
+`packages/zkvm-contract/src/zkvm/__tests__/ts-rust-compatibility.test.ts` を参照する。
 
 ---
 
@@ -249,14 +256,15 @@ Counted-as-Recorded では、zkVM が次の性質を proof-bound にする。
 - `inputCommitment` が canonical public input と一致すること。
 - `sthDigest` が close statement / STH に binding されること。
 
-zkVM は不一致や除外があっても可能な限り Journal を返す。これにより、assert 失敗で証拠が失われるのではなく、
-ユーザーが「なぜ Verified にならないか」を確認できる。
+zkVM は valid wire input の範囲では、不一致や除外があっても可能な限り Journal を返す。これにより、
+assert 失敗で証拠が失われるのではなく、ユーザーが「なぜ Verified にならないか」を確認できる。
+ただし guest work budget や structural bounds を超える入力は、Journal emission 前に拒否する。
 
 ---
 
 ## 6. Verification Checks
 
-`verificationChecks` の ID と base metadata は `src/lib/verification/verification-checks.ts` が単一ソースである。
+`verificationChecks` の ID と base metadata は `packages/verification/src/verification/verification-checks.ts` が単一ソースである。
 ドキュメント上の一覧は説明用であり、変更時はコードとテストを優先する。
 
 | Stage    | Checks                                                                                                                                                                                                                                                                                                                  |
@@ -271,7 +279,7 @@ Required / optional の扱い:
 - Cast 4 checks は required。
 - Recorded では `recorded_index_in_range`, `recorded_inclusion_proof`, `recorded_consistency_proof` が required。
 - `recorded_commitment_in_bulletin` と `recorded_root_at_cast_consistent` は derived / optional metadata として扱われる。
-- `recorded_sth_third_party` は通常 optional。ただし `NEXT_PUBLIC_STH_SOURCES` が設定されている場合は required 扱いになる。
+- `recorded_sth_third_party` は通常 optional。ただし `VITE_STH_SOURCES` が設定されている場合は required 扱いになる。
 - Counted 10 checks は required。
 - STARK 2 checks は required。
 
@@ -394,11 +402,13 @@ public bundle member ではない。
 ImageID は、証明が期待した zkVM guest program で生成されたことを確認するための trust anchor である。
 
 現行の対応表は `public/imageId-mapping.json` が source of truth である。current mapping は
-`methodVersion = 14` を指す。architecture-specific な ImageID 差分は
-`src/lib/verification/image-id-policy.js` の明示 variant policy で選択する。未指定時は `default` variant として
-`expectedImageID` を使い、`x86_64` は `EXPECTED_IMAGE_ID_VARIANT=x86_64` または呼び出し側の明示 option で選ぶ。
-runtime / CLI の実際の解決経路は `src/lib/verification/expected-image-id.ts`,
-`src/lib/verification/image-id-verifier.ts`, `scripts/tests/cli-e2e-voting-flow.ts`,
+`methodVersion = 14` を指し、`default` / ARM64 の `expectedImageID` と local x86_64 の
+`expectedImageID_x86_64` を保持する。target app handoff helper は、複数 variant がある current mapping
+では `default` / `expectedImageID` を active deployment evidence として扱う。local x86_64 検証では
+`EXPECTED_IMAGE_ID_VARIANT=x86_64` または呼び出し側の明示 option で `expectedImageID_x86_64` を選ぶ。
+runtime / CLI の実際の解決経路は
+`packages/verification/src/verification/expected-image-id.ts`,
+`packages/verification/src/verification/image-id-verifier.ts`, `scripts/tests/cli-e2e-voting-flow.ts`,
 `verifier-service/scripts/read-image-id.mjs` を参照する。
 
 要件:
@@ -471,28 +481,28 @@ SHA-256 commitment の第二原像困難性により、commitment 後に別の�
 
 主要 API と責務は次の通り。
 
-| Endpoint                                                     | Method | 責務                                          |
-| ------------------------------------------------------------ | ------ | --------------------------------------------- |
-| `/api/session`                                               | POST   | session 作成と capability token 発行。        |
-| `/api/vote`                                                  | POST   | ユーザー投票を記録し、receipt 情報を返す。    |
-| `/api/progress`                                              | GET    | Bot 投票進捗。                                |
-| `/api/finalize`                                              | POST   | finalize / zkVM proof generation の開始。     |
-| `/api/sessions/{sessionId}/status`                           | GET    | async finalize status。                       |
-| `/api/finalize/callback`                                     | POST   | async prover callback。                       |
-| `/api/finalize/cancel`                                       | POST   | finalize cancel。                             |
-| `/api/verify`                                                | GET    | verification data, checks, steps を返す。     |
-| `/api/verification/run`                                      | POST   | server-side receipt verification を実行する。 |
-| `/api/verification/bundles/{sessionId}/{executionId}`        | GET    | public bundle を返す。                        |
-| `/api/verification/bundles/{sessionId}/{executionId}/report` | GET    | protected verification report を返す。        |
-| `/api/bulletin`                                              | GET    | session-scoped bulletin inspection。          |
-| `/api/bulletin/{voteId}/proof`                               | GET    | session-authorized vote proof。               |
-| `/api/bulletin/consistency-proof`                            | GET    | append-only consistency proof。               |
-| `/api/bitmap-proof`                                          | GET    | included / seen bitmap proof material。       |
-| `/api/zkvm-input-hash`                                       | GET    | zkVM input hash inspection。                  |
-| `/api/botdata/{id}`                                          | GET    | Bot vote details for verification/debug。     |
-| `/api/sth`                                                   | GET    | STH source for verification/tests。           |
+| Endpoint                                                     | Method | 責務                                                                                                                                                                                                                          |
+| ------------------------------------------------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/session`                                               | POST   | session 作成と capability token 発行。                                                                                                                                                                                        |
+| `/api/vote`                                                  | POST   | ユーザー投票を記録し、receipt 情報を返す。                                                                                                                                                                                    |
+| `/api/progress`                                              | GET    | Bot 投票進捗。                                                                                                                                                                                                                |
+| `/api/finalize`                                              | POST   | finalize / zkVM proof generation の開始。                                                                                                                                                                                     |
+| `/api/sessions/{sessionId}/status`                           | GET    | async finalize status。                                                                                                                                                                                                       |
+| `/api/finalize/callback`                                     | POST   | async prover callback。                                                                                                                                                                                                       |
+| `/api/finalize/cancel`                                       | POST   | finalize cancel。                                                                                                                                                                                                             |
+| `/api/verify`                                                | GET    | verification data, checks, steps を返す。                                                                                                                                                                                     |
+| `/api/verification/run`                                      | POST   | server-side receipt verification を実行する。                                                                                                                                                                                 |
+| `/api/verification/bundles/{sessionId}/{executionId}`        | GET    | public bundle を返す。                                                                                                                                                                                                        |
+| `/api/verification/bundles/{sessionId}/{executionId}/report` | GET    | protected verification report を返す。                                                                                                                                                                                        |
+| `/api/bulletin`                                              | GET    | 現行 retained owner-scoped bulletin inspection。Target 通常 public browser/CLI contract では full-bulletin inspection を public surface として扱わず、残す場合は retained owner-scoped または internal/operator-only に分類。 |
+| `/api/bulletin/{voteId}/proof`                               | GET    | session-authorized vote proof。                                                                                                                                                                                               |
+| `/api/bulletin/consistency-proof`                            | GET    | append-only consistency proof。                                                                                                                                                                                               |
+| `/api/bitmap-proof`                                          | GET    | included / seen bitmap proof material。                                                                                                                                                                                       |
+| `/api/zkvm-input-hash`                                       | GET    | hash-only owner-scoped evidence。Private `includeData` variants は現行 legacy/private inspection で、target 通常 contract では retired/rejected/non-public。                                                                  |
+| `/api/botdata/{id}`                                          | GET    | retired / unregistered。Hono route inventory には登録せず、通常 public browser/CLI API では公開しない。contract metadata は fail-closed 監査用に残す。                                                                        |
+| `/api/sth`                                                   | GET    | STH source for verification/tests。                                                                                                                                                                                           |
 
-`src/app/api/*/route.ts` は原則 thin wrapper であり、共有 handler と route registry を source of truth にする。
+`apps/api/src/server/api/routes/definitions.ts` が framework-neutral route inventory であり、共有 handler と Hono route binding の source of truth にする。
 
 ---
 

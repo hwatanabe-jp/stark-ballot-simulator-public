@@ -8,8 +8,8 @@ RISC Zero zkVM prover workspace for STARK Ballot Simulator.
 
 The workspace is used in two execution paths:
 
-- Local and synchronous proof generation from the application process (`src/lib/zkvm/executor.ts`)
-- Async prover execution in the cloud (Step Functions -> ECS Fargate -> `docker/entrypoint.sh`)
+- Local and synchronous proof generation from the application process (`packages/node-adapters/src/zkvm/executor.ts`)
+- Async prover execution in the cloud (Step Functions -> ECS Fargate -> `infra/docker/entrypoint.sh`)
 
 Earlier design docs referred to this component as "Lambda A". The current async prover path is ECS Fargate based, not a standalone Lambda runtime.
 
@@ -98,8 +98,11 @@ pnpm tsx scripts/tests/generate-rfc6962-golden-vectors.ts
 # From zkvm/
 cargo build --release
 
-# From repo root
+# From repo root, build the production-feature host used for real proofs
 pnpm run build:zkvm
+
+# From repo root, build a host that allows RISC0_DEV_MODE=1
+pnpm run build:zkvm:dev-mode
 ```
 
 ### Run the host CLI
@@ -107,16 +110,17 @@ pnpm run build:zkvm
 ```bash
 cd zkvm
 
-# Dev mode: fake receipt, fast
-RISC0_DEV_MODE=1 ./target/release/host test-data/test-fixture-valid.json
-
 # Production mode: real STARK proof, slow
 ./target/release/host test-data/test-fixture-valid.json
+
+# Dev mode: fake receipt, fast; requires the dev-mode build above
+RISC0_DEV_MODE=1 ./target/release/host test-data/test-fixture-valid.json
 ```
 
 Notes:
 
 - `RISC0_DEV_MODE=1` does not generate a real STARK proof.
+- Host binaries built by `pnpm build:zkvm` use the `production` feature and reject `RISC0_DEV_MODE=1`; use `pnpm build:zkvm:dev-mode` for fake-receipt iteration.
 - Local release builds on x86_64 can take around 6 minutes for 64 votes.
 - Async ARM64 Fargate runs are documented separately and can be faster than local x86_64 runs.
 
@@ -184,50 +188,37 @@ Note: `EXPECTED_IMAGE_ID` is not consumed by the host CLI itself. It is used dow
 
 ## Input Format
 
-The host reads JSON in the format produced by `serializeZkvmAggregatorInput()` in `src/lib/zkvm/executor.ts`.
+The host reads JSON in the format produced by `serializeZkvmAggregatorInput()` in `packages/zkvm-contract/src/zkvm/host-io.ts`.
+The `timestamp` field is a Unix timestamp in milliseconds encoded as a Rust
+`u64`; TypeScript callers validate it as a positive JavaScript safe integer
+before serialization.
 
-The guest correspondence contract is intentionally bounded. The checked
-guest path accepts `tree_size <= 1,000,000`, at most `1,000,000` presented vote
-records, and candidate tally buckets no larger than `1,000,000`; oversized
-inputs fail closed before journal fields are emitted.
+The guest correspondence contract is intentionally bounded. The checked guest
+path accepts `tree_size <= 1,000,000`, at most `1,000,000` presented vote
+records, candidate tally buckets no larger than `1,000,000`, no more than
+`1,000,000` aggregate Merkle path nodes, and serialized/structural input work
+within the current 64 MiB budget. Oversized inputs fail closed before journal
+fields are emitted; the host also rejects over-budget JSON before building the
+RISC Zero executor environment.
 
 Example structure:
 
 ```json
 {
-  "election_id": [
-    /* 16 bytes */
-  ],
-  "bulletin_root": [
-    /* 32 bytes */
-  ],
+  "election_id": [/* 16 bytes */],
+  "bulletin_root": [/* 32 bytes */],
   "tree_size": 8,
-  "log_id": [
-    /* 32 bytes */
-  ],
-  "timestamp": 1725000000,
+  "log_id": [/* 32 bytes */],
+  "timestamp": 1725000000000,
   "total_expected": 8,
-  "election_config_hash": [
-    /* 32 bytes */
-  ],
+  "election_config_hash": [/* 32 bytes */],
   "votes": [
     {
-      "commitment": [
-        /* 32 bytes */
-      ],
+      "commitment": [/* 32 bytes */],
       "choice": 0,
-      "random": [
-        /* 32 bytes */
-      ],
+      "random": [/* 32 bytes */],
       "index": 0,
-      "merkle_path": [
-        [
-          /* 32 bytes */
-        ],
-        [
-          /* 32 bytes */
-        ]
-      ]
+      "merkle_path": [[/* 32 bytes */], [/* 32 bytes */]]
     }
   ]
 }
@@ -272,20 +263,12 @@ Example structure:
 
 ```json
 {
-  "electionId": [
-    /* 16 bytes */
-  ],
-  "electionConfigHash": [
-    /* 32 bytes */
-  ],
-  "bulletinRoot": [
-    /* 32 bytes */
-  ],
+  "electionId": [/* 16 bytes */],
+  "electionConfigHash": [/* 32 bytes */],
+  "bulletinRoot": [/* 32 bytes */],
   "treeSize": 64,
   "totalExpected": 64,
-  "sthDigest": [
-    /* 32 bytes */
-  ],
+  "sthDigest": [/* 32 bytes */],
   "verifiedTally": [16, 16, 16, 16, 0],
   "totalVotes": 64,
   "validVotes": 64,
@@ -294,16 +277,10 @@ Example structure:
   "missingSlots": 0,
   "invalidPresentedSlots": 0,
   "rejectedRecords": 0,
-  "seenBitmapRoot": [
-    /* 32 bytes */
-  ],
-  "includedBitmapRoot": [
-    /* 32 bytes */
-  ],
+  "seenBitmapRoot": [/* 32 bytes */],
+  "includedBitmapRoot": [/* 32 bytes */],
   "excludedSlots": 0,
-  "inputCommitment": [
-    /* 32 bytes */
-  ],
+  "inputCommitment": [/* 32 bytes */],
   "methodVersion": 14,
   "imageId": "0x..."
 }
@@ -324,9 +301,7 @@ Example structure:
       "Composite": {
         "segments": [
           {
-            "seal": [
-              /* proof data */
-            ]
+            "seal": [/* proof data */]
           }
         ]
       }
@@ -387,13 +362,13 @@ bundle.
 
 The async ECS prover path does additional packaging:
 
-- `docker/entrypoint.sh` copies `*-receipt.json` to `receipt.json`
-- `docker/entrypoint.sh` converts `*-output.json` to `journal.json`
-- `docker/entrypoint.sh` builds `election-manifest.json`
-- `docker/entrypoint.sh` builds `close-statement.json`
-- `docker/entrypoint.sh` promotes `*-bitmap.json` to private `included-bitmap.json`
-- `docker/entrypoint.sh` promotes `*-seen-bitmap.json` to private `seen-bitmap.json`
-- `docker/entrypoint.sh` adds `public-input.json`
+- `infra/docker/entrypoint.sh` copies `*-receipt.json` to `receipt.json`
+- `infra/docker/entrypoint.sh` converts `*-output.json` to `journal.json`
+- `infra/docker/entrypoint.sh` builds `election-manifest.json`
+- `infra/docker/entrypoint.sh` builds `close-statement.json`
+- `infra/docker/entrypoint.sh` promotes `*-bitmap.json` to private `included-bitmap.json`
+- `infra/docker/entrypoint.sh` promotes `*-seen-bitmap.json` to private `seen-bitmap.json`
+- `infra/docker/entrypoint.sh` adds `public-input.json`
 - only the public files are zipped into `bundle.zip`
 
 For the current async public bundle contract, `bundle.zip` contains:
@@ -404,7 +379,7 @@ public-input.json, election-manifest.json, close-statement.json, receipt.json, j
 
 Private artifacts such as `included-bitmap.json`, `seen-bitmap.json`, `input.json`, and `verification.json` must stay out of the public archive.
 
-Compatibility note: `docker/entrypoint.sh` validates async host output against
+Compatibility note: `infra/docker/entrypoint.sh` validates async host output against
 the current methodVersion. Keep that entrypoint in lockstep with
 `zkvm/contract-core/src/types.rs` before promoting a new async prover image.
 
@@ -442,6 +417,11 @@ Important details:
 - The mapping is keyed by `methodVersion`.
 - The mapping can contain platform-specific IDs, for example an ARM64 AWS build and a local x86_64 build.
 - Do not assume a locally built x86_64 ImageID matches the AWS Fargate ARM64 ImageID.
+- For methodVersion 14, the checked-in mapping retains both the target-account
+  default/ARM64 ImageID and the local `x86_64` ImageID. The develop app
+  handoff helpers treat `default` / `expectedImageID` as the active deployment
+  evidence when multiple variants are present. Use `x86_64` explicitly for
+  receipts produced by the local x86_64 guest build.
 - The operational procedure for confirming the deployed ARM64 ImageID is documented in `docs/current/guides/7-terraform/README.md`.
 - Do not mix a newly updated mapping with an older locally generated `*-receipt.json` or `*-output.json`; `verifier-service` checks the receipt metadata `image_id` and will reject mismatches.
 
@@ -449,8 +429,8 @@ When the guest image changes, update the mapping and any remaining hard-coded
 fallback constants or environment overrides:
 
 - `public/imageId-mapping.json`
-- `src/lib/verification/expected-image-id.ts`, if its fallback constant still applies
-- any explicit `EXPECTED_IMAGE_ID` override in shell, `.env.local`, CI, or Amplify SSR env
+- `packages/verification/src/verification/expected-image-id.ts`, if its fallback constant still applies
+- any explicit `EXPECTED_IMAGE_ID` or `EXPECTED_IMAGE_ID_VARIANT` override in target runtime config, shell, `.env.local`, CI, or release-manifest inputs
 
 `vitest.setup.ts` currently derives its default ImageID from
 `public/imageId-mapping.json`, so it normally only needs review if test
@@ -468,7 +448,7 @@ unset RISC0_DEV_MODE
 
 ### Sync and local execution
 
-- `src/lib/zkvm/executor.ts` shells out to `zkvm/target/release/host`
+- `packages/node-adapters/src/zkvm/executor.ts` shells out to `zkvm/target/release/host`
 - it reads `*-output.json` and `*-receipt.json`
 - it also reads `*-bitmap.json` and `*-seen-bitmap.json` when present
 - it normalizes byte-array fields into application-level UUID and hex strings
@@ -476,7 +456,7 @@ unset RISC0_DEV_MODE
 
 ### Async cloud execution
 
-- `docker/entrypoint.sh` runs the host inside the prover container
+- `infra/docker/entrypoint.sh` runs the host inside the prover container
 - Terraform provisions the async prover path with Step Functions and ECS Fargate
 - the prover task uploads `bundle.zip` and related artifacts to S3
 
@@ -499,15 +479,20 @@ zkvm/
 │   ├── Cargo.toml
 │   ├── src/
 │   │   ├── bitmap.rs
+│   │   ├── domain.rs
 │   │   ├── encoding.rs
 │   │   ├── inclusion_proof.rs
 │   │   ├── lib.rs
 │   │   ├── sha256.rs
-│   │   └── types.rs
+│   │   ├── types.rs
+│   │   └── work_budget.rs
 │   └── testdata/
+│       ├── bitmap-ts-golden-vectors.json
 │       └── rfc6962-ts-golden-vectors.json
 ├── host/
 │   ├── Cargo.toml
+│   ├── methods/
+│   │   └── guest.json
 │   └── src/main.rs
 ├── methods/
 │   ├── Cargo.toml
@@ -582,7 +567,7 @@ Check all of the following before assuming the proof is bad:
 
 1. whether the receipt was produced on local x86_64 or AWS ARM64
 2. `public/imageId-mapping.json`
-3. `src/lib/verification/expected-image-id.ts`
+3. `packages/verification/src/verification/expected-image-id.ts`
 4. `vitest.setup.ts`
 5. any explicit `EXPECTED_IMAGE_ID` environment override
 

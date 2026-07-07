@@ -1,6 +1,18 @@
 import type { Page, Locator } from '@playwright/test';
-import { getNumberProperty, getStringArrayProperty, getStringProperty, isRecord } from '@/lib/utils/guards';
+import {
+  getNumberProperty,
+  getStringArrayProperty,
+  getStringProperty,
+  isRecord,
+} from '@stark-ballot/domain/utils/guards';
 import { BasePage } from './BasePage';
+
+function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
+  if (value === undefined || value === null) {
+    throw new Error(`Expected ${label} to be defined`);
+  }
+  return value;
+}
 
 export type VoteChoice = 'A' | 'B' | 'C' | 'D' | 'E';
 
@@ -136,7 +148,7 @@ export class VotePage extends BasePage {
 
       // Fetch progress from API
       const progressData = await this.page.evaluate(
-        async ({ sid, capability }: { sid: string; capability?: string }) => {
+        async ({ sid, capability }: { sid: string; capability: string | undefined }) => {
           try {
             const headers: HeadersInit = { 'X-Session-ID': sid };
             if (capability) {
@@ -158,7 +170,7 @@ export class VotePage extends BasePage {
       );
 
       if (progressData) {
-        const dataRecord = isRecord(progressData) && isRecord(progressData.data) ? progressData.data : null;
+        const dataRecord = isRecord(progressData) && isRecord(progressData['data']) ? progressData['data'] : null;
         const botCount = getNumberProperty(dataRecord, 'count') ?? 0;
         const total = getNumberProperty(dataRecord, 'total') ?? 63;
 
@@ -200,8 +212,8 @@ export class VotePage extends BasePage {
     const match = text.match(/(\d+)\/(\d+)/);
     if (match) {
       return {
-        current: parseInt(match[1]),
-        total: parseInt(match[2]),
+        current: parseInt(strictDefined(match[1]), 10),
+        total: parseInt(strictDefined(match[2]), 10),
       };
     }
     return { current: 0, total: 63 };

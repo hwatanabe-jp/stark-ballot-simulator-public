@@ -3,9 +3,10 @@
 This directory contains the maintained planning documents for the
 current zkVM contract work.
 
-These documents are decision records, not implementation checklists or
-runtime source of truth. For current runtime behavior, prefer the code
-plus:
+These documents are primarily decision records. They also include the
+maintained `08` implementation plan for the next hardening program.
+They are not runtime source of truth. For current runtime behavior,
+prefer the code plus:
 
 - `docs/current/verification/README.md`
 - `zkvm/README.md`
@@ -63,6 +64,14 @@ intent and historical rationale, not as the active runtime contract.
    while keeping authenticated bundle/report endpoints as the only
    browser and CLI download authority. **Status: implemented (commit
    `930026f`).**
+8. [zkVM Hardening Integrated Implementation Plan](./08-zkvm-hardening-integrated-implementation-plan.md)
+   Defines the planned integrated hardening program for multi-leaf
+   bitmap evidence, guest performance measurement and optimization,
+   Rust domain typing, ImageID provenance, fail-closed verification, and
+   verification UI explainability. **Status: implemented through the
+   local x86_64 post-change benchmark boundary; active local x86_64
+   methodVersion 14 ImageID trust material is refreshed, and default/ARM64
+   remains unsupported pending independent evidence.**
 
 ## Current-State Reading Note
 
@@ -78,6 +87,9 @@ intent and historical rationale, not as the active runtime contract.
 - 03 and 04 are fixed historical decision records and are not planned
   rewrite targets; future residue changes belong in 06, this index,
   implementation-oriented docs, or a new follow-up note.
+- 08 is forward-looking zkVM hardening planning on top of the settled
+  current-contract baseline. It does not change current runtime behavior
+  until implemented in code and verified by the required gates.
 
 ## Reading Order
 
@@ -93,6 +105,10 @@ intent and historical rationale, not as the active runtime contract.
 7. Read the public-boundary cutover plan before removing public route
    aliases, public delivery URL fields, browser or CLI fallback parsing,
    URL-refresh download behavior, or `proofMode` compatibility.
+8. Read the integrated hardening plan before changing bitmap proof
+   semantics, guest performance-sensitive code, Rust zkVM domain types,
+   ImageID lifecycle policy, development-mode verification verdicts, or
+   bitmap evidence UI.
 
 ## Historical Execution Order (01-05)
 
@@ -140,6 +156,8 @@ In practice, that means:
 ## Deliberate Omissions
 
 These documents intentionally avoid becoming exhaustive implementation
-checklists. Detailed route inventories, touched-file lists, rollout
-checklists, and command matrices belong in task-specific notes, PRs, or
-test plans rather than in the decision documents themselves.
+checklists. The maintained `08` implementation plan is the narrow
+exception for the zkVM hardening program; even there, detailed route
+inventories, touched-file lists, and command matrices belong in
+task-specific notes, PRs, or test plans rather than in this directory's
+decision records.

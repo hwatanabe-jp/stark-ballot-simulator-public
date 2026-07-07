@@ -1,0 +1,50 @@
+{
+  "name": "@stark-ballot/verification",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./bitmap-proof-types": "./src/verification/bitmap-proof-types.ts",
+    "./bitmap-root": "./src/verification/bitmap-root.ts",
+    "./bitmap-verifier": "./src/verification/bitmap-verifier.ts",
+    "./bundle": "./src/verification/verification-bundle.ts",
+    "./check-evaluator": "./src/verification/engine/evaluate-checks.ts",
+    "./check-results": "./src/verification/build-verification-checks.ts",
+    "./checks": "./src/verification/verification-checks.ts",
+    "./engine-types": "./src/verification/engine/types.ts",
+    "./excluded-count": "./src/verification/excluded-count.ts",
+    "./fail-closed-status": "./src/verification/fail-closed-status.ts",
+    "./image-id": "./src/verification/expected-image-id.ts",
+    "./image-id-policy": "./src/verification/image-id-policy.js",
+    "./image-id-types": "./src/verification/image-id-types.ts",
+    "./included-bitmap-artifact": "./src/verification/included-bitmap-artifact.ts",
+    "./merkle": "./src/verification/merkle.ts",
+    "./merkle/*": "./src/merkle/*",
+    "./public-audit-artifacts": "./src/verification/public-audit-artifacts.ts",
+    "./public-audit-artifact-consistency": "./src/verification/public-audit-artifact-consistency.ts",
+    "./public-input": "./src/verification/public-input-contract.ts",
+    "./public-result": "./src/verification/public-verification-result.ts",
+    "./receipt-normalizer": "./src/verification/receipt-normalizer.ts",
+    "./seen-bitmap-artifact": "./src/verification/seen-bitmap-artifact.ts",
+    "./shared/*": "./src/shared/*",
+    "./stage-evaluators": "./src/verification/engine/stage-evaluators.ts",
+    "./stage-status": "./src/verification/engine/derive-stages.ts",
+    "./steps": "./src/verification/build-verification-steps.ts",
+    "./sth-verifier": "./src/verification/sth-verifier.ts",
+    "./summary": "./src/verification/verification-summary.ts",
+    "./tamper-detection": "./src/verification/tamperDetection.ts",
+    "./three-stage": "./src/verification/three-stage.ts",
+    "./types": "./src/verification/types.ts"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.2.0",
+    "@stark-ballot/merkle": "workspace:*",
+    "@stark-ballot/validation": "workspace:*",
+    "@stark-ballot/zkvm-contract": "workspace:*"
+  },
+  "devDependencies": {
+    "@stark-ballot/node-adapters": "workspace:*",
+    "fast-check": "4.8.0",
+    "vitest": "4.1.9"
+  }
+}

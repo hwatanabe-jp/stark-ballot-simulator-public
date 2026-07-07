@@ -12,15 +12,19 @@ the behavior in code first.
 - `runbooks/aws-hybrid.md` - AWS hybrid operational flow
 - `guides/7-terraform/README.md` - Terraform-managed infrastructure
 - `guides/6-zkvm_design/final_design.md` - zkVM design contract
+- `zkvm-contract/index.md` - zkVM contract plans, including planned hardening work
 - `roadmap/README.md` - active roadmap entry
 
 ## Areas
 
-- `guides/` - setup, development, architecture, deployment, security, and reference material
-- `verification/` - implementation-oriented verification notes
+- `guides/` and `references/` - setup, development, architecture, deployment, security, and reference material
+- `repository-baseline/` - ownership, dependency, path, and runtime boundary maps
+- `verification/`, `formal/`, and `zkvm-contract/` - verification semantics, Lean artifacts, vectors, and zkVM contract notes
+- `hono/` - retained API runtime notes
 - `ui-redesign/` - current UI vocabulary and design contracts
-- `zkvm-contract/` - current zkVM contract planning and cleanup notes
 - `runbooks/` - public operational procedures; private monitoring query catalogs are stripped from generated public snapshots
 - `tests/` - test and CLI runbooks
+- `licenses/` - generated dependency license and metadata artifacts
+- `roadmap/` - active roadmap entry
 
 Historical context is kept in the private source repository and stripped from generated public snapshots.

@@ -3,10 +3,10 @@ set -euo pipefail
 IFS=$'\n\t'
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ENTRYPOINT_PATH="${ROOT_DIR}/docker/entrypoint.sh"
+ENTRYPOINT_PATH="${ROOT_DIR}/infra/docker/entrypoint.sh"
 CURRENT_CONTRACT_GENERATION="$(
-  sed -n "s/^const DEFAULT_CONTRACT_GENERATION = '\\([^']*\\)';$/\\1/p" \
-    "${ROOT_DIR}/src/lib/contract/contractGeneration.ts"
+  sed -n "s/^export const DEFAULT_CONTRACT_GENERATION = '\\([^']*\\)';$/\\1/p" \
+    "${ROOT_DIR}/packages/domain/src/lib/contract/contractGenerationConstants.ts"
 )"
 CURRENT_METHOD_VERSION="$(
   sed -n "s/^CURRENT_METHOD_VERSION=\\([0-9][0-9]*\\)$/\\1/p" \
@@ -36,6 +36,51 @@ cleanup() {
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT
+
+owner_error="${tmp_dir}/owner-error.txt"
+if (TARGET_AWS_RUNTIME=1 INPUT_S3_BUCKET=proof-inputs AWS_ACCOUNT_ID='' validate_expected_bucket_owner) >"$owner_error" 2>&1; then
+  echo "target S3 mode should reject a missing AWS_ACCOUNT_ID"
+  exit 1
+fi
+grep -q "AWS_ACCOUNT_ID must be a 12-digit account ID" "$owner_error"
+
+if (TARGET_AWS_RUNTIME=1 OUTPUT_S3_BUCKET=proof-outputs AWS_ACCOUNT_ID=not-an-account validate_expected_bucket_owner) >"$owner_error" 2>&1; then
+  echo "target S3 mode should reject a malformed AWS_ACCOUNT_ID"
+  exit 1
+fi
+grep -q "AWS_ACCOUNT_ID must be a 12-digit account ID" "$owner_error"
+
+dev_mode_error="${tmp_dir}/dev-mode-error.txt"
+if (RISC0_DEV_MODE=1 INPUT_S3_BUCKET=proof-inputs validate_production_proof_mode) >"$dev_mode_error" 2>&1; then
+  echo "S3-backed async prover mode should reject RISC0_DEV_MODE=1"
+  exit 1
+fi
+grep -q "RISC0_DEV_MODE=1 is not allowed for S3-backed async prover execution" "$dev_mode_error"
+
+RISC0_DEV_MODE=1 validate_production_proof_mode
+
+aws_log="${tmp_dir}/aws-args.txt"
+aws() {
+  printf '%s ' "$@" >>"$aws_log"
+  printf '\n' >>"$aws_log"
+}
+
+AWS_ACCOUNT_ID=123456789012 aws_s3_cp "s3://proof-inputs/session/input.json" "${tmp_dir}/input.json"
+grep -q -- "s3api get-object --bucket proof-inputs --key session/input.json --expected-bucket-owner 123456789012 ${tmp_dir}/input.json" "$aws_log"
+
+printf '{}\n' >"${tmp_dir}/upload.json"
+AWS_ACCOUNT_ID=123456789012 aws_s3_cp "${tmp_dir}/upload.json" "s3://proof-outputs/session/output.json"
+grep -q -- "s3api put-object --bucket proof-outputs --key session/output.json --body ${tmp_dir}/upload.json --expected-bucket-owner 123456789012" "$aws_log"
+
+exact_stage_dir="${tmp_dir}/exact-stage"
+exact_stage_output="${tmp_dir}/exact-stage-output"
+mkdir -p "$exact_stage_dir" "$exact_stage_output"
+printf '{}\n' >"${exact_stage_dir}/input.json"
+printf '{"schema":"stark-ballot.included_bitmap"}\n' >"${exact_stage_dir}/included-bitmap.json"
+printf '{"schema":"stark-ballot.seen_bitmap"}\n' >"${exact_stage_dir}/seen-bitmap.json"
+WORK_INPUT="${exact_stage_dir}/input.json" OUTPUT_DIR="$exact_stage_output" stage_outputs
+test -f "${exact_stage_output}/included-bitmap.json"
+test -f "${exact_stage_output}/seen-bitmap.json"
 
 output_dir="${tmp_dir}/output"
 mkdir -p "$output_dir"
@@ -249,12 +294,14 @@ PY
 # create_bundle_archive reads WORK_INPUT as a sourced-entrypoint global.
 # shellcheck disable=SC2034
 WORK_INPUT="$input_json"
+printf '{"status":"private-report-canary"}\n' >"${output_dir}/verification.json"
 create_bundle_archive "$output_dir"
 
 bundle_zip="${output_dir}/bundle.zip"
 test -f "$bundle_zip"
 test -f "${output_dir}/included-bitmap.json"
 test -f "${output_dir}/seen-bitmap.json"
+test -f "${output_dir}/verification.json"
 
 entries="$(unzip -Z1 "$bundle_zip")"
 echo "$entries" | grep -q "^receipt.json$"
@@ -264,6 +311,10 @@ echo "$entries" | grep -q "^election-manifest.json$"
 echo "$entries" | grep -q "^close-statement.json$"
 if echo "$entries" | grep -q "^input.json$"; then
   echo "input.json should not be in the public bundle"
+  exit 1
+fi
+if echo "$entries" | grep -q "^verification.json$"; then
+  echo "verification.json should not be in the public bundle"
   exit 1
 fi
 if echo "$entries" | grep -q "^included-bitmap.json$"; then

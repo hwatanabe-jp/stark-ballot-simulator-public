@@ -2,7 +2,7 @@
 node_modules/
 formal/.lake/
 
-# Next.js
+# Retired Next.js build outputs
 .next/
 out/
 
@@ -27,7 +27,6 @@ target/
 
 # TypeScript
 *.tsbuildinfo
-next-env.d.ts
 
 # zkVM generated files
 output/
@@ -60,12 +59,8 @@ zkvm/test-data/*-tampered-*.json
 .tmp/
 .temp/
 
-# Amplify sandbox artifacts (keep source files under amplify/*)
+# Retired Amplify generated artifacts
 .amplify/
-amplify/.ampxrc
-amplify/amplify.meta.json
-amplify/outputs.json
-amplify/outputs/
 amplify_outputs*
 
 # Editor directories and AI tool artifacts
@@ -108,10 +103,23 @@ docs/licenses/*.csv
 .terraform.lock.hcl
 *.tfstate
 *.tfstate.backup
-terraform/*.local.tfvars
-terraform/*.local.json
-terraform/*.local.hcl
+infra/terraform/*.local.tfvars
+infra/terraform/*.local.json
+infra/terraform/*.local.hcl
+infra/terraform/**/*.local.tfvars
+infra/terraform/**/*.local.json
+infra/terraform/**/*.local.hcl
+infra/terraform/*.tfplan
+infra/terraform/**/*.tfplan
 terraform.*.tfvars
+/infra/terraform/app/tfplan*
+/infra/terraform/app/apply-outputs.json
+/infra/terraform/app/backend.pipeline.hcl
+/infra/terraform/app/pipeline.auto.tfvars
+/infra/terraform/app/evidence/
+/app-smoke-*
+/accepted-index-existing.*
+/accepted-deployments/
 crash.log
 crash.*.log
 override.tf

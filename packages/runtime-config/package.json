@@ -1,0 +1,15 @@
+{
+  "name": "@stark-ballot/runtime-config",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./env/*": "./src/env/*"
+  },
+  "dependencies": {
+    "@stark-ballot/validation": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "4.1.9"
+  }
+}

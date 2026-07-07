@@ -6,14 +6,14 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-echo "🧹 Cleaning all generated files..."
+echo "Cleaning all generated files..."
 
 # Navigate to project root
 cd "$(dirname "$0")/../.."
 
-# Remove Next.js build artifacts
-echo "Removing Next.js build artifacts..."
-rm -rf .next out
+# Remove frontend build artifacts, including retired Next.js output
+echo "Removing frontend build artifacts..."
+rm -rf dist .next out
 
 # Remove TypeScript build info
 echo "Removing TypeScript build info..."
@@ -21,11 +21,11 @@ rm -f tsconfig.tsbuildinfo
 
 # Remove test coverage
 echo "Removing test coverage..."
-rm -rf coverage .nyc_output
+rm -rf coverage .nyc_output playwright-report test-results
 
 # Remove zkVM temporary files
 echo "Removing zkVM temporary files..."
-rm -rf .zkvm-temp
+rm -rf .zkvm-temp .verifier-bundles zkvm/test-results
 
 # Remove zkVM output files
 echo "Removing zkVM output files..."
@@ -40,7 +40,8 @@ rm -f npm-debug.log* yarn-debug.log* yarn-error.log* .pnpm-debug.log* pnpm-debug
 echo "Removing temporary files..."
 find . -name "*.tmp" -delete 2>/dev/null || true
 find . -name "*.temp" -delete 2>/dev/null || true
-rm -rf .tmp .temp terraform/.tmp
+find infra/terraform -path "*/.terraform" -prune -o -type f \( -name "*.local.hcl" -o -name "*.local.tfvars" -o -name "*.local.json" -o -name "*.tfplan" -o -path "infra/terraform/app/tfplan*" \) -exec rm -f {} + 2>/dev/null || true
+rm -rf .tmp .temp infra/terraform/legacy/.tmp
 
 # Remove editor swap files
 echo "Removing editor swap files..."
@@ -57,9 +58,9 @@ find . -name "Thumbs.db" -delete 2>/dev/null || true
 # echo "Clearing pnpm cache..."
 # pnpm store prune
 
-echo "✅ Cleanup complete!"
+echo "[OK] Cleanup complete!"
 echo ""
 echo "To clean specific areas:"
-echo "  pnpm clean       - Remove Next.js artifacts only"
+echo "  pnpm clean       - Remove frontend artifacts and local caches"
 echo "  pnpm clean:cache - Clear package manager cache"
 echo "  cargo clean      - Clean Rust build artifacts (in zkvm/)"
