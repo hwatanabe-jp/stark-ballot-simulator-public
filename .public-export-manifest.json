@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "sourceSha": "ba05a5ee18d72375f08713b026f28ebdbf6c58dd",
-  "generatedAt": "2026-07-07T14:46:10.646Z",
+  "sourceSha": "b6db47826297f8ffe85121095930176839d7c8dd",
+  "generatedAt": "2026-07-07T15:35:56.692Z",
   "copiedFileCount": 1050,
   "generatedFiles": [
     ".github/workflows/public-cli-tests.yml",

@@ -311,7 +311,7 @@
     },
     {
       "path": "docs/current/formal/generated-vectors/bitmap-cases.json",
-      "sha256": "90070a50a224673536eaa18a739f39db2ccd13f00388718f0de7b007e516e4eb"
+      "sha256": "50e51fe56e997980bf6cf30a9dce63bd48d5f8bbb2c3ecac5f156e3d7eddedde"
     },
     {
       "path": "docs/current/formal/generated-vectors/guest-model-cases.json",

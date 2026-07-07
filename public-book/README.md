@@ -5,7 +5,7 @@
 ## セットアップ
 
 ```bash
-cargo install --locked mdbook --version 0.5.3
+cargo install --locked mdbook --version 0.5.4
 cargo install --locked mdbook-mermaid --version 0.17.0
 ```
 
