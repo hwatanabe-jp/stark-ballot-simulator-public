@@ -6,7 +6,7 @@
 # Use pre-built RISC Zero toolchain base image for faster builds
 # Pass a digest-pinned RISC0_TOOLCHAIN_IMAGE build arg for reproducibility.
 # Resolve local build arg: AWS_ACCOUNT_ID=<account-id> ./scripts/update-risc0-digest.sh --write-env .tmp/risc0-toolchain-image.env
-# See: docs/current/guides/3-deployment/risc0-base-image.md
+# See: docs/infrastructure/risc0-base-image.md
 # Build #2: r0.1.91.1 toolchain, RISC Zero v3.0.5
 ARG RISC0_TOOLCHAIN_IMAGE
 FROM ${RISC0_TOOLCHAIN_IMAGE} AS build

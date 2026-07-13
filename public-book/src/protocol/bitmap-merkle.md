@@ -156,7 +156,7 @@ included = (chunk[byte_index] AND (1 << bit_in_byte)) != 0
 
 1. チャンクからビット値を抽出し、自分の投票がカウントされたか確認
 2. チャンクのリーフハッシュを計算: `SHA-256(0x00 || "stark-ballot:leaf|v1" || chunk)`
-3. 監査パスに沿ってルートまで再計算:
+3. Merkle パス（`auditPath`）に沿ってルートまで再計算:
    - 兄弟の位置が `left` → `SHA-256(0x01 || sibling || current)`
    - 兄弟の位置が `right` → `SHA-256(0x01 || current || sibling)`
 4. 計算されたルートが、`kind` に対応するジャーナル上のルートと一致するか確認
@@ -167,7 +167,7 @@ included = (chunk[byte_index] AND (1 << bit_in_byte)) != 0
 flowchart TD
   CK[チャンク受信] --> EX[ビット抽出<br/>included = true/false]
   CK --> LH["リーフハッシュ計算"]
-  LH --> AP[監査パスに沿って<br/>ルートを再計算]
+  LH --> AP[Merkle パスに沿って<br/>ルートを再計算]
   AP --> CMP{計算ルート =<br/>bitmap root ?}
   CMP -->|一致| V[証明有効]
   CMP -->|不一致| IV[証明無効]
@@ -205,7 +205,7 @@ async finalize 経路では、必要に応じて S3 の sibling object から復
   - 保存や復元時の root 一致ゲートで採用されなかった
   - cast-time 証跡（`voteReceipt` / `userVote.proof`）が store から再構成できず `voteReceipt.bulletinIndex` が確定しない
 - **採用後にクライアント側の root 照合が失敗** → `counted_my_vote_included` は `failed`。
-  サーバーが返した chunk と audit path から再計算したルートが、ジャーナルの `includedBitmapRoot`（または `seenBitmapRoot`）と一致しない。
+  サーバーが返した chunk と Merkle パスから再計算したルートが、ジャーナルの `includedBitmapRoot`（または `seenBitmapRoot`）と一致しない。
 
 採用前ゲートおよび `counted_my_vote_included` の評価詳細は [チェック一覧 > `counted_my_vote_included`](../verification/checks-catalog.md#counted_my_vote_included) を参照してください。
 

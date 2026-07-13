@@ -1,10 +1,9 @@
 # トポロジー
 
 AWS 上のサービス配置とコンポーネント間の通信経路を示します。
-この章は runtime の責務分担を説明するもので、個別環境の導入進捗を示すものではありません。
+このページは runtime の責務分担を説明します（個別環境の導入進捗は扱いません）。
 
 本システムは 6 つの論理レイヤ（Web、API、Data、Prover、Verification、Storage）で構成されます。
-各レイヤはそれぞれ別の責務を持ちます。
 
 ## レイヤ別トポロジー
 
@@ -13,6 +12,11 @@ AWS 上のサービス配置とコンポーネント間の通信経路を示し�
 CloudFront が private S3 origin の Vite/React 静的アセットを配信します。
 `/api/*` は同じ CloudFront distribution から API Gateway origin に routing されます。
 extensionless browser route は viewer-request fallback で `index.html` に解決します。
+
+develop で operator gate が有効な場合、static frontend、browser route、`/api`、`/api/*` の viewer access は CloudFront signed cookie を要求します。
+信頼する public key group は、追跡対象 keyset に従って Terraform が管理する非対称 KMS signing key から public key を導出して構成します。
+KMS の private signing material は CloudFront、app runtime role、Terraform state には渡しません。
+この gate は develop 固有の条件付き境界であり、すべての環境に一律適用されるものではありません。
 
 ### API レイヤ
 
@@ -24,6 +28,8 @@ API Gateway（HTTP API）が `/api/*` パスパターンのリクエストを受
 ```mermaid
 flowchart LR
   Client["クライアント"] --> CF["CloudFront"]
+  KMS["KMS<br/>(develop signing keys)"] --> KG["CloudFront trusted key group<br/>(public keys only)"]
+  KG -. develop signed-cookie gate .-> CF
   CF --> FRONT["S3<br/>(static frontend)"]
   CF --> APIGW["API Gateway<br/>(HTTP API)"]
   APIGW --> API["public-api<br/>Lambda"]
@@ -60,14 +66,19 @@ CORS 設定では `X-Session-ID` と `X-Session-Capability` ヘッダーを許�
 DynamoDB が、セッション、投票、集計結果、レート制限状態の永続化を担当します。
 データプレーンは target Lambda IAM role ごとの最小権限で制限され、ブラウザから DynamoDB へ直接アクセスする経路はありません。
 
+通常時は Terraform-owned primary sessions / votes table pair を参照します。
+DynamoDB recovery は `primary_active`、`primary_quiesced`、`replacement_quiesced`、`replacement_active` の 4 phase で、`replacement_*` phase では検証済み recovery manifest が指定する replacement pair に参照先を切り替えます。
+`*_quiesced` phase では新規 session admission と prover / verification queue の event-source mapping を無効化し、切替中の新規処理を fail-closed に停止します。
+
 主要なデータモデルは以下の 2 つです（集計結果は `VotingSession.finalizationResultJson` に格納）。
 
-| モデル        | キー/識別子                     | 主要フィールド                                                         | TTL   |
-| ------------- | ------------------------------- | ---------------------------------------------------------------------- | ----- |
-| VotingSession | `id`                            | electionId, botCount, finalized, userVoteIndex, finalizationResultJson | `ttl` |
-| Vote          | 識別子: `sessionId + voteIndex` | choice, random, commitment, rootAtCast, isUserVote                     | —     |
+| モデル        | キー/識別子             | 主要フィールド                                                         | TTL         |
+| ------------- | ----------------------- | ---------------------------------------------------------------------- | ----------- |
+| VotingSession | `sessionId`             | electionId, botCount, finalized, userVoteIndex, finalizationResultJson | `expiresAt` |
+| Vote          | `sessionId + voteIndex` | choice, random, commitment, rootAtCast, isUserVote                     | `expiresAt` |
 
 レート制限用に 2 つの追加テーブル（RateLimitEvents、RateLimitCounters）が PAY_PER_REQUEST モードで運用されています。
+これとは別に、同時実行数を制御する prover semaphore table も DynamoDB 上で管理します。
 
 ### Prover レイヤ
 
@@ -83,13 +94,15 @@ flowchart LR
   SQS["SQS<br/>ワークキュー"] --> DP["proof-dispatcher<br/>Lambda"]
   DP --> SFN["Step Functions<br/>ディスパッチャー"]
   SFN --> SIG["image-signature-gate<br/>Lambda"]
+  SFN <--> SEM["DynamoDB<br/>prover semaphore"]
+  JANITOR["semaphore-janitor<br/>Lambda"] --> SEM
   SFN --> ECS["ECS Fargate<br/>16 vCPU / 32 GB"]
   SFN --> CALLBACK["finalization-writer<br/>Lambda"]
   ECS --> S3["S3<br/>証明バンドル"]
 ```
 
-ECS タスクは ARM64 アーキテクチャの Fargate で実行され、専用の VPC（10.0.0.0/16）内のパブリックサブネットに配置されます。
-セキュリティグループは HTTPS エグレスのみを許可し、インバウンドトラフィックは一切受け付けません。
+ECS タスクは ARM64 アーキテクチャの Fargate で実行され、専用の VPC（10.0.0.0/16）内のパブリックサブネットに配置されます（セキュリティグループの設定は [ネットワーク構成](#ネットワーク構成) を参照）。
+Step Functions は DynamoDB の semaphore row で prover slot を取得・解放し、`semaphore-janitor` は terminal execution event と定期 sweep から stale slot を回収します。
 
 ### Verification レイヤ
 
@@ -137,13 +150,15 @@ target runtime では `S3_PROOF_PREFIX=sessions/` が Terraform と runtime vali
 | `bundle.zip`             | 配布対象   | `receipt.json` + `journal.json` + `public-input.json` + `election-manifest.json` + `close-statement.json` を同梱した配布アーカイブ |
 | `verification.json`      | 保護       | 検証サービスの出力で、`POST /api/verification/run` 後に protected report artifact として追加されうる。`bundle.zip` には含めない    |
 
-S3 バケット自体はパブリックアクセス全ブロックです。
 「区分」は機密性の扱いを示すものです。
 詳細は [バンドル構造](../verification/bundle-structure.md) を参照してください。
 
 ## エンドツーエンドのデータフロー
 
-投票から検証までの全データフローを、レイヤ間の通信として示します。
+投票から検証までのデータフローを、レイヤ間の通信として示します。
+以下は `primary_active` または `replacement_active` の非 quiesced phase における処理です。
+`*_quiesced` phase では、この図に含まれる新規 session admission と prover / verification queue consumption は利用できません。
+図では API request ごとの CloudFront hop を省略していますが、develop operator gate が有効な場合は frontend と API の両方で viewer request の signed cookie を検証します。
 
 ```mermaid
 sequenceDiagram
@@ -158,6 +173,9 @@ sequenceDiagram
 
   Note over C,D: 投票フェーズ
   C->>W: ページ読み込み
+  opt develop operator gate enabled
+    W->>W: CloudFront signed-cookie 検証
+  end
   C->>A: POST /api/session
   A->>D: セッション作成
   C->>A: POST /api/vote
@@ -253,14 +271,18 @@ ECS タスクはパブリック IP を持ちますが、セキュリティグル
 | `/aws/apigateway/{project}-{account-alias}-{environment}-api/access`          | API Gateway アクセスログ | 30 日    |
 
 ロググループ名は Terraform-managed physical names と component suffix に揃えます。
-旧構成のロググループが残っている場合でも、この topology の runtime authority には含めません。
 deployment pipeline の CodeBuild log group は bootstrap root の管理対象で、app pipeline は既定 180 日、foundation pipeline は既定 365 日保持します。
-旧 standalone prover/toolchain CodeBuild log group は current target runtime authority ではありません。
+旧構成の残存ロググループや旧 standalone prover/toolchain CodeBuild log group は、この topology の runtime authority に含めません。
 
 ### CloudTrail
 
-CloudTrail は current target app/bootstrap/foundation Terraform runtime の構成要素ではありません。
-account-plane または organization-level の監査証跡として別途管理される場合があります。
-旧 Terraform には main 環境のみ 90 日保持の multi-region CloudTrail がありましたが、これは current target runtime authority ではありません。
+CloudTrail は current target app/bootstrap/foundation Terraform runtime の構成要素ではなく、account-plane または organization-level の監査証跡として別途管理される場合があります。
+旧 Terraform の multi-region CloudTrail（main 環境のみ、90 日保持）も同様に runtime authority には含めません。
+
+## 関連する章
+
+- [現行構成とサービス一覧](design-and-services.md)：サービスごとの責務一覧
+- [非同期プローバー](async-prover.md)：Prover レイヤの実行時フロー
+- [バンドル構造](../verification/bundle-structure.md)：Storage レイヤの artifact 境界
 
 <!-- source: infra/terraform/app, infra/terraform/bootstrap, infra/lambdas/, infra/docker/entrypoint.sh, packages/verification/src/verification/verification-bundle.ts -->

@@ -58,7 +58,7 @@ formal/
 The Lean workspace now includes journal count semantics, the verification
 summary fail-closed model, input commitment and bitmap models, generated vectors
 consumed by TypeScript and Rust tests, an abstract guest state machine, and a
-stable generated formal report under `docs/current/formal/formal-report.json`.
+stable generated formal report under `docs/formal/formal-report.json`.
 The guest model tracks a candidate-indexed tally, proves the fold preserves
 duplicate-free in-range seen-index invariants and count bounds, and states its
 zero-exclusion completeness theorem directly over `processVotes`. Current
@@ -80,7 +80,7 @@ validation-and-tally entry point used by `guest_main` and the guest-vector tests
 
 These notes preserve the implementation plan and historical context.
 For the durable current documentation entry point, see
-[`docs/current/formal/README.md`](../docs/current/formal/README.md).
+[`docs/formal/README.md`](../docs/formal/README.md).
 
 ## Proof Policy
 
@@ -95,13 +95,13 @@ Lean may depend on standard-library axioms where expected. The important rule is
 that the public claim stays inspectable and does not overstate what was proved.
 `pnpm formal:audit` runs the dependency check for the theorem set listed in
 `formal-report.json` and records stable dependency summaries in
-`docs/current/formal/formal-audit.json`.
+`docs/formal/formal-audit.json`.
 
 ## Axiom Dependency Audit
 
 The current theorem dependency set is generated with `#print axioms` by
 `pnpm formal:audit` and recorded in
-[`docs/current/formal/formal-audit.json`](../docs/current/formal/formal-audit.json).
+[`docs/formal/formal-audit.json`](../docs/formal/formal-audit.json).
 Keep that audit artifact as the source of truth instead of hand-maintaining
 per-theorem axiom tables in this README.
 
@@ -136,7 +136,7 @@ formal report lists the current theorem claims and assumptions.
 Stable generated artifacts live under:
 
 ```text
-docs/current/formal/
+docs/formal/
   formal-report.json
   generated-vectors/
     verification-summary-cases.json
@@ -148,9 +148,9 @@ docs/current/formal/
   formal-audit.json
 ```
 
-This follows the repository's existing `docs/current/` freshness convention. If
-stable formal artifacts are later moved to a top-level `docs/formal/` directory,
-update `docs/README.md` in the same change.
+The stable formal artifacts live under the public `docs/formal/` area. Keep
+`docs/README.md`, the emitters, scripts, tests, and workflow filters aligned if
+that contract changes.
 
 CI-only artifacts should remain ephemeral:
 
@@ -212,4 +212,8 @@ Lean targets rather than reporting `0 jobs`.
 Keep Lean checks out of the broad `ci:verify` script until the extra runtime is
 intentionally accepted there. Dedicated formal workflows may run
 `pnpm formal:verify` for changes to the Lean workspace, stable report,
-generated vectors, and implementation files guarded by formal vectors.
+generated vectors, and implementation files guarded by formal vectors. The
+source repository's public-release workflow always builds Lean and runs
+`pnpm formal:verify` before generating the public snapshot, so stale or failing
+formal artifacts block that release. The generated public repository has its
+own path-filtered formal workflow for formal-contract changes.

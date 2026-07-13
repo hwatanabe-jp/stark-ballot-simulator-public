@@ -1,5 +1,5 @@
 /**
- * Bitmap proof API types following final_design.md §2.6.1
+ * Bitmap proof API types following final-design.md §2.6.1
  *
  * Server returns only raw materials, client calculates bit positions
  * to prevent UI attacks that could misrepresent indices

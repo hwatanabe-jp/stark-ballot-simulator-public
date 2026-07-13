@@ -93,7 +93,7 @@ resource "aws_codepipeline" "development_foundation" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/foundation/tfplan.txt and tfplan.sha256 for stark-dev/develop/foundation. Approval must confirm no app state or app runtime resources are created."
+        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/foundation/tfplan.txt and tfplan.sha256 for stark-dev/develop/foundation. Approval must confirm the foundation plan manages no app runtime resources; separately deployed app state/runtime may exist."
       }
     }
   }

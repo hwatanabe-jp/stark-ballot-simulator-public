@@ -110,4 +110,4 @@ are not the stable output contract for these wrappers.
 - **S5**: Random error injection
 
 For the full CLI contract, package-script matrix, ImageID notes, and bundle
-download behavior, see `docs/current/tests/cli.md`.
+download behavior, see `docs/guides/cli.md`.

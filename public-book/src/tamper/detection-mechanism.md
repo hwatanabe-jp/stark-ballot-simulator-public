@@ -5,9 +5,7 @@
 
 ## 前提
 
-- `VITE_USE_MOCK_API=true` の mock API fixture は本章と異なるチェック結果を返すことがある。
-- `USE_MOCK_ZKVM=true` の mock zkVM executor は production STARK proof を生成しない。
-- `RISC0_DEV_MODE=1` の dev-mode receipt も production STARK proof ではない。
+- 実行モードと検証の前提は [シナリオ一覧 > 実行モードと検証の前提](scenarios.md#実行モードと検証の前提) と同じ。
 - 現行 API は `castSource=client` のため、`cast_*` チェックはシナリオに関係なく `not_run`。
 
 <details>
@@ -108,7 +106,7 @@ S5 の定義と処理内容（`tamperMode=input`、`modifiedVotes`、ジャー�
 
 ## 最終判定（Verified 表示）
 
-最終表示は `verification-summary` のルールで決定されます。
+最終表示は `verification-summary` のルールで決定されます（厳密な判定順序は [ゲーティングロジック](../verification/gating-logic.md) を参照）。
 
 ```mermaid
 flowchart TB

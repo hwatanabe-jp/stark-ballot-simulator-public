@@ -157,9 +157,7 @@ Image ID が不一致の場合は、以下のいずれかの状況が考えら�
 | 異なるゲストで証明が生成された | レシートの出所を調査する                 |
 | アーキテクチャの不一致         | 対象 variant の Image ID で照合する      |
 
-`RISC0_DEV_MODE=1` で生成された dev-mode receipt はフェイクレシートであり、production STARK proof ではありません。
-Image ID が一致していても、dev-mode receipt を本番 STARK proof として扱ってはいけません。
-production proof として検証するには、`RISC0_DEV_MODE` を unset した本番モードの receipt が必要です。
+Image ID が一致していても、`RISC0_DEV_MODE=1` の dev-mode receipt（フェイクレシート）は production STARK proof として扱いません（生成側は [ホストと証明生成](host-and-proving.md)、判定側は [ゲーティングロジック](../verification/gating-logic.md#stark-検証のゲーティング) を参照）。
 
 ## Image ID 更新時の手順
 

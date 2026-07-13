@@ -71,9 +71,9 @@ Cross-language golden-vector evidence:
 
 Formal correspondence vector evidence:
 
-- `docs/current/formal/generated-vectors/input-commitment-cases.json` feeds Rust input-commitment tests in `zkvm/contract-core/src/encoding.rs`
-- `docs/current/formal/generated-vectors/bitmap-cases.json` feeds Rust bitmap tests in `zkvm/contract-core/src/bitmap.rs`
-- `docs/current/formal/generated-vectors/guest-model-cases.json` feeds Rust guest-model tests in `zkvm/methods/guest/src/tally.rs`
+- `docs/formal/generated-vectors/input-commitment-cases.json` feeds Rust input-commitment tests in `zkvm/contract-core/src/encoding.rs`
+- `docs/formal/generated-vectors/bitmap-cases.json` feeds Rust bitmap tests in `zkvm/contract-core/src/bitmap.rs`
+- `docs/formal/generated-vectors/guest-model-cases.json` feeds Rust guest-model tests in `zkvm/methods/guest/src/tally.rs`
 
 Regenerate the checked-in TS-to-Rust RFC6962 fixture from the repository root:
 
@@ -422,7 +422,9 @@ Important details:
   handoff helpers treat `default` / `expectedImageID` as the active deployment
   evidence when multiple variants are present. Use `x86_64` explicitly for
   receipts produced by the local x86_64 guest build.
-- The operational procedure for confirming the deployed ARM64 ImageID is documented in `docs/current/guides/7-terraform/README.md`.
+- The target ARM64 image and ImageID release model is documented in
+  `docs/infrastructure/risc0-base-image.md`; account-specific
+  operator procedures remain in the private source repository.
 - Do not mix a newly updated mapping with an older locally generated `*-receipt.json` or `*-output.json`; `verifier-service` checks the receipt metadata `image_id` and will reject mismatches.
 
 When the guest image changes, update the mapping and any remaining hard-coded
@@ -604,9 +606,9 @@ Use the expected ImageID that matches the build you are verifying.
 
 ## Related Documentation
 
-- `docs/current/guides/6-zkvm_design/final_design.md`
-- `docs/current/runbooks/aws-hybrid.md`
-- `docs/current/tests/cli.md`
+- `docs/zkvm/final-design.md`
+- `docs/runbooks/aws-runtime-operations.md`
+- `docs/guides/cli.md`
 - `verifier-service/README.md`
 - <https://dev.risczero.com>
 

@@ -4,9 +4,9 @@
 まず [AWS runtime boundary](runtime-boundary.md) を読み、公開仕様として扱う範囲を確認してください。
 
 AWS runtime は、Terraform 管理の静的フロントエンド、Hono/API ランタイム、DynamoDB ストア、非同期プローバー、検証 worker、private proof artifact storage で構成されます。
-この部はそれぞれの責務分担を説明するもので、本番環境の初期構築、独自ドメインの本番 DNS 切り替え、旧 AWS アカウント削除の完了状態を主張するものではありません。
+この部はそれぞれの責務分担を説明します。個別環境の導入・移行の進捗は [本章で扱わないもの](#本章で扱わないもの) に含めます。
 
-ここでの `public` bundle は「秘密を含まず第三者検証に使える」配布対象 artifact の分類であり、無認証公開を意味しません（詳細は [公開境界](../verification/public-boundary.md)）。
+ここでいう `public` は「秘密を含まず第三者検証に使える」という機密性の分類であり、無認証公開を意味しません（定義は [公開境界](../verification/public-boundary.md)）。
 `verification.json` などの protected report artifact は別物で、通常の bundle/report 取得経路は capability 保護 API です。
 
 ## この部に含まれる章
@@ -16,19 +16,20 @@ AWS runtime は、Terraform 管理の静的フロントエンド、Hono/API ラ�
 - [トポロジー](topology.md)：レイヤ別のサービス構成と通信フロー
 - [非同期プローバー](async-prover.md)：SQS → Step Functions → ECS による証明パイプライン
 - [イメージ署名](image-signing.md)：AWS Signer によるコンテナイメージ検証
-- [Terraform](terraform.md)：IaC による root ownership と runtime wiring
+- [Terraform](terraform.md)：IaC による root ownership、recovery selection、deployment / release authority、runtime wiring
 
 ## 想定読者と前提
 
 - 想定読者: 公開仕様として AWS runtime の責務分担を把握したい読者
-- 前提: AWS の基本サービス（S3 / SQS / Step Functions / ECS）と Terraform の概念を把握していること
+- 前提: AWS の基本サービス（S3 / SQS / Step Functions / ECS）、CloudFront / KMS / CodePipeline などの配信・デプロイ系サービス、Terraform の概念を把握していること
 
 ## 本章で扱わないもの
 
 - 退役済み Amplify / AppSync 構成の詳細
 - Terraform 文法・モジュール設計の一般論
 - CloudWatch アラート設計やコスト最適化ガイド
-- 個別アカウント、秘密値、デプロイ承認、移行作業記録、環境切り替えの進捗
+- 個別アカウント、秘密値、アカウント固有の承認手順や詳細な証跡、移行作業記録、環境切り替えの進捗
+- 本番環境の初期構築、独自ドメインの本番 DNS 切り替え、旧 AWS アカウント削除の完了状態
 
 ## 関連する章
 

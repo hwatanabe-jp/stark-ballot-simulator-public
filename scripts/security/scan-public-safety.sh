@@ -160,13 +160,15 @@ my @resource_rules = (
   ['aws_resource_id', qr/\b(?:subnet|sg|vpc|ami|rtb|nat|eipalloc|igw|vpce)-[0-9a-f]{8,}\b/],
 );
 
+my @private_doc_prefixes = qw(docs/archive/ docs/internal/);
+
 sub is_account_id_hygiene_scope {
   my ($path) = @_;
   return 1 if $path =~ /\.tfvars(?:\.json)?(?:\.example)?$/;
   return 1 if $path eq 'README.md' || $path eq 'SECURITY.md' || $path eq 'docs/README.md';
   return 1 if $path =~ m{^public-book/};
-  return 0 if $path =~ m{^docs/current/(?:aws-account-migration|internal|monitoring)/};
-  return 1 if $path =~ m{^docs/current/};
+  return 0 if grep { index($path, $_) == 0 } @private_doc_prefixes;
+  return 1 if $path =~ m{^docs/};
   return 0;
 }
 

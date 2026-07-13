@@ -1,5 +1,8 @@
 import '@testing-library/jest-dom/vitest';
 import path from 'path';
+import { configureLogger } from '@stark-ballot/diagnostics/logger';
+
+configureLogger({ level: 'warn' });
 
 function configureDefaultTestImageIdVariant(): void {
   if (!process.env['EXPECTED_IMAGE_ID'] && !process.env['EXPECTED_IMAGE_ID_VARIANT']) {

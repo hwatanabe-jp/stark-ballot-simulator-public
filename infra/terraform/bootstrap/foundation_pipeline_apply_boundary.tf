@@ -9,6 +9,39 @@ data "aws_iam_policy_document" "foundation_apply_deploy_permissions_boundary" {
     actions   = ["s3:PutObject"]
     resources = ["arn:aws:s3:::${var.state_bucket_name}/${local.foundation_state_backend_key}"]
   }
+
+  statement {
+    sid    = "DenyDeletingRetainedFoundationImages"
+    effect = "Deny"
+    actions = [
+      "ecr:BatchDeleteImage",
+      "ecr:DeleteRepository",
+      "ecr:PutLifecyclePolicy",
+    ]
+    resources = local.foundation_ecr_repository_arns
+  }
+
+  statement {
+    sid    = "DenyDeletingImmutableReleaseAuthority"
+    effect = "Deny"
+    actions = [
+      "s3:DeleteObject",
+      "s3:DeleteObjectVersion",
+    ]
+    resources = [
+      "${local.foundation_release_manifest_bucket_arn}/artifacts/*",
+      "${local.foundation_release_manifest_bucket_arn}/promotions/*",
+      "${local.foundation_release_manifest_bucket_arn}/deployments/*",
+      "${local.foundation_release_manifest_bucket_arn}/rollbacks/*",
+    ]
+  }
+
+  statement {
+    sid       = "DenyAddingReleaseAuthorityLifecycle"
+    effect    = "Deny"
+    actions   = ["s3:PutLifecycleConfiguration"]
+    resources = [local.foundation_release_manifest_bucket_arn]
+  }
 }
 
 resource "aws_iam_policy" "foundation_apply_deploy_permissions_boundary" {

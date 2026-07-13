@@ -43,4 +43,4 @@
 - [検証パイプライン](../verification/index.md)：検証ロジックとゲーティング
 - [参考文献](../appendix/references.md)：設計背景の一次資料一覧
 
-<!-- source: public-book/src/decisions/poc-relaxations.md, public-book/src/decisions/design-retrospective.md, docs/current/references/README.md -->
+<!-- source: public-book/src/decisions/poc-relaxations.md, public-book/src/decisions/design-retrospective.md, docs/zkvm/references.md -->

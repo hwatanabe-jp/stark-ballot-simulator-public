@@ -22,7 +22,7 @@
   "devDependencies": {
     "@types/yauzl": "3.4.0",
     "@types/yazl": "3.3.1",
-    "fast-check": "4.8.0",
+    "fast-check": "4.9.0",
     "vitest": "4.1.9"
   }
 }

@@ -119,8 +119,8 @@
 
 #### `recorded_inclusion_proof`
 
-投票者のコミットメントに対する RFC 6962 包含証明（監査パス）を検証します。
-リーフハッシュと監査パスから cast 時点のルートを再計算し、receipt の `bulletinRootAtCast` と一致することを確認します。
+投票者のコミットメントに対する RFC 6962 包含証明（Merkle パス）を検証します。
+リーフハッシュと Merkle パスから cast 時点のルートを再計算し、receipt の `bulletinRootAtCast` と一致することを確認します。
 proof の `treeSize` が `voteReceipt.bulletinIndex + 1` と一致しない場合は `failed` です。
 
 #### `recorded_consistency_proof`
@@ -242,15 +242,8 @@ STARK 証明の暗号学的正当性を検証するチェック群です。
 STARK status が `success` に解決された後で、期待 Image ID、verifier-confirmed Image ID、ホスト主張値が相互に矛盾しないことを確認します。
 整合条件（report に Image ID フィールドが揃わない場合の挙動を含む）と fail-closed の取り扱いは [Image ID](../zkvm/image-id.md) を参照してください。
 
-期待 Image ID の解決順:
-
-| 優先順 | ソース                                           |
-| ------ | ------------------------------------------------ |
-| 1      | `EXPECTED_IMAGE_ID` 環境変数                     |
-| 2      | `public/imageId-mapping.json` の current mapping |
-
-variant は `EXPECTED_IMAGE_ID_VARIANT`（`default` または `x86_64`）または呼び出し側 option で明示指定し、未指定時の解決候補は `default` です。
-unsupported variant、missing mapping、選択 variant の Image ID 欠落は暗黙にフォールバックせず fail-closed で失敗します。
+期待 Image ID は `EXPECTED_IMAGE_ID` 環境変数を優先し、次に `public/imageId-mapping.json` の current mapping から解決します。
+variant の明示指定規則を含め、解決できない場合は暗黙にフォールバックせず fail-closed で失敗します（解決順と variant の詳細は上記の [Image ID](../zkvm/image-id.md) を参照）。
 
 #### `stark_receipt_verify`
 

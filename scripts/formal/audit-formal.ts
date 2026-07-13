@@ -56,8 +56,8 @@ interface FormalAudit {
 }
 
 const repoRoot = process.cwd();
-const reportPath = 'docs/current/formal/formal-report.json';
-const auditPath = 'docs/current/formal/formal-audit.json';
+const reportPath = 'docs/formal/formal-report.json';
+const auditPath = 'docs/formal/formal-audit.json';
 const formalDir = path.join(repoRoot, 'formal');
 const allowedCoreAxioms = ['propext', 'Quot.sound', 'Classical.choice'];
 const allowedNativeDecideSources = ['formal/StarkBallotFormal/Bitmap.lean'];
@@ -274,14 +274,14 @@ function buildAudit(): FormalAudit {
   const leanFiles = listLeanFiles(formalDir);
   assertProofHygiene(leanFiles);
 
-  const formalReadme = readFileSync(path.join(repoRoot, 'docs/current/formal/README.md'), 'utf8');
+  const formalReadme = readFileSync(path.join(repoRoot, 'docs/formal/README.md'), 'utf8');
   for (const axiom of allowedCoreAxioms) {
     if (!formalReadme.includes(axiom)) {
-      throw new Error(`docs/current/formal/README.md must document allowed core axiom ${axiom}`);
+      throw new Error(`docs/formal/README.md must document allowed core axiom ${axiom}`);
     }
   }
   if (!formalReadme.includes('native_decide')) {
-    throw new Error('docs/current/formal/README.md must document the native_decide allowlist');
+    throw new Error('docs/formal/README.md must document the native_decide allowlist');
   }
 
   const theoremStatements = report.theorems.map((theorem) => ({

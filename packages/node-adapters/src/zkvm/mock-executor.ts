@@ -1,6 +1,6 @@
 /**
  * Mock zkVM executor for fast testing
- * Implements final_design.md v1.0 specifications
+ * Implements final-design.md v1.0 specifications
  */
 
 import { Buffer } from 'buffer';
@@ -19,7 +19,7 @@ import { resolveMockImageId } from './mock-image-id';
 import { assertZkvmWireNumericPreflight } from '@stark-ballot/zkvm-contract/zkvm/wire-numeric-preflight';
 import { validateGuestWorkBudget } from '@stark-ballot/zkvm-contract/zkvm/work-budget';
 
-// Constants following final_design.md specifications
+// Constants following final-design.md specifications
 const MOCK_EXECUTION_TIME_MS = 100;
 const MAX_CHOICE_VALUE = 4; // Choices are 0-4 (A-E)
 const NUM_CHOICES = 5;
@@ -50,7 +50,7 @@ export function getLastExecutedSeenBitmap(): boolean[] | null {
 
 /**
  * Mock zkVM executor that simulates proof generation
- * Following final_design.md §2.4 Counted-as-Recorded verification
+ * Following final-design.md §2.4 Counted-as-Recorded verification
  * ~100ms execution time vs ~125s for real zkVM production mode
  */
 export async function executeMockZkVM(input: ZkVMInput): Promise<ZkVMExecutionResult> {
@@ -64,7 +64,7 @@ export async function executeMockZkVM(input: ZkVMInput): Promise<ZkVMExecutionRe
   // Process all votes and collect statistics
   const verificationResult = verifyAndTallyVotes(input);
 
-  // Calculate three-way split statistics (final_design.md §2.4 line 295-300)
+  // Calculate three-way split statistics (final-design.md §2.4 line 295-300)
   const statistics = calculateStatistics(
     verificationResult.seenIndicesCount,
     input.treeSize,
@@ -133,7 +133,7 @@ export async function executeMockZkVM(input: ZkVMInput): Promise<ZkVMExecutionRe
     },
   };
 
-  // Return ZkVMJournal structure (final_design.md §1.3)
+  // Return ZkVMJournal structure (final-design.md §1.3)
   const result: ZkVMExecutionResult = {
     // Election scope identification
     electionId: input.electionId,
@@ -182,7 +182,7 @@ export async function executeMockZkVM(input: ZkVMInput): Promise<ZkVMExecutionRe
 
 /**
  * Verify and tally all votes
- * Implements final_design.md §2.4 verification logic
+ * Implements final-design.md §2.4 verification logic
  *
  * Current slot/record semantics:
  * - missingSlots: bulletin slots never seen as a unique in-range record
@@ -198,7 +198,7 @@ function verifyAndTallyVotes(input: ZkVMInput) {
   let validCount = 0;
   let invalidCount = 0; // Counts rejected records, including duplicate/out-of-range indices
 
-  // Process each vote (final_design.md §2.4 line 226-288)
+  // Process each vote (final-design.md §2.4 line 226-288)
   for (const vote of input.votes) {
     // Out-of-range records are rejected and counted as invalid, but they do
     // not contribute to seenIndicesCount because no in-range slot was seen.

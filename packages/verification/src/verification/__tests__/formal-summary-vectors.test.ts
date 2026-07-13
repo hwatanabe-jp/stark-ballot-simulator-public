@@ -11,7 +11,7 @@ import {
   type VerificationSummaryStatus,
   type VerificationSummaryTone,
 } from '@stark-ballot/verification/summary';
-import summaryCasesJson from '../../../../../docs/current/formal/generated-vectors/verification-summary-cases.json';
+import summaryCasesJson from '../../../../../docs/formal/generated-vectors/verification-summary-cases.json';
 
 interface FormalSummaryCase {
   name: string;

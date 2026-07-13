@@ -23,7 +23,7 @@ The Phase 3 review did not find that the Lean files are merely decorative:
 - `formal/` is a Lake workspace.
 - `formal:*` scripts exist in `package.json`.
 - dedicated formal CI runs `pnpm formal:verify`.
-- `docs/current/formal/formal-report.json` is generated and checked.
+- `docs/formal/formal-report.json` is generated and checked.
 - summary, display, input-commitment, and bitmap vectors are consumed by
   TypeScript and Rust tests.
 
@@ -53,14 +53,13 @@ The remaining risk is narrower:
 - `src/lib/verification/verification-checks.ts`
 - `src/lib/verification/verification-summary.ts`
 - `src/app/(routes)/verify/lib/overall-status.ts`
-- `.github/workflows/public-formal-checks.yml`
-- the public workflow generator
-- the public export tests
-- `docs/current/formal/README.md`
+- private and generated public formal-workflow definitions
+- public-export contract tests
+- `docs/formal/README.md`
 
 ## Deliverables
 
-- generated `docs/current/formal/generated-vectors/guest-model-cases.json`
+- generated `docs/formal/generated-vectors/guest-model-cases.json`
 - Rust test coverage that consumes `guest-model-cases.json`
 - a narrow guest-equivalent pure test surface for rejection classification if
   the current guest entry point cannot expose those classifications directly
@@ -96,10 +95,10 @@ to implementation tests through generated vectors and CI drift guards.
 
 ## P4-1: Formal CI Path Filters
 
-Expand `.github/workflows/public-formal-checks.yml` so implementation files covered by
-formal vectors trigger the formal workflow. Keep the generated public workflow
-template in the public workflow generator aligned, because the public
-snapshot emits `.github/workflows/public-formal-checks.yml` separately.
+Keep the private and generated public formal-workflow path filters aligned so
+implementation files covered by formal vectors trigger the same evidence gate
+in both repositories. The public snapshot emits
+`.github/workflows/public-formal-checks.yml` separately.
 
 Path-filter coverage alone is not enough. The implementation-correspondence
 tests that consume generated vectors must run in a clearly identified gate.
@@ -185,7 +184,7 @@ Acceptance criteria:
 Extend `formal/Scripts/EmitTestVectors.lean` to emit:
 
 ```text
-docs/current/formal/generated-vectors/guest-model-cases.json
+docs/formal/generated-vectors/guest-model-cases.json
 ```
 
 The vectors should exercise the externally important guest ordering from

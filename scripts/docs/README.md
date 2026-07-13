@@ -22,7 +22,7 @@ Checks that generated mdBook HTML contains the required security hardening tags.
 
 ### regenerate-license-metadata.sh
 
-Regenerates sanitized third-party license metadata under `docs/current/licenses/`. The package script is:
+Regenerates sanitized third-party license metadata under `docs/licenses/`. The package script is:
 
 ```bash
 pnpm licenses:regen

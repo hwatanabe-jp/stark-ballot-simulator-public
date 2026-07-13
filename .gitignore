@@ -97,6 +97,14 @@ test-results/
 # License inventory artifacts (regenerate as needed)
 docs/licenses/*.json
 docs/licenses/*.csv
+!docs/licenses/cargo-licenses-verifier.csv
+!docs/licenses/cargo-licenses-zkvm.csv
+!docs/licenses/cargo-metadata-verifier.json
+!docs/licenses/cargo-metadata-zkvm.json
+!docs/licenses/pnpm-licenses-all.csv
+!docs/licenses/pnpm-licenses-all.json
+!docs/licenses/pnpm-licenses-prod.csv
+!docs/licenses/pnpm-licenses-prod.json
 
 # Terraform
 .terraform/
@@ -116,6 +124,7 @@ terraform.*.tfvars
 /infra/terraform/app/apply-outputs.json
 /infra/terraform/app/backend.pipeline.hcl
 /infra/terraform/app/pipeline.auto.tfvars
+/infra/terraform/app/dynamodb-recovery.auto.tfvars.json
 /infra/terraform/app/evidence/
 /app-smoke-*
 /accepted-index-existing.*

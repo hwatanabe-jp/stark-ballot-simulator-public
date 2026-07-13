@@ -16,19 +16,54 @@ output "app_lane_scope" {
 output "dynamodb_runtime_config" {
   description = "Non-secret DynamoDB and rate-limit runtime config names for target runtime."
   value = {
-    aws_account_id                      = var.aws_account_id
-    aws_region                          = var.aws_region
-    dynamodb_sessions_table             = aws_dynamodb_table.sessions.arn
-    dynamodb_votes_table                = aws_dynamodb_table.votes.arn
-    rate_limit_events_table             = aws_dynamodb_table.rate_limit_events.arn
-    rate_limit_counters_table           = aws_dynamodb_table.rate_limit_counters.arn
-    rate_limit_store                    = "dynamo"
-    session_live_ttl_seconds            = var.session_live_ttl_seconds
-    session_capability_secret_ref       = local.runtime_reference_names.SESSION_CAPABILITY_SECRET_REF
-    session_capability_ttl_seconds_ref  = local.runtime_reference_names.SESSION_CAPABILITY_TTL_SECONDS_REF
-    verification_artifact_ttl_seconds   = var.verification_artifact_ttl_seconds
-    vote_secret_encryption_key_ref      = local.runtime_reference_names.VOTE_SECRET_ENCRYPTION_KEY_REF
-    vote_duplicate_detector_ttl_seconds = var.vote_duplicate_detector_ttl_seconds
+    aws_account_id                       = var.aws_account_id
+    aws_region                           = var.aws_region
+    dynamodb_sessions_table              = local.active_sessions_table_arn
+    dynamodb_votes_table                 = local.active_votes_table_arn
+    rate_limit_events_table              = aws_dynamodb_table.rate_limit_events.arn
+    rate_limit_counters_table            = aws_dynamodb_table.rate_limit_counters.arn
+    rate_limit_store                     = "dynamo"
+    session_live_ttl_seconds             = var.session_live_ttl_seconds
+    session_capability_secret_ref        = local.runtime_reference_names.SESSION_CAPABILITY_SECRET_REF
+    session_capability_ttl_seconds_ref   = local.runtime_reference_names.SESSION_CAPABILITY_TTL_SECONDS_REF
+    verification_artifact_ttl_seconds    = var.verification_artifact_ttl_seconds
+    vote_secret_encryption_key_ref       = local.runtime_reference_names.VOTE_SECRET_ENCRYPTION_KEY_REF
+    vote_duplicate_detector_ttl_seconds  = var.vote_duplicate_detector_ttl_seconds
+    recovery_phase                       = var.dynamodb_recovery_phase
+    recovery_quiesced                    = local.dynamodb_recovery_quiesced
+    serves_replacement                   = local.dynamodb_recovery_serves_replacement
+    target_public_session_create_enabled = local.target_public_session_create_enabled
+    event_source_mappings_enabled        = !local.dynamodb_recovery_quiesced
+    recovery_activation                  = var.dynamodb_recovery_activation
+  }
+}
+
+output "dynamodb_recovery_transition" {
+  description = "Non-secret desired and served state for the four-phase DynamoDB recovery transition."
+  value = {
+    phase                                = var.dynamodb_recovery_phase
+    quiesced                             = local.dynamodb_recovery_quiesced
+    serves_replacement                   = local.dynamodb_recovery_serves_replacement
+    recovery_manifest_present            = var.dynamodb_recovery_activation != null
+    target_public_session_create_enabled = local.target_public_session_create_enabled
+    event_source_mappings_enabled        = !local.dynamodb_recovery_quiesced
+    served = {
+      sessions_table_arn = local.active_sessions_table_arn
+      votes_table_arn    = local.active_votes_table_arn
+    }
+    primary = {
+      sessions_table_arn = aws_dynamodb_table.sessions.arn
+      votes_table_arn    = aws_dynamodb_table.votes.arn
+    }
+    replacement = var.dynamodb_recovery_activation == null ? null : {
+      sessions_table_arn = local.recovery_sessions_table_arn
+      votes_table_arn    = local.recovery_votes_table_arn
+    }
+    recovery_manifest = var.dynamodb_recovery_activation == null ? null : {
+      recovery_id     = var.dynamodb_recovery_activation.recovery_id
+      recovery_point  = var.dynamodb_recovery_activation.recovery_point
+      manifest_sha256 = var.dynamodb_recovery_activation.manifest_sha256
+    }
   }
 }
 
@@ -41,8 +76,8 @@ output "dynamodb_table_inventory" {
   description = "Target table inventory with access paths and lifecycle controls."
   value = {
     sessions = {
-      table_name                      = aws_dynamodb_table.sessions.name
-      table_arn                       = aws_dynamodb_table.sessions.arn
+      table_name                      = local.active_sessions_table_name
+      table_arn                       = local.active_sessions_table_arn
       purpose                         = "Session metadata, finalization envelope, bitmap/receipt sidecar items, and owner authority."
       primary_access_path             = "GetItem/PutItem by sessionId"
       ttl_attribute                   = "expiresAt"
@@ -57,8 +92,8 @@ output "dynamodb_table_inventory" {
       least_privilege_access_decision = "Session-table runtime access is limited by aws_iam_policy_document.target_lambda_session_store_runtime statements UseSessionTable and UseSessionVoteTransactions for the Hono API, finalize callback, and prover dispatch roles; KMS use is constrained by UseAppDataKey to this table name."
     }
     votes = {
-      table_name                      = aws_dynamodb_table.votes.name
-      table_arn                       = aws_dynamodb_table.votes.arn
+      table_name                      = local.active_votes_table_name
+      table_arn                       = local.active_votes_table_arn
       purpose                         = "Session-owned vote rows and CT bulletin restoration material."
       primary_access_path             = "Query by sessionId sorted by voteIndex"
       secondary_access                = "voteId-index is index-only; target proof acceptance remains session-scoped."
@@ -173,6 +208,8 @@ output "target_runtime" {
     async = {
       prover_work_queue_arn                      = aws_sqs_queue.prover_work.arn
       prover_work_queue_url                      = aws_sqs_queue.prover_work.url
+      prover_work_event_source_mapping_uuid      = aws_lambda_event_source_mapping.prover_work.uuid
+      prover_work_event_source_mapping_enabled   = !local.dynamodb_recovery_quiesced
       dispatch_lambda_arn                        = aws_lambda_function.target["proof_dispatcher"].arn
       dispatch_role_arn                          = aws_iam_role.target_lambda["proof_dispatcher"].arn
       image_signature_lambda_arn                 = aws_lambda_function.target["image_signature_gate"].arn
@@ -207,15 +244,17 @@ output "target_runtime" {
       fargate_on_demand_vcpu_usage_alarm_arn     = aws_cloudwatch_metric_alarm.fargate_on_demand_vcpu_usage.arn
     }
     verifier = {
-      lambda_arn                             = aws_lambda_function.target["verification_worker"].arn
-      role_arn                               = aws_iam_role.target_lambda["verification_worker"].arn
-      lambda_package                         = var.lambda_artifacts["verification_worker"]
-      verification_work_queue_arn            = aws_sqs_queue.verification_work.arn
-      verification_work_queue_url            = aws_sqs_queue.verification_work.url
-      verification_work_dlq_arn              = aws_sqs_queue.verification_work_dlq.arn
-      verification_work_dlq_url              = aws_sqs_queue.verification_work_dlq.url
-      verification_work_dlq_depth_alarm_name = aws_cloudwatch_metric_alarm.verification_work_dlq_depth.alarm_name
-      verification_work_dlq_depth_alarm_arn  = aws_cloudwatch_metric_alarm.verification_work_dlq_depth.arn
+      lambda_arn                                     = aws_lambda_function.target["verification_worker"].arn
+      role_arn                                       = aws_iam_role.target_lambda["verification_worker"].arn
+      lambda_package                                 = var.lambda_artifacts["verification_worker"]
+      verification_work_queue_arn                    = aws_sqs_queue.verification_work.arn
+      verification_work_queue_url                    = aws_sqs_queue.verification_work.url
+      verification_work_event_source_mapping_uuid    = aws_lambda_event_source_mapping.verification_work.uuid
+      verification_work_event_source_mapping_enabled = !local.dynamodb_recovery_quiesced
+      verification_work_dlq_arn                      = aws_sqs_queue.verification_work_dlq.arn
+      verification_work_dlq_url                      = aws_sqs_queue.verification_work_dlq.url
+      verification_work_dlq_depth_alarm_name         = aws_cloudwatch_metric_alarm.verification_work_dlq_depth.alarm_name
+      verification_work_dlq_depth_alarm_arn          = aws_cloudwatch_metric_alarm.verification_work_dlq_depth.arn
     }
     artifacts = {
       proof_bucket_name    = aws_s3_bucket.proof_artifacts.bucket
@@ -224,6 +263,29 @@ output "target_runtime" {
       public_bundle_policy = "bundle.zip allowlist only; private report and bitmap artifacts remain sibling protected objects"
       bucket_versioning    = "Enabled"
       lifecycle_days       = var.proof_artifact_lifecycle_days
+    }
+  }
+}
+
+output "develop_operator_gate_keyset" {
+  description = "Nonsecret KMS and CloudFront coordinates for the tracked develop operator-gate keyset."
+  value = {
+    enabled                       = local.target_develop_operator_gate_enabled
+    schema_version                = local.operator_gate_keyset.schemaVersion
+    issuer_generation             = local.operator_gate_keyset.issuerGeneration
+    signing_algorithm             = "RSASSA_PKCS1_V1_5_SHA_256"
+    cookie_hash_algorithm         = "SHA256"
+    key_group_id                  = local.operator_gate_keyset_configured ? aws_cloudfront_key_group.develop_operator_gate[0].id : null
+    key_group_name                = local.operator_gate_name
+    legacy_trusted_public_key_ids = local.operator_gate_active_legacy_trusted_public_key_ids
+    trusted_public_key_ids        = local.operator_gate_trusted_public_key_ids
+    generations = {
+      for generation, key in local.operator_gate_managed_generations : generation => {
+        status                   = key.status
+        kms_key_arn              = aws_kms_key.develop_operator_gate[generation].arn
+        kms_alias_name           = try(aws_kms_alias.develop_operator_gate[generation].name, null)
+        cloudfront_public_key_id = try(aws_cloudfront_public_key.develop_operator_gate_managed[generation].id, null)
+      }
     }
   }
 }

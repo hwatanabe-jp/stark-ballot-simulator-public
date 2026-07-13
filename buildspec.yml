@@ -7,7 +7,7 @@ version: 0.2
 # - Uses a pre-built RISC Zero toolchain base image when one is supplied
 # - Base image contains: Rust 1.91.1, pinned RISC Zero toolchain, build dependencies
 # - Build time: 5-10 minutes (vs 70-90 minutes without base image)
-# - See: docs/current/guides/3-deployment/risc0-base-image.md
+# - See: docs/infrastructure/risc0-base-image.md
 
 env:
   variables:
@@ -115,7 +115,7 @@ phases:
       # - Manual/legacy primitive builds may override IMAGE_TAG explicitly
       # - Automatic fallback uses commit SHA only when IMAGE_TAG is not set
       # - Latest tag: Only updated for main branch builds
-      # - See: docs/current/guides/7-terraform/README.md (運用フロー)
+      # - See: docs/infrastructure/terraform.md (運用フロー)
       - |
         if [ -n "$IMAGE_TAG" ]; then
           echo "Using provided IMAGE_TAG: $IMAGE_TAG"
@@ -280,9 +280,11 @@ phases:
           METADATA_PREFIX="${METADATA_PREFIX%/}"
           DIGEST_KEY="${IMAGE_DIGEST#sha256:}"
           DIGEST_METADATA_KEY="${METADATA_PREFIX}/by-digest/sha256-${DIGEST_KEY}.json"
-          aws s3api put-object --bucket "$PROVER_IMAGE_METADATA_BUCKET" --key "$DIGEST_METADATA_KEY" --body image-metadata.json --content-type application/json >/dev/null
-          aws s3api put-object --bucket "$PROVER_IMAGE_METADATA_BUCKET" --key "${METADATA_PREFIX}/by-git-sha/$REQUESTED_SOURCE_SHA.json" --body image-metadata.json --content-type application/json >/dev/null
-          aws s3api put-object --bucket "$PROVER_IMAGE_METADATA_BUCKET" --key "${METADATA_PREFIX}/latest.json" --body image-metadata.json --content-type application/json >/dev/null
+          for key in "$DIGEST_METADATA_KEY" "${METADATA_PREFIX}/by-git-sha/$REQUESTED_SOURCE_SHA.json" "${METADATA_PREFIX}/latest.json"; do
+            PROVER_IMAGE_METADATA_KEY="$key" \
+              PROVER_IMAGE_METADATA_EXPECTED_BUCKET_OWNER="$AWS_ACCOUNT_ID" \
+              infra/terraform/bootstrap/app-pipeline-scripts/prover-candidate-metadata-put.sh
+          done
           METADATA_S3_URI="s3://${PROVER_IMAGE_METADATA_BUCKET}/${DIGEST_METADATA_KEY}"
           printf '%s' "$METADATA_S3_URI" > /tmp/prover-metadata-s3-uri
         else

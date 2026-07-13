@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths: &formal_paths
       - 'formal/**'
-      - 'docs/current/formal/**'
+      - 'docs/formal/**'
       - 'packages/verification/src/verification/**'
       - 'packages/verification/src/merkle/**'
       - 'packages/zkvm-contract/src/zkvm/**'

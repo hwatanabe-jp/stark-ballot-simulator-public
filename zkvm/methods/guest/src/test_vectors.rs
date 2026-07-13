@@ -1,4 +1,4 @@
-// Test vectors from final_design.md v1.0 Examples 1-3
+// Test vectors from final-design.md v1.0 Examples 1-3
 // Matching the TypeScript implementation for compatibility verification
 // Regenerate expected values with scripts/generate-test-vectors.ts.
 
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_example_1_minimal_input() {
-        // Test data from final_design.md lines 849-854
+        // Test data from final-design.md lines 849-854
         let election_id: [u8; 16] = [
             0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44,
             0x00, 0x00,
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn test_example_3_multiple_votes() {
-        // Test data from final_design.md lines 936-944
+        // Test data from final-design.md lines 936-944
         let election_id: [u8; 16] = [
             0x12, 0x3e, 0x45, 0x67, 0xe8, 0x9b, 0x12, 0xd3, 0xa4, 0x56, 0x42, 0x66, 0x14, 0x17,
             0x40, 0x00,

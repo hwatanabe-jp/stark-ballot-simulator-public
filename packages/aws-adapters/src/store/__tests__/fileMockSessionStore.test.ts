@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'path';
 import fs from 'fs-extra';
 import crypto from 'crypto';
@@ -15,6 +15,7 @@ import { buildFinalizationResultFromJournal } from '@stark-ballot/application/fi
 import { parseFinalizationState } from '@stark-ballot/application/finalize/finalization-storage';
 import { buildZkVMInputFromSession } from '@stark-ballot/application/zkvm-input/input-builder';
 import { normalizeHex } from '@stark-ballot/domain/utils/hex';
+import { logger } from '@stark-ballot/diagnostics/logger';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -170,6 +171,49 @@ describe('FileMockSessionStore', () => {
     });
 
     expect(await store.getActiveSessionCount()).toBe(0);
+  });
+
+  it('summarizes a batch of bot votes in one info log entry', async () => {
+    const store = new FileMockSessionStore();
+    const session = await store.createSession();
+    await store.addVote(session.sessionId, {
+      vote: 'A',
+      rand: randomHex(),
+      commit: randomHex(),
+      path: [],
+    });
+    const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => {});
+
+    try {
+      await store.addBotVotes(
+        session.sessionId,
+        [1, 2, 3].map((index) => ({
+          voteId: crypto.randomUUID(),
+          vote: choiceAt(index),
+          rand: randomHex(),
+          commit: randomHex(),
+          path: [],
+        })),
+      );
+
+      const botVoteLogs = infoSpy.mock.calls.filter(([message]) =>
+        String(message).includes('[FileMockStore] Bot vote'),
+      );
+      expect(botVoteLogs).toEqual([
+        [
+          '[FileMockStore] Bot votes added:',
+          expect.objectContaining({
+            addedCount: 3,
+            totalBotCount: 3,
+            firstBotIndex: 1,
+            lastBotIndex: 3,
+            bulletinSize: 4,
+          }),
+        ],
+      ]);
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 
   it('fails closed when addBotVotes targets a stale live session', async () => {

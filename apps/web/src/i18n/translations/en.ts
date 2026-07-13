@@ -57,7 +57,6 @@ export const en = {
         },
         queue: {
           waiting: 'Waiting',
-          concurrentProofs: 'Concurrent proofs',
           typicalDuration: 'Typical duration',
         },
         estimate: {

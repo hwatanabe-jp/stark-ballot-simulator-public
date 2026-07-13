@@ -10,5 +10,5 @@
 第三者ライセンス情報は公開リポジトリの
 [`THIRD_PARTY_NOTICES.md`](https://github.com/hwatanabe-jp/stark-ballot-simulator-public/blob/main/THIRD_PARTY_NOTICES.md)
 と、生成済みメタデータ
-[`docs/current/licenses/`](https://github.com/hwatanabe-jp/stark-ballot-simulator-public/tree/main/docs/current/licenses)
+[`docs/licenses/`](https://github.com/hwatanabe-jp/stark-ballot-simulator-public/tree/main/docs/licenses)
 にまとめています。

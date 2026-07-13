@@ -7,6 +7,8 @@ resource "aws_iam_role" "app_pipeline" {
   tags = merge(local.common_tags, {
     StateScope = "app"
   })
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 }
 
 resource "aws_iam_role" "app_terraform_plan" {
@@ -18,6 +20,8 @@ resource "aws_iam_role" "app_terraform_plan" {
   tags = merge(local.common_tags, {
     StateScope = "app"
   })
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 }
 
 resource "aws_iam_role" "app_deployment_record" {
@@ -29,6 +33,8 @@ resource "aws_iam_role" "app_deployment_record" {
   tags = merge(local.common_tags, {
     StateScope = "app"
   })
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 }
 
 resource "aws_iam_role" "app_terraform_apply" {
@@ -40,6 +46,8 @@ resource "aws_iam_role" "app_terraform_apply" {
   tags = merge(local.common_tags, {
     StateScope = "app"
   })
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 }
 
 resource "aws_iam_role" "app_terraform_smoke" {
@@ -51,6 +59,8 @@ resource "aws_iam_role" "app_terraform_smoke" {
   tags = merge(local.common_tags, {
     StateScope = "app"
   })
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 }
 
 resource "aws_iam_role" "app_static_deploy" {
@@ -62,6 +72,8 @@ resource "aws_iam_role" "app_static_deploy" {
   tags = merge(local.common_tags, {
     StateScope = "app"
   })
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 }
 
 resource "aws_iam_role" "app_github_trigger" {
@@ -73,4 +85,6 @@ resource "aws_iam_role" "app_github_trigger" {
   tags = merge(local.common_tags, {
     StateScope = "app"
   })
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 }

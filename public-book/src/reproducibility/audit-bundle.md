@@ -13,7 +13,7 @@
 > 手順の前提（ソース取得やビルドが必要なステップ）は、リポジトリが公開されるまで実行できません。
 > 詳細は [第三者検証ガイド](index.md) を参照してください。
 
-ここで扱う `public` は「秘密データを含まない配布対象」を指し、無認証取得を意味しません。
+ここでいう `public` は「秘密を含まず第三者検証に使える」という機密性の分類であり、無認証公開を意味しません（定義は [公開境界](../verification/public-boundary.md)）。
 通常の取得経路は capability 保護 API です。
 raw S3 URL や presigned URL は通常のブラウザと CLI 契約ではありません。
 現行レスポンスに含まれない旧 URL フィールドの扱いは、[バンドル構造](../verification/bundle-structure.md) と [API エンドポイント一覧](../api/endpoints.md#現行-response-で返さない-legacy-フィールド) を参照してください。

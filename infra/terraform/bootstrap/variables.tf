@@ -271,21 +271,6 @@ variable "development_app_cloudfront_acm_certificate_arn" {
   }
 }
 
-variable "development_app_operator_gate_public_key_pem" {
-  description = "PEM-encoded CloudFront public key consumed by the develop app operator/tester gate."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition = (
-      var.development_app_operator_gate_public_key_pem == null
-      || can(regex("^-----BEGIN PUBLIC KEY-----[\\s\\S]+-----END PUBLIC KEY-----\\s*$", var.development_app_operator_gate_public_key_pem))
-    )
-    error_message = "development_app_operator_gate_public_key_pem must be a PEM-encoded public key when set."
-  }
-}
-
 variable "app_pipeline_artifact_retention_days" {
   description = "Minimum days to retain development app deployment-authority artifacts."
   type        = number

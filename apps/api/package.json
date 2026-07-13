@@ -7,9 +7,9 @@
     "./server": "./src/server/index.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-lambda": "3.1079.0",
-    "@aws-sdk/client-sfn": "3.1079.0",
-    "@aws-sdk/client-sqs": "3.1079.0",
+    "@aws-sdk/client-lambda": "3.1085.0",
+    "@aws-sdk/client-sfn": "3.1085.0",
+    "@aws-sdk/client-sqs": "3.1085.0",
     "@stark-ballot/api-contract": "workspace:*",
     "@stark-ballot/application": "workspace:*",
     "@stark-ballot/aws-adapters": "workspace:*",
@@ -20,10 +20,10 @@
     "@stark-ballot/validation": "workspace:*",
     "@stark-ballot/verification": "workspace:*",
     "@stark-ballot/zkvm-contract": "workspace:*",
-    "hono": "4.12.27"
+    "hono": "4.12.29"
   },
   "devDependencies": {
-    "@aws-sdk/lib-dynamodb": "3.1079.0",
+    "@aws-sdk/lib-dynamodb": "3.1085.0",
     "@stark-ballot/test-support": "workspace:*",
     "vitest": "4.1.9"
   }

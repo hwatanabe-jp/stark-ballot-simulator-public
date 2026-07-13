@@ -1,5 +1,5 @@
 /**
- * Test vectors from final_design.md v1.0 Examples 1-3
+ * Test vectors from final-design.md v1.0 Examples 1-3
  * Verifies implemented final design test vectors.
  *
  * These tests verify the exact byte-level encoding specifications
@@ -25,10 +25,10 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   return value;
 }
 
-describe('final_design.md Test Vectors', () => {
+describe('final-design.md Test Vectors', () => {
   describe('Example 1: Minimal Input (1 vote)', () => {
     it('should produce exact inputCommitment for minimal case', () => {
-      // Test data from final_design.md lines 849-854
+      // Test data from final-design.md lines 849-854
       const electionId = '550e8400-e29b-41d4-a716-446655440000';
       const bulletinRoot = '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
       const treeSize = 1;
@@ -252,7 +252,7 @@ describe('final_design.md Test Vectors', () => {
 
   describe('Example 3: Multiple Votes with Inclusion Proof', () => {
     it('should handle 3 votes with different path lengths', () => {
-      // Test data from final_design.md lines 936-944
+      // Test data from final-design.md lines 936-944
       const electionId = '123e4567-e89b-12d3-a456-426614174000';
       const bulletinRoot = '0xabcd' + '00'.repeat(28) + 'ef01'; // 32 bytes total (2 + 28 + 2)
       const treeSize = 3;

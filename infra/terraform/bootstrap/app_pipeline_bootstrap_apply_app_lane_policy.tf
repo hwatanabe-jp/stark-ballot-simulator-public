@@ -230,6 +230,52 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_iam_management" {
     }
   }
 
+}
+
+data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_management" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  statement {
+    sid    = "AttachAppPlanManagedPolicies"
+    effect = "Allow"
+
+    actions = [
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+    ]
+    resources = ["arn:aws:iam::${var.aws_account_id}:role/${local.app_terraform_plan_role_name}"]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "iam:PolicyARN"
+      values   = local.app_plan_managed_policy_arns
+    }
+  }
+
+  statement {
+    sid    = "AttachAppDeploymentManagedPolicies"
+    effect = "Allow"
+
+    actions = [
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+    ]
+    resources = ["arn:aws:iam::${var.aws_account_id}:role/${local.app_terraform_apply_role_name}"]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "iam:PolicyARN"
+      values   = local.app_deployment_managed_policy_arns
+    }
+  }
+
+  statement {
+    sid       = "ListAppApplyAttachedPolicies"
+    effect    = "Allow"
+    actions   = ["iam:ListAttachedRolePolicies"]
+    resources = local.app_pipeline_role_name_arns
+  }
+
   statement {
     sid    = "CreateOrAttachAppPipelineRoleBoundary"
     effect = "Allow"
@@ -285,51 +331,6 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_iam_management" {
         "codepipeline.amazonaws.com",
       ]
     }
-  }
-}
-
-data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_management" {
-  count = local.app_pipeline_enabled ? 1 : 0
-
-  statement {
-    sid    = "AttachAppPlanManagedPolicies"
-    effect = "Allow"
-
-    actions = [
-      "iam:AttachRolePolicy",
-      "iam:DetachRolePolicy",
-    ]
-    resources = ["arn:aws:iam::${var.aws_account_id}:role/${local.app_terraform_plan_role_name}"]
-
-    condition {
-      test     = "ArnEquals"
-      variable = "iam:PolicyARN"
-      values   = local.app_plan_managed_policy_arns
-    }
-  }
-
-  statement {
-    sid    = "AttachAppDeploymentManagedPolicies"
-    effect = "Allow"
-
-    actions = [
-      "iam:AttachRolePolicy",
-      "iam:DetachRolePolicy",
-    ]
-    resources = ["arn:aws:iam::${var.aws_account_id}:role/${local.app_terraform_apply_role_name}"]
-
-    condition {
-      test     = "ArnEquals"
-      variable = "iam:PolicyARN"
-      values   = local.app_deployment_managed_policy_arns
-    }
-  }
-
-  statement {
-    sid       = "ListAppApplyAttachedPolicies"
-    effect    = "Allow"
-    actions   = ["iam:ListAttachedRolePolicies"]
-    resources = local.app_pipeline_role_name_arns
   }
 }
 

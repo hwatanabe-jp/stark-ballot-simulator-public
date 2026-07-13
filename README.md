@@ -5,7 +5,7 @@ formal-methods layer, built around an end-to-end verifiable voting demo.
 
 This root README is the reviewer entry point. It explains what the project demonstrates, how to run the
 local mock flow, and where to find the detailed public specifications. Protocol details, AWS diagrams,
-verification semantics, and implementation notes live in the Public Specs and the `docs/current/` tree.
+verification semantics, and implementation notes live in the Public Specs and the purpose-oriented `docs/` tree.
 
 - Live demo: <https://stark-ballot-sim.hwatanabe.dev/>
 - Public specs: <https://specs.stark-ballot-sim.hwatanabe.dev/>
@@ -99,7 +99,7 @@ external services.
 ### Prerequisites
 
 - Node.js 24
-- Corepack with pnpm 11.7.0, as pinned by `packageManager`
+- Corepack with pnpm 11.12.0, as pinned by `packageManager`
 - Rust 1.91.1 only if you want Rust builds or real zkVM flows
 - RISC Zero tooling only if you want real zkVM flows
 - Lean / `elan` only if you want to run the formal verification gate
@@ -217,7 +217,7 @@ consumed by TypeScript and Rust tests; it does not claim to prove the whole voti
 pnpm formal:verify
 ```
 
-For scope and claim boundaries, see [`docs/current/formal/README.md`](./docs/current/formal/README.md).
+For scope and claim boundaries, see [`docs/formal/README.md`](./docs/formal/README.md).
 
 ## Repository Layout
 
@@ -273,10 +273,10 @@ For vulnerability reporting and supported testing scope, see [`SECURITY.md`](./S
 
 - Public specs: <https://specs.stark-ballot-sim.hwatanabe.dev/>
 - Local mdBook source: [`public-book/`](./public-book/)
-- Current docs entry point: [`docs/current/README.md`](./docs/current/README.md)
-- Verification pipeline and bundle contract: [`docs/current/verification/README.md`](./docs/current/verification/README.md)
-- Formal model scope: [`docs/current/formal/README.md`](./docs/current/formal/README.md)
-- CLI test guide: [`docs/current/tests/cli.md`](./docs/current/tests/cli.md)
+- Current docs entry point: [`docs/README.md`](./docs/README.md)
+- Verification pipeline and bundle contract: [`docs/verification/README.md`](./docs/verification/README.md)
+- Formal model scope: [`docs/formal/README.md`](./docs/formal/README.md)
+- CLI test guide: [`docs/guides/cli.md`](./docs/guides/cli.md)
 - zkVM build details: [`zkvm/README.md`](./zkvm/README.md)
 - Verifier-service details: [`verifier-service/README.md`](./verifier-service/README.md)
 - Security policy: [`SECURITY.md`](./SECURITY.md)

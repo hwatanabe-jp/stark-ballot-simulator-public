@@ -3,7 +3,7 @@
 This directory contains a mix of maintained CLI entrypoints and lower-level diagnostic helpers for the STARK Ballot Simulator.
 
 The primary end-to-end entrypoint is `scripts/tests/cli-e2e-voting-flow.ts`.
-For the fuller CLI runbook and package-script matrix, see `docs/current/tests/cli.md`.
+For the fuller CLI runbook and package-script matrix, see `docs/guides/cli.md`.
 
 ## Recommended Entry Points
 
@@ -57,17 +57,45 @@ produce and verify production-mode STARK evidence. Develop differs from
 production only by access gating, Cloudflare bypass posture, and artifact
 retention policy.
 
-Use signed-cookie values from the approved operator procedure. The cookie must
-be generated from the current develop operator private key in the approved
-secret store and the CloudFront public key ID created by the app Terraform
-lane. Do not generate cookies from repository files or Terraform state.
+The default acceptance matrix is `S0,S1,S2`: normal, one exclusion class, and
+one claimed-tally class. Set
+`STARK_BALLOT_GATED_SMOKE_SCENARIOS=S0,S1,S2,S3,S4,S5` to exercise the full
+scenario set. A configured matrix fails closed unless it includes `S0`, at
+least one of `S1`/`S3`/`S5`, and at least one of `S2`/`S4`.
+
+For each scenario, the runner resolves the independent expected ImageID from
+the current `default` entry in `public/imageId-mapping.json`, compares the API
+ImageID projections with that authority, explicitly starts
+`POST /api/verification/run`, requires a newly queued durable AWS verification
+run, and polls `/api/verify` to success. It then checks wrong-capability
+rejection on both bundle and report endpoints, retrieves both with the owner
+capability, and rejects a public ZIP containing `input.json`,
+`verification.json`, `included-bitmap.json`, or `seen-bitmap.json`. The STARK
+receipt status must succeed for every educational scenario, while the derived
+overall verdict must be `fully_verified` only for S0 and fail closed for every
+configured tamper scenario.
+
+Use short-lived signed-cookie values from the approved KMS-backed operator
+procedure (`pnpm aws:operator-gate:develop -- inspect`, followed by `issue
+--probe`). KMS private key material is never exported or read from a secret
+store, repository file, or Terraform state. Supply all four issued cookie
+values to the smoke runner only through a protected local environment and do
+not write them to logs or tracked files.
 
 ```bash
 STARK_BALLOT_DEVELOP_BASE_URL=https://develop.stark-ballot-sim.hwatanabe.dev \
 STARK_BALLOT_DIRECT_API_ORIGIN=https://<api-id>.execute-api.<region>.amazonaws.com \
 STARK_BALLOT_OPERATOR_AUTH_HEADER=Cookie \
-STARK_BALLOT_OPERATOR_AUTH_VALUE='CloudFront-Policy=<policy>; CloudFront-Signature=<signature>; CloudFront-Key-Pair-Id=<key-pair-id>' \
+STARK_BALLOT_OPERATOR_AUTH_VALUE='CloudFront-Policy=<policy>; CloudFront-Signature=<signature>; CloudFront-Key-Pair-Id=<key-pair-id>; CloudFront-Hash-Algorithm=SHA256' \
 pnpm test:develop:gated-smoke
+```
+
+This command generates production-mode STARK evidence for multiple scenarios
+and is intentionally not part of the default local or CI gate. Local contract
+tests cover the runner without contacting AWS:
+
+```bash
+pnpm exec vitest run scripts/__tests__/develop-gated-smoke.test.ts --reporter=dot
 ```
 
 The documented operator-gated command does not require
@@ -238,9 +266,9 @@ It verifies that the generated zip contains public artifacts such as:
 - `election-manifest.json`
 - `close-statement.json`
 
-and that private `input.json` / `included-bitmap.json` / `seen-bitmap.json` are excluded
-from `bundle.zip` while the exact bitmap artifacts are still retained alongside the uploaded
-outputs.
+and that private `input.json` / `verification.json` / `included-bitmap.json` / `seen-bitmap.json`
+are excluded from `bundle.zip` while the protected verification report and exact bitmap artifacts
+are still retained alongside the uploaded outputs.
 
 Notes:
 

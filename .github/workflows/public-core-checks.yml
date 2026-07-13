@@ -29,6 +29,9 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      - name: Format check
+        run: pnpm format:check
+
       - name: Lint
         run: pnpm lint
 

@@ -24,7 +24,7 @@ be reviewed as a meaningful vertical slice.
 - `src/lib/verification/verification-summary.ts`
 - `src/lib/verification/verification-checks.ts`
 - `src/app/(routes)/verify/page.tsx`
-- `docs/current/verification/README.md`
+- `docs/verification/README.md`
 
 ## Deliverables
 
@@ -42,8 +42,8 @@ be reviewed as a meaningful vertical slice.
 - theorem: `fully_verified_implies_no_unknown_checks`
 - theorem: `fully_verified_implies_required_roles_success`
 - theorem: `sth_configured_promotes_third_party_check`
-- generated `docs/current/formal/generated-vectors/verification-summary-cases.json`
-- generated `docs/current/formal/generated-vectors/verification-display-cases.json`
+- generated `docs/formal/generated-vectors/verification-summary-cases.json`
+- generated `docs/formal/generated-vectors/verification-display-cases.json`
 - a targeted Vitest connection for summary vectors
 - a targeted Vitest or page-level connection for the verify page's final
   overall-status gate
@@ -203,5 +203,5 @@ Do not modify `ci:verify` in this phase. Lean availability and vector
 consumption should stabilize before CI promotion.
 
 Lean/Lake setup is documented in `formal/README.md` and
-`docs/current/formal/README.md`. Use `elan`; `lake` comes from the selected Lean
+`docs/formal/README.md`. Use `elan`; `lake` comes from the selected Lean
 toolchain and should not be installed as an unrelated system package.

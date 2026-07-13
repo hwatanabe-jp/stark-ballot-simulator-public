@@ -12,7 +12,7 @@
  * 設計目標: 1%あたりの所要時間が単調増加（または平坦）となり、
  * ユーザーに「減速している」という自然な印象を与える。
  *
- * Reference: docs/current/ui-redesign/design-spec-transparent-trust.md
+ * Reference: docs/ui/design-spec-transparent-trust.md
  */
 
 // 区間境界（ratio）

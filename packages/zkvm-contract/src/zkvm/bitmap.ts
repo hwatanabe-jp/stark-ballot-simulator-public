@@ -1,6 +1,6 @@
 /**
  * Bitmap processing utilities for includedBitmapRoot calculation
- * Following final_design.md §2.6 specifications
+ * Following final-design.md §2.6 specifications
  *
  * LSB-first encoding with 32-byte chunks and CT-style Merkle tree
  */
@@ -136,7 +136,7 @@ export function computeMerkleRoot(leaves: Buffer[]): Buffer {
 
 /**
  * Compute includedBitmapRoot from bitmap
- * Following final_design.md §2.6 specification
+ * Following final-design.md §2.6 specification
  *
  * @param bitmap Boolean array where true = included, false = excluded
  * @returns Hex string of the Merkle root

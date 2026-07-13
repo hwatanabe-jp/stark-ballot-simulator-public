@@ -80,6 +80,97 @@ variable "enable_dynamodb_deletion_protection" {
   default     = true
 }
 
+variable "dynamodb_recovery_phase" {
+  description = "Explicit four-phase DynamoDB recovery transition state selected by the app saved-plan lane."
+  type        = string
+  default     = "primary_active"
+
+  validation {
+    condition = contains([
+      "primary_active",
+      "primary_quiesced",
+      "replacement_quiesced",
+      "replacement_active",
+    ], var.dynamodb_recovery_phase)
+    error_message = "dynamodb_recovery_phase must be primary_active, primary_quiesced, replacement_quiesced, or replacement_active."
+  }
+}
+
+variable "dynamodb_recovery_activation" {
+  description = "Validated, non-secret two-table recovery activation selected by the app saved-plan lane; null keeps the Terraform-owned primary tables active."
+  type = object({
+    schema_version         = string
+    validation_status      = string
+    recovery_id            = string
+    recovery_point         = string
+    manifest_sha256        = string
+    account_alias          = string
+    deployment_environment = string
+    account_id             = string
+    region                 = string
+    kms_key_arn            = string
+    sessions = object({
+      source_table_arn = string
+      table_arn        = string
+      table_name       = string
+      key_schema       = string
+    })
+    votes = object({
+      source_table_arn     = string
+      table_arn            = string
+      table_name           = string
+      key_schema           = string
+      vote_id_index_schema = string
+    })
+  })
+  default  = null
+  nullable = true
+
+  validation {
+    condition = var.dynamodb_recovery_activation == null ? true : (
+      var.dynamodb_recovery_activation.schema_version == "dynamodb-recovery-activation-v1"
+      && var.dynamodb_recovery_activation.validation_status == "validated"
+      && can(regex("^[0-9a-f]{64}$", var.dynamodb_recovery_activation.recovery_id))
+      && can(regex("^[0-9a-f]{64}$", var.dynamodb_recovery_activation.manifest_sha256))
+      && can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$", var.dynamodb_recovery_activation.recovery_point))
+    )
+    error_message = "dynamodb_recovery_activation must be a validated v1 manifest with one recovery ID, checksum, and UTC recovery point."
+  }
+
+  validation {
+    condition = var.dynamodb_recovery_activation == null ? true : (
+      var.dynamodb_recovery_activation.account_alias == var.account_alias
+      && var.dynamodb_recovery_activation.deployment_environment == var.deployment_environment
+      && var.dynamodb_recovery_activation.account_id == var.aws_account_id
+      && var.dynamodb_recovery_activation.region == var.aws_region
+      && can(regex("^arn:aws:kms:${var.aws_region}:${var.aws_account_id}:key/[0-9a-fA-F-]+$", var.dynamodb_recovery_activation.kms_key_arn))
+    )
+    error_message = "dynamodb_recovery_activation account, region, alias, environment, and KMS key must match the app lane."
+  }
+
+  validation {
+    condition = var.dynamodb_recovery_activation == null ? true : (
+      var.dynamodb_recovery_activation.sessions.source_table_arn == "arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${var.project_name}-${var.account_alias}-${var.deployment_environment}-sessions"
+      && var.dynamodb_recovery_activation.votes.source_table_arn == "arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${var.project_name}-${var.account_alias}-${var.deployment_environment}-votes"
+      && var.dynamodb_recovery_activation.sessions.table_arn == "arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${var.dynamodb_recovery_activation.sessions.table_name}"
+      && var.dynamodb_recovery_activation.votes.table_arn == "arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${var.dynamodb_recovery_activation.votes.table_name}"
+    )
+    error_message = "dynamodb_recovery_activation must select replacement ARNs for the app lane's primary sessions and votes pair."
+  }
+
+  validation {
+    condition = var.dynamodb_recovery_activation == null ? true : (
+      startswith(var.dynamodb_recovery_activation.sessions.table_name, "${var.project_name}-${var.account_alias}-${var.deployment_environment}-sessions-recovery-")
+      && startswith(var.dynamodb_recovery_activation.votes.table_name, "${var.project_name}-${var.account_alias}-${var.deployment_environment}-votes-recovery-")
+      && trimprefix(var.dynamodb_recovery_activation.sessions.table_name, "${var.project_name}-${var.account_alias}-${var.deployment_environment}-sessions-recovery-") == trimprefix(var.dynamodb_recovery_activation.votes.table_name, "${var.project_name}-${var.account_alias}-${var.deployment_environment}-votes-recovery-")
+      && var.dynamodb_recovery_activation.sessions.key_schema == "sessionId:S:HASH"
+      && var.dynamodb_recovery_activation.votes.key_schema == "sessionId:S:HASH,voteIndex:N:RANGE"
+      && var.dynamodb_recovery_activation.votes.vote_id_index_schema == "voteId-index:voteId:S:HASH:KEYS_ONLY"
+    )
+    error_message = "dynamodb_recovery_activation replacement names and table schemas must match one complete DynamoSessionStore recovery pair."
+  }
+}
+
 variable "session_live_ttl_seconds" {
   description = "Live-session retention used by target runtime config."
   type        = number
@@ -315,21 +406,6 @@ variable "develop_operator_gate_enabled" {
   validation {
     condition     = var.deployment_environment == "develop" || !var.develop_operator_gate_enabled
     error_message = "develop_operator_gate_enabled may be true only for the develop app lane."
-  }
-}
-
-variable "develop_operator_gate_public_key_pem" {
-  description = "PEM-encoded CloudFront public key used by the develop operator/tester signed-cookie gate."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition = (
-      var.develop_operator_gate_public_key_pem == null
-      || can(regex("^-----BEGIN PUBLIC KEY-----[\\s\\S]+-----END PUBLIC KEY-----\\s*$", var.develop_operator_gate_public_key_pem))
-    )
-    error_message = "develop_operator_gate_public_key_pem must be a PEM-encoded public key when set."
   }
 }
 

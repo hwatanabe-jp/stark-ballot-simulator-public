@@ -76,6 +76,8 @@ flowchart TD
 4. `/verify` の UI シーケンスは、step を順に見せる前に STARK が terminal status に到達するまでポーリングします。
    timeout や transport failure は STARK failure として扱われます。
 
+継続判定に使うクライアント状態キーの視点は [セッションライフサイクル](../api/session-lifecycle.md) を参照してください。
+
 ```mermaid
 sequenceDiagram
   participant U as ブラウザ

@@ -40,7 +40,7 @@ data "aws_iam_policy_document" "target_lambda_session_store_runtime" {
       "dynamodb:Scan",
       "dynamodb:UpdateItem",
     ]
-    resources = [aws_dynamodb_table.sessions.arn]
+    resources = local.runtime_sessions_table_arns
   }
 
   statement {
@@ -52,7 +52,7 @@ data "aws_iam_policy_document" "target_lambda_session_store_runtime" {
       "dynamodb:PutItem",
       "dynamodb:Query",
     ]
-    resources = [aws_dynamodb_table.votes.arn]
+    resources = local.runtime_votes_table_arns
   }
 
   statement {
@@ -62,10 +62,7 @@ data "aws_iam_policy_document" "target_lambda_session_store_runtime" {
     actions = [
       "dynamodb:TransactWriteItems",
     ]
-    resources = [
-      aws_dynamodb_table.sessions.arn,
-      aws_dynamodb_table.votes.arn,
-    ]
+    resources = concat(local.runtime_sessions_table_arns, local.runtime_votes_table_arns)
   }
 
   statement {
@@ -217,7 +214,7 @@ data "aws_iam_policy_document" "target_lambda_proof_dispatcher" {
     sid       = "StartTargetFinalization"
     effect    = "Allow"
     actions   = ["states:StartExecution"]
-    resources = [aws_sfn_state_machine.target_finalization.arn]
+    resources = [local.target_state_machine_arn]
   }
 
   statement {

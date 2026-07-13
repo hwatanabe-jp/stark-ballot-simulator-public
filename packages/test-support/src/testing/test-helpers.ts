@@ -1,6 +1,6 @@
 /**
  * Test helpers for zkVM v2 structures
- * Provides utilities for creating test data following final_design.md v1.0
+ * Provides utilities for creating test data following final-design.md v1.0
  */
 
 import { randomBytes, randomUUID } from 'crypto';

@@ -1,5 +1,5 @@
 /// STH (Signed Tree Head) digest calculation for split-view attack prevention
-/// Following final_design.md §2.4 specifications
+/// Following final-design.md §2.4 specifications
 use risc0_zkvm::sha::{Impl, Sha256};
 
 /// Compute STH digest for split-view attack prevention

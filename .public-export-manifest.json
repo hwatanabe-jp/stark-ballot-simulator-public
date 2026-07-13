@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "sourceSha": "b6db47826297f8ffe85121095930176839d7c8dd",
-  "generatedAt": "2026-07-07T15:35:56.692Z",
-  "copiedFileCount": 1050,
+  "sourceSha": "5bd8b65e9a15194dc26bb35cd0f6d4402428e7fa",
+  "generatedAt": "2026-07-13T06:32:30.986Z",
+  "copiedFileCount": 1047,
   "generatedFiles": [
     ".github/workflows/public-cli-tests.yml",
     ".github/workflows/public-core-checks.yml",
@@ -21,9 +21,7 @@
     ".env* except .env.local.example and scripts/tests/.env.test.defaults",
     ".github/workflows/* from the private repository",
     "docs/archive/",
-    "docs/current/internal/",
-    "docs/current/monitoring/",
-    "docs/current/guides/3-deployment/public-repository-release.md",
+    "docs/internal/",
     "scripts/monitoring/",
     "scripts/public/",
     "infra/terraform/legacy/main.tfvars",

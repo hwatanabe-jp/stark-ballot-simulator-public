@@ -1,95 +1,6 @@
 locals {
-  app_no_runtime_source_check_command         = <<-EOT
-find infra/terraform/app -type f -name '*.tf' | sort > app-smoke-terraform-files.txt
-grep -R -n -E '^[[:space:]]*(resource|module)[[:space:]]+"' infra/terraform/app --include='*.tf' > app-smoke-declared-blocks.txt || true
-if grep -R -n -E '^[[:space:]]*module[[:space:]]+"' infra/terraform/app --include='*.tf'; then
-  echo "Target app smoke found module blocks that can hide app/frontend resources." >&2
-  exit 2
-fi
-node <<'NODE'
-const fs = require("node:fs");
-
-const declaredBlocks = fs.readFileSync("app-smoke-declared-blocks.txt", "utf8").split(/\r?\n/).filter(Boolean);
-const targetAppAllowedResourceTypes = new Set([
-  "terraform_data",
-  "aws_apigatewayv2_api",
-  "aws_apigatewayv2_integration",
-  "aws_apigatewayv2_route",
-  "aws_apigatewayv2_stage",
-  "aws_cloudwatch_event_rule",
-  "aws_cloudwatch_event_target",
-  "aws_cloudwatch_metric_alarm",
-  "aws_cloudwatch_log_group",
-  "aws_cloudfront_cache_policy",
-  "aws_cloudfront_distribution",
-  "aws_cloudfront_function",
-  "aws_cloudfront_key_group",
-  "aws_cloudfront_origin_access_control",
-  "aws_cloudfront_origin_request_policy",
-  "aws_cloudfront_public_key",
-  "aws_cloudfront_response_headers_policy",
-  "aws_dynamodb_table",
-  "aws_dynamodb_table_item",
-  "aws_ecs_cluster",
-  "aws_ecs_task_definition",
-  "aws_iam_role",
-  "aws_iam_role_policy_attachment",
-  "aws_iam_role_policy",
-  "aws_kms_alias",
-  "aws_kms_key",
-  "aws_lambda_event_source_mapping",
-  "aws_lambda_function",
-  "aws_lambda_permission",
-  "aws_s3_bucket",
-  "aws_s3_bucket_lifecycle_configuration",
-  "aws_s3_bucket_policy",
-  "aws_s3_bucket_public_access_block",
-  "aws_s3_bucket_server_side_encryption_configuration",
-  "aws_s3_bucket_versioning",
-  "aws_ssm_parameter",
-  "aws_sfn_state_machine",
-  "aws_sqs_queue",
-]);
-const unapprovedDeclarations = declaredBlocks.filter((line) => {
-  const match = line.match(/resource\s+"([^"]+)"/);
-  return match && !targetAppAllowedResourceTypes.has(match[1]);
-});
-if (unapprovedDeclarations.length > 0) {
-  throw new Error("Target app smoke found unapproved resource declarations:\n" + unapprovedDeclarations.join("\n"));
-}
-
-const plan = JSON.parse(fs.readFileSync("infra/terraform/app/tfplan.json", "utf8"));
-const deferredResourceTypes = new Set([
-  "aws_api_gateway_rest_api",
-  "aws_s3_object",
-  "aws_s3_bucket_website_configuration",
-  "aws_s3_bucket_acl",
-  "aws_s3_bucket_ownership_controls",
-  "aws_s3_bucket_cors_configuration",
-  "aws_ecs_service",
-  "aws_secretsmanager_secret",
-]);
-const deferredResourceTypePrefixes = [
-  "aws_route53_",
-  "aws_acm_",
-  "aws_ecr_",
-];
-const resourceChanges = Array.isArray(plan.resource_changes) ? plan.resource_changes : [];
-function isDeferredResourceType(type) {
-  return (
-    typeof type === "string" &&
-    (deferredResourceTypes.has(type) || deferredResourceTypePrefixes.some((prefix) => type.startsWith(prefix)))
-  );
-}
-const mutatingRuntimeChanges = resourceChanges.filter((change) => {
-  const actions = Array.isArray(change.change?.actions) ? change.change.actions : [];
-  return isDeferredResourceType(change.type) && actions.some((action) => !["no-op", "read"].includes(action));
-});
-if (mutatingRuntimeChanges.length > 0) {
-  throw new Error("Target app smoke found deferred AWS resources in retained plan JSON.");
-}
-NODE
-EOT
+  app_no_runtime_source_check_command         = "bash infra/terraform/bootstrap/app-pipeline-scripts/app-smoke-source-boundary.sh"
+  app_smoke_operator_gate_keyset_command      = "bash infra/terraform/bootstrap/app-pipeline-scripts/app-smoke-operator-gate-keyset.sh"
   app_smoke_dynamodb_data_plane_command       = <<-EOT
 set -eu
 node <<'NODE' > app-smoke-dynamodb-config.json
@@ -264,6 +175,7 @@ const evidence = {
 fs.writeFileSync("app-smoke-dynamodb-data-plane-evidence.json", JSON.stringify(evidence, null, 2) + "\n");
 NODE
 EOT
+  app_smoke_dynamodb_recovery_phase_command   = "bash infra/terraform/bootstrap/app-pipeline-scripts/app-smoke-dynamodb-recovery-phase.sh"
   app_smoke_denial_checks_command             = <<-EOT
 aws iam simulate-principal-policy --policy-source-arn "${aws_iam_role.app_terraform_smoke[0].arn}" --action-names s3:GetObject s3:PutObject kms:Decrypt kms:Encrypt --resource-arns "${aws_s3_bucket.state.arn}/${local.app_state_backend_key}" "${aws_kms_key.state.arn}" --output json --no-cli-pager > app-smoke-state-denial-simulation.json
 aws iam simulate-principal-policy --policy-source-arn "${aws_iam_role.app_terraform_smoke[0].arn}" --action-names iam:CreateRole iam:PutRolePolicy cloudfront:CreateDistribution route53:CreateHostedZone acm:RequestCertificate ecr:CreateRepository ecs:CreateService secretsmanager:CreateSecret s3:PutObject s3:PutBucketPolicy s3:PutBucketWebsite s3:PutBucketAcl --resource-arns "*" --output json --no-cli-pager > app-smoke-mutation-denial-simulation.json
@@ -294,13 +206,24 @@ NODE
 EOT
   app_fetch_existing_acceptance_index_command = <<-EOT
 set +e
-aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "${local.app_accepted_marker_path}/index.json" accepted-index-existing.json --output json --no-cli-pager > accepted-index-existing.get-object.json 2> accepted-index-existing.error
+aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "${local.app_accepted_marker_path}/index.json" --expected-bucket-owner "${var.aws_account_id}" accepted-index-existing.json --output json --no-cli-pager > accepted-index-existing.get-object.json 2> accepted-index-existing.error
 accepted_index_status="$?"
 set -e
 if [ "$accepted_index_status" -eq 0 ]; then
-  :
+  node <<'NODE'
+const fs = require("node:fs");
+const response = JSON.parse(fs.readFileSync("accepted-index-existing.get-object.json", "utf8"));
+if (typeof response.ETag !== "string" || response.ETag.length === 0) {
+  throw new Error("Existing accepted deployment index get-object response is missing ETag.");
+}
+fs.writeFileSync(
+  "accepted-index-existing-state.json",
+  JSON.stringify({ exists: true, etag: response.ETag, versionId: response.VersionId ?? null }, null, 2) + "\n",
+);
+NODE
 elif grep -Eq '(^|[^[:alnum:]])(NoSuchKey|Not[[:space:]]*Found)([^[:alnum:]]|$)' accepted-index-existing.error; then
   printf '{"schemaVersion":"target-app-deployment-evidence-v1","stateIdentity":"stark-dev/develop/app","acceptedDeployments":[]}\n' > accepted-index-existing.json
+  printf '{"exists":false}\n' > accepted-index-existing-state.json
 else
   cat accepted-index-existing.error >&2
   exit "$accepted_index_status"

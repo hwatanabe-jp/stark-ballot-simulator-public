@@ -117,6 +117,7 @@ async function buildZipBuffer(entries: Record<string, unknown>): Promise<Buffer>
 describe('target verification-worker handler', () => {
   const originalEnv = { ...process.env };
   let loggerErrorSpy: MockInstance<typeof logger.error>;
+  let loggerWarnSpy: MockInstance<typeof logger.warn>;
 
   function configureTargetRuntimeEnv(): void {
     process.env['TARGET_AWS_RUNTIME'] = '1';
@@ -152,6 +153,7 @@ describe('target verification-worker handler', () => {
     storeMocks.recordAwsVerificationDeliveryMetadata.mockResolvedValue(undefined);
     storeMocks.completeVerificationResult.mockResolvedValue(undefined);
     loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     configureTargetRuntimeEnv();
   });
 
@@ -163,6 +165,7 @@ describe('target verification-worker handler', () => {
     }
     Object.assign(process.env, originalEnv);
     loggerErrorSpy.mockRestore();
+    loggerWarnSpy.mockRestore();
   });
 
   it('verifies and re-uploads Docker-shaped async bundles without metadata.json', async () => {
@@ -478,6 +481,58 @@ describe('target verification-worker handler', () => {
     expect(completedPayload.executionId).toBe(executionId);
     expect(completedPayload.verificationResult.status).toBe('success');
     expect(completedPayload.verificationResult.report?.status).toBe('success');
+    expect(loggerWarnSpy).not.toHaveBeenCalledWith(expect.stringContaining('bitmap'), expect.anything());
+  });
+
+  it('fails closed when target runtime cannot access an optional private sidecar unexpectedly', async () => {
+    const sessionId = '550e8400-e29b-41d4-a716-446655440000';
+    const executionId = 'exec-sidecar-access';
+    const bundleKey = `sessions/${sessionId}/${executionId}/bundle.zip`;
+
+    vi.mocked(downloadFromS3).mockResolvedValue(
+      await buildZipBuffer({
+        'public-input.json': { schema: 'stark-ballot.public_input', version: '1.0', votes: [] },
+        'election-manifest.json': { electionId: 'election-1' },
+        'close-statement.json': { treeSize: 1 },
+        'receipt.json': { receipt: true },
+        'journal.json': { journal: true },
+      }),
+    );
+    vi.mocked(invokeVerifierService).mockImplementation(async ({ bundlePath, reportPath }) => {
+      const report = {
+        status: 'success' as const,
+        verifier_version: 'test',
+        verified_at: '2026-06-12T00:00:00.000Z',
+        duration_ms: 1,
+        expected_image_id: '0x' + '1'.repeat(64),
+        receipt_image_id: '0x' + '1'.repeat(64),
+        dev_mode_receipt: false,
+      };
+      await fs.writeFile(reportPath, JSON.stringify(report), 'utf-8');
+      return { status: 'success', bundlePath, reportPath, report };
+    });
+    const realAccess = fs.access.bind(fs);
+    const accessSpy = vi.spyOn(fs, 'access').mockImplementation(async (filePath) => {
+      if (path.basename(String(filePath)) === 'included-bitmap.json') {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      }
+      return await realAccess(filePath);
+    });
+
+    try {
+      const response = await handler({
+        mode: 's3_bundle',
+        sessionId,
+        executionId,
+        bundleKey,
+        expectedImageId: '0x' + '1'.repeat(64),
+      });
+
+      expect(response.status).toBe('error');
+      expect(loggerWarnSpy).toHaveBeenCalledWith('[Bundle] Included bitmap access failed:', 'permission denied');
+    } finally {
+      accessSpy.mockRestore();
+    }
   });
 
   it('deduplicates repeated SQS work for the same execution within one batch', async () => {

@@ -688,7 +688,7 @@ mod tests {
 
     fn formal_guest_cases() -> Vec<FormalGuestCase> {
         serde_json::from_str(include_str!(
-            "../../../../docs/current/formal/generated-vectors/guest-model-cases.json"
+            "../../../../docs/formal/generated-vectors/guest-model-cases.json"
         ))
         .expect("formal guest model vectors should parse")
     }

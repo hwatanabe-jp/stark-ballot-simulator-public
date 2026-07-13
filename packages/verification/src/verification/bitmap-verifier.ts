@@ -1,6 +1,6 @@
 /**
  * Client-side bitmap verification
- * Following final_design.md §2.6.1 specifications
+ * Following final-design.md §2.6.1 specifications
  *
  * Client independently calculates bit positions to prevent server manipulation
  * Server provides only raw materials (chunk and audit path)

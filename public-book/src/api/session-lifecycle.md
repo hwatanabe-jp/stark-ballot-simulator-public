@@ -34,7 +34,7 @@
 - `aggregate` 画面で非同期集計の `pending` または `running` を検知すると、identity-scoped helper が `phase: 'finalizing'` を保存します。
 - `aggregate` 画面または `result` 画面で canonical な `finalizeResult` を保存できると、identity-scoped helper が `phase: 'verifying'` へ進めます。
 - `/result` から `/verify` へ進む時は `verificationRequestedAt` を保存し、必要に応じて `POST /api/verification/run` を先行起動します。
-- `/verify` の継続判定:
+- `/verify` の継続判定（フロー視点の説明は [設計と実行フロー](../verification/design-and-flow.md) を参照）:
   1. `verificationRequestedAt` と canonical な `finalizeResult` の両方がそろっていれば継続扱い（`hasContinuationAuthority`）
   2. 上記がなくても、サーバー返却の STARK 状態が `not_run` 以外なら進行できる
   3. `hasContinuationAuthority` 不成立かつ STARK が `not_run` の場合はブロックする

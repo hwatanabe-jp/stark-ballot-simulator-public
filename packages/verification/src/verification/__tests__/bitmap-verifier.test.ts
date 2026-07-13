@@ -1,6 +1,6 @@
 /**
  * Tests for client-side bitmap verification
- * Following final_design.md §2.6.1 specifications
+ * Following final-design.md §2.6.1 specifications
  *
  * Verifies client-side bitmap proof handling after implementation.
  */

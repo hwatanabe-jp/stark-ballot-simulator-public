@@ -68,7 +68,7 @@ export function verifyRecordedAsCast(
  * Verify Counted-as-Recorded
  * Ensures the vote was counted correctly by the zkVM
  *
- * Enhanced with completeness checks per final_design.md requirements:
+ * Enhanced with completeness checks per final-design.md requirements:
  * - excludedSlots > 0 MUST fail verification
  * - missingSlots / invalidPresentedSlots explain the slot-based exclusion signal
  * - totalExpected vs treeSize mismatches MUST fail verification

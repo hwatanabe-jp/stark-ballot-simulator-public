@@ -3,7 +3,7 @@
  *
  * Tests for the ImageID mapping functionality that provides
  * the correspondence between methodVersion and expected ImageID
- * according to final_design.md §4.8
+ * according to final-design.md §4.8
  */
 
 import { describe, it, expect } from 'vitest';

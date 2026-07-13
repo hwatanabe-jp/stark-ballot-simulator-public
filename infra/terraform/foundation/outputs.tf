@@ -26,17 +26,19 @@ output "target_image_authority" {
         filterType = "WILDCARD_MATCH"
       }
     ]
-    retention_policy = "candidate-prefix-latest-200-images"
+    retention_policy = "no-automatic-image-expiry"
   }
 }
 
 output "release_manifest_authority" {
-  description = "Encrypted versioned S3 authority for immutable release manifests."
+  description = "Encrypted versioned S3 authority for immutable release records and mutable accepted pointers."
   value = {
-    bucket_name        = aws_s3_bucket.release_manifests.bucket
-    versioning_enabled = true
-    encryption         = "AES256"
-    required_inputs    = ["ReleaseManifestKey", "ReleaseManifestVersionId", "ReleaseManifestSha256"]
+    bucket_name                        = aws_s3_bucket.release_manifests.bucket
+    versioning_enabled                 = true
+    encryption                         = "AES256"
+    immutable_record_delete_protection = true
+    required_coordinates               = ["key", "versionId", "sha256"]
+    consumer_model                     = "accepted-pointer-or-retained-deployment-record"
   }
 }
 

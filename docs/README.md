@@ -1,25 +1,56 @@
 # Documentation
 
-This directory is split by document freshness:
+The Public Specs explain the protocol and verification model for readers of the
+demo. This tree complements them with implementation-oriented contracts,
+architecture notes, operating guides, and evidence produced alongside the
+code. When documentation and implementation disagree, current code and tests
+win.
 
-- `docs/current/` contains documents that are intended to describe the
-  current implementation, current operating procedures, or current design
-  contracts.
-- Historical plans, old specs, completed phase notes, and proposal material are kept in the private source repository and stripped from generated public snapshots.
+The public snapshot intentionally omits account-specific procedures, live
+inventory, approval records, and historical working notes. Its generated
+`docs/PUBLIC_REPOSITORY.md` records the source revision and documentation
+footprint of that snapshot.
 
-When code and documentation disagree, current code wins. For runtime
-behavior, check `apps/`, `packages/`, `infra/docker/`, `infra/terraform/`, and
-the nearest README for the area you are changing.
+## 15-Minute Review Path
 
-## Current Entry Points
+1. [Verification pipeline](./verification/README.md) — the fail-closed checks,
+   verdict rules, and public/private artifact boundary.
+2. [Formal evidence](./formal/README.md) — the Lean scope, generated vectors,
+   and the limits of the formal claims.
+3. [AWS architecture](./architecture/aws-architecture.md) — the deployed
+   application and proof pipeline.
+4. [zkVM decision records](./zkvm/decisions/README.md) — why the current proof
+   contract and trust boundaries look the way they do.
+5. [Transparent Trust UI](./ui/design-spec-transparent-trust.md) — how the
+   verification model is presented without overstating assurance.
 
-- `docs/current/verification/README.md` - verification pipeline and bundle contract
-- `docs/current/formal/README.md` - Lean model scope and generated vector outputs
-- `docs/current/tests/cli.md` - CLI flow and verification test guide
-- `docs/current/runbooks/aws-hybrid.md` - AWS hybrid operations
-- `docs/current/guides/7-terraform/README.md` - Terraform-managed infrastructure
-- `docs/current/guides/6-zkvm_design/final_design.md` - zkVM design contract
-- `docs/current/zkvm-contract/index.md` - zkVM contract plans, including planned hardening work
-- `docs/current/roadmap/README.md` - active roadmap entry
+For a runnable review, continue with the [CLI guide](./guides/cli.md) or the
+root `README.md` mock quick start.
 
-Operational or account-specific material is kept in the private source repository and stripped from generated public snapshots.
+## Documentation Map
+
+| Area                                         | Purpose                                                                            | Primary language         |
+| -------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------ |
+| [Verification](./verification/README.md)     | Verification checks, summary semantics, bundle delivery, and hard-failure rules    | 🇯🇵 Japanese              |
+| [Formal](./formal/README.md)                 | Lean models, audit output, and generated implementation vectors                    | 🇬🇧 English               |
+| [Architecture](./architecture/README.md)     | System boundaries, AWS topology, Hono ownership, and repository context            | 🇬🇧 English / 🇯🇵 Japanese |
+| [Guides](./guides/)                          | Local setup, CLI operation, and STARK verification testing                         | 🇬🇧 English / 🇯🇵 Japanese |
+| [Infrastructure](./infrastructure/README.md) | Terraform ownership, release lanes, toolchain images, and cloud security routing   | 🇬🇧 English / 🇯🇵 Japanese |
+| [Runbooks](./runbooks/README.md)             | Read-only-first runtime diagnosis, logging, and security response                  | 🇬🇧 English / 🇯🇵 Japanese |
+| [UI](./ui/README.md)                         | Visual system, UI-facing API vocabulary, page behavior, and lifecycle presentation | 🇯🇵 Japanese              |
+| [zkVM](./zkvm/README.md)                     | Proof design, journal/reference material, mock behavior, and decision records      | 🇬🇧 English / 🇯🇵 Japanese |
+| [Roadmap](./roadmap.md)                      | Current forward-looking priorities                                                 | 🇬🇧 English               |
+| [Licenses](./licenses/)                      | Generated dependency-license and metadata artifacts                                | Machine-generated        |
+
+## How to Read the Evidence
+
+- The files under [zkVM decisions](./zkvm/decisions/README.md) are decision and
+  execution records. Their status text explains how the design evolved; it is
+  not a substitute for current code.
+- The [formal artifacts](./formal/README.md) machine-check selected invariants
+  and feed generated vectors into TypeScript and Rust tests. They do not claim
+  to prove the complete application, AWS runtime, or browser UI.
+- Runbooks distinguish read-only diagnosis from authorized changes. Public
+  runbooks explain the safety boundary but do not grant deployment authority.
+- The repository remains an educational proof of concept, not a production
+  voting system.

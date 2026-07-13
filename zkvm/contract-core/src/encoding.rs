@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn test_formal_input_commitment_vectors() {
         let cases: Vec<FormalInputCommitmentCase> = serde_json::from_str(include_str!(
-            "../../../docs/current/formal/generated-vectors/input-commitment-cases.json"
+            "../../../docs/formal/generated-vectors/input-commitment-cases.json"
         ))
         .expect("formal input commitment vectors should parse");
 

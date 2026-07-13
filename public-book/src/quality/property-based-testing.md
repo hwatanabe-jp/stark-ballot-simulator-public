@@ -7,14 +7,9 @@ Property-based Testing (PBT) は、少数の fixture では見落としやすい
 ## PBT を導入した理由
 
 Example-based tests は既知のシナリオを守ります。
-PBT はそれに加えて、次のような仕様レベルの性質を生成器が到達できる範囲で探索します。
+PBT はそれに加えて、input commitment の順序不変性、Merkle proof の改ざん拒否、LSB-first bitmap packing の境界安定性、journal count の分解式のような仕様レベルの性質を、生成器が到達できる範囲で探索します。
 
-- 同じ vote multiset なら入力順序を変えても input commitment が変わらない
-- root、leaf、index、proof node を改ざんすると Merkle proof が失敗する
-- LSB-first bitmap packing の bit address が境界で崩れない
-- journal count の分解式が常に成立する
-
-PBT は数学的証明ではありません。
+PBT は数学的証明ではありません（[限界](#限界)）。
 それでも、CI で広い生成入力を継続的に試せるため、暗号周辺の encoding drift や境界条件の退行を早期に検出しやすくなります。
 
 ## TypeScript 側の PBT
@@ -42,8 +37,10 @@ PBT は数学的証明ではありません。
 
 - 生成した bitmap の任意 index について proof が round-trip する
 - proof から抽出した `included` が元の bit と一致する
-- leaf chunk や audit path の改ざんを拒否する
-- 0, 1, 7, 8, 255, 256, 257, 511, 512 bit などの境界を固定ケースで検査する
+- leaf chunk や Merkle パスの改ざんを拒否する
+- 認証済みの logical tree size から外れる bit の proof を拒否する
+- logical tree size より後ろの padding bit が非ゼロなら拒否する
+- 0, 1, 7, 8, 255, 256, 257, 511, 512, 513, 1025 bit の境界を固定ケースで検査する
 
 ### Input commitment
 
@@ -56,7 +53,7 @@ PBT は数学的証明ではありません。
 - 同じ vote multiset の順序を入れ替えても input commitment が変わらない
 - duplicate index がある異常入力でも deterministic tie-break により順序が安定する
 - election ID、bulletin root、tree size、total expected を変えると commitment が変わる
-- vote の index、commitment、Merkle path を変えると commitment が変わる
+- vote の index、commitment、Merkle パスを変えると commitment が変わる
 
 ### Journal invariants
 
@@ -110,4 +107,4 @@ Lean は同種の不変条件を抽象モデル上で証明します。
 そのため、PBT は example-based tests や Lean formalization を置き換えるものではありません。
 境界条件と実装 drift を検出する追加レイヤーとして扱います。
 
-<!-- source: packages/merkle/src/rfc6962-merkle-tree.property.test.ts, packages/verification/src/merkle/bitmap-merkle-tree.property.test.ts, packages/zkvm-contract/src/zkvm/__tests__/input-commitment.property.test.ts, packages/node-adapters/src/zkvm/journal-invariants.property.test.ts, zkvm/methods/guest/src/property_tests.rs, docs/current/formal/README.md -->
+<!-- source: packages/merkle/src/rfc6962-merkle-tree.property.test.ts, packages/verification/src/merkle/bitmap-merkle-tree.property.test.ts, packages/zkvm-contract/src/zkvm/__tests__/input-commitment.property.test.ts, packages/node-adapters/src/zkvm/journal-invariants.property.test.ts, zkvm/methods/guest/src/property_tests.rs, docs/formal/README.md -->

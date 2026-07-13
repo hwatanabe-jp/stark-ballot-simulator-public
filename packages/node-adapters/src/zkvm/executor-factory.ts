@@ -1,7 +1,7 @@
 /**
  * Factory for creating zkVM executors
  * Supports both real and mock implementations for new structures
- * Following final_design.md v1.0 specifications
+ * Following final-design.md v1.0 specifications
  */
 
 import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';

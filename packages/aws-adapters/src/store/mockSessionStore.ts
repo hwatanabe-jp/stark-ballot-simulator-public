@@ -913,16 +913,21 @@ export class MockSessionStore
     for (const stagedWrite of stagedWrites.votes) {
       session.votes.set(stagedWrite.index, stagedWrite.storedVote);
       this.voteIdIndex.set(stagedWrite.voteId, { sessionId, index: stagedWrite.index });
-
-      logger.debug('[MockStore] Bot vote added:', {
-        botIndex: stagedWrite.index,
-        bulletinSize: session.bulletin.getSize(),
-        commitment: stagedWrite.storedVote.commit.slice(2, 10) + '...',
-        root: stagedWrite.storedVote.rootAtCast?.slice(0, 10),
-      });
     }
 
     session.botCount = canonicalProjection.botCount + stagedWrites.votes.length;
+    const firstStagedWrite = stagedWrites.votes[0];
+    const lastStagedWrite = stagedWrites.votes[stagedWrites.votes.length - 1];
+    if (firstStagedWrite && lastStagedWrite) {
+      logger.debug('[MockStore] Bot votes added:', {
+        addedCount: stagedWrites.votes.length,
+        totalBotCount: session.botCount,
+        firstBotIndex: firstStagedWrite.index,
+        lastBotIndex: lastStagedWrite.index,
+        bulletinSize: session.bulletin.getSize(),
+        finalRoot: lastStagedWrite.storedVote.rootAtCast?.slice(0, 10),
+      });
+    }
 
     session.lastActivity = Date.now();
   }

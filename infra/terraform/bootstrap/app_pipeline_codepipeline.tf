@@ -16,21 +16,51 @@ resource "aws_codepipeline" "development_app" {
   }
 
   variable {
-    name          = "ReleaseManifestKey"
-    default_value = "__MISSING_RELEASE_MANIFEST_KEY__"
-    description   = "S3 object key for the immutable release-candidate manifest consumed by the target app lane."
+    name          = "DeploymentMode"
+    default_value = "normal"
+    description   = "Explicit app deployment mode: normal or rollback."
   }
 
   variable {
-    name          = "ReleaseManifestVersionId"
-    default_value = "__MISSING_RELEASE_MANIFEST_VERSION_ID__"
-    description   = "VersionId for the immutable release-candidate manifest object."
+    name          = "DynamoDbRecoveryPhase"
+    default_value = "primary_active"
+    description   = "Explicit DynamoDB recovery phase: primary_active, primary_quiesced, replacement_quiesced, or replacement_active."
   }
 
   variable {
-    name          = "ReleaseManifestSha256"
-    default_value = "__MISSING_RELEASE_MANIFEST_SHA256__"
-    description   = "SHA-256 checksum for the exact immutable release-candidate manifest object body."
+    name          = "SelectedDeploymentRecordKey"
+    default_value = "__NOT_APPLICABLE__"
+    description   = "Immutable accepted deployment record key selected only for rollback."
+  }
+
+  variable {
+    name          = "SelectedDeploymentRecordVersionId"
+    default_value = "__NOT_APPLICABLE__"
+    description   = "Exact accepted deployment record VersionId selected only for rollback."
+  }
+
+  variable {
+    name          = "SelectedDeploymentRecordSha256"
+    default_value = "__NOT_APPLICABLE__"
+    description   = "Exact accepted deployment record body SHA-256 selected only for rollback."
+  }
+
+  variable {
+    name          = "DynamoDbRecoveryManifestKey"
+    default_value = "__DISABLED__"
+    description   = "Validated DynamoDB recovery activation manifest key, or __DISABLED__."
+  }
+
+  variable {
+    name          = "DynamoDbRecoveryManifestVersionId"
+    default_value = "__DISABLED__"
+    description   = "Exact DynamoDB recovery activation manifest VersionId, or __DISABLED__."
+  }
+
+  variable {
+    name          = "DynamoDbRecoveryManifestSha256"
+    default_value = "__DISABLED__"
+    description   = "Exact DynamoDB recovery activation manifest body SHA-256, or __DISABLED__."
   }
 
   stage {
@@ -89,30 +119,9 @@ resource "aws_codepipeline" "development_app" {
       output_artifacts = ["ValidateOutput"]
 
       configuration = {
-        EnvironmentVariables = jsonencode([
-          {
-            name  = "APP_RELEASE_MANIFEST_KEY"
-            value = "#{AppDeploymentRecord.ReleaseManifestKey}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_RELEASE_MANIFEST_VERSION_ID"
-            value = "#{AppDeploymentRecord.ReleaseManifestVersionId}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_RELEASE_MANIFEST_SHA256"
-            value = "#{AppDeploymentRecord.ReleaseManifestSha256}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_PIPELINE_EXECUTION_ID"
-            value = "#{codepipeline.PipelineExecutionId}"
-            type  = "PLAINTEXT"
-          },
-        ])
-        PrimarySource = "SourceOutput"
-        ProjectName   = aws_codebuild_project.app_validate[0].name
+        EnvironmentVariables = local.app_codebuild_deployment_env_variables
+        PrimarySource        = "SourceOutput"
+        ProjectName          = aws_codebuild_project.app_validate[0].name
       }
     }
   }
@@ -131,30 +140,9 @@ resource "aws_codepipeline" "development_app" {
       output_artifacts = ["PlanOutput"]
 
       configuration = {
-        EnvironmentVariables = jsonencode([
-          {
-            name  = "APP_RELEASE_MANIFEST_KEY"
-            value = "#{AppDeploymentRecord.ReleaseManifestKey}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_RELEASE_MANIFEST_VERSION_ID"
-            value = "#{AppDeploymentRecord.ReleaseManifestVersionId}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_RELEASE_MANIFEST_SHA256"
-            value = "#{AppDeploymentRecord.ReleaseManifestSha256}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_PIPELINE_EXECUTION_ID"
-            value = "#{codepipeline.PipelineExecutionId}"
-            type  = "PLAINTEXT"
-          },
-        ])
-        PrimarySource = "SourceOutput"
-        ProjectName   = aws_codebuild_project.app_terraform_plan[0].name
+        EnvironmentVariables = local.app_codebuild_plan_env_variables
+        PrimarySource        = "SourceOutput"
+        ProjectName          = aws_codebuild_project.app_terraform_plan[0].name
       }
     }
   }
@@ -171,7 +159,7 @@ resource "aws_codepipeline" "development_app" {
         rule {
           name = "SkipEmptyDevelopPlan"
 
-          rule_type_id = {
+          rule_type_id {
             category = "Rule"
             owner    = "AWS"
             provider = "VariableCheck"
@@ -179,8 +167,8 @@ resource "aws_codepipeline" "development_app" {
           }
 
           configuration = {
-            Variable = "#{PlanAppState.PLAN_EMPTY}"
-            Value    = "true"
+            Variable = "#{PlanAppState.APPROVAL_REQUIRED}"
+            Value    = "false"
             Operator = "NE"
           }
         }
@@ -195,7 +183,7 @@ resource "aws_codepipeline" "development_app" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/app/tfplan.txt, infra/terraform/app/tfplan.sha256, and infra/terraform/app/evidence/target-lambda-artifacts.json for stark-dev/develop/app. Approval summary must be JSON: {\"sourceSha\":\"<requested/resolved sha>\",\"accountId\":\"${var.aws_account_id}\",\"deploymentEnvironment\":\"develop\",\"reviewedPlanChecksum\":\"<tfplan sha256>\"}."
+        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/app/tfplan.txt, infra/terraform/app/tfplan.sha256, and infra/terraform/app/evidence/target-lambda-artifacts.json for stark-dev/develop/app. Rollback always requires approval even when Terraform is empty because retained static deployables may change. Approval summary must be JSON: {\"deploymentMode\":\"normal|rollback\",\"controlSourceSha\":\"<current pipeline source sha>\",\"selectedSourceSha\":\"<selected deployment sha>\",\"accountId\":\"${var.aws_account_id}\",\"deploymentEnvironment\":\"develop\",\"reviewedPlanChecksum\":\"<tfplan sha256>\"}."
       }
     }
   }
@@ -213,30 +201,9 @@ resource "aws_codepipeline" "development_app" {
       output_artifacts = ["ApplyOutput"]
 
       configuration = {
-        EnvironmentVariables = jsonencode([
-          {
-            name  = "APP_RELEASE_MANIFEST_KEY"
-            value = "#{AppDeploymentRecord.ReleaseManifestKey}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_RELEASE_MANIFEST_VERSION_ID"
-            value = "#{AppDeploymentRecord.ReleaseManifestVersionId}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_RELEASE_MANIFEST_SHA256"
-            value = "#{AppDeploymentRecord.ReleaseManifestSha256}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_PIPELINE_EXECUTION_ID"
-            value = "#{codepipeline.PipelineExecutionId}"
-            type  = "PLAINTEXT"
-          },
-        ])
-        PrimarySource = "SourceOutput"
-        ProjectName   = aws_codebuild_project.app_terraform_apply[0].name
+        EnvironmentVariables = local.app_codebuild_plan_env_variables
+        PrimarySource        = "SourceOutput"
+        ProjectName          = aws_codebuild_project.app_terraform_apply[0].name
       }
     }
   }
@@ -254,30 +221,9 @@ resource "aws_codepipeline" "development_app" {
       output_artifacts = ["StaticDeployOutput"]
 
       configuration = {
-        EnvironmentVariables = jsonencode([
-          {
-            name  = "APP_RELEASE_MANIFEST_KEY"
-            value = "#{AppDeploymentRecord.ReleaseManifestKey}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_RELEASE_MANIFEST_VERSION_ID"
-            value = "#{AppDeploymentRecord.ReleaseManifestVersionId}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_RELEASE_MANIFEST_SHA256"
-            value = "#{AppDeploymentRecord.ReleaseManifestSha256}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_PIPELINE_EXECUTION_ID"
-            value = "#{codepipeline.PipelineExecutionId}"
-            type  = "PLAINTEXT"
-          },
-        ])
-        PrimarySource = "SourceOutput"
-        ProjectName   = aws_codebuild_project.app_static_deploy[0].name
+        EnvironmentVariables = local.app_codebuild_deployment_env_variables
+        PrimarySource        = "SourceOutput"
+        ProjectName          = aws_codebuild_project.app_static_deploy[0].name
       }
     }
   }
@@ -294,30 +240,9 @@ resource "aws_codepipeline" "development_app" {
       input_artifacts = ["SourceOutput", "PlanOutput", "ApplyOutput", "StaticDeployOutput"]
 
       configuration = {
-        EnvironmentVariables = jsonencode([
-          {
-            name  = "APP_RELEASE_MANIFEST_KEY"
-            value = "#{AppDeploymentRecord.ReleaseManifestKey}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_RELEASE_MANIFEST_VERSION_ID"
-            value = "#{AppDeploymentRecord.ReleaseManifestVersionId}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_RELEASE_MANIFEST_SHA256"
-            value = "#{AppDeploymentRecord.ReleaseManifestSha256}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "APP_PIPELINE_EXECUTION_ID"
-            value = "#{codepipeline.PipelineExecutionId}"
-            type  = "PLAINTEXT"
-          },
-        ])
-        PrimarySource = "SourceOutput"
-        ProjectName   = aws_codebuild_project.app_smoke[0].name
+        EnvironmentVariables = local.app_codebuild_deployment_env_variables
+        PrimarySource        = "SourceOutput"
+        ProjectName          = aws_codebuild_project.app_smoke[0].name
       }
     }
   }

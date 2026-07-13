@@ -187,12 +187,12 @@ def nonClaims : List String := [
 ]
 
 def generatedVectorArtifacts : List String := [
-  "docs/current/formal/generated-vectors/verification-summary-cases.json",
-  "docs/current/formal/generated-vectors/verification-display-cases.json",
-  "docs/current/formal/generated-vectors/check-definitions.json",
-  "docs/current/formal/generated-vectors/input-commitment-cases.json",
-  "docs/current/formal/generated-vectors/bitmap-cases.json",
-  "docs/current/formal/generated-vectors/guest-model-cases.json"
+  "docs/formal/generated-vectors/verification-summary-cases.json",
+  "docs/formal/generated-vectors/verification-display-cases.json",
+  "docs/formal/generated-vectors/check-definitions.json",
+  "docs/formal/generated-vectors/input-commitment-cases.json",
+  "docs/formal/generated-vectors/bitmap-cases.json",
+  "docs/formal/generated-vectors/guest-model-cases.json"
 ]
 
 def formalReportJson : String :=
@@ -209,7 +209,7 @@ def formalReportJson : String :=
     ],
     "  \"theorems\": " ++ jsonArray (theoremReports.map renderTheorem),
     "  \"generatedVectorArtifacts\": " ++ renderStringArray generatedVectorArtifacts,
-    "  \"formalAuditArtifact\": " ++ jsonString "docs/current/formal/formal-audit.json",
+    "  \"formalAuditArtifact\": " ++ jsonString "docs/formal/formal-audit.json",
     "  \"assumptions\": " ++ renderStringArray assumptions,
     "  \"nonClaims\": " ++ renderStringArray nonClaims
   ] ++ "\n}\n"
@@ -220,7 +220,7 @@ def formalReportPath : IO System.FilePath := do
       binDir.parent.bind (fun buildDir =>
         buildDir.parent.bind (fun lakeDir => lakeDir.parent)))
     | throw <| IO.userError s!"could not locate formal directory from executable path: {appPath}"
-  pure <| formalDir / ".." / "docs" / "current" / "formal" / "formal-report.json"
+  pure <| formalDir / ".." / "docs" / "formal" / "formal-report.json"
 
 def checkFormalReport (outPath : System.FilePath) : IO Unit := do
   let current ← IO.FS.readFile outPath

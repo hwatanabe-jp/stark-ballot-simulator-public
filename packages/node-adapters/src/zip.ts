@@ -5,6 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import * as yauzl from 'yauzl';
 
 const DEFAULT_MAX_ENTRY_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_ENTRIES = 10_000;
 
 type ZipOpenOptions = yauzl.Options & {
   strictFileNames?: boolean;
@@ -27,6 +28,10 @@ export interface ReadZipEntriesOptions {
   maxEntryBytes?: number;
 }
 
+export interface ListZipEntryNamesOptions {
+  maxEntries?: number;
+}
+
 function resolveEntryTarget(
   destination: string,
   entryName: string,
@@ -40,7 +45,8 @@ function resolveEntryTarget(
   if (!trimmed) {
     throw new Error(`Invalid zip entry name: ${entryName}`);
   }
-  if (trimmed.split('/').includes('..')) {
+  const segments = trimmed.split('/');
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
     throw new Error(`Unsafe zip entry name: ${entryName}`);
   }
 
@@ -210,6 +216,76 @@ export async function extractZipFromFile(zipPath: string, options: ExtractZipOpt
 export async function extractZipFromBuffer(buffer: Buffer, options: ExtractZipOptions): Promise<void> {
   const zipfile = await openZipFromBuffer(buffer);
   await extractZip(zipfile, options);
+}
+
+/**
+ * Lists every validated file entry name in a zip buffer without reading entry contents.
+ */
+export async function listZipEntryNamesFromBuffer(
+  buffer: Buffer,
+  options: ListZipEntryNamesOptions = {},
+): Promise<string[]> {
+  const { maxEntries = DEFAULT_MAX_ENTRIES } = options;
+  if (!Number.isSafeInteger(maxEntries) || maxEntries <= 0) {
+    throw new Error('Zip maxEntries must be a positive integer');
+  }
+
+  const zipfile = await openZipFromBuffer(buffer);
+  const entries: string[] = [];
+  const seen = new Set<string>();
+  let entryCount = 0;
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      try {
+        zipfile.close();
+      } catch {
+        // ignore close errors
+      }
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    };
+
+    zipfile.on('error', (error: Error) => finish(error));
+    zipfile.on('end', () => finish());
+
+    zipfile.on('entry', (entry: yauzl.Entry) => {
+      entryCount += 1;
+      if (entryCount > maxEntries) {
+        finish(new Error(`Zip contains more than ${maxEntries} entries`));
+        return;
+      }
+
+      let target: { targetPath: string; isDirectory: boolean; key: string };
+      try {
+        target = resolveEntryTarget(path.resolve('zip-inspection-root'), entry.fileName);
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+
+      if (seen.has(target.key)) {
+        finish(new Error(`Duplicate zip entry: ${entry.fileName}`));
+        return;
+      }
+      seen.add(target.key);
+
+      if (!target.isDirectory) {
+        entries.push(target.key);
+      }
+      zipfile.readEntry();
+    });
+
+    zipfile.readEntry();
+  });
+
+  return entries;
 }
 
 /**

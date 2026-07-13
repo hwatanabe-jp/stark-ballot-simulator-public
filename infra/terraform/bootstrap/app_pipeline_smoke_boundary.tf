@@ -2,7 +2,6 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   statement {
-    sid    = "AppPipelineArtifacts"
     effect = "Allow"
 
     actions = [
@@ -18,7 +17,6 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
   }
 
   statement {
-    sid    = "AppArtifactKeyUse"
     effect = "Allow"
 
     actions = [
@@ -46,7 +44,6 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
   }
 
   statement {
-    sid    = "AppCodeBuildAndPipeline"
     effect = "Allow"
 
     actions = [
@@ -62,7 +59,17 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
   }
 
   statement {
-    sid    = "AppLogs"
+    sid    = "AppSmokeSourceConnection"
+    effect = "Allow"
+
+    actions = [
+      "codeconnections:UseConnection",
+      "codestar-connections:UseConnection",
+    ]
+    resources = local.app_source_connection_arns
+  }
+
+  statement {
     effect = "Allow"
 
     actions = [
@@ -81,6 +88,49 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
   }
 
   statement {
+    effect = "Allow"
+
+    actions = [
+      "kms:DescribeKey",
+      "kms:GetPublicKey",
+    ]
+    resources = [local.app_data_kms_key_arn_pattern]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [var.project_name]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/AccountAlias"
+      values   = [var.account_alias]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = [var.deployment_environment]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/StateScope"
+      values   = ["app"]
+    }
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "cloudfront:GetKeyGroup",
+      "cloudfront:GetPublicKey",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
     sid    = "TargetDynamoDbDataPlaneSmoke"
     effect = "Allow"
 
@@ -93,7 +143,11 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
       "dynamodb:Query",
     ]
 
-    resources = concat(local.app_dynamodb_table_arns, local.app_dynamodb_index_arns)
+    resources = concat(
+      local.app_dynamodb_table_arns,
+      local.app_dynamodb_index_arns,
+      local.app_dynamodb_recovery_table_arn_patterns,
+    )
   }
 
   statement {
@@ -116,10 +170,22 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
     }
 
     condition {
-      test     = "ForAnyValue:StringEquals"
+      test     = "ForAnyValue:StringLike"
       variable = "kms:EncryptionContext:aws:dynamodb:tableName"
-      values   = local.app_dynamodb_table_names
+      values   = concat(local.app_dynamodb_table_names, local.app_dynamodb_recovery_table_name_patterns)
     }
+  }
+
+  statement {
+    effect    = "Allow"
+    actions   = ["lambda:GetFunctionConfiguration"]
+    resources = [local.app_target_lambda_arn_pattern]
+  }
+
+  statement {
+    effect    = "Allow"
+    actions   = ["lambda:GetEventSourceMapping"]
+    resources = ["*"]
   }
 
   statement {
@@ -144,6 +210,14 @@ resource "aws_iam_policy" "app_smoke_deploy_permissions_boundary" {
 
   name   = local.app_smoke_deploy_permissions_boundary_policy_name
   policy = data.aws_iam_policy_document.app_smoke_deploy_permissions_boundary[0].json
+
+  lifecycle {
+    precondition {
+      condition     = length(jsonencode(jsondecode(data.aws_iam_policy_document.app_smoke_deploy_permissions_boundary[0].json))) <= 6144
+      error_message = "App smoke permissions boundary exceeds the IAM managed-policy size quota."
+    }
+  }
+
   tags = merge(local.common_tags, {
     StateScope = "app"
   })

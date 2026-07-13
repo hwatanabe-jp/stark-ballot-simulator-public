@@ -29,7 +29,7 @@ async function main(): Promise<void> {
       stdio: 'inherit',
     });
 
-    const report = readJson<FormalReport>('docs/current/formal/formal-report.json');
+    const report = readJson<FormalReport>('docs/formal/formal-report.json');
     const staleArtifacts: string[] = [];
 
     for (const artifact of report.generatedVectorArtifacts) {

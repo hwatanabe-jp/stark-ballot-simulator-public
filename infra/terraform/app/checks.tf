@@ -15,13 +15,27 @@ resource "terraform_data" "skeletal_app_lane" {
 
   lifecycle {
     precondition {
-      condition     = !local.target_develop_operator_gate_requested || local.operator_gate_public_key_configured
-      error_message = "operator-gated develop requires develop_operator_gate_public_key_pem."
+      condition     = !local.target_develop_operator_gate_requested || local.operator_gate_keyset_configured
+      error_message = "operator-gated develop requires a valid tracked KMS-backed operator-gate keyset."
     }
 
     precondition {
       condition     = !local.target_public_session_create_enabled || length(local.operator_gate_trusted_key_groups) > 0
       error_message = "TARGET_PUBLIC_SESSION_CREATE_ENABLED requires a configured develop operator-gate key group."
+    }
+
+    precondition {
+      condition     = var.dynamodb_recovery_activation == null ? true : var.dynamodb_recovery_activation.kms_key_arn == aws_kms_key.app_data.arn
+      error_message = "dynamodb_recovery_activation must retain the Terraform-owned app-data KMS key."
+    }
+
+    precondition {
+      condition = (
+        var.dynamodb_recovery_phase == "primary_active"
+        ? var.dynamodb_recovery_activation == null
+        : var.dynamodb_recovery_activation != null
+      )
+      error_message = "primary_active requires a null dynamodb_recovery_activation; every transition phase requires one validated manifest."
     }
   }
 }
@@ -57,8 +71,8 @@ check "develop_operator_gate_configured" {
   assert {
     condition = (
       !local.target_develop_operator_gate_requested
-      || (local.operator_gate_public_key_configured && local.api_origin_verify_header_configured)
+      || (local.operator_gate_keyset_configured && local.api_origin_verify_header_configured)
     )
-    error_message = "operator-gated develop requires develop_operator_gate_public_key_pem and AWSCURRENT at EXPECTED_ORIGIN_VERIFY_HEADER_REF."
+    error_message = "operator-gated develop requires a valid tracked KMS-backed keyset and AWSCURRENT at EXPECTED_ORIGIN_VERIFY_HEADER_REF."
   }
 }

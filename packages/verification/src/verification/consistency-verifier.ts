@@ -4,7 +4,7 @@
  * This module implements RFC 6962 consistency proof verification to ensure
  * the append-only property of the bulletin board and prevent split-view attacks.
  *
- * Critical requirements from final_design.md:
+ * Critical requirements from final-design.md:
  * 1. Consistency proof must pass before showing "Verified" status
  * 2. excludedSlots > 0 must always fail closed; missing/invalid refine the explanation
  * 3. totalExpected vs treeSize mismatches must fail closed
@@ -349,7 +349,7 @@ function isValidCount(value: number | undefined): value is number {
  * This function combines consistency proof and completeness checks to determine
  * if the voting result can be shown as "Verified" in the UI.
  *
- * According to final_design.md:
+ * According to final-design.md:
  * - MUST NOT show "Verified" unless consistency proof passes
  * - MUST NOT show "Verified" if excludedSlots > 0
  * - MUST show red warning for any verification failure

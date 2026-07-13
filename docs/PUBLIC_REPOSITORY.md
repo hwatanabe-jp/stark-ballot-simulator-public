@@ -3,9 +3,9 @@
 This repository is a generated public portfolio snapshot of STARK Ballot Simulator.
 
 - Public repository: https://github.com/hwatanabe-jp/stark-ballot-simulator-public
-- Source commit: `b6db47826297f8ffe85121095930176839d7c8dd`
-- Generated at: `2026-07-07T15:35:56.692Z`
-- Copied source files: `1050`
+- Source commit: `5bd8b65e9a15194dc26bb35cd0f6d4402428e7fa`
+- Generated at: `2026-07-13T06:32:30.986Z`
+- Copied source files: `1047`
 
 The private repository remains the source of truth. Public-repository changes
 should normally be made in the private repository and released again as a new
@@ -29,26 +29,22 @@ The private source repository intentionally keeps broader working notes than the
 public portfolio snapshot needs. This export preserves that signal while
 publishing only the documentation that is safe and useful for readers.
 
-- Private source docs tracked: `182`
-- Public source docs copied: `63`
+- Private source docs tracked: `176`
+- Public source docs copied: `58`
 - Generated public docs: `1`
-- Source docs stripped: `119`
+- Source docs stripped: `118`
 
 Stripped documentation categories:
 
-- Archived history and progress notes: `49` files from `docs/archive/`
-- Internal implementation notes: `19` files from `docs/current/internal/`
-- Monitoring and operations notes: `4` files from `docs/current/monitoring/`
-- Other unpublished documentation: `47` files from `docs/ outside the public allowlist`
+- Archived history and progress notes: `52` files from `docs/archive/`
+- Internal implementation notes: `66` files from `docs/internal/`
 
 ## What Is Stripped
 
 - `.env* except .env.local.example and scripts/tests/.env.test.defaults`
 - `.github/workflows/* from the private repository`
 - `docs/archive/`
-- `docs/current/internal/`
-- `docs/current/monitoring/`
-- `docs/current/guides/3-deployment/public-repository-release.md`
+- `docs/internal/`
 - `scripts/monitoring/`
 - `scripts/public/`
 - `infra/terraform/legacy/main.tfvars`

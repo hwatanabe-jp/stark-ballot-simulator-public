@@ -139,6 +139,35 @@ describe('scan-public-safety.sh', () => {
     }
   });
 
+  it('strict-scans every docs area except the private internal and archive prefixes', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'public-safety-scan-doc-scope-'));
+    const accountId = '123456789012';
+    const unpublishedDocPath = path.join(dir, 'docs/new-area/account-hygiene.md');
+    const internalDocPath = path.join(dir, 'docs/internal/account-hygiene.md');
+    const archivedDocPath = path.join(dir, 'docs/archive/account-hygiene.md');
+
+    try {
+      for (const filePath of [unpublishedDocPath, internalDocPath, archivedDocPath]) {
+        mkdirSync(path.dirname(filePath), { recursive: true });
+        writeFileSync(filePath, `historical account number: ${accountId}\n`);
+      }
+
+      const publicResult = runScanRoot(dir);
+      expect(publicResult.status).toBe(1);
+      expect(publicResult.stderr).toContain('docs/new-area/account-hygiene.md');
+      expect(publicResult.stderr).not.toContain('docs/internal/account-hygiene.md');
+      expect(publicResult.stderr).not.toContain('docs/archive/account-hygiene.md');
+      expect(publicResult.stderr).not.toContain(accountId);
+
+      rmSync(unpublishedDocPath);
+      const privateOnlyResult = runScanRoot(dir);
+      expect(privateOnlyResult.status).toBe(0);
+      expect(privateOnlyResult.stdout).toContain('Public safety scan passed');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('allows the zero account placeholder in tracked tfvars and public-exported docs', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'public-safety-scan-account-id-placeholder-'));
     try {

@@ -11,7 +11,8 @@ This file is retained Docker and entrypoint implementation background. It is
 not Plan 02 release-candidate authority, not Plan 03 acceptance evidence, and
 not a substitute for the target-account release-candidate handoff.
 
-For private target-account go/no-go authority, use the internal release-candidate handoff retained outside the public snapshot.
+Current target-account go/no-go authority, prerequisite definitions, and
+handoff evidence are maintained in private operator documentation.
 
 Legacy/shared CodeBuild and ECR references below may be used only as
 background or local smoke context. They do not prove accepted target images,
@@ -70,7 +71,8 @@ digest-pinned `@sha256:<64 lowercase hex chars>` reference, extracts the ARM64
 guest ImageID from the built prover image, and records the resolved toolchain
 image, prover digest, methodVersion, and ImageID in `image-metadata.json`.
 Those mechanics remain useful implementation context, but the current
-target-develop release candidate must come from the dedicated target-account release-candidate authority retained outside the public snapshot.
+target-develop release candidate must come from the dedicated target-account
+release-candidate authority maintained in private operator documentation.
 
 The retained shared RISC Zero toolchain base image path used:
 

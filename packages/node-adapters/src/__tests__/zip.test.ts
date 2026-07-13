@@ -6,7 +6,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createWriteStream, promises as fs } from 'node:fs';
 import * as yazl from 'yazl';
-import { extractZipFromBuffer, extractZipFromFile, readZipEntriesFromBuffer } from '../zip';
+import {
+  extractZipFromBuffer,
+  extractZipFromFile,
+  listZipEntryNamesFromBuffer,
+  readZipEntriesFromBuffer,
+} from '../zip';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -222,6 +227,50 @@ describe('zip utils', () => {
     const entries = await readZipEntriesFromBuffer(zipBuffer, ['missing.json']);
 
     expect(entries.size).toBe(0);
+  });
+
+  it('lists validated nested entry names without reading their contents', async () => {
+    const zipBuffer = await buildZipBuffer([
+      { name: 'public-input.json', content: '{}' },
+      { name: 'nested/verification.json', content: '{"private":true}' },
+    ]);
+
+    const entries = await listZipEntryNamesFromBuffer(zipBuffer);
+
+    expect(entries).toEqual(['public-input.json', 'nested/verification.json']);
+  });
+
+  it('rejects unsafe entry names while listing', async () => {
+    const zipBuffer = buildRawZipBuffer('../verification.json', Buffer.from('{}', 'utf8'));
+
+    await expect(listZipEntryNamesFromBuffer(zipBuffer)).rejects.toThrow(/invalid|unsafe/i);
+  });
+
+  it.each(['verification.json/.', 'nested/./journal.json', 'nested//journal.json'])(
+    'rejects non-canonical entry name %s while listing',
+    async (entryName) => {
+      const zipBuffer = await buildZipBuffer([{ name: entryName, content: '{}' }]);
+
+      await expect(listZipEntryNamesFromBuffer(zipBuffer)).rejects.toThrow(/invalid|unsafe|canonical/i);
+    },
+  );
+
+  it('rejects duplicate entry names while listing', async () => {
+    const zipBuffer = await buildZipBuffer([
+      { name: 'journal.json', content: '{}' },
+      { name: 'journal.json', content: '{}' },
+    ]);
+
+    await expect(listZipEntryNamesFromBuffer(zipBuffer)).rejects.toThrow(/Duplicate zip entry/);
+  });
+
+  it('rejects archives over the entry-count limit while listing', async () => {
+    const zipBuffer = await buildZipBuffer([
+      { name: 'journal.json', content: '{}' },
+      { name: 'receipt.json', content: '{}' },
+    ]);
+
+    await expect(listZipEntryNamesFromBuffer(zipBuffer, { maxEntries: 1 })).rejects.toThrow(/more than 1 entries/);
   });
 
   it('rejects path traversal entries', async () => {

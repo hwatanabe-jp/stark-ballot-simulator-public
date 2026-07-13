@@ -7,7 +7,7 @@ required check が失敗、未実行、保留中、実行中のまま残る場�
 `verificationStatus` や `stark_receipt_verify` は STARK receipt verification の信号であり、それだけで overall verdict を表すものではありません。
 
 public `bundle.zip` は公開可能な監査用アーカイブであり、`verification.json` などの保護対象 artifact は含めません（境界の正本は [公開境界](public-boundary.md)）。
-ここでの public は「秘密を含まず第三者検証に使える」という分類であり、無認証公開を意味しません。
+ここでいう `public` は「秘密を含まず第三者検証に使える」という機密性の分類であり、無認証公開を意味しません。
 `RISC0_DEV_MODE=1` の receipt は production STARK proof ではありません。
 
 ## 章の読み順
@@ -19,7 +19,7 @@ public `bundle.zip` は公開可能な監査用アーカイブであり、`verif
 - [公開境界](public-boundary.md)：public `bundle.zip` と protected report artifact の境界
 - [ゲーティングロジック](gating-logic.md)：「Verified」表示の条件と不変条件
 
-## 対象読者と前提
+## 想定読者と前提
 
 - 想定読者：`/verify` 画面の最終判定ロジックを把握したい監査者と実装者
 - 前提：[暗号プロトコル](../protocol/index.md) と [zkVM 設計](../zkvm/index.md) の概要を読み終えていること
@@ -30,7 +30,7 @@ public `bundle.zip` は公開可能な監査用アーカイブであり、`verif
 - 改ざんシナリオごとの検出表（[改ざんシナリオ](../tamper/index.md) を参照）
 - UI コンポーネントや Storybook 配置の詳細
 
-## 関連章
+## 関連する章
 
 - [暗号プロトコル](../protocol/index.md)：チェック対象となるプリミティブ
 - [zkVM 設計](../zkvm/index.md)：ジャーナルとレシートの構造

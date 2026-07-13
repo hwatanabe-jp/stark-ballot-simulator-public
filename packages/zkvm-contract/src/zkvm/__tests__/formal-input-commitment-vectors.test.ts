@@ -1,7 +1,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { describe, expect, it } from 'vitest';
-import inputCommitmentCasesJson from '../../../../../docs/current/formal/generated-vectors/input-commitment-cases.json';
+import inputCommitmentCasesJson from '../../../../../docs/formal/generated-vectors/input-commitment-cases.json';
 import {
   canonicalizeInputCommitmentVotesForEncoding,
   computeInputCommitmentFromPublicInput,

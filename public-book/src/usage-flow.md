@@ -78,7 +78,8 @@ required check が未実行、実行中、失敗、または hard-failure に該
 | `GET /api/verification/bundles/:sessionId/:executionId`        | public `bundle.zip`                           |
 | `GET /api/verification/bundles/:sessionId/:executionId/report` | protected `verification.json` report artifact |
 
-ここでいう `public` は「秘密を含まず第三者検証に使える」という分類であり、無認証公開を意味しません（raw S3 URL や presigned URL は通常のブラウザ / CLI contract ではありません）。
+ここでいう `public` は「秘密を含まず第三者検証に使える」という機密性の分類であり、無認証公開を意味しません。
+raw S3 URL や presigned URL は通常のブラウザ / CLI contract ではありません。
 ファイル構成と除外対象は [公開境界](verification/public-boundary.md) と [バンドル構造](verification/bundle-structure.md) を参照してください。
 
 ## Receipt と proof mode の読み分け

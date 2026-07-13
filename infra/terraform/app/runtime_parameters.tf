@@ -1,7 +1,7 @@
 resource "aws_ssm_parameter" "runtime_config_names" {
   for_each = merge({
-    DYNAMODB_SESSIONS_TABLE             = aws_dynamodb_table.sessions.arn
-    DYNAMODB_VOTES_TABLE                = aws_dynamodb_table.votes.arn
+    DYNAMODB_SESSIONS_TABLE             = local.active_sessions_table_arn
+    DYNAMODB_VOTES_TABLE                = local.active_votes_table_arn
     RATE_LIMIT_EVENTS_TABLE             = aws_dynamodb_table.rate_limit_events.arn
     RATE_LIMIT_COUNTERS_TABLE           = aws_dynamodb_table.rate_limit_counters.arn
     APP_DATA_KMS_KEY_ARN                = aws_kms_key.app_data.arn

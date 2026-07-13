@@ -34,8 +34,7 @@ Lean が扱わない範囲は末尾の [証明していないこと](#証明し�
 | Guest completeness   | `zero_exclusion_guest_model_complete`                                                                                                      | `excludedSlots = 0` が guest model 上で missing / invalid presented の不存在につながる   |
 | Bounded counts       | `no_overflow_under_guest_bounds`                                                                                                           | 明示した guest bounds 内で seen / valid / rejected / tally bucket が Rust `u32` に収まる |
 
-これらは抽象モデル上の主張です。
-実装との対応は、次の generated vectors とテストで検査します。
+これらは抽象モデル上の主張であり、実装との対応は次節の generated vectors とテストで検査します。
 
 ## 実装との接続
 
@@ -74,24 +73,20 @@ flowchart LR
 | `guest-model-cases.json`          | Rust guest tests                 | 抽象 guest model と Rust guest inspection surface の対応               |
 
 `pnpm formal:verify` は Lean build、formal report、generated vectors、audit の freshness、TypeScript の vector-consuming tests、生成 JSON の format check をまとめて実行します。
-Rust 側の vector-consuming tests は `docs/current/formal/generated-vectors/**` の変更で起動する Rust tests workflow の `cargo test` によって検査します。
+Rust 側の vector-consuming tests は `docs/formal/generated-vectors/**` の変更で起動する Rust tests workflow の `cargo test` によって検査します。
+公開 repository snapshot の release workflow でも export 前に Lean workspace を build して `pnpm formal:verify` を実行します。
+そのため、formal artifact が古い、または formal verification が失敗する状態では公開 snapshot を生成できません。
 
-この接続により、Lean model が変わったにもかかわらず実装テストが追従していない場合に、CI 上で drift を検出できます。
-実装側の encoding、summary、guest behavior が model から外れた場合も同じです。
+この接続により、Lean model と実装のどちらが変わっても、追従していない drift を CI 上で検出できます。
 
 ## 対応付けを支える成果物
 
-Lean の成果物を public documentation と実装テストに接続するため、次の artifact と検査を組み込んでいます。
+前掲の generated vectors と vector-consuming tests に加えて、次の audit artifact と検査を組み込んでいます。
 
-- guest-model generated vectors
-- check-definition drift vector
-- theorem statement hash
-- generated-vector hash
+- theorem statement hash と generated-vector hash
 - `#print axioms` に基づく theorem dependency audit
 - proof hygiene scan
 - explicit guest bounds
-- TypeScript / Rust 側の vector-consuming tests
-- `pnpm formal:verify` による freshness gate
 
 ## 実行コマンド
 
@@ -122,4 +117,4 @@ Lean は次を証明しません。
 したがって、主張は「投票システム全体を形式検証した」ではありません。
 選択した安全モデルを Lean で証明し、generated vectors と CI drift guard によって TypeScript / Rust 実装との対応を検査しています。
 
-<!-- source: formal/StarkBallotFormal/*.lean, formal/Scripts/EmitFormalReport.lean, formal/Scripts/EmitTestVectors.lean, formal/README.md, docs/current/formal/README.md, docs/current/formal/formal-report.json, docs/current/formal/formal-audit.json, docs/current/formal/generated-vectors/, package.json -->
+<!-- source: formal/StarkBallotFormal/*.lean, formal/Scripts/EmitFormalReport.lean, formal/Scripts/EmitTestVectors.lean, formal/README.md, docs/formal/README.md, docs/formal/formal-report.json, docs/formal/formal-audit.json, docs/formal/generated-vectors/, package.json -->

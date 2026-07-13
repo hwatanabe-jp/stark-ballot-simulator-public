@@ -118,6 +118,7 @@ resource "aws_codebuild_project" "foundation_terraform_plan" {
       }
       artifacts = {
         files = [
+          "infra/terraform/foundation/.terraform.lock.hcl",
           "infra/terraform/foundation/tfplan",
           "infra/terraform/foundation/tfplan.txt",
           "infra/terraform/foundation/tfplan.json",
@@ -174,6 +175,7 @@ resource "aws_codebuild_project" "foundation_terraform_apply" {
           commands = [
             "test -n \"$CODEBUILD_SRC_DIR_PlanOutput\"",
             "mkdir -p infra/terraform/foundation/evidence",
+            "cp \"$CODEBUILD_SRC_DIR_PlanOutput\"/infra/terraform/foundation/.terraform.lock.hcl infra/terraform/foundation/.terraform.lock.hcl",
             "cp \"$CODEBUILD_SRC_DIR_PlanOutput\"/infra/terraform/foundation/tfplan infra/terraform/foundation/tfplan",
             "cp \"$CODEBUILD_SRC_DIR_PlanOutput\"/infra/terraform/foundation/tfplan.sha256 infra/terraform/foundation/tfplan.sha256",
             "cp \"$CODEBUILD_SRC_DIR_PlanOutput\"/infra/terraform/foundation/pipeline.auto.tfvars infra/terraform/foundation/pipeline.auto.tfvars",
@@ -187,7 +189,7 @@ resource "aws_codebuild_project" "foundation_terraform_apply" {
             local.foundation_guard_init_command,
             local.foundation_guard_apply_command,
             "terraform -chdir=infra/terraform/foundation output -json > infra/terraform/foundation/apply-outputs.json",
-            "printf '{\"schemaVersion\":\"foundation-saved-plan-evidence-v1\",\"manifestType\":\"foundation-apply\",\"stateIdentity\":\"stark-dev/develop/foundation\",\"sourceSha\":\"%s\",\"appRuntimeResourcesCreated\":false,\"evidenceClass\":\"FoundationStateAbsenceOfAppRuntime\"}\\n' \"$CODEBUILD_RESOLVED_SOURCE_VERSION\" > infra/terraform/foundation/evidence/foundation-apply.json",
+            "bash infra/terraform/bootstrap/foundation-pipeline-scripts/foundation-state-ownership.sh capture",
           ]
         }
       }
@@ -197,6 +199,7 @@ resource "aws_codebuild_project" "foundation_terraform_apply" {
           "infra/terraform/foundation/evidence/apply-caller.json",
           "infra/terraform/foundation/evidence/foundation-action-executions.json",
           "infra/terraform/foundation/evidence/foundation-apply.json",
+          "infra/terraform/foundation/evidence/foundation-state-resources.txt",
         ]
       }
     })
@@ -204,6 +207,36 @@ resource "aws_codebuild_project" "foundation_terraform_apply" {
 
   tags = merge(local.common_tags, {
     StateScope = "foundation"
+  })
+}
+
+locals {
+  foundation_smoke_buildspec = yamlencode({
+    version = "0.2"
+    phases = {
+      install = {
+        commands = local.terraform_install_commands
+      }
+      build = {
+        commands = [
+          "test -n \"$CODEBUILD_SRC_DIR_ApplyOutput\"",
+          "mkdir -p infra/terraform/foundation/evidence",
+          "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/foundation/apply-outputs.json infra/terraform/foundation/apply-outputs.json",
+          "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/foundation/evidence/foundation-apply.json infra/terraform/foundation/evidence/foundation-apply.json",
+          "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/foundation/evidence/foundation-state-resources.txt infra/terraform/foundation/evidence/foundation-state-resources.txt",
+          local.foundation_backend_config_command,
+          local.foundation_tfvars_command,
+          local.foundation_guard_smoke_command,
+          "bash infra/terraform/bootstrap/foundation-pipeline-scripts/foundation-state-ownership.sh verify",
+          local.foundation_absence_smoke_command,
+        ]
+      }
+    }
+    artifacts = {
+      files = [
+        "infra/terraform/foundation/evidence/foundation-smoke.json",
+      ]
+    }
   })
 }
 
@@ -233,32 +266,15 @@ resource "aws_codebuild_project" "foundation_smoke" {
   }
 
   source {
-    type = "CODEPIPELINE"
-    buildspec = yamlencode({
-      version = "0.2"
-      phases = {
-        install = {
-          commands = local.terraform_install_commands
-        }
-        build = {
-          commands = [
-            "test -n \"$CODEBUILD_SRC_DIR_ApplyOutput\"",
-            "mkdir -p infra/terraform/foundation/evidence",
-            "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/foundation/apply-outputs.json infra/terraform/foundation/apply-outputs.json",
-            "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/foundation/evidence/foundation-apply.json infra/terraform/foundation/evidence/foundation-apply.json",
-            local.foundation_backend_config_command,
-            local.foundation_tfvars_command,
-            local.foundation_guard_smoke_command,
-            local.foundation_absence_smoke_command,
-          ]
-        }
-      }
-      artifacts = {
-        files = [
-          "infra/terraform/foundation/evidence/foundation-smoke.json",
-        ]
-      }
-    })
+    type      = "CODEPIPELINE"
+    buildspec = local.foundation_smoke_buildspec
+  }
+
+  lifecycle {
+    precondition {
+      condition     = length(local.foundation_smoke_buildspec) <= 24000
+      error_message = "The foundation smoke buildspec must stay within the 24,000-character operational budget below the CodeBuild limit."
+    }
   }
 
   tags = merge(local.common_tags, {

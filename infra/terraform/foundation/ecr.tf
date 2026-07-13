@@ -10,6 +10,10 @@ resource "aws_ecr_repository" "toolchain" {
     scan_on_push = true
   }
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   tags = local.common_tags
 }
 
@@ -25,45 +29,9 @@ resource "aws_ecr_repository" "prover" {
     scan_on_push = true
   }
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   tags = local.common_tags
-}
-
-resource "aws_ecr_lifecycle_policy" "toolchain" {
-  repository = aws_ecr_repository.toolchain.name
-
-  policy = jsonencode({
-    rules = [{
-      rulePriority = 1
-      description  = "Retain the latest 200 candidate toolchain images"
-      selection = {
-        tagStatus     = "tagged"
-        tagPrefixList = ["candidate-"]
-        countType     = "imageCountMoreThan"
-        countNumber   = 200
-      }
-      action = {
-        type = "expire"
-      }
-    }]
-  })
-}
-
-resource "aws_ecr_lifecycle_policy" "prover" {
-  repository = aws_ecr_repository.prover.name
-
-  policy = jsonencode({
-    rules = [{
-      rulePriority = 1
-      description  = "Retain the latest 200 candidate prover images"
-      selection = {
-        tagStatus     = "tagged"
-        tagPrefixList = ["candidate-"]
-        countType     = "imageCountMoreThan"
-        countNumber   = 200
-      }
-      action = {
-        type = "expire"
-      }
-    }]
-  })
 }

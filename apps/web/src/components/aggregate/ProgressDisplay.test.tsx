@@ -57,13 +57,11 @@ describe('ProgressDisplay', () => {
   });
 
   describe('queue info panel', () => {
-    it('displays static capacity and typical duration without positional claims', () => {
+    it('displays typical duration without capacity or positional claims', () => {
       render(<ProgressDisplay status="pending" concurrencyLimit={2} estimatedDurationMs={360000} />);
 
       expect(screen.getByText('Waiting')).toBeInTheDocument();
-      expect(screen.getByText('Concurrent proofs')).toBeInTheDocument();
       expect(screen.getByText('Typical duration')).toBeInTheDocument();
-      expect(screen.getByText('2')).toBeInTheDocument();
       expect(screen.getByText('~6 min')).toBeInTheDocument();
       expect(screen.queryByText('Queue Position')).not.toBeInTheDocument();
       expect(screen.queryByText(/position in queue/i)).not.toBeInTheDocument();
@@ -73,7 +71,7 @@ describe('ProgressDisplay', () => {
       render(<ProgressDisplay status="pending" />);
 
       expect(screen.queryByText('Queue Position')).not.toBeInTheDocument();
-      expect(screen.queryByText('Concurrent proofs')).not.toBeInTheDocument();
+      expect(screen.queryByText('Typical duration')).not.toBeInTheDocument();
     });
 
     it('does not render legacy position or depth even when stale props are supplied', () => {
@@ -110,7 +108,7 @@ describe('ProgressDisplay', () => {
 
       // Queue panel should not appear for running state
       expect(screen.queryByText('Queue Position')).not.toBeInTheDocument();
-      expect(screen.queryByText('Concurrent proofs')).not.toBeInTheDocument();
+      expect(screen.queryByText('Typical duration')).not.toBeInTheDocument();
     });
   });
 

@@ -3,7 +3,7 @@
 > Status: completed in commit `491afb87`. The abstract guest fold in
 > `StarkBallotFormal/GuestModel.lean`, the four required theorems plus
 > supporting fold invariants and ordering lemmas, the stable
-> `docs/current/formal/formal-report.json`, the `formal:report` /
+> `docs/formal/formal-report.json`, the `formal:report` /
 > `formal:report:check` / `formal:verify` scripts, and the schema test in
 > `scripts/__tests__/formal-report.test.ts` are all in place. Follow-up CI
 > integration uses dedicated formal workflows rather than adding Lean to the
@@ -22,7 +22,7 @@ guest tally model.
 
 - `formal/StarkBallotFormal/*.lean`
 - `zkvm/methods/guest/src/main.rs`
-- `docs/current/verification/README.md`
+- `docs/verification/README.md`
 - package scripts in `package.json`
 
 ## Deliverables
@@ -33,7 +33,7 @@ guest tally model.
 - theorem: `valid_votes_count_accepted`
 - theorem: `rejected_records_classification`
 - theorem: `zero_exclusion_guest_model_complete`
-- `docs/current/formal/formal-report.json`
+- `docs/formal/formal-report.json`
 - package scripts: `formal:report` and `formal:verify`
 - dedicated CI integration for `formal:verify` after Lean installation and
   vector consumption are stable
@@ -97,7 +97,7 @@ verification.
 The stable checked-in report should avoid volatile fields such as `generatedAt`
 or `repoCommit`.
 
-Stable formal artifacts should live under `docs/current/formal/` so they follow
+Stable formal artifacts should live under `docs/formal/` so they follow
 the repository's existing current-vs-archive documentation map. If a future
 change intentionally uses a top-level `docs/formal/` directory, update
 `docs/README.md` in the same change.

@@ -27,7 +27,7 @@ can model without claiming cryptographic hash security.
 - `src/server/api/handlers/bitmapProof.ts`
 - `src/lib/zkvm/__tests__/ts-rust-compatibility.test.ts`
 - `src/lib/zkvm/__tests__/final-design-test-vectors.test.ts`
-- `docs/current/verification/README.md`
+- `docs/verification/README.md`
 
 ## Deliverables
 
@@ -40,8 +40,8 @@ can model without claiming cryptographic hash security.
 - theorem: `pack_bits_length`
 - theorem: `pack_bits_get_bit`
 - theorem: `distinct_indices_distinct_packed_addresses`
-- generated `docs/current/formal/generated-vectors/input-commitment-cases.json`
-- generated `docs/current/formal/generated-vectors/bitmap-cases.json`
+- generated `docs/formal/generated-vectors/input-commitment-cases.json`
+- generated `docs/formal/generated-vectors/bitmap-cases.json`
 - extended `formal:vectors` script coverage
 - TypeScript tests consuming the generated vectors
 - Rust tests consuming the generated vectors, or an explicit follow-up if Rust

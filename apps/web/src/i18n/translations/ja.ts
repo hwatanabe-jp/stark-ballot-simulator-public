@@ -54,7 +54,6 @@ export const ja = {
         },
         queue: {
           waiting: '待機中',
-          concurrentProofs: '同時証明数',
           typicalDuration: '標準所要時間',
         },
         estimate: {

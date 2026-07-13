@@ -35,9 +35,9 @@ resource "aws_codebuild_project" "app_deployment_record" {
       env = {
         "git-credential-helper" = "yes"
         "exported-variables" = [
-          "ReleaseManifestKey",
-          "ReleaseManifestVersionId",
-          "ReleaseManifestSha256",
+          "DeploymentMode",
+          "AppDeploymentRecordSha256",
+          "AppSourceSha",
         ]
       }
       phases = {
@@ -54,176 +54,24 @@ resource "aws_codebuild_project" "app_deployment_record" {
           commands = [
             <<-EOT
 set -eu
-test -n "$APP_RELEASE_MANIFEST_BUCKET"
-test -n "$APP_RELEASE_MANIFEST_KEY"
-test -n "$APP_RELEASE_MANIFEST_VERSION_ID"
-test -n "$APP_RELEASE_MANIFEST_SHA256"
-mkdir -p .tmp infra/terraform/app/evidence
-aws s3api get-object --bucket "$APP_RELEASE_MANIFEST_BUCKET" --key "$APP_RELEASE_MANIFEST_KEY" --version-id "$APP_RELEASE_MANIFEST_VERSION_ID" transitional-release-manifest.json --output json --no-cli-pager > transitional-release-manifest.get-object.json
-node <<'NODE'
-const crypto = require("node:crypto");
-const fs = require("node:fs");
-const actual = crypto.createHash("sha256").update(fs.readFileSync("transitional-release-manifest.json")).digest("hex");
-if (actual !== process.env.APP_RELEASE_MANIFEST_SHA256) {
-  throw new Error("Transitional release manifest SHA-256 does not match the supplied sidecar.");
-}
-NODE
-aws s3api get-object --bucket "$APP_RELEASE_MANIFEST_BUCKET" --key channels/develop/toolchain/accepted.json accepted-toolchain-pointer.json --output json --no-cli-pager > accepted-toolchain-pointer.get-object.json
-aws s3api get-object --bucket "$APP_RELEASE_MANIFEST_BUCKET" --key channels/develop/prover/accepted.json accepted-prover-pointer.json --output json --no-cli-pager > accepted-prover-pointer.get-object.json
-node <<'NODE' > .tmp/release-authority.env
-const crypto = require("node:crypto");
-const fs = require("node:fs");
-function shellQuote(value) {
-  return "'" + String(value).replace(/'/g, "'\\''") + "'";
-}
-function emit(name, value) {
-  console.log(name + "=" + shellQuote(value));
-}
-function sha256(path) {
-  return crypto.createHash("sha256").update(fs.readFileSync(path)).digest("hex");
-}
-const toolchainPointer = JSON.parse(fs.readFileSync("accepted-toolchain-pointer.json", "utf8"));
-const toolchainPointerGet = JSON.parse(fs.readFileSync("accepted-toolchain-pointer.get-object.json", "utf8"));
-const proverPointer = JSON.parse(fs.readFileSync("accepted-prover-pointer.json", "utf8"));
-const proverPointerGet = JSON.parse(fs.readFileSync("accepted-prover-pointer.get-object.json", "utf8"));
-if (toolchainPointer.schemaVersion !== "develop-toolchain-accepted-pointer-v1") {
-  throw new Error("Accepted toolchain pointer schema is invalid.");
-}
-if (proverPointer.schemaVersion !== "develop-prover-accepted-pointer-v1") {
-  throw new Error("Accepted prover pointer schema is invalid.");
-}
-emit("toolchain_artifact_key", toolchainPointer.artifactRecordKey);
-emit("toolchain_artifact_version_id", toolchainPointer.artifactRecordVersionId);
-emit("toolchain_artifact_sha256", toolchainPointer.artifactRecordSha256);
-emit("toolchain_pointer_version_id", toolchainPointerGet.VersionId);
-emit("toolchain_pointer_sha256", sha256("accepted-toolchain-pointer.json"));
-emit("prover_release_key", proverPointer.releaseRecordKey);
-emit("prover_release_version_id", proverPointer.releaseRecordVersionId);
-emit("prover_release_sha256", proverPointer.releaseRecordSha256);
-emit("prover_pointer_version_id", proverPointerGet.VersionId);
-emit("prover_pointer_sha256", sha256("accepted-prover-pointer.json"));
-NODE
-set -a
-. .tmp/release-authority.env
-set +a
-aws s3api get-object --bucket "$APP_RELEASE_MANIFEST_BUCKET" --key "$toolchain_artifact_key" --version-id "$toolchain_artifact_version_id" toolchain-artifact-record.json --output json --no-cli-pager > toolchain-artifact-record.get-object.json
-aws s3api get-object --bucket "$APP_RELEASE_MANIFEST_BUCKET" --key "$prover_release_key" --version-id "$prover_release_version_id" prover-release-record.json --output json --no-cli-pager > prover-release-record.get-object.json
-node <<'NODE'
-const crypto = require("node:crypto");
-const fs = require("node:fs");
-function sha256(path) {
-  return crypto.createHash("sha256").update(fs.readFileSync(path)).digest("hex");
-}
-const sourceSha = process.env.CODEBUILD_RESOLVED_SOURCE_VERSION;
-if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sourceSha || "")) {
-  throw new Error("CODEBUILD_RESOLVED_SOURCE_VERSION must be a Git SHA.");
-}
-if (sha256("toolchain-artifact-record.json") !== process.env.toolchain_artifact_sha256) {
-  throw new Error("toolchain artifact record body hash does not match the accepted pointer.");
-}
-if (sha256("prover-release-record.json") !== process.env.prover_release_sha256) {
-  throw new Error("prover release record body hash does not match the accepted pointer.");
-}
-const bridge = JSON.parse(fs.readFileSync("transitional-release-manifest.json", "utf8"));
-const provenance = bridge.provenance || {};
-const input = {
-  schemaVersion: "develop-app-deployment-selection-input-v1",
-  appSourceSha: sourceSha,
-  finalIntegrationEvidenceId: bridge.finalIntegrationEvidenceId || provenance.exactSourceCiEvidenceId || "pipeline/app-deployment-record/" + sourceSha,
-  bootstrapBaselineRerunEvidenceId: bridge.bootstrapBaselineRerunEvidenceId || provenance.bootstrapNoChangeBaselineEvidenceId,
-  selectedProverSelector: "accepted",
-  toolchainArtifactRecord: JSON.parse(fs.readFileSync("toolchain-artifact-record.json", "utf8")),
-  toolchainArtifactRecordRef: {
-    key: process.env.toolchain_artifact_key,
-    versionId: process.env.toolchain_artifact_version_id,
-    sha256: process.env.toolchain_artifact_sha256,
-  },
-  acceptedToolchainPointer: JSON.parse(fs.readFileSync("accepted-toolchain-pointer.json", "utf8")),
-  acceptedToolchainPointerRef: {
-    key: "channels/develop/toolchain/accepted.json",
-    versionId: process.env.toolchain_pointer_version_id,
-    sha256: process.env.toolchain_pointer_sha256,
-  },
-  proverReleaseRecord: JSON.parse(fs.readFileSync("prover-release-record.json", "utf8")),
-  proverReleaseRecordRef: {
-    key: process.env.prover_release_key,
-    versionId: process.env.prover_release_version_id,
-    sha256: process.env.prover_release_sha256,
-  },
-  acceptedProverPointer: JSON.parse(fs.readFileSync("accepted-prover-pointer.json", "utf8")),
-  acceptedProverPointerRef: {
-    key: "channels/develop/prover/accepted.json",
-    versionId: process.env.prover_pointer_version_id,
-    sha256: process.env.prover_pointer_sha256,
-  },
-  compatibility: {
-    temporaryRiskDecision: provenance.zkvmCompatibilityEvidenceId || "compatibility/temporary-risk/" + sourceSha,
-  },
-  foundation: {
-    proverSubnetIds: bridge.proverSubnetIds,
-    proverSecurityGroupIds: bridge.proverSecurityGroupIds,
-    runtimeReferencesEvidenceId: provenance.foundationRuntimeReferencesEvidenceId,
-    dnsAcmDispositionEvidenceId: provenance.dnsAcmDispositionEvidenceId,
-    bootstrapNoChangeBaselineEvidenceId: provenance.bootstrapNoChangeBaselineEvidenceId,
-    targetAwsAccountAlias: provenance.targetAwsAccountAlias,
-    targetAwsRegion: provenance.targetAwsRegion,
-    deploymentEnvironment: provenance.deploymentEnvironment,
-    foundationStateIdentity: provenance.foundationStateIdentity,
-  },
-  appDeploymentRecord: {
-    key: "deployments/develop/" + sourceSha + ".json",
-    schemaVersion: "develop-app-deployment-record-v1",
-  },
-  releaseManifest: {
-    key: "release-candidates/develop/" + sourceSha + "/release-manifest.json",
-    privateManifestLocator: provenance.privateManifestLocator,
-  },
-};
-fs.writeFileSync("app-deployment-selection-input.json", JSON.stringify(input, null, 2) + "\n");
-NODE
-pnpm aws:app-deployment-record:generate:develop -- --input app-deployment-selection-input.json --write-app-deployment-record app-deployment-record.json --write-release-manifest release-manifest.json
-node <<'NODE'
-const crypto = require("node:crypto");
-const fs = require("node:fs");
-const generatedSha256 = crypto.createHash("sha256").update(fs.readFileSync("release-manifest.json")).digest("hex");
-if (generatedSha256 !== process.env.APP_RELEASE_MANIFEST_SHA256) {
-  throw new Error("Generated release manifest bridge does not match the supplied transitional manifest.");
-}
-NODE
-app_record_key="deployments/develop/$CODEBUILD_RESOLVED_SOURCE_VERSION.json"
-APP_DEPLOYMENT_RECORD_KEY="$app_record_key" APP_DEPLOYMENT_RECORD_BODY=app-deployment-record.json APP_DEPLOYMENT_RECORD_PUT_OUTPUT=put-app-deployment-record.json infra/terraform/bootstrap/app-pipeline-scripts/app-deployment-record-put.sh
-export ReleaseManifestKey="$APP_RELEASE_MANIFEST_KEY"
-ReleaseManifestVersionId="$APP_RELEASE_MANIFEST_VERSION_ID"
-export ReleaseManifestVersionId
-ReleaseManifestSha256="$APP_RELEASE_MANIFEST_SHA256"
-export ReleaseManifestSha256
-node <<'NODE'
-const fs = require("node:fs");
-const appPut = JSON.parse(fs.readFileSync("put-app-deployment-record.json", "utf8"));
-const evidence = {
-  schemaVersion: "app-deployment-record-generation-v1",
-  appDeploymentRecordKey: "deployments/develop/" + process.env.CODEBUILD_RESOLVED_SOURCE_VERSION + ".json",
-  appDeploymentRecordVersionId: appPut.VersionId,
-  releaseManifestKey: process.env.ReleaseManifestKey,
-  releaseManifestVersionId: process.env.ReleaseManifestVersionId,
-  releaseManifestSha256: process.env.ReleaseManifestSha256,
-  sourceSha: process.env.CODEBUILD_RESOLVED_SOURCE_VERSION,
-};
-if (!evidence.appDeploymentRecordVersionId || !evidence.releaseManifestVersionId || !evidence.releaseManifestSha256) {
-  throw new Error("Generated app deployment record publication and manifest sidecars must be complete.");
-}
-fs.writeFileSync("infra/terraform/app/evidence/app-deployment-record-generation.json", JSON.stringify(evidence, null, 2) + "\n");
-NODE
+test "$APP_DEPLOYMENT_MODE" = normal -o "$APP_DEPLOYMENT_MODE" = rollback
+APP_PIPELINE_ARTIFACT_BUCKET="${local.app_pipeline_artifact_bucket_name}" APP_EXPECTED_AWS_ACCOUNT_ID="${var.aws_account_id}" APP_EXPECTED_AWS_REGION="${var.aws_region}" APP_EXPECTED_DEPLOYMENT_ENVIRONMENT="${var.deployment_environment}" infra/terraform/bootstrap/app-pipeline-scripts/app-deployment-selection.sh
+export DeploymentMode="$APP_DEPLOYMENT_MODE"
+AppDeploymentRecordSha256="$(node -e 'const fs=require("node:fs"); const e=JSON.parse(fs.readFileSync("infra/terraform/app/evidence/app-deployment-record-generation.json","utf8")); process.stdout.write(e.appDeploymentRecordSha256)')"
+export AppDeploymentRecordSha256
+AppSourceSha="$(node -e 'const fs=require("node:fs"); const e=JSON.parse(fs.readFileSync("infra/terraform/app/evidence/app-deployment-record-generation.json","utf8")); process.stdout.write(e.appSourceSha)')"
+export AppSourceSha
 cat infra/terraform/app/evidence/app-deployment-record-generation.json
-EOT,
+EOT
           ]
         }
       }
       artifacts = {
         files = [
           "app-deployment-record.json",
-          "release-manifest.json",
           "app-deployment-selection-input.json",
+          "selected-deployment-record.json",
+          "rollback-selection.json",
           "infra/terraform/app/evidence/app-deployment-record-generation.json",
         ]
       }
@@ -281,7 +129,7 @@ resource "aws_codebuild_project" "app_validate" {
         }
         build = {
           commands = [
-            local.app_source_preflight_command,
+            "test -n \"$CODEBUILD_SRC_DIR_AppDeploymentRecordOutput\"",
             "terraform -chdir=infra/terraform/app init -backend=false",
             "terraform -chdir=infra/terraform/bootstrap fmt -check -recursive",
             "terraform -chdir=infra/terraform/app fmt -check -recursive",
@@ -293,6 +141,12 @@ resource "aws_codebuild_project" "app_validate" {
             "pnpm lint",
             "pnpm type-check",
             "pnpm public-safety:scan",
+            "mkdir -p infra/terraform/app/evidence",
+            "cp \"$CODEBUILD_SRC_DIR_AppDeploymentRecordOutput\"/app-deployment-record.json app-deployment-record.json",
+            "cp \"$CODEBUILD_SRC_DIR_AppDeploymentRecordOutput\"/infra/terraform/app/evidence/app-deployment-record-generation.json infra/terraform/app/evidence/app-deployment-record-generation.json",
+            "cp \"$CODEBUILD_SRC_DIR_AppDeploymentRecordOutput\"/selected-deployment-record.json selected-deployment-record.json",
+            "cp \"$CODEBUILD_SRC_DIR_AppDeploymentRecordOutput\"/rollback-selection.json rollback-selection.json",
+            local.app_source_preflight_command,
             <<-EOT
 set -eu
 RUN_FULL_VALIDATE_SUITE=true
@@ -351,7 +205,7 @@ if [ "$RUN_FULL_VALIDATE_SUITE" = "true" ]; then
 else
   echo "Skipping pnpm test:run because the diff does not touch apps/api/**, packages/**, zkvm/**, or infra/lambdas/**."
 fi
-EOT,
+EOT
           ]
         }
       }
@@ -366,6 +220,10 @@ EOT,
       }
       artifacts = {
         files = [
+          "app-deployment-record.json",
+          "selected-deployment-record.json",
+          "rollback-selection.json",
+          "infra/terraform/app/evidence/app-deployment-record-generation.json",
           "infra/terraform/app/evidence/source-preflight.json",
         ]
       }
@@ -413,7 +271,7 @@ resource "aws_codebuild_project" "app_terraform_plan" {
       version = "0.2"
       env = {
         "git-credential-helper" = "yes"
-        "exported-variables" = ["PLAN_EMPTY"]
+        "exported-variables"    = ["PLAN_EMPTY", "APPROVAL_REQUIRED"]
       }
       phases = {
         install = {
@@ -426,10 +284,13 @@ resource "aws_codebuild_project" "app_terraform_plan" {
           commands = [
             "test -n \"$CODEBUILD_SRC_DIR_ValidateOutput\"",
             "mkdir -p infra/terraform/app/evidence",
-            "cp \"$CODEBUILD_SRC_DIR_ValidateOutput\"/infra/terraform/app/evidence/source-preflight.json infra/terraform/app/evidence/source-preflight.json",
+            "for path in app-deployment-record.json selected-deployment-record.json rollback-selection.json infra/terraform/app/evidence/app-deployment-record-generation.json infra/terraform/app/evidence/source-preflight.json; do cp \"$CODEBUILD_SRC_DIR_ValidateOutput/$path\" \"$path\"; done",
             local.app_backend_config_command,
             local.app_tfvars_command,
             "node --version | grep -E '^v24\\.'",
+            "corepack enable",
+            "pnpm install --frozen-lockfile",
+            local.app_recovery_prepare_command,
             local.app_target_lambda_artifacts_command,
             local.app_guard_init_command,
             local.app_guard_validate_command,
@@ -479,7 +340,9 @@ resource "aws_codebuild_project" "app_terraform_plan" {
               JSON.stringify(
                 {
                   schemaVersion: "app-plan-empty-v1",
-                  sourceSha: process.env.CODEBUILD_RESOLVED_SOURCE_VERSION || "",
+                  deploymentMode: process.env.APP_DEPLOYMENT_MODE || "",
+                  controlSourceSha: process.env.CODEBUILD_RESOLVED_SOURCE_VERSION || "",
+                  selectedSourceSha: process.env.APP_SOURCE_SHA || "",
                   planEmpty,
                   resourceChangeCount,
                   outputChangeCount,
@@ -494,7 +357,13 @@ resource "aws_codebuild_project" "app_terraform_plan" {
             NODE
             )"
             export PLAN_EMPTY
-            EOT,
+            export APPROVAL_REQUIRED=true
+            if [ "$APP_DEPLOYMENT_MODE" = "normal" ] && [ "$PLAN_EMPTY" = "true" ]; then
+              APPROVAL_REQUIRED=false
+            fi
+            export APPROVAL_REQUIRED
+            EOT
+            ,
             "sha256sum infra/terraform/app/tfplan > infra/terraform/app/tfplan.sha256",
           ]
         }
@@ -510,11 +379,18 @@ resource "aws_codebuild_project" "app_terraform_plan" {
       }
       artifacts = {
         files = [
+          "infra/terraform/app/.terraform.lock.hcl",
           "infra/terraform/app/tfplan",
           "infra/terraform/app/tfplan.txt",
           "infra/terraform/app/tfplan.json",
           "infra/terraform/app/tfplan.sha256",
           "infra/terraform/app/pipeline.auto.tfvars",
+          "infra/terraform/app/dynamodb-recovery.auto.tfvars.json",
+          "app-deployment-record.json",
+          "selected-deployment-record.json",
+          "rollback-selection.json",
+          "infra/terraform/app/evidence/app-deployment-record-generation.json",
+          "infra/terraform/app/evidence/dynamodb-recovery-selection.json",
           "infra/terraform/app/evidence/source-preflight.json",
           "infra/terraform/app/evidence/target-lambda-artifacts.json",
           "infra/terraform/app/evidence/app-plan-empty.json",
@@ -567,11 +443,16 @@ resource "aws_codebuild_project" "app_terraform_apply" {
           commands = [
             "test -n \"$CODEBUILD_SRC_DIR_PlanOutput\"",
             "mkdir -p infra/terraform/app/evidence",
-            "for path in infra/terraform/app/tfplan infra/terraform/app/tfplan.sha256 infra/terraform/app/pipeline.auto.tfvars infra/terraform/app/evidence/source-preflight.json; do cp \"$CODEBUILD_SRC_DIR_PlanOutput/$path\" \"$path\"; done",
+            "cp \"$CODEBUILD_SRC_DIR_PlanOutput\"/infra/terraform/app/.terraform.lock.hcl infra/terraform/app/.terraform.lock.hcl",
+            "for path in app-deployment-record.json selected-deployment-record.json rollback-selection.json infra/terraform/app/tfplan infra/terraform/app/tfplan.sha256 infra/terraform/app/pipeline.auto.tfvars infra/terraform/app/dynamodb-recovery.auto.tfvars.json infra/terraform/app/evidence/app-deployment-record-generation.json infra/terraform/app/evidence/dynamodb-recovery-selection.json infra/terraform/app/evidence/source-preflight.json infra/terraform/app/evidence/target-lambda-artifacts.json infra/terraform/app/evidence/app-plan-empty.json; do cp \"$CODEBUILD_SRC_DIR_PlanOutput/$path\" \"$path\"; done",
             "sha256sum -c infra/terraform/app/tfplan.sha256",
+            "corepack enable",
+            "pnpm install --frozen-lockfile",
             local.app_source_preflight_command,
+            local.app_recovery_prepare_command,
             local.app_backend_config_command,
             local.app_guard_init_command,
+            "APP_PIPELINE_NAME=${local.app_pipeline_name} APP_PIPELINE_EXECUTION_ID=\"$APP_PIPELINE_EXECUTION_ID\" APP_DEPLOYMENT_MODE=\"$APP_DEPLOYMENT_MODE\" APP_EXPECTED_CONTROL_SOURCE_SHA=\"$CODEBUILD_RESOLVED_SOURCE_VERSION\" APP_EXPECTED_SELECTED_SOURCE_SHA=\"$APP_SOURCE_SHA\" APP_EXPECTED_ACCOUNT_ID=${var.aws_account_id} APP_DEPLOYMENT_ENVIRONMENT=${var.deployment_environment} APP_TFPLAN_SHA256_PATH=infra/terraform/app/tfplan.sha256 APP_PLAN_EMPTY_EVIDENCE_PATH=infra/terraform/app/evidence/app-plan-empty.json APP_APPROVAL_EVIDENCE_PATH=infra/terraform/app/evidence/approval-evidence.json APP_APPROVAL_PUBLICATION_PATH=infra/terraform/app/evidence/approval-evidence-publication.json APP_PIPELINE_ARTIFACT_BUCKET=${local.app_pipeline_artifact_bucket_name} APP_APPROVAL_EVIDENCE_KEY_PREFIX=approval-evidence infra/terraform/bootstrap/app-pipeline-scripts/app-approval-evidence.sh",
             local.app_guard_apply_command,
             "terraform -chdir=infra/terraform/app output -json > infra/terraform/app/apply-outputs.json",
           ]
@@ -579,7 +460,16 @@ resource "aws_codebuild_project" "app_terraform_apply" {
       }
       artifacts = {
         files = [
+          "app-deployment-record.json",
+          "selected-deployment-record.json",
+          "rollback-selection.json",
           "infra/terraform/app/apply-outputs.json",
+          "infra/terraform/app/evidence/app-deployment-record-generation.json",
+          "infra/terraform/app/evidence/dynamodb-recovery-selection.json",
+          "infra/terraform/app/evidence/source-preflight.json",
+          "infra/terraform/app/evidence/target-lambda-artifacts.json",
+          "infra/terraform/app/evidence/approval-evidence.json",
+          "infra/terraform/app/evidence/approval-evidence-publication.json",
         ]
       }
     })
@@ -587,6 +477,55 @@ resource "aws_codebuild_project" "app_terraform_apply" {
 
   tags = merge(local.common_tags, {
     StateScope = "app"
+  })
+}
+
+locals {
+  app_smoke_buildspec = yamlencode({
+    version = "0.2"
+    phases = {
+      build = {
+        commands = [
+          "test -n \"$CODEBUILD_SRC_DIR_PlanOutput\"",
+          "test -n \"$CODEBUILD_SRC_DIR_ApplyOutput\"",
+          "test -n \"$CODEBUILD_SRC_DIR_StaticDeployOutput\"",
+          "mkdir -p infra/terraform/app/evidence",
+          "for path in app-deployment-record.json selected-deployment-record.json rollback-selection.json; do cp \"$CODEBUILD_SRC_DIR_PlanOutput/$path\" \"$path\"; done",
+          "for path in infra/terraform/app/tfplan infra/terraform/app/tfplan.sha256 infra/terraform/app/tfplan.txt infra/terraform/app/tfplan.json infra/terraform/app/evidence/app-deployment-record-generation.json infra/terraform/app/evidence/dynamodb-recovery-selection.json infra/terraform/app/evidence/source-preflight.json infra/terraform/app/evidence/target-lambda-artifacts.json infra/terraform/app/evidence/app-plan-empty.json infra/terraform/app/evidence/terraform-version.json infra/terraform/app/evidence/terraform-providers.txt; do cp \"$CODEBUILD_SRC_DIR_PlanOutput/$path\" \"$path\"; done",
+          "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/app/apply-outputs.json infra/terraform/app/apply-outputs.json",
+          "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/app/evidence/approval-evidence.json infra/terraform/app/evidence/approval-evidence.json",
+          "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/app/evidence/approval-evidence-publication.json infra/terraform/app/evidence/approval-evidence-publication.json",
+          "cp \"$CODEBUILD_SRC_DIR_StaticDeployOutput\"/infra/terraform/app/evidence/static-frontend-deploy.json infra/terraform/app/evidence/static-frontend-deploy.json",
+          "aws sts get-caller-identity --output json --no-cli-pager > app-smoke-caller.json",
+          local.app_guard_smoke_command,
+          local.app_no_runtime_source_check_command,
+          local.app_smoke_operator_gate_keyset_command,
+          local.app_smoke_dynamodb_data_plane_command,
+          local.app_smoke_dynamodb_recovery_phase_command,
+          local.app_smoke_denial_checks_command,
+          local.app_fetch_existing_acceptance_index_command,
+          "bash infra/terraform/bootstrap/app-pipeline-scripts/app-smoke-report.sh",
+          local.app_acceptance_publish_command,
+        ]
+      }
+    }
+    artifacts = {
+      files = [
+        "app-smoke-terraform-files.txt",
+        "app-smoke-declared-blocks.txt",
+        "app-smoke-state-denial-simulation.json",
+        "app-smoke-mutation-denial-simulation.json",
+        "app-smoke-denial-evidence.json",
+        "app-smoke-operator-gate-keyset-evidence.json",
+        "app-smoke-dynamodb-data-plane-evidence.json",
+        "app-smoke-dynamodb-recovery-phase-evidence.json",
+        "app-smoke-caller.json",
+        "app-smoke-report.json",
+        "infra/terraform/app/evidence/static-frontend-deploy.json",
+        "${local.app_accepted_marker_path}/index.json",
+        "${local.app_accepted_marker_path}/**/*",
+      ]
+    }
   })
 }
 
@@ -610,6 +549,11 @@ resource "aws_codebuild_project" "app_smoke" {
     environment_variable {
       name  = "APP_AWS_ACCOUNT_ID"
       value = var.aws_account_id
+    }
+
+    environment_variable {
+      name  = "APP_PIPELINE_ARTIFACT_BUCKET"
+      value = local.app_pipeline_artifact_bucket_name
     }
 
     environment_variable {
@@ -646,46 +590,15 @@ resource "aws_codebuild_project" "app_smoke" {
   }
 
   source {
-    type = "CODEPIPELINE"
-    buildspec = yamlencode({
-      version = "0.2"
-      phases = {
-        build = {
-          commands = [
-            "test -n \"$CODEBUILD_SRC_DIR_PlanOutput\"",
-            "test -n \"$CODEBUILD_SRC_DIR_ApplyOutput\"",
-            "test -n \"$CODEBUILD_SRC_DIR_StaticDeployOutput\"",
-            "mkdir -p infra/terraform/app/evidence",
-            "for path in infra/terraform/app/tfplan infra/terraform/app/tfplan.sha256 infra/terraform/app/tfplan.txt infra/terraform/app/tfplan.json infra/terraform/app/evidence/source-preflight.json infra/terraform/app/evidence/target-lambda-artifacts.json infra/terraform/app/evidence/app-plan-empty.json infra/terraform/app/evidence/terraform-version.json infra/terraform/app/evidence/terraform-providers.txt; do cp \"$CODEBUILD_SRC_DIR_PlanOutput/$path\" \"$path\"; done",
-            "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/app/apply-outputs.json infra/terraform/app/apply-outputs.json",
-            "cp \"$CODEBUILD_SRC_DIR_StaticDeployOutput\"/infra/terraform/app/evidence/static-frontend-deploy.json infra/terraform/app/evidence/static-frontend-deploy.json",
-            "aws sts get-caller-identity --output json --no-cli-pager > app-smoke-caller.json",
-            local.app_guard_smoke_command,
-            local.app_no_runtime_source_check_command,
-            local.app_smoke_dynamodb_data_plane_command,
-            local.app_smoke_denial_checks_command,
-            local.app_fetch_existing_acceptance_index_command,
-            "bash infra/terraform/bootstrap/app-pipeline-scripts/app-smoke-report.sh",
-            local.app_acceptance_publish_command,
-          ]
-        }
-      }
-      artifacts = {
-        files = [
-          "app-smoke-terraform-files.txt",
-          "app-smoke-declared-blocks.txt",
-          "app-smoke-state-denial-simulation.json",
-          "app-smoke-mutation-denial-simulation.json",
-          "app-smoke-denial-evidence.json",
-          "app-smoke-dynamodb-data-plane-evidence.json",
-          "app-smoke-caller.json",
-          "app-smoke-report.json",
-          "infra/terraform/app/evidence/static-frontend-deploy.json",
-          "${local.app_accepted_marker_path}/index.json",
-          "${local.app_accepted_marker_path}/**/*",
-        ]
-      }
-    })
+    type      = "CODEPIPELINE"
+    buildspec = local.app_smoke_buildspec
+  }
+
+  lifecycle {
+    precondition {
+      condition     = length(local.app_smoke_buildspec) <= 24000
+      error_message = "The app smoke buildspec must stay within the 24,000-character operational budget below the CodeBuild limit."
+    }
   }
 
   tags = merge(local.common_tags, {
@@ -729,16 +642,63 @@ resource "aws_codebuild_project" "app_static_deploy" {
           }
           commands = [
             "corepack enable",
-            "pnpm install --frozen-lockfile",
           ]
         }
         build = {
           commands = [
             "test -n \"$CODEBUILD_SRC_DIR_ApplyOutput\"",
             "mkdir -p infra/terraform/app/evidence",
+            "test \"$APP_STATIC_FAST_MODE\" = true -o \"$APP_STATIC_FAST_MODE\" = false",
             "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/app/apply-outputs.json infra/terraform/app/apply-outputs.json",
+            "if [ \"$APP_STATIC_FAST_MODE\" = true ]; then test \"$APP_DEPLOYMENT_MODE\" = normal; cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/app/evidence/static-fast-gate.json infra/terraform/app/evidence/static-fast-gate.json; else cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/app-deployment-record.json app-deployment-record.json; fi",
+            "if [ \"$APP_DEPLOYMENT_MODE\" = rollback ]; then cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/selected-deployment-record.json selected-deployment-record.json; else printf '{}\\n' > selected-deployment-record.json; fi",
             <<-EOT
 set -eu
+node <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const staticFastMode = process.env.APP_STATIC_FAST_MODE === "true";
+const applyOutputsBody = fs.readFileSync("infra/terraform/app/apply-outputs.json", "utf8");
+const outputs = JSON.parse(applyOutputsBody);
+if (
+  outputs.app_state_identity?.value !== "stark-dev/develop/app" ||
+  outputs.app_state_backend_key?.value !==
+    "stark-ballot-simulator/stark-dev/develop/app/terraform.tfstate"
+) {
+  throw new Error("Static deployment apply output does not identify the expected app state.");
+}
+if (staticFastMode) {
+  const gate = JSON.parse(fs.readFileSync("infra/terraform/app/evidence/static-fast-gate.json", "utf8"));
+  const actualApplyOutputsSha256 = crypto.createHash("sha256").update(applyOutputsBody).digest("hex");
+  if (
+    gate.schemaVersion !== "app-static-fast-gate-v1" ||
+    gate.sourceSha !== process.env.APP_SOURCE_SHA ||
+    actualApplyOutputsSha256 !== gate.applyOutputsSha256 ||
+    gate.stateIdentity !== outputs.app_state_identity.value ||
+    gate.backendKey !== outputs.app_state_backend_key.value ||
+    gate.accountAlias !== "stark-dev" ||
+    gate.deploymentEnvironment !== "develop" ||
+    !/^[0-9a-f]{40}$/.test(gate.acceptedSourceSha || "") ||
+    !/^[0-9a-f]{64}$/.test(gate.imageIdMappingSha256 || "")
+  ) {
+    throw new Error("Static fast deployment evidence does not match the accepted app authority.");
+  }
+} else {
+  const appDeploymentRecordBody = fs.readFileSync("app-deployment-record.json", "utf8");
+  const appDeploymentRecord = JSON.parse(appDeploymentRecordBody);
+  const actualSha256 = crypto.createHash("sha256").update(appDeploymentRecordBody).digest("hex");
+  if (
+    !/^[0-9a-f]{64}$/.test(process.env.APP_DEPLOYMENT_RECORD_SHA256 || "") ||
+    actualSha256 !== process.env.APP_DEPLOYMENT_RECORD_SHA256 ||
+    appDeploymentRecord.schemaVersion !== "develop-app-deployment-record-v1" ||
+    appDeploymentRecord.appSourceSha !== process.env.APP_SOURCE_SHA
+  ) {
+    throw new Error("Static deployment app record does not match the selected immutable authority.");
+  }
+}
+NODE
+pnpm install --frozen-lockfile --ignore-scripts
+if [ "$APP_DEPLOYMENT_MODE" = "normal" ]; then
 echo "Resolve Plan 02 static frontend config"
 mkdir -p .tmp
 node <<'NODE' > .tmp/static-frontend-config.env
@@ -795,7 +755,98 @@ NODE
 . .tmp/static-frontend-config.env
 pnpm tsx scripts/aws/static-frontend-config-authority.ts --apply-outputs infra/terraform/app/apply-outputs.json --write-record infra/terraform/app/evidence/static-frontend-config-authority.json
 pnpm build:ci
+node <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const staticFastMode = process.env.APP_STATIC_FAST_MODE === "true";
+const staticFastGate = staticFastMode
+  ? JSON.parse(fs.readFileSync("infra/terraform/app/evidence/static-fast-gate.json", "utf8"))
+  : null;
+const appDeploymentRecord = staticFastMode
+  ? null
+  : JSON.parse(fs.readFileSync("app-deployment-record.json", "utf8"));
+const expectedImageIdMappingSha256 = staticFastMode
+  ? staticFastGate.imageIdMappingSha256
+  : appDeploymentRecord.imageIdMappingSha256;
+const imageIdMappingSha256 = crypto
+  .createHash("sha256")
+  .update(fs.readFileSync("dist/imageId-mapping.json"))
+  .digest("hex");
+if (
+  !/^[0-9a-f]{64}$/.test(expectedImageIdMappingSha256 || "") ||
+  imageIdMappingSha256 !== expectedImageIdMappingSha256
+) {
+  throw new Error("Static frontend ImageID mapping checksum does not match its deployment authority.");
+}
+NODE
 rm -f .tmp/static-frontend-config.env
+tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf .tmp/static-frontend-dist.tar dist infra/terraform/app/evidence/static-frontend-config-authority.json
+gzip -n -c .tmp/static-frontend-dist.tar > .tmp/static-frontend-dist.tar.gz
+static_archive_key="static-frontend-artifacts/$APP_SOURCE_SHA/dist.tar.gz"
+set +e
+aws s3api put-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "$static_archive_key" --body .tmp/static-frontend-dist.tar.gz --metadata "sourceSha=$APP_SOURCE_SHA" --if-none-match '*' --expected-bucket-owner "${var.aws_account_id}" --output json --no-cli-pager > .tmp/static-frontend-dist.put-object.json 2> .tmp/static-frontend-dist.put-object.error
+static_put_status=$?
+set -e
+if [ "$static_put_status" -ne 0 ]; then
+  grep -Eq 'PreconditionFailed|412' .tmp/static-frontend-dist.put-object.error || { sed -n '1,120p' .tmp/static-frontend-dist.put-object.error >&2; exit "$static_put_status"; }
+  aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "$static_archive_key" --expected-bucket-owner "${var.aws_account_id}" .tmp/static-frontend-dist.existing.tar.gz --output json --no-cli-pager > .tmp/static-frontend-dist.existing.get-object.json
+  cmp .tmp/static-frontend-dist.tar.gz .tmp/static-frontend-dist.existing.tar.gz || { echo "Retained static frontend archive differs for the same source SHA." >&2; exit 1; }
+  aws s3api head-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "$static_archive_key" --expected-bucket-owner "${var.aws_account_id}" --output json --no-cli-pager > .tmp/static-frontend-dist.put-object.json
+fi
+APP_STATIC_ARCHIVE_KEY="$static_archive_key" node <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const put = JSON.parse(fs.readFileSync(".tmp/static-frontend-dist.put-object.json", "utf8"));
+if (
+  typeof put.VersionId !== "string" ||
+  put.VersionId.length === 0 ||
+  put.VersionId.trim() !== put.VersionId ||
+  put.VersionId === "null"
+) {
+  throw new Error("Retained static frontend archive publication requires a non-null VersionId.");
+}
+fs.writeFileSync("infra/terraform/app/evidence/static-frontend-retained.json", JSON.stringify({
+  bucket: "${local.app_pipeline_artifact_bucket_name}",
+  key: process.env.APP_STATIC_ARCHIVE_KEY,
+  versionId: put.VersionId,
+  sha256: crypto.createHash("sha256").update(fs.readFileSync(".tmp/static-frontend-dist.tar.gz")).digest("hex"),
+}, null, 2) + "\n");
+NODE
+elif [ "$APP_DEPLOYMENT_MODE" = "rollback" ]; then
+  node <<'NODE' > .tmp/static-frontend-retained.env
+const fs = require("node:fs");
+const selected = JSON.parse(fs.readFileSync("selected-deployment-record.json", "utf8"));
+const retained = selected.retainedDeployables?.staticFrontend;
+if (
+  !retained?.bucket ||
+  !retained?.key ||
+  typeof retained?.versionId !== "string" ||
+  retained.versionId.length === 0 ||
+  retained.versionId.trim() !== retained.versionId ||
+  retained.versionId === "null" ||
+  !/^[0-9a-f]{64}$/.test(retained.sha256 || "")
+) throw new Error("Rollback static frontend retention coordinates are incomplete.");
+function q(value) { return "'" + String(value).replace(/'/g, "'\\''") + "'"; }
+for (const [name, value] of Object.entries({ bucket: retained.bucket, key: retained.key, version: retained.versionId, sha: retained.sha256 })) console.log(name + "=" + q(value));
+fs.writeFileSync("infra/terraform/app/evidence/static-frontend-retained.json", JSON.stringify(retained, null, 2) + "\n");
+NODE
+  set -a
+  . .tmp/static-frontend-retained.env
+  set +a
+  aws s3api get-object --bucket "$bucket" --key "$key" --version-id "$version" --expected-bucket-owner "${var.aws_account_id}" .tmp/static-frontend-dist.tar.gz --output json --no-cli-pager > .tmp/static-frontend-dist.get-object.json
+  APP_EXPECTED_STATIC_VERSION="$version" node <<'NODE'
+const fs = require("node:fs");
+const response = JSON.parse(fs.readFileSync(".tmp/static-frontend-dist.get-object.json", "utf8"));
+if (response.VersionId !== process.env.APP_EXPECTED_STATIC_VERSION) {
+  throw new Error("Rollback static frontend VersionId mismatch.");
+}
+NODE
+  test "$(sha256sum .tmp/static-frontend-dist.tar.gz | awk '{print $1}')" = "$sha"
+  tar -xzf .tmp/static-frontend-dist.tar.gz
+else
+  echo "APP_DEPLOYMENT_MODE must be normal or rollback." >&2
+  exit 1
+fi
 
 node <<'NODE'
 const crypto = require("node:crypto");
@@ -860,7 +911,27 @@ for (const file of files.sort()) {
   hash.update(fs.readFileSync(file));
 }
 const artifactSha256 = hash.digest("hex");
-const imageIdMappingSha256 = crypto.createHash("sha256").update(fs.readFileSync("public/imageId-mapping.json")).digest("hex");
+const retainedStaticFrontend = JSON.parse(fs.readFileSync("infra/terraform/app/evidence/static-frontend-retained.json", "utf8"));
+if (retainedStaticFrontend.artifactSha256 && retainedStaticFrontend.artifactSha256 !== artifactSha256) {
+  throw new Error("Retained rollback static frontend content checksum does not match the selected deployment.");
+}
+const imageIdMappingSha256 = crypto.createHash("sha256").update(fs.readFileSync("dist/imageId-mapping.json")).digest("hex");
+const staticFastMode = process.env.APP_STATIC_FAST_MODE === "true";
+const staticFastGate = staticFastMode
+  ? JSON.parse(fs.readFileSync("infra/terraform/app/evidence/static-fast-gate.json", "utf8"))
+  : null;
+const appDeploymentRecord = staticFastMode
+  ? null
+  : JSON.parse(fs.readFileSync("app-deployment-record.json", "utf8"));
+const expectedImageIdMappingSha256 = staticFastMode
+  ? staticFastGate.imageIdMappingSha256
+  : appDeploymentRecord.imageIdMappingSha256;
+if (
+  !/^[0-9a-f]{64}$/.test(expectedImageIdMappingSha256 || "") ||
+  imageIdMappingSha256 !== expectedImageIdMappingSha256
+) {
+  throw new Error("Static frontend ImageID mapping checksum does not match its deployment authority.");
+}
 function canonicalJson(value) {
   if (Array.isArray(value)) {
     return "[" + value.map(canonicalJson).join(",") + "]";
@@ -882,7 +953,7 @@ const invalidation = JSON.parse(execFileSync("aws", ["cloudfront", "create-inval
 const publicFrontendConfigSha256 = crypto.createHash("sha256").update(canonicalJson(publicFrontendConfig)).digest("hex");
 const evidence = {
   schemaVersion: "static-frontend-deploy-v1",
-  sourceSha: process.env.CODEBUILD_RESOLVED_SOURCE_VERSION,
+  sourceSha: process.env.APP_SOURCE_SHA,
   pipelineExecutionId: process.env.APP_PIPELINE_EXECUTION_ID,
   frontendBucketName: frontend.frontend_bucket_name,
   cloudfrontDistributionId: frontend.cloudfront_distribution_id,
@@ -890,6 +961,12 @@ const evidence = {
   operatorGateEnabled: frontend.operator_gate_enabled !== false,
   distFileCount: files.length,
   artifactSha256,
+  retainedArchive: {
+    bucket: retainedStaticFrontend.bucket,
+    key: retainedStaticFrontend.key,
+    versionId: retainedStaticFrontend.versionId,
+    sha256: retainedStaticFrontend.sha256,
+  },
   publicFrontendConfig,
   publicFrontendConfigSha256,
   imageIdMapping: {
@@ -914,6 +991,7 @@ EOT
       artifacts = {
         files = [
           "infra/terraform/app/evidence/static-frontend-deploy.json",
+          "infra/terraform/app/evidence/static-frontend-retained.json",
         ]
       }
     })

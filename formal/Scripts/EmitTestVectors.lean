@@ -760,7 +760,7 @@ def generatedVectorsDir : IO System.FilePath := do
       binDir.parent.bind (fun buildDir =>
         buildDir.parent.bind (fun lakeDir => lakeDir.parent)))
     | throw <| IO.userError s!"could not locate formal directory from executable path: {appPath}"
-  pure <| formalDir / ".." / "docs" / "current" / "formal" / "generated-vectors"
+  pure <| formalDir / ".." / "docs" / "formal" / "generated-vectors"
 
 end Scripts.EmitTestVectors
 

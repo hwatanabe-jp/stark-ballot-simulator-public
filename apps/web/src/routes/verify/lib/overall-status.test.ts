@@ -8,7 +8,7 @@ import {
   type VerifyPageOverallStatusOverrideSource,
 } from './overall-status';
 import type { VerificationSummaryTone } from '@stark-ballot/verification/summary';
-import displayCasesJson from '../../../../../../docs/current/formal/generated-vectors/verification-display-cases.json';
+import displayCasesJson from '../../../../../../docs/formal/generated-vectors/verification-display-cases.json';
 
 interface FormalDisplayCase {
   name: string;

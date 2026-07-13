@@ -7,6 +7,8 @@ resource "aws_iam_role" "app_static_fast_pipeline" {
   tags = merge(local.common_tags, {
     StateScope = "app"
   })
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 }
 
 resource "aws_iam_role" "app_static_fast_gate_and_build" {
@@ -18,6 +20,8 @@ resource "aws_iam_role" "app_static_fast_gate_and_build" {
   tags = merge(local.common_tags, {
     StateScope = "app"
   })
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 }
 
 resource "aws_iam_role" "app_static_fast_smoke_lite" {
@@ -29,6 +33,8 @@ resource "aws_iam_role" "app_static_fast_smoke_lite" {
   tags = merge(local.common_tags, {
     StateScope = "app"
   })
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 }
 
 data "aws_iam_policy_document" "app_static_fast_pipeline" {
@@ -166,7 +172,7 @@ data "aws_iam_policy_document" "app_static_fast_gate_and_build" {
     sid       = "WriteAppStaticFastArtifacts"
     effect    = "Allow"
     actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.app_static_fast_pipeline_name}/*"]
+    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/*"]
   }
 
   statement {
@@ -304,7 +310,6 @@ resource "aws_codebuild_project" "app_static_fast_gate_and_build" {
           }
           commands = [
             "corepack enable",
-            "pnpm install --frozen-lockfile",
           ]
         }
         build = {
@@ -312,29 +317,49 @@ resource "aws_codebuild_project" "app_static_fast_gate_and_build" {
             <<-STATIC_FAST_GATE
 set -eu
 mkdir -p .tmp infra/terraform/app/evidence
-for public_dir in public apps/web/public; do
-  if [ -d "$public_dir" ] && find "$public_dir" -type l -print -quit | grep -q .; then
-    echo "Static fast lane refuses symlinks under $public_dir. Use the full app lane." >&2
-    exit 1
-  fi
-done
-aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "accepted-deployments/stark-dev/develop/app/index.json" accepted-index.json --output json --no-cli-pager
+git ls-files -s -z -- public apps/web > .tmp/static-fast-tracked-files.z
+node <<'NODE'
+const fs = require("node:fs");
+const entries = fs.readFileSync(".tmp/static-fast-tracked-files.z", "utf8").split("\0").filter(Boolean);
+const allowedModes = new Set(["100644", "100755"]);
+const invalidEntries = [];
+for (const entry of entries) {
+  const match = entry.match(/^(\d{6}) [0-9a-f]+ \d+\t([\s\S]*)$/);
+  if (!match) {
+    invalidEntries.push({ mode: "malformed", path: "<unparsed>" });
+  } else if (!allowedModes.has(match[1])) {
+    invalidEntries.push({ mode: match[1], path: match[2] });
+  }
+}
+if (invalidEntries.length > 0) {
+  throw new Error(
+    "Static fast lane refuses non-regular tracked entries under public or apps/web: " +
+      invalidEntries.map((entry) => entry.mode + ":" + JSON.stringify(entry.path)).join(", ")
+  );
+}
+NODE
+aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "accepted-deployments/stark-dev/develop/app/index.json" --expected-bucket-owner "${var.aws_account_id}" accepted-index.json --output json --no-cli-pager
 node <<'NODE' > .tmp/static-fast-accepted.env
 const fs = require("node:fs");
 const index = JSON.parse(fs.readFileSync("accepted-index.json", "utf8"));
 const deployments = Array.isArray(index.acceptedDeployments) ? index.acceptedDeployments : [];
-const latest = deployments.find((deployment) => deployment && typeof deployment.sourceSha === "string");
-if (!latest) {
-  throw new Error("Static fast lane requires an accepted deployment marker. Use the full app lane.");
+function retainedPath(deployment, key) {
+  const retained = deployment && deployment.retainedDeploymentArtifacts;
+  const nested = retained && retained[key];
+  return typeof nested === "string" && nested.length > 0 ? nested : deployment && deployment[key];
 }
-const applyOutputsPath = latest.retainedDeploymentArtifacts && latest.retainedDeploymentArtifacts.applyOutputsPath;
+const latest = deployments[0];
+if (!latest || typeof latest.sourceSha !== "string" || !/^[0-9a-f]{40}$/.test(latest.sourceSha)) {
+  throw new Error("Static fast lane requires an accepted deployment marker with retained static deploy artifacts. Use the full app lane.");
+}
+const applyOutputsPath = retainedPath(latest, "applyOutputsPath");
 if (typeof applyOutputsPath !== "string" || applyOutputsPath.length === 0) {
   throw new Error("Static fast lane accepted deployment is missing applyOutputsPath. Use the full app lane.");
 }
 if (typeof latest.applyOutputsSha256 !== "string" || !/^[0-9a-f]{64}$/i.test(latest.applyOutputsSha256)) {
   throw new Error("Static fast lane accepted deployment is missing applyOutputsSha256. Use the full app lane.");
 }
-const staticFrontendDeployPath = latest.retainedDeploymentArtifacts && latest.retainedDeploymentArtifacts.staticFrontendDeployPath;
+const staticFrontendDeployPath = retainedPath(latest, "staticFrontendDeployPath");
 if (typeof staticFrontendDeployPath !== "string" || staticFrontendDeployPath.length === 0) {
   throw new Error("Static fast lane accepted deployment is missing staticFrontendDeployPath. Use the full app lane.");
 }
@@ -373,12 +398,29 @@ for (let index = 0; index < entries.length;) {
     }
   }
 }
-const allowedPrefixes = ["apps/web/", "public/patterns/", "public/textures/"];
+const staticPrefixes = ["apps/web/src/", "public/patterns/", "public/textures/"];
+const neutralPrefixes = [
+  "docs/",
+  "public-book/",
+  "scripts/__tests__/",
+  "infra/terraform/bootstrap/",
+  "infra/terraform/foundation/",
+];
+const neutralFiles = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  "README.md",
+  "SECURITY.md",
+  "infra/terraform/app/README.md",
+];
 const explicitDeniedPrefixes = [
   "apps/api/",
   "packages/",
   "zkvm/",
-  "infra/",
+  "verifier-service/",
+  "infra/terraform/app/",
+  "infra/docker/",
+  "infra/lambdas/",
   "scripts/aws/",
 ];
 const explicitDeniedFiles = [
@@ -390,27 +432,34 @@ const explicitDeniedFiles = [
   "yarn.lock",
   "bun.lockb",
 ];
+const staticPaths = paths.filter((file) => staticPrefixes.some((prefix) => file.startsWith(prefix)));
 const denied = paths.filter((file) => {
   if (explicitDeniedFiles.includes(file)) {
     return true;
   }
+  if (staticPrefixes.some((prefix) => file.startsWith(prefix))) {
+    return false;
+  }
+  if (neutralFiles.includes(file) || neutralPrefixes.some((prefix) => file.startsWith(prefix))) {
+    return false;
+  }
   if (explicitDeniedPrefixes.some((prefix) => file.startsWith(prefix))) {
     return true;
   }
-  if (!allowedPrefixes.some((prefix) => file.startsWith(prefix))) {
-    return true;
-  }
-  return false;
+  return true;
 });
-if (denied.length > 0 || paths.length === 0) {
+if (denied.length > 0 || paths.length === 0 || staticPaths.length === 0) {
+  const reason =
+    denied.length > 0 ? denied.join(", ") : paths.length === 0 ? "(empty diff)" : "(no static frontend paths)";
   throw new Error(
     "Static fast lane default-deny gate rejected this diff. Use the full app lane. Rejected paths: " +
-      (denied.length > 0 ? denied.join(", ") : "(empty diff)")
+      reason
   );
 }
 NODE
-aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "$apply_outputs_path" infra/terraform/app/apply-outputs.json --output json --no-cli-pager
-aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "$static_frontend_deploy_path" accepted-static-frontend-deploy.json --output json --no-cli-pager
+pnpm install --frozen-lockfile --ignore-scripts
+aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "$apply_outputs_path" --expected-bucket-owner "${var.aws_account_id}" infra/terraform/app/apply-outputs.json --output json --no-cli-pager
+aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "$static_frontend_deploy_path" --expected-bucket-owner "${var.aws_account_id}" accepted-static-frontend-deploy.json --output json --no-cli-pager
 node <<'NODE'
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -459,7 +508,14 @@ const evidence = {
   deploymentEnvironment,
   stateIdentity,
   backendKey,
-  allowedPrefixes: ["apps/web/", "public/patterns/", "public/textures/"],
+  staticPrefixes: ["apps/web/src/", "public/patterns/", "public/textures/"],
+  neutralPrefixes: [
+    "docs/",
+    "public-book/",
+    "scripts/__tests__/",
+    "infra/terraform/bootstrap/",
+    "infra/terraform/foundation/",
+  ],
 };
 fs.writeFileSync("infra/terraform/app/evidence/static-fast-gate.json", JSON.stringify(evidence, null, 2) + "\n");
 NODE
@@ -593,7 +649,7 @@ console.log("frontend_host='" + host.replace(/'/g, "'\\''") + "'");
 console.log("expected_http_status='" + (operatorGateEnabled ? "403" : "200") + "'");
 console.log("operator_gate_enabled='" + (operatorGateEnabled ? "true" : "false") + "'");
 NODE
-. .tmp-static-fast-smoke.env
+. ./.tmp-static-fast-smoke.env
 root_status="$(curl --silent --show-error --output /dev/null --write-out '%%{http_code}' "https://$frontend_host/")"
 mapping_status="$(curl --silent --show-error --output /dev/null --write-out '%%{http_code}' "https://$frontend_host/imageId-mapping.json")"
 if [ "$root_status" != "$expected_http_status" ] || [ "$mapping_status" != "$expected_http_status" ]; then
@@ -655,6 +711,7 @@ resource "aws_codepipeline" "app_static_fast" {
       owner            = "AWS"
       provider         = "CodeStarSourceConnection"
       version          = "1"
+      namespace        = "StaticFastSource"
       output_artifacts = ["SourceOutput"]
 
       configuration = {
@@ -703,8 +760,23 @@ resource "aws_codepipeline" "app_static_fast" {
         ProjectName   = aws_codebuild_project.app_static_deploy[0].name
         EnvironmentVariables = jsonencode([
           {
+            name  = "APP_DEPLOYMENT_MODE"
+            value = "normal"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "APP_SOURCE_SHA"
+            value = "#{StaticFastSource.CommitId}"
+            type  = "PLAINTEXT"
+          },
+          {
             name  = "APP_PIPELINE_EXECUTION_ID"
             value = "#{codepipeline.PipelineExecutionId}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "APP_STATIC_FAST_MODE"
+            value = "true"
             type  = "PLAINTEXT"
           },
         ])

@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Last updated: 2026-05-12
+Last updated: 2026-07-13
 
 This repository is published as source. The notices below summarize known
 third-party licenses used by this codebase and by vendored documentation assets.
@@ -14,7 +14,8 @@ This summary assumes the public repository includes the full codebase, including
 - zkVM workspace under `zkvm/`
 - verifier-service under `verifier-service/`
 - Target Lambdas under `infra/lambdas/`: `public-api`, `finalization-writer`,
-  `proof-dispatcher`, `verification-worker`, and `image-signature-gate`
+  `proof-dispatcher`, `verification-worker`, `image-signature-gate`, and
+  `semaphore-janitor`
 - Lean formal models under `formal/` (current Lake metadata lists no external packages)
 - Docs, scripts, and tests
 
@@ -28,21 +29,21 @@ pnpm licenses:regen
 
 The script runs `pnpm licenses list --json`, `cargo metadata` for `zkvm/` and
 `verifier-service/`, replaces local absolute paths with `<REPO_ROOT>` and
-`<CARGO_HOME>` / `<HOME>`, writes `docs/current/licenses/*.{json,csv}`, and finishes with
+`<CARGO_HOME>` / `<HOME>`, writes `docs/licenses/*.{json,csv}`, and finishes with
 `pnpm public-safety:scan`.
 
 ## Generated metadata source of truth
 
 Use these tracked files for current package-level license data:
 
-- `docs/current/licenses/pnpm-licenses-prod.json`
-- `docs/current/licenses/pnpm-licenses-prod.csv`
-- `docs/current/licenses/pnpm-licenses-all.json`
-- `docs/current/licenses/pnpm-licenses-all.csv`
-- `docs/current/licenses/cargo-licenses-zkvm.csv`
-- `docs/current/licenses/cargo-licenses-verifier.csv`
-- `docs/current/licenses/cargo-metadata-zkvm.json`
-- `docs/current/licenses/cargo-metadata-verifier.json`
+- `docs/licenses/pnpm-licenses-prod.json`
+- `docs/licenses/pnpm-licenses-prod.csv`
+- `docs/licenses/pnpm-licenses-all.json`
+- `docs/licenses/pnpm-licenses-all.csv`
+- `docs/licenses/cargo-licenses-zkvm.csv`
+- `docs/licenses/cargo-licenses-verifier.csv`
+- `docs/licenses/cargo-metadata-zkvm.json`
+- `docs/licenses/cargo-metadata-verifier.json`
 
 The Terraform image-signature Lambda is bundled from the root pnpm dependency
 graph; regenerate this metadata when its bundled dependencies change.

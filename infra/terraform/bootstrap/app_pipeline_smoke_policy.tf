@@ -11,6 +11,51 @@ data "aws_iam_policy_document" "app_terraform_smoke" {
   }
 
   statement {
+    sid    = "ReadTargetOperatorGateKmsPublicKeys"
+    effect = "Allow"
+
+    actions = [
+      "kms:DescribeKey",
+      "kms:GetPublicKey",
+    ]
+    resources = [local.app_data_kms_key_arn_pattern]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [var.project_name]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/AccountAlias"
+      values   = [var.account_alias]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = [var.deployment_environment]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/StateScope"
+      values   = ["app"]
+    }
+  }
+
+  statement {
+    sid    = "ReadTargetOperatorGateCloudFrontKeys"
+    effect = "Allow"
+    actions = [
+      "cloudfront:GetKeyGroup",
+      "cloudfront:GetPublicKey",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
     sid    = "SmokeSelfPolicySimulation"
     effect = "Allow"
 
@@ -31,7 +76,11 @@ data "aws_iam_policy_document" "app_terraform_smoke" {
       "dynamodb:Query",
     ]
 
-    resources = concat(local.app_dynamodb_table_arns, local.app_dynamodb_index_arns)
+    resources = concat(
+      local.app_dynamodb_table_arns,
+      local.app_dynamodb_index_arns,
+      local.app_dynamodb_recovery_table_arn_patterns,
+    )
   }
 
   statement {
@@ -54,10 +103,24 @@ data "aws_iam_policy_document" "app_terraform_smoke" {
     }
 
     condition {
-      test     = "ForAnyValue:StringEquals"
+      test     = "ForAnyValue:StringLike"
       variable = "kms:EncryptionContext:aws:dynamodb:tableName"
-      values   = local.app_dynamodb_table_names
+      values   = concat(local.app_dynamodb_table_names, local.app_dynamodb_recovery_table_name_patterns)
     }
+  }
+
+  statement {
+    sid       = "ReadTargetRecoveryLambdaConfig"
+    effect    = "Allow"
+    actions   = ["lambda:GetFunctionConfiguration"]
+    resources = local.app_target_lambda_arns
+  }
+
+  statement {
+    sid       = "ReadTargetRecoveryEventSourceMappings"
+    effect    = "Allow"
+    actions   = ["lambda:GetEventSourceMapping"]
+    resources = ["*"]
   }
 }
 

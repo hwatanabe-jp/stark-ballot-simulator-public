@@ -63,16 +63,13 @@ data "aws_iam_policy_document" "app_deployment_record" {
     actions = [
       "s3:GetObject",
       "s3:GetObjectVersion",
-      "s3:ListBucket",
     ]
     resources = [
-      local.app_release_manifest_bucket_arn,
       local.app_toolchain_accepted_pointer_object_arn,
       local.app_prover_accepted_pointer_object_arn,
       local.app_toolchain_artifact_records_objects_arn,
       local.app_prover_release_records_objects_arn,
       local.app_deployment_record_objects_arn,
-      local.app_release_manifest_candidate_objects_arn,
     ]
   }
 
@@ -142,24 +139,6 @@ data "aws_iam_policy_document" "app_codebuild_common" {
   }
 
   statement {
-    sid    = "ReadFoundationReleaseManifests"
-    effect = "Allow"
-
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-    ]
-    resources = [local.app_release_manifest_objects_arn]
-  }
-
-  statement {
-    sid       = "ListFoundationReleaseManifestBucket"
-    effect    = "Allow"
-    actions   = ["s3:ListBucket"]
-    resources = [local.app_release_manifest_bucket_arn]
-  }
-
-  statement {
     sid    = "UseAppPipelineArtifactKey"
     effect = "Allow"
 
@@ -179,6 +158,16 @@ data "aws_iam_policy_document" "app_terraform_plan" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   source_policy_documents = [data.aws_iam_policy_document.app_codebuild_common[0].json]
+
+  statement {
+    sid    = "ReadSelectedReleaseImageDigests"
+    effect = "Allow"
+    actions = [
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer",
+    ]
+    resources = local.app_release_image_repository_arns
+  }
 
   statement {
     sid    = "ReadAppStateBackend"
@@ -241,7 +230,10 @@ data "aws_iam_policy_document" "app_terraform_plan" {
       "dynamodb:DescribeTimeToLive",
       "dynamodb:ListTagsOfResource",
     ]
-    resources = concat(local.app_dynamodb_table_arns, local.app_dynamodb_index_arns)
+    resources = [
+      local.app_dynamodb_table_arn_pattern,
+      local.app_dynamodb_index_arn_pattern,
+    ]
   }
 
   statement {
@@ -250,11 +242,18 @@ data "aws_iam_policy_document" "app_terraform_plan" {
 
     actions = [
       "kms:DescribeKey",
+      "kms:GetPublicKey",
       "kms:GetKeyPolicy",
       "kms:GetKeyRotationStatus",
-      "kms:ListAliases",
       "kms:ListResourceTags",
     ]
+    resources = [local.app_data_kms_key_arn_pattern]
+  }
+
+  statement {
+    sid       = "ListTargetKmsAliases"
+    effect    = "Allow"
+    actions   = ["kms:ListAliases"]
     resources = ["*"]
   }
 
@@ -302,7 +301,7 @@ data "aws_iam_policy_document" "app_terraform_plan" {
       "iam:ListRolePolicies",
       "iam:ListRoleTags",
     ]
-    resources = local.app_target_runtime_role_arns
+    resources = [local.app_target_runtime_role_arn_pattern]
   }
 
   statement {
@@ -313,7 +312,7 @@ data "aws_iam_policy_document" "app_terraform_plan" {
       "logs:DescribeLogGroups",
       "logs:ListTagsForResource",
     ]
-    resources = local.app_target_all_log_group_arns
+    resources = local.app_target_all_log_group_resource_arns
   }
 
   statement {
@@ -328,7 +327,7 @@ data "aws_iam_policy_document" "app_terraform_plan" {
       "lambda:ListEventSourceMappings",
       "lambda:ListTags",
     ]
-    resources = concat(local.app_target_lambda_arns, ["*"])
+    resources = ["*"]
   }
 
   statement {

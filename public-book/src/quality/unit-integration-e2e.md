@@ -120,8 +120,6 @@ Playwright は、ユーザーが実際に触る投票、集計、検証の流れ
 ## CI での位置づけ
 
 CI では、TypeScript の core checks、UI mock E2E、Rust tests、formal checks、public snapshot checks が役割を分けて動きます。
+変更領域に応じて必要な gate を選ぶ方針は [mock zkVM と real zkVM の境界](#mock-zkvm-と-real-zkvm-の境界) と同じです。
 
-すべてを常に最重構成で走らせるのではなく、変更領域に応じて必要な gate を選ぶ構成にしています。
-特に production STARK proof は高コストなので、proof 入力や journal contract に関わる変更で使う確認経路として扱います。
-
-<!-- source: package.json, vitest.config.ts, playwright.config.ts, tests/e2e/, tests/e2e/README.md, scripts/tests/cli-e2e-voting-flow.ts, scripts/tests/README.md, formal/**, scripts/formal/**, docs/current/formal/generated-vectors/**, apps/**, packages/**, *.test.ts, apps/**, packages/**, *.test.tsx, CI workflow definitions -->
+<!-- source: package.json, vitest.config.ts, playwright.config.ts, tests/e2e/, tests/e2e/README.md, scripts/tests/cli-e2e-voting-flow.ts, scripts/tests/README.md, formal/**, scripts/formal/**, docs/formal/generated-vectors/**, apps/**, packages/**, *.test.ts, apps/**, packages/**, *.test.tsx, CI workflow definitions -->

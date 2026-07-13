@@ -76,10 +76,7 @@ data "aws_iam_policy_document" "foundation_terraform_apply_workload" {
     actions = [
       "s3:*",
     ]
-    resources = [
-      local.foundation_release_manifest_bucket_arn,
-      local.foundation_release_manifest_objects_arn,
-    ]
+    resources = [local.foundation_release_manifest_bucket_arn]
   }
 }
 

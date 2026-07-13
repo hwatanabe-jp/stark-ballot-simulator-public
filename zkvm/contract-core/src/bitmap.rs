@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn test_formal_bitmap_vectors_lsb_first() {
         let cases: Vec<FormalBitmapCase> = serde_json::from_str(include_str!(
-            "../../../docs/current/formal/generated-vectors/bitmap-cases.json"
+            "../../../docs/formal/generated-vectors/bitmap-cases.json"
         ))
         .expect("formal bitmap vectors should parse");
 

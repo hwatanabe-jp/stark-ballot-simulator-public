@@ -87,7 +87,6 @@ locals {
     backend_principal_arns                         = var.backend_principal_arns
     deployment_environment                         = var.deployment_environment
     development_app_cloudfront_acm_certificate_arn = var.development_app_cloudfront_acm_certificate_arn
-    development_app_operator_gate_public_key_pem   = var.development_app_operator_gate_public_key_pem
     development_app_public_hostname                = var.development_app_public_hostname
     enable_development_app_pipeline                = true
     enable_development_foundation_pipeline         = true
@@ -109,7 +108,7 @@ locals {
   terraform_install_commands = [
     "set -eu",
     "if ! command -v terraform >/dev/null 2>&1 || [ \"$(terraform version -json | jq -r .terraform_version)\" != \"${var.terraform_version}\" ]; then curl -fsSLo /tmp/terraform.zip \"https://releases.hashicorp.com/terraform/${var.terraform_version}/terraform_${var.terraform_version}_linux_amd64.zip\"; unzip -q -o /tmp/terraform.zip -d /usr/local/bin; fi",
-    "terraform version",
+    "terraform version -json > /tmp/stark-ballot-terraform-version.json && jq -e -c 'select(.terraform_version == \"${var.terraform_version}\" and .platform == \"linux_amd64\") | {terraform_version, platform}' /tmp/stark-ballot-terraform-version.json",
   ]
 
   bootstrap_backend_init_command = "terraform -chdir=infra/terraform/bootstrap init -backend-config=\"bucket=${aws_s3_bucket.state.bucket}\" -backend-config=\"key=${var.state_backend_key}\" -backend-config=\"region=${var.aws_region}\" -backend-config=\"encrypt=true\" -backend-config=\"kms_key_id=${var.state_kms_alias}\" -backend-config=\"use_lockfile=true\""
@@ -1635,6 +1634,7 @@ resource "aws_codebuild_project" "terraform_plan" {
       }
       artifacts = {
         files = [
+          "infra/terraform/bootstrap/.terraform.lock.hcl",
           "infra/terraform/bootstrap/tfplan",
           "infra/terraform/bootstrap/tfplan.txt",
           "infra/terraform/bootstrap/tfplan.sha256",
@@ -1683,6 +1683,7 @@ resource "aws_codebuild_project" "terraform_apply" {
         build = {
           commands = [
             "test -n \"$CODEBUILD_SRC_DIR_PlanOutput\"",
+            "cp \"$CODEBUILD_SRC_DIR_PlanOutput\"/infra/terraform/bootstrap/.terraform.lock.hcl infra/terraform/bootstrap/.terraform.lock.hcl",
             "cp \"$CODEBUILD_SRC_DIR_PlanOutput\"/infra/terraform/bootstrap/tfplan infra/terraform/bootstrap/tfplan",
             "cp \"$CODEBUILD_SRC_DIR_PlanOutput\"/infra/terraform/bootstrap/tfplan.sha256 infra/terraform/bootstrap/tfplan.sha256",
             "cp \"$CODEBUILD_SRC_DIR_PlanOutput\"/infra/terraform/bootstrap/pipeline.auto.tfvars.json infra/terraform/bootstrap/pipeline.auto.tfvars.json",

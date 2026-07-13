@@ -1,5 +1,5 @@
 resource "aws_cloudwatch_event_rule" "semaphore_janitor_execution_status" {
-  name        = "${local.name_prefix}-semaphore-janitor-execution"
+  name        = "${local.name_prefix}-sem-janitor-exec"
   description = "Release target prover semaphore slots when Step Functions executions close."
 
   event_pattern = jsonencode({

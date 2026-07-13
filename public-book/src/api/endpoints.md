@@ -21,7 +21,7 @@ API ハンドラはフレームワーク非依存の共通実装で、ローカ�
 ## Active browser と CLI API 一覧
 
 この一覧は通常のブラウザと CLI flow から使う active API です。
-`public` は秘密データを含まない公開可能 artifact を指し、無認証で誰でも取得できることは意味しません。
+ここでいう `public` は「秘密を含まず第三者検証に使える」という機密性の分類であり、無認証公開を意味しません（定義は [公開境界](../verification/public-boundary.md)）。
 session-scoped API と bundle/report API は capability 保護が必須です。
 「セッションヘッダー」列の「両方必須」は `X-Session-ID` と `X-Session-Capability` の両方、「capability のみ」は `X-Session-Capability` だけを要求します。
 

@@ -42,9 +42,6 @@ locals {
   app_deployment_record_objects_arn = (
     "${local.app_release_manifest_bucket_arn}/deployments/develop/*"
   )
-  app_release_manifest_candidate_objects_arn = (
-    "${local.app_release_manifest_bucket_arn}/release-candidates/develop/*"
-  )
 
   app_pipeline_role_name = "${var.project_name}-pipeline-${var.account_alias}-${var.deployment_environment}-app"
   app_deployment_record_role_name = (
@@ -55,7 +52,7 @@ locals {
   app_static_deploy_role_name   = "stark-ballot-sim-static-deploy-${var.account_alias}-${var.deployment_environment}-app"
   app_terraform_smoke_role_name = "stark-ballot-sim-tf-smoke-${var.account_alias}-${var.deployment_environment}-app"
   app_static_fast_pipeline_role_name = (
-    "${var.project_name}-static-fast-pipeline-${var.account_alias}-${var.deployment_environment}-app"
+    "sbs-static-fast-pipeline-${var.account_alias}-${var.deployment_environment}-app"
   )
   app_static_fast_gate_and_build_role_name = (
     "stark-ballot-sim-static-fast-gate-${var.account_alias}-${var.deployment_environment}-app"
@@ -85,6 +82,9 @@ locals {
     for name in local.app_target_lambda_names :
     "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:${name}"
   ]
+  app_target_lambda_arn_pattern = (
+    "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:${local.app_runtime_name_prefix}-*"
+  )
   app_target_lambda_role_arns = [
     for name in local.app_target_lambda_role_names :
     "arn:aws:iam::${var.aws_account_id}:role/${name}"
@@ -138,7 +138,7 @@ locals {
   ]
   app_target_state_machine_arn     = "arn:aws:states:${var.aws_region}:${var.aws_account_id}:stateMachine:${local.app_runtime_name_prefix}-finalization"
   app_target_execution_arn         = "arn:aws:states:${var.aws_region}:${var.aws_account_id}:execution:${local.app_runtime_name_prefix}-finalization:*"
-  app_target_execution_status_rule = "${local.app_runtime_name_prefix}-semaphore-janitor-execution"
+  app_target_execution_status_rule = "${local.app_runtime_name_prefix}-sem-janitor-exec"
   app_target_sweep_rule            = "${local.app_runtime_name_prefix}-semaphore-janitor-sweep"
   app_target_event_rule_arns = [
     "arn:aws:events:${var.aws_region}:${var.aws_account_id}:rule/${local.app_target_execution_status_rule}",
@@ -158,6 +158,9 @@ locals {
     "arn:aws:iam::${var.aws_account_id}:role/${local.app_runtime_name_prefix}-target-sfn",
   ]
   app_target_runtime_role_arns = concat(local.app_target_lambda_role_arns, local.app_target_ecs_role_arns)
+  app_target_runtime_role_arn_pattern = (
+    "arn:aws:iam::${var.aws_account_id}:role/${local.app_runtime_name_prefix}-*"
+  )
   app_target_api_arns = [
     "arn:aws:apigateway:${var.aws_region}::/apis",
     "arn:aws:apigateway:${var.aws_region}::/apis/*",
@@ -168,6 +171,9 @@ locals {
   app_data_kms_alias           = "alias/${local.app_runtime_name_prefix}-app-data"
   app_data_kms_alias_arn       = "arn:aws:kms:${var.aws_region}:${var.aws_account_id}:${local.app_data_kms_alias}"
   app_data_kms_key_arn_pattern = "arn:aws:kms:${var.aws_region}:${var.aws_account_id}:key/*"
+  app_operator_gate_kms_alias_arn_pattern = (
+    "arn:aws:kms:${var.aws_region}:${var.aws_account_id}:alias/${local.app_runtime_name_prefix}-operator-gate-*"
+  )
   app_dynamodb_table_names = [
     "${local.app_runtime_name_prefix}-sessions",
     "${local.app_runtime_name_prefix}-votes",
@@ -179,8 +185,27 @@ locals {
     for name in local.app_dynamodb_table_names :
     "arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${name}"
   ]
+  app_dynamodb_table_arn_pattern = (
+    "arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${local.app_runtime_name_prefix}-*"
+  )
   app_dynamodb_index_arns = [
     "arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${local.app_runtime_name_prefix}-votes/index/*",
+  ]
+  app_dynamodb_index_arn_pattern = (
+    "arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${local.app_runtime_name_prefix}-*/index/*"
+  )
+  app_dynamodb_recovery_table_arn_patterns = [
+    "arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${local.app_runtime_name_prefix}-sessions-recovery-*",
+    "arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${local.app_runtime_name_prefix}-votes-recovery-*",
+    "arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${local.app_runtime_name_prefix}-votes-recovery-*/index/*",
+  ]
+  app_dynamodb_recovery_table_name_patterns = [
+    "${local.app_runtime_name_prefix}-sessions-recovery-*",
+    "${local.app_runtime_name_prefix}-votes-recovery-*",
+  ]
+  app_release_image_repository_arns = [
+    "arn:aws:ecr:${var.aws_region}:${var.aws_account_id}:repository/${local.app_runtime_name_prefix}/prover",
+    "arn:aws:ecr:${var.aws_region}:${var.aws_account_id}:repository/${local.app_runtime_name_prefix}/risc0-toolchain",
   ]
   app_cloudwatch_alarm_arns = [
     "arn:aws:cloudwatch:${var.aws_region}:${var.aws_account_id}:alarm:${local.app_runtime_name_prefix}-*"
@@ -288,7 +313,6 @@ locals {
   )
   app_pipeline_artifact_bucket_arn = "arn:aws:s3:::${local.app_pipeline_artifact_bucket_name}"
   app_release_manifest_bucket_arn  = "arn:aws:s3:::${local.app_release_manifest_bucket_name}"
-  app_release_manifest_objects_arn = "${local.app_release_manifest_bucket_arn}/*"
   app_source_connection_arns = [
     aws_codeconnections_connection.source[0].arn,
     replace(aws_codeconnections_connection.source[0].arn, ":codeconnections:", ":codestar-connections:"),
@@ -333,7 +357,6 @@ locals {
     var.development_app_cloudfront_acm_certificate_arn == null ? "cloudfront_acm_certificate_arn = null" : "cloudfront_acm_certificate_arn = \"${var.development_app_cloudfront_acm_certificate_arn}\"",
     "deployment_environment = \"develop\"",
     "develop_operator_gate_enabled = true",
-    "develop_operator_gate_public_key_pem = ${jsonencode(var.development_app_operator_gate_public_key_pem)}",
     "project_name           = \"${var.project_name}\"",
     "public_hostname             = \"${var.development_app_public_hostname}\"",
     "public_hostname_disposition = \"${local.app_public_hostname_disposition}\"",

@@ -2,6 +2,13 @@ data "aws_iam_policy_document" "app_terraform_apply" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   source_policy_documents = [data.aws_iam_policy_document.app_terraform_plan[0].json]
+
+  statement {
+    sid       = "ReadAppApprovalActionExecution"
+    effect    = "Allow"
+    actions   = ["codepipeline:ListActionExecutions"]
+    resources = [aws_codepipeline.development_app[0].arn]
+  }
 }
 
 data "aws_iam_policy_document" "app_terraform_apply_state_backend" {
@@ -20,9 +27,12 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   statement {
-    effect    = "Allow"
-    actions   = ["dynamodb:*"]
-    resources = concat(local.app_dynamodb_table_arns, local.app_dynamodb_index_arns)
+    effect  = "Allow"
+    actions = ["dynamodb:*"]
+    resources = [
+      local.app_dynamodb_table_arn_pattern,
+      local.app_dynamodb_index_arn_pattern,
+    ]
   }
 
   statement {
@@ -46,7 +56,7 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
   statement {
     effect    = "Allow"
     actions   = ["iam:*"]
-    resources = local.app_target_runtime_role_arns
+    resources = [local.app_target_runtime_role_arn_pattern]
   }
 
   statement {
@@ -121,7 +131,7 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
     effect = "Allow"
 
     actions   = ["iam:PassRole"]
-    resources = concat(local.app_target_lambda_role_arns, local.app_target_ecs_role_arns)
+    resources = [local.app_target_runtime_role_arn_pattern]
 
     condition {
       test     = "StringEquals"
@@ -177,6 +187,62 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime_kms" {
     effect    = "Allow"
     actions   = ["kms:ListAliases"]
     resources = ["*"]
+  }
+
+  statement {
+    sid    = "CreateTargetOperatorGateSigningKeys"
+    effect = "Allow"
+
+    actions   = ["kms:CreateKey"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = [var.project_name]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/AccountAlias"
+      values   = [var.account_alias]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Environment"
+      values   = [var.deployment_environment]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/ManagedBy"
+      values   = ["Terraform"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/StateScope"
+      values   = ["app"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:KeyUsage"
+      values   = ["SIGN_VERIFY"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:KeySpec"
+      values   = ["RSA_2048"]
+    }
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "aws:TagKeys"
+      values   = ["Project", "AccountAlias", "Environment", "ManagedBy", "StateScope"]
+    }
   }
 
   statement {
@@ -248,13 +314,17 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime_kms" {
   }
 
   statement {
+    sid    = "ManageTargetKmsResources"
     effect = "Allow"
 
     actions = [
       "kms:CreateAlias",
       "kms:DeleteAlias",
       "kms:DescribeKey",
+      "kms:DisableKey",
+      "kms:EnableKey",
       "kms:EnableKeyRotation",
+      "kms:GetPublicKey",
       "kms:GetKeyPolicy",
       "kms:GetKeyRotationStatus",
       "kms:ListResourceTags",
@@ -266,6 +336,7 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime_kms" {
     ]
     resources = [
       local.app_data_kms_alias_arn,
+      local.app_operator_gate_kms_alias_arn_pattern,
       "arn:aws:kms:${var.aws_region}:${var.aws_account_id}:key/*",
     ]
   }

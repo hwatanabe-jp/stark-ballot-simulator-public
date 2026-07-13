@@ -1,6 +1,6 @@
 /**
  * Tests for zkVM v2 type definitions
- * Following final_design.md v1.0 specifications
+ * Following final-design.md v1.0 specifications
  */
 
 import {
@@ -36,7 +36,7 @@ const withBufferUnavailable = <T>(fn: () => T): T => {
 
 describe('ZkVMInput', () => {
   describe('structure validation', () => {
-    it('should have all required fields from final_design.md', () => {
+    it('should have all required fields from final-design.md', () => {
       const input: ZkVMInput = {
         electionId: '550e8400-e29b-41d4-a716-446655440000',
         bulletinRoot: '0x' + '1'.repeat(64),
@@ -77,7 +77,7 @@ describe('ZkVMInput', () => {
   });
 
   describe('VoteWithProof structure', () => {
-    it('should include index and merklePath as per final_design.md', () => {
+    it('should include index and merklePath as per final-design.md', () => {
       const vote: VoteWithProof = {
         commitment: '0x' + '4'.repeat(64),
         choice: 0,
@@ -160,7 +160,7 @@ describe('ZkVMInput', () => {
 
 describe('ZkVMJournal', () => {
   describe('structure validation', () => {
-    it('should have all required fields from final_design.md', () => {
+    it('should have all required fields from final-design.md', () => {
       const journal: ZkVMJournal = {
         electionId: '550e8400-e29b-41d4-a716-446655440000',
         electionConfigHash: '0x' + '1'.repeat(64),

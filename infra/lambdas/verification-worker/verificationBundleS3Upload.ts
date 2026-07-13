@@ -141,8 +141,14 @@ async function uploadPrivateSidecar(
   try {
     await fs.access(filePath);
   } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+      return;
+    }
     const errorMessage = error instanceof Error ? error.message : String(error);
-    logger.warn(`[Bundle] ${label} upload skipped:`, errorMessage);
+    logger.warn(`[Bundle] ${label} access failed:`, errorMessage);
+    if (targetAwsRuntime) {
+      throw error instanceof Error ? error : new Error(errorMessage);
+    }
     return;
   }
 

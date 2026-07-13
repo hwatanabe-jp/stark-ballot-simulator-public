@@ -86,8 +86,8 @@ sync mode では TypeScript 側の allowlist に基づいて archive を作成�
 - sync bundle allowlist: `packages/verification/src/verification/verification-bundle.ts`
 - async bundle creation: `infra/docker/entrypoint.sh`
 - authenticated bundle/report delivery: `apps/api/src/server/api/handlers/verificationBundles.ts`
-- 現行 verification flow notes: `docs/current/verification/README.md`
+- 現行 verification flow notes: `docs/verification/README.md`
 
 詳細なファイル構造とローカル監査手順は、[バンドル構造](bundle-structure.md) と [第三者検証ガイド](../reproducibility/index.md) を参照してください。
 
-<!-- source: packages/verification/src/verification/verification-bundle.ts, infra/docker/entrypoint.sh, apps/api/src/server/api/handlers/verificationBundles.ts, docs/current/verification/README.md -->
+<!-- source: packages/verification/src/verification/verification-bundle.ts, infra/docker/entrypoint.sh, apps/api/src/server/api/handlers/verificationBundles.ts, docs/verification/README.md -->

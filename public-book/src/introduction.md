@@ -1,8 +1,9 @@
 # はじめに
 
-> **最終更新:** 2026-07-07
+> **最終更新:** 2026-07-13
 
 このドキュメントは、`STARK Ballot Simulator` の公開向けガイドです。
+`STARK Ballot Simulator` は投票の完全性を段階的に検証する教育・ポートフォリオ向けの PoC であり、実運用の選挙基盤ではありません。
 
 ## 目的
 
@@ -24,8 +25,7 @@
 
 ## 想定読者
 
-- 暗号検証や監査に関心のある技術者
-- 本アプリケーションに興味のある技術者
+- 暗号検証や監査、本アプリケーションの設計に関心のある技術者
 
 ## 本書の用語表記
 
@@ -36,6 +36,7 @@
 - **英語のまま使う語**：STARK、zkVM、Image ID、RFC 6962、capability、`bundle.zip`、fail-closed、finalization（集計確定）
 - **識別子は原文のまま**：ファイル名、API フィールド、契約名（`journal.json`、`verificationStatus` など）はコードフォントの英語表記を保ちます。
 - **コンポーネント名**：概念としては「検証サービス」、バイナリ名・パスとしては `verifier-service` を使います。
+- **役割名とリソース名**：概念・役割としては「プローバー」「検証 worker」、リソース・コンポーネント固有名（prover semaphore、`proof-dispatcher`、`verification-worker` など）は原文の英語表記を保ちます。
 
 バンドル関連は、次の 3 語を使い分けます。
 
@@ -97,7 +98,7 @@
 
 AWS インフラ、非同期プローバー、デプロイを担当する読者向けです。
 
-1. [公開アーキテクチャの前提](aws/runtime-boundary.md) で frontend、API、DynamoDB、async prover、artifact delivery の責務分担を把握する
+1. [AWS runtime boundary](aws/runtime-boundary.md) で frontend、API、DynamoDB、async prover、artifact delivery の責務分担を把握する
 2. [AWS アーキテクチャ](aws/index.md) で runtime 構成、環境分離、Terraform-managed infrastructure の連携点を把握する
 3. [非同期プローバー](aws/async-prover.md) で SQS、Step Functions、ECS の責務を理解する
 4. [イメージ署名](aws/image-signing.md) と [Image ID](zkvm/image-id.md) で署名検証と Image ID 解決の連動を確認する

@@ -1,6 +1,6 @@
 /**
  * Tests for ZkVMJournal v2 output specification
- * Following final_design.md §1.3 specifications
+ * Following final-design.md §1.3 specifications
  * Verifies the implemented journal contract.
  */
 
@@ -290,7 +290,7 @@ describe('ZkVMJournal Output Specification', () => {
     });
 
     it('should handle boundary cases for bitmap size', async () => {
-      // Test case from final_design.md: 12 votes (less than 32 bytes)
+      // Test case from final-design.md: 12 votes (less than 32 bytes)
       const treeSize = 12;
 
       // Create votes for all indices (all bits set to 1)
@@ -323,7 +323,7 @@ describe('ZkVMJournal Output Specification', () => {
     });
 
     it('should handle 257 votes case (multiple chunks)', async () => {
-      // Test case from final_design.md: 257 votes (crosses 256-bit boundary)
+      // Test case from final-design.md: 257 votes (crosses 256-bit boundary)
       const treeSize = 257;
 
       // Create votes for first 10 indices and index 256

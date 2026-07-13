@@ -92,7 +92,7 @@ export interface ReceiptPublication {
 
 /**
  * Knowledge data structure - all known information
- * Keys follow final_design.md vocabulary with user./bot. scope prefixes
+ * Keys follow final-design.md vocabulary with user./bot. scope prefixes
  */
 export interface KnowledgeData {
   // ── Session phase ──────────────────────────────────────────────────────────

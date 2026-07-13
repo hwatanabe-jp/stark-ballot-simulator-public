@@ -215,22 +215,6 @@ function handler(event) {
 EOT
 }
 
-resource "aws_cloudfront_public_key" "develop_operator_gate" {
-  count = local.operator_gate_public_key_configured ? 1 : 0
-
-  name        = "${local.name_prefix}-develop-operator-gate"
-  comment     = "Public key for the ${local.name_prefix} operator/tester gate"
-  encoded_key = "${trimspace(var.develop_operator_gate_public_key_pem)}\n"
-}
-
-resource "aws_cloudfront_key_group" "develop_operator_gate" {
-  count = local.operator_gate_public_key_configured ? 1 : 0
-
-  name    = "${local.name_prefix}-develop-operator-gate"
-  comment = "Trusted key group for the ${local.name_prefix} operator/tester gate"
-  items   = [aws_cloudfront_public_key.develop_operator_gate[0].id]
-}
-
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
   comment             = local.frontend_distribution_comment

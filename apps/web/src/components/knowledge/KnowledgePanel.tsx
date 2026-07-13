@@ -56,7 +56,7 @@ function getItemLabel(key: keyof KnowledgeData, t: (key: string) => string): str
 /**
  * ボトムシート設定
  *
- * @see docs/current/ui-redesign/layout-architecture.md セクション4.7
+ * @see docs/ui/layout-architecture.md セクション4.7
  */
 /** 最小高さ (ヘッダーのみ表示) */
 const BOTTOM_SHEET_MIN_HEIGHT = 60;

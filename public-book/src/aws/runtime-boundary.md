@@ -2,7 +2,7 @@
 
 このページは、AWS 章で前提にする公開仕様上の runtime 境界を定義します。
 ここでいう runtime は、ブラウザから投票、集計、検証を実行するための target 構成です。
-アカウント移行の進捗、秘密値の受け渡し、個別デプロイ承認の証跡は扱いません。
+扱わない範囲は末尾の [このページで扱わないもの](#このページで扱わないもの) にまとめます。
 
 ## 公開仕様として扱う境界
 
@@ -16,13 +16,20 @@ S3 frontend origin は直接公開せず、CloudFront が静的 asset と browse
 CloudFront は静的 asset を S3 origin へ、`/api/*` を API Gateway origin へ routing します。
 これにより、frontend と API の公開入口は同じ origin 上に投影されます。
 
+Develop target では、静的 frontend と API の両方を含む CloudFront behavior を operator / tester 向けの signed-cookie gate で保護します。
+署名用の秘密鍵は KMS 内で管理し、対応する公開鍵だけを CloudFront trusted key group に登録します。
+この gate は環境全体への入口を制限するもので、session-scoped な capability token の代わりにはなりません。
+
 ### API
 
 API Gateway は `/api/*` を受け取り、Lambda 上の Hono runtime adapter に渡します。
 実際の API surface は `apps/api/src/server/api/routes/definitions.ts` の route inventory を中心に定義されます。
 Hono はその route inventory を AWS runtime に接続します。
 
-Session-scoped な操作は capability token で保護されます。
+Target runtime では、CloudFront が API origin への転送時に origin-verification header を付与し、Hono はその値が欠落または不一致のリクエストを拒否します。
+したがって、API Gateway の直接 URL は通常の browser / CLI contract ではなく、認可された CloudFront origin path が外側の admission boundary です。
+
+その内側で、session-scoped な操作は capability token で保護されます。
 `POST /api/vote`、`POST /api/finalize`、`GET /api/verify`、`POST /api/verification/run` などの header-scoped route は、`X-Session-ID` と `X-Session-Capability` の検証を通過した場合だけ処理されます。
 `GET /api/sessions/:sessionId/status` や bundle/report delivery などの path-scoped route は、path 上の `sessionId` と `X-Session-Capability` を照合します。
 
@@ -35,28 +42,25 @@ API Lambda と worker Lambda が、それぞれの IAM role に基づく最小�
 ### Async prover
 
 長時間かかる STARK 証明生成は、非同期 runtime に分離されます。
-`POST /api/finalize` が非同期モードで受理されると、API は work item を SQS に送り、dispatcher Lambda が Step Functions execution を開始します。
-Step Functions は署名確認と concurrency semaphore などの gate を通過したうえで ECS Fargate task を起動し、zkVM host が証明と公開監査用 artifact を生成します。
-
-ECS Fargate task は一回限りの証明生成 job として実行されます。
-生成結果は finalization-writer Lambda によって session state に反映されます。
-ブラウザは status endpoint を capability 付きでポーリングして進捗を確認します。
+非同期モードの `POST /api/finalize` は work item を SQS に登録します。
+Step Functions は署名確認や concurrency semaphore などの gate を通過した場合だけ ECS Fargate task を起動し、zkVM host が証明と公開監査用 artifact を生成します。
+生成結果は finalization-writer Lambda が session state に反映し、ブラウザは status endpoint を capability 付きでポーリングします。
+パイプラインの詳細は [非同期プローバー](async-prover.md) を参照してください。
 
 ### Verification worker
 
 Target runtime の `POST /api/verification/run` は、session capability、finalization state、bundle locator、Image ID を確認したうえで verification work を durable queue に登録します。
-verification-worker Lambda は private S3 bucket から `bundle.zip` を取得し、`verifier-service` で STARK receipt を検証します。
-検証結果は session state と、必要に応じて protected report artifact として保存されます。
-ブラウザは通常の API flow から検証状態を取得し、worker や S3 に直接アクセスしません。
+`verification-worker` Lambda は private S3 bucket から `bundle.zip` を取得して `verifier-service` で STARK レシートを検証し、結果を session state と、必要に応じて protected report artifact として保存します。
+ブラウザは通常の API flow から検証状態を取得し、worker や S3 に直接アクセスしません（検証内容は [検証サービス](../zkvm/verifier-service.md) を参照）。
 
 ### Proof artifacts
 
 Proof artifact storage は private S3 bucket です。
 `input.json`、`verification.json`、`included-bitmap.json`、`seen-bitmap.json` などの private artifact は public `bundle.zip` に含めません。
 
-ここでの `public` / 「公開可能」は「秘密を含まず第三者検証に使える」という分類であり、無認証公開を意味しません（詳細は [公開境界](../verification/public-boundary.md)）。
-`bundle.zip` や report の通常配信は、capability-protected API が session、execution ID、artifact locator を検証したうえで S3 から読み出し、API response として返す経路です。
-Raw S3 URL や presigned URL は通常の browser / CLI contract ではありません。
+ここでの `public` の分類は [公開境界](../verification/public-boundary.md) の定義に従います。
+`bundle.zip` や report（`verification.json`）の通常配信は、capability 保護 API が session、execution ID、artifact locator を検証したうえで S3 から読み出し、API response として返す経路です。
+raw S3 URL や presigned URL は通常の browser / CLI contract ではありません。
 
 ## このページで扱わないもの
 

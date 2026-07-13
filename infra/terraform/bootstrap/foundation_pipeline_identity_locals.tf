@@ -252,19 +252,21 @@ node <<'NODE'
 const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 
-const stateBucket = "${aws_s3_bucket.state.bucket}";
-const appStateKey = "${local.app_state_backend_key}";
-const appNamePrefix = "${local.app_runtime_name_prefix}";
-const cloudFrontComment = appNamePrefix + " static frontend";
 const expectedSigningProfileArn = "${local.foundation_ecr_signing_profile_arn}";
 const expectedSigningRepositoryFilters = ${jsonencode([
   format("%s/risc0-toolchain", local.foundation_runtime_name_prefix),
   format("%s/prover", local.foundation_runtime_name_prefix),
+  ])};
+const expectedImageRepositories = ${jsonencode([
+  format("%s/risc0-toolchain", local.foundation_runtime_name_prefix),
+  format("%s/prover", local.foundation_runtime_name_prefix),
 ])};
-const appBuckets = [
-  "${local.app_target_proof_bucket_name}",
-  "${local.app_target_frontend_bucket_name}",
-];
+const releaseManifestBucket = "${local.foundation_release_manifest_bucket_name}";
+const releaseManifestBucketArn = "${local.foundation_release_manifest_bucket_arn}";
+const expectedFoundationApplyRoleName = "${local.foundation_terraform_apply_role_name}";
+const expectedFoundationApplyBoundaryArn = "${local.foundation_apply_deploy_permissions_boundary_policy_arn}";
+const expectedFoundationApplyWorkloadPolicyArn = "${local.foundation_terraform_apply_workload_policy_arn}";
+const expectedImageRepositoryArns = ${jsonencode(local.foundation_ecr_repository_arns)};
 
 function awsJson(args) {
   const output = execFileSync("aws", [...args, "--output", "json", "--no-cli-pager"], {
@@ -272,34 +274,6 @@ function awsJson(args) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   return JSON.parse(output || "{}");
-}
-
-function countAppStateObjects() {
-  const result = awsJson([
-    "s3api",
-    "list-objects-v2",
-    "--bucket",
-    stateBucket,
-    "--prefix",
-    appStateKey,
-    "--max-keys",
-    "1",
-  ]);
-  return Array.isArray(result.Contents) ? result.Contents.length : 0;
-}
-
-function countHeadBucketExists(bucket) {
-  const result = spawnSync("aws", ["s3api", "head-bucket", "--bucket", bucket, "--no-cli-pager"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  if (result.status === 0) {
-    return 1;
-  }
-  if (/(404|Not Found|NoSuchBucket)/i.test(result.stderr || "")) {
-    return 0;
-  }
-  throw new Error("Unable to prove S3 bucket absence for " + bucket + ": " + (result.stderr || result.status));
 }
 
 function verifyEcrSigningConfiguration() {
@@ -330,79 +304,335 @@ function verifyEcrSigningConfiguration() {
   }
 }
 
+function asSet(value) {
+  return new Set(Array.isArray(value) ? value : [value]);
+}
+
+function requireExactConditionalWriteDeny(statements, sid, label, expectedResources, expectedConditionKeys) {
+  const missingPrefix =
+    label === "Accepted pointer"
+      ? "Accepted pointer conditional-write deny is missing"
+      : label + " conditional-write deny is missing";
+  const statement = statements.find((candidate) => candidate.Sid === sid);
+  if (!statement || statement.Effect !== "Deny") {
+    throw new Error("Release authority bucket is missing " + sid);
+  }
+  const principal = statement.Principal;
+  const principalAws = principal && typeof principal === "object" ? principal.AWS : undefined;
+  const principalKeys = principal && typeof principal === "object" ? Object.keys(principal) : [];
+  const principalValues = Array.isArray(principalAws) ? principalAws : [principalAws];
+  const exactWildcardPrincipal =
+    principal === "*" ||
+    (principalKeys.length === 1 &&
+      principalKeys[0] === "AWS" &&
+      principalValues.length === 1 &&
+      principalValues[0] === "*");
+  if (!exactWildcardPrincipal || statement.NotPrincipal !== undefined) {
+    throw new Error(
+      label === "Accepted pointer"
+        ? "Accepted pointer conditional-write deny must apply to Principal *"
+        : label + " conditional-write deny must apply to Principal *",
+    );
+  }
+  if (statement.NotAction !== undefined || statement.NotResource !== undefined) {
+    throw new Error(label + " conditional-write deny must use exact Action and Resource fields");
+  }
+  const actions = asSet(statement.Action);
+  if (actions.size !== 1 || !actions.has("s3:PutObject")) {
+    throw new Error(missingPrefix + " exact s3:PutObject authority");
+  }
+  const resources = asSet(statement.Resource);
+  if (
+    resources.size !== expectedResources.length ||
+    expectedResources.some((resource) => !resources.has(resource))
+  ) {
+    throw new Error(missingPrefix + " an exact protected resource");
+  }
+  const condition = statement.Condition;
+  const conditionOperators = condition && typeof condition === "object" ? Object.keys(condition) : [];
+  if (conditionOperators.length !== 1 || conditionOperators[0] !== "Null") {
+    throw new Error(label + " conditional-write deny has unexpected condition operators");
+  }
+  const nullConditions = condition.Null;
+  const conditionKeys = nullConditions && typeof nullConditions === "object" ? Object.keys(nullConditions).sort() : [];
+  const sortedExpectedConditionKeys = [...expectedConditionKeys].sort();
+  if (
+    conditionKeys.length !== sortedExpectedConditionKeys.length ||
+    conditionKeys.some((key, index) => key !== sortedExpectedConditionKeys[index])
+  ) {
+    throw new Error(label + " conditional-write deny has unexpected condition keys");
+  }
+  for (const key of sortedExpectedConditionKeys) {
+    const values = Array.isArray(nullConditions[key]) ? nullConditions[key] : [nullConditions[key]];
+    if (values.length !== 1 || (values[0] !== true && values[0] !== "true")) {
+      throw new Error(missingPrefix + " " + key);
+    }
+  }
+}
+
+function verifyReleaseAuthorityRetention() {
+  for (const repository of expectedImageRepositories) {
+    const result = spawnSync(
+      "aws",
+      ["ecr", "get-lifecycle-policy", "--repository-name", repository, "--no-cli-pager"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    if (result.status === 0) {
+      throw new Error("Automatic ECR lifecycle expiry remains configured for " + repository);
+    }
+    if (!/LifecyclePolicyNotFoundException/i.test(result.stderr || "")) {
+      throw new Error("Unable to prove ECR lifecycle absence for " + repository + ": " + (result.stderr || result.status));
+    }
+  }
+
+  const bucketLifecycle = spawnSync(
+    "aws",
+    ["s3api", "get-bucket-lifecycle-configuration", "--bucket", releaseManifestBucket, "--no-cli-pager"],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (bucketLifecycle.status === 0) {
+    throw new Error("Automatic release authority S3 lifecycle remains configured");
+  }
+  if (!/NoSuchLifecycleConfiguration/i.test(bucketLifecycle.stderr || "")) {
+    throw new Error(
+      "Unable to prove release authority S3 lifecycle absence: " +
+        (bucketLifecycle.stderr || bucketLifecycle.status),
+    );
+  }
+
+  const bucketPolicyResult = awsJson(["s3api", "get-bucket-policy", "--bucket", releaseManifestBucket]);
+  const bucketPolicy = JSON.parse(String(bucketPolicyResult.Policy || "{}"));
+  const statements = Array.isArray(bucketPolicy.Statement) ? bucketPolicy.Statement : [];
+  const retentionDeny = statements.find((statement) => statement.Sid === "DenyImmutableReleaseAuthorityDeletion");
+  if (!retentionDeny || retentionDeny.Effect !== "Deny") {
+    throw new Error("Release authority bucket is missing DenyImmutableReleaseAuthorityDeletion");
+  }
+  const principal = retentionDeny.Principal;
+  const principalAws = principal && typeof principal === "object" ? principal.AWS : undefined;
+  const appliesToEveryone =
+    principal === "*" ||
+    principalAws === "*" ||
+    (Array.isArray(principalAws) && principalAws.includes("*"));
+  if (!appliesToEveryone || retentionDeny.NotPrincipal !== undefined) {
+    throw new Error("Release authority deletion deny must apply to Principal *");
+  }
+  if (retentionDeny.Condition !== undefined) {
+    throw new Error("Release authority deletion deny must be unconditional");
+  }
+  const actions = new Set(Array.isArray(retentionDeny.Action) ? retentionDeny.Action : [retentionDeny.Action]);
+  for (const action of ["s3:DeleteObject", "s3:DeleteObjectVersion"]) {
+    if (!actions.has(action)) {
+      throw new Error("Release authority deletion deny is missing " + action);
+    }
+  }
+  const resources = new Set(
+    Array.isArray(retentionDeny.Resource) ? retentionDeny.Resource : [retentionDeny.Resource],
+  );
+  for (const prefix of ["artifacts", "promotions", "deployments", "rollbacks"]) {
+    const expected = "arn:aws:s3:::" + releaseManifestBucket + "/" + prefix + "/*";
+    if (!resources.has(expected)) {
+      throw new Error("Release authority deletion deny is missing " + expected);
+    }
+  }
+
+  requireExactConditionalWriteDeny(
+    statements,
+    "DenyUnconditionalImmutableReleaseAuthorityWrites",
+    "Release authority create-only",
+    ["artifacts", "promotions", "deployments", "rollbacks"].map(
+      (prefix) => releaseManifestBucketArn + "/" + prefix + "/*",
+    ),
+    ["s3:if-none-match"],
+  );
+  requireExactConditionalWriteDeny(
+    statements,
+    "DenyUnconditionalAcceptedPointerWrites",
+    "Accepted pointer",
+    ["toolchain", "prover"].map(
+      (channel) => releaseManifestBucketArn + "/channels/develop/" + channel + "/accepted.json",
+    ),
+    ["s3:if-none-match", "s3:if-match"],
+  );
+}
+
+function requireUnconditionalBoundaryDeny(statements, sid, expectedActions, expectedResources) {
+  const statement = statements.find((candidate) => candidate.Sid === sid);
+  if (!statement || statement.Effect !== "Deny") {
+    throw new Error("Foundation apply boundary is missing " + sid);
+  }
+  if (
+    statement.Condition !== undefined ||
+    statement.NotAction !== undefined ||
+    statement.NotResource !== undefined
+  ) {
+    throw new Error("Foundation apply boundary deny must be unconditional: " + sid);
+  }
+  const actions = asSet(statement.Action);
+  for (const action of expectedActions) {
+    if (!actions.has(action)) {
+      throw new Error("Foundation apply boundary " + sid + " is missing action " + action);
+    }
+  }
+  const resources = asSet(statement.Resource);
+  for (const resource of expectedResources) {
+    if (!resources.has(resource)) {
+      throw new Error("Foundation apply boundary " + sid + " is missing resource " + resource);
+    }
+  }
+}
+
+function verifyFoundationApplyBoundary() {
+  const roleResult = awsJson(["iam", "get-role", "--role-name", expectedFoundationApplyRoleName]);
+  const appliedBoundaryArn = String(
+    (((roleResult.Role || {}).PermissionsBoundary || {}).PermissionsBoundaryArn) || "",
+  );
+  if (appliedBoundaryArn !== expectedFoundationApplyBoundaryArn) {
+    throw new Error("Foundation apply role permissions boundary mismatch");
+  }
+
+  const policyResult = awsJson(["iam", "get-policy", "--policy-arn", expectedFoundationApplyBoundaryArn]);
+  const defaultVersionId = String(((policyResult.Policy || {}).DefaultVersionId) || "");
+  if (!defaultVersionId) {
+    throw new Error("Foundation apply boundary default version is missing");
+  }
+  const versionResult = awsJson([
+    "iam",
+    "get-policy-version",
+    "--policy-arn",
+    expectedFoundationApplyBoundaryArn,
+    "--version-id",
+    defaultVersionId,
+  ]);
+  const policyDocument = (versionResult.PolicyVersion || {}).Document || {};
+  const statements = Array.isArray(policyDocument.Statement) ? policyDocument.Statement : [];
+  requireUnconditionalBoundaryDeny(
+    statements,
+    "DenyDeletingRetainedFoundationImages",
+    ["ecr:BatchDeleteImage", "ecr:DeleteRepository", "ecr:PutLifecyclePolicy"],
+    expectedImageRepositoryArns,
+  );
+  requireUnconditionalBoundaryDeny(
+    statements,
+    "DenyDeletingImmutableReleaseAuthority",
+    ["s3:DeleteObject", "s3:DeleteObjectVersion"],
+    ["artifacts", "promotions", "deployments", "rollbacks"].map(
+      (prefix) => releaseManifestBucketArn + "/" + prefix + "/*",
+    ),
+  );
+  requireUnconditionalBoundaryDeny(
+    statements,
+    "DenyAddingReleaseAuthorityLifecycle",
+    ["s3:PutLifecycleConfiguration"],
+    [releaseManifestBucketArn],
+  );
+}
+
+function verifyFoundationApplyWorkloadPolicy() {
+  const attachedResult = awsJson([
+    "iam", "list-attached-role-policies", "--role-name", expectedFoundationApplyRoleName,
+  ]);
+  const attachedPolicies = Array.isArray(attachedResult.AttachedPolicies) ? attachedResult.AttachedPolicies : [];
+  if (!attachedPolicies.some((policy) => policy.PolicyArn === expectedFoundationApplyWorkloadPolicyArn)) {
+    throw new Error("Foundation apply workload policy must be attached to the apply role");
+  }
+
+  const policyResult = awsJson([
+    "iam",
+    "get-policy",
+    "--policy-arn",
+    expectedFoundationApplyWorkloadPolicyArn,
+  ]);
+  const policy = policyResult.Policy || {};
+  const defaultVersionId = String(policy.DefaultVersionId || "");
+  if (policy.Arn !== expectedFoundationApplyWorkloadPolicyArn || !defaultVersionId) {
+    throw new Error("Foundation apply workload policy default version is missing or mismatched");
+  }
+  const versionResult = awsJson([
+    "iam",
+    "get-policy-version",
+    "--policy-arn",
+    expectedFoundationApplyWorkloadPolicyArn,
+    "--version-id",
+    defaultVersionId,
+  ]);
+  const policyDocument = (versionResult.PolicyVersion || {}).Document || {};
+  const statements = Array.isArray(policyDocument.Statement) ? policyDocument.Statement : [];
+  const manifestStatements = statements.filter(
+    (statement) => statement.Sid === "ManageFoundationManifestStorage",
+  );
+  if (manifestStatements.length !== 1) {
+    throw new Error("Foundation apply workload policy must define one ManageFoundationManifestStorage statement");
+  }
+  const manifestStatement = manifestStatements[0];
+  const manifestActions = asSet(manifestStatement.Action);
+  const manifestResources = asSet(manifestStatement.Resource);
+  if (
+    manifestStatement.Effect !== "Allow" ||
+    manifestStatement.Condition !== undefined ||
+    manifestStatement.NotAction !== undefined ||
+    manifestStatement.NotResource !== undefined ||
+    manifestActions.size !== 1 ||
+    !manifestActions.has("s3:*") ||
+    manifestResources.size !== 1 ||
+    !manifestResources.has(releaseManifestBucketArn)
+  ) {
+    throw new Error("Foundation manifest storage authority must be bucket-only");
+  }
+
+  for (const statement of statements) {
+    if (statement.Effect !== "Allow") continue;
+    const actions = asSet(statement.Action);
+    const resources = asSet(statement.Resource);
+    const canAffectS3 =
+      statement.NotAction !== undefined ||
+      [...actions].some((action) => action === "*" || (typeof action === "string" && action.startsWith("s3:")));
+    const reachesReleaseObjects = [...resources].some(
+      (resource) =>
+        resource === "*" ||
+        (typeof resource === "string" && resource.startsWith(releaseManifestBucketArn + "/")),
+    );
+    if (canAffectS3 && reachesReleaseObjects) {
+      throw new Error("Foundation manifest storage authority must be bucket-only");
+    }
+  }
+}
+
 verifyEcrSigningConfiguration();
+verifyReleaseAuthorityRetention();
+verifyFoundationApplyBoundary();
+verifyFoundationApplyWorkloadPolicy();
 
-const checks = [
-  {
-    id: "app_tfstate_absent",
-    count: countAppStateObjects(),
-  },
-  {
-    id: "api_gateway_absent",
-    count: (awsJson(["apigatewayv2", "get-apis"]).Items || []).filter((item) =>
-      String(item.Name || "").startsWith(appNamePrefix),
-    ).length,
-  },
-  {
-    id: "lambda_absent",
-    count: (awsJson(["lambda", "list-functions"]).Functions || []).filter((item) =>
-      String(item.FunctionName || "").startsWith(appNamePrefix),
-    ).length,
-  },
-  {
-    id: "dynamodb_absent",
-    count: (awsJson(["dynamodb", "list-tables"]).TableNames || []).filter((name) =>
-      String(name).startsWith(appNamePrefix),
-    ).length,
-  },
-  {
-    id: "sqs_absent",
-    count: (awsJson(["sqs", "list-queues", "--queue-name-prefix", appNamePrefix]).QueueUrls || []).length,
-  },
-  {
-    id: "step_functions_absent",
-    count: (awsJson(["stepfunctions", "list-state-machines"]).stateMachines || []).filter((item) =>
-      String(item.name || "").startsWith(appNamePrefix),
-    ).length,
-  },
-  {
-    id: "ecs_absent",
-    count: (awsJson(["ecs", "list-clusters"]).clusterArns || []).filter((arn) =>
-      String(arn).includes(":cluster/" + appNamePrefix + "-prover"),
-    ).length,
-  },
-  {
-    id: "cloudfront_absent",
-    count: (((awsJson(["cloudfront", "list-distributions"]).DistributionList || {}).Items) || []).filter(
-      (item) => String(item.Comment || "") === cloudFrontComment,
-    ).length,
-  },
-  ...appBuckets.map((bucket) => ({
-    id: "s3_bucket_absent:" + bucket,
-    count: countHeadBucketExists(bucket),
-  })),
-];
-
+const stateOwnership = JSON.parse(
+  fs.readFileSync("infra/terraform/foundation/evidence/foundation-state-ownership.json", "utf8"),
+);
+const checks = Array.isArray(stateOwnership.checks) ? stateOwnership.checks : [];
 const failingChecks = checks.filter((check) => check.count !== 0);
+if (
+  stateOwnership.schemaVersion !== "foundation-state-ownership-v1" ||
+  stateOwnership.stateIdentity !== "stark-dev/develop/foundation" ||
+  stateOwnership.sourceSha !== process.env.CODEBUILD_RESOLVED_SOURCE_VERSION ||
+  stateOwnership.appRuntimeResourcesCreated !== false ||
+  failingChecks.length > 0
+) {
+  throw new Error("Foundation state ownership evidence is invalid.");
+}
 const evidence = {
   schemaVersion: "foundation-saved-plan-evidence-v1",
   manifestType: "foundation-smoke",
   stateIdentity: "stark-dev/develop/foundation",
   sourceSha: process.env.CODEBUILD_RESOLVED_SOURCE_VERSION,
-  appRuntimeResourcesCreated: failingChecks.length > 0,
+  appRuntimeResourcesCreated: false,
   evidenceClass: "FoundationStateAbsenceOfAppRuntime",
+  stateOwnershipVerified: true,
+  releaseAuthorityRetentionProtected: true,
   acceptedMarkerPath: "${local.foundation_accepted_marker_path}",
-  appStateKey,
-  appNamePrefix,
+  stateOwnership,
   checks,
 };
 fs.writeFileSync(
   "infra/terraform/foundation/evidence/foundation-smoke.json",
   JSON.stringify(evidence, null, 2) + "\\n",
 );
-if (failingChecks.length > 0) {
-  throw new Error("Foundation smoke found app state or runtime resources: " + JSON.stringify(failingChecks));
-}
 NODE
 EOT
 foundation_accepted_marker_path = "accepted-deployments/stark-dev/develop/foundation"

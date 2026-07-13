@@ -23,11 +23,13 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
     actions = [
       "s3:GetObject",
       "s3:GetObjectVersion",
-      "s3:ListBucket",
     ]
     resources = [
-      local.app_release_manifest_bucket_arn,
-      local.app_release_manifest_objects_arn,
+      local.app_toolchain_accepted_pointer_object_arn,
+      local.app_prover_accepted_pointer_object_arn,
+      local.app_toolchain_artifact_records_objects_arn,
+      local.app_prover_release_records_objects_arn,
+      local.app_deployment_record_objects_arn,
     ]
   }
 
@@ -121,6 +123,16 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
       "states:*",
     ]
     resources = ["*"]
+  }
+
+  statement {
+    sid    = "AppSelectedReleaseImageReadGuardrail"
+    effect = "Allow"
+    actions = [
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer",
+    ]
+    resources = local.app_release_image_repository_arns
   }
 
   statement {

@@ -13,7 +13,7 @@
 # Maintenance:
 # - Update when RISC Zero releases new versions (typically 1-2 times/year)
 # - Rebuild for Debian security patches (quarterly recommended)
-# - See docs/current/guides/3-deployment/risc0-base-image.md for update procedures
+# - See docs/infrastructure/risc0-base-image.md for update procedures
 #
 # Multi-stage build strategy:
 # - Stage 1 (build): Build RISC Zero toolchain with all build dependencies

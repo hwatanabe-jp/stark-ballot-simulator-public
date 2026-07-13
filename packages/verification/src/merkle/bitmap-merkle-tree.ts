@@ -1,6 +1,6 @@
 /**
  * Bitmap Merkle tree proof generation and verification
- * Following final_design.md §2.6 specifications
+ * Following final-design.md §2.6 specifications
  *
  * Generates and verifies Merkle proofs for bitmap inclusion
  * Uses CT-style hashing with domain separators (RFC 6962)

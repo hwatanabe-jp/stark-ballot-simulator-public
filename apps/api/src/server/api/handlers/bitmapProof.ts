@@ -1,6 +1,6 @@
 /**
  * /api/bitmap-proof endpoint
- * Following final_design.md §2.6.1 specifications
+ * Following final-design.md §2.6.1 specifications
  *
  * Returns Merkle proof materials for individual vote verification
  * Server provides only raw materials, client performs bit extraction

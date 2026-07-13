@@ -16,8 +16,8 @@ resource "aws_lambda_function" "target" {
     variables = {
       AWS_ACCOUNT_ID                       = var.aws_account_id
       AWS_NODEJS_CONNECTION_REUSE_ENABLED  = "1"
-      DYNAMODB_SESSIONS_TABLE              = aws_dynamodb_table.sessions.arn
-      DYNAMODB_VOTES_TABLE                 = aws_dynamodb_table.votes.arn
+      DYNAMODB_SESSIONS_TABLE              = local.active_sessions_table_arn
+      DYNAMODB_VOTES_TABLE                 = local.active_votes_table_arn
       EXPECTED_IMAGE_ID                    = var.expected_image_id
       EXPECTED_ORIGIN_VERIFY_HEADER_REF    = local.runtime_reference_names.EXPECTED_ORIGIN_VERIFY_HEADER_REF
       FINALIZE_ASYNC_MODE                  = "true"
@@ -60,7 +60,14 @@ resource "aws_lambda_function" "target" {
     }
   }
 
-  depends_on = [aws_cloudwatch_log_group.target_lambdas]
+  depends_on = [
+    aws_cloudwatch_log_group.target_lambdas,
+    aws_iam_role_policy.target_lambda_finalization_writer,
+    aws_iam_role_policy.target_lambda_proof_dispatcher,
+    aws_iam_role_policy.target_lambda_public_api,
+    aws_iam_role_policy.target_lambda_verification_worker,
+    aws_kms_key.app_data,
+  ]
 
   tags = local.common_tags
 }
@@ -69,17 +76,20 @@ resource "aws_lambda_event_source_mapping" "prover_work" {
   event_source_arn        = aws_sqs_queue.prover_work.arn
   function_name           = aws_lambda_function.target["proof_dispatcher"].arn
   batch_size              = 1
-  enabled                 = true
+  enabled                 = !local.dynamodb_recovery_quiesced
   function_response_types = ["ReportBatchItemFailures"]
 
-  depends_on = [aws_iam_role_policy.target_lambda_proof_dispatcher]
+  depends_on = [
+    aws_iam_role_policy.target_lambda_proof_dispatcher,
+    aws_sfn_state_machine.target_finalization,
+  ]
 }
 
 resource "aws_lambda_event_source_mapping" "verification_work" {
   event_source_arn        = aws_sqs_queue.verification_work.arn
   function_name           = aws_lambda_function.target["verification_worker"].arn
   batch_size              = 1
-  enabled                 = true
+  enabled                 = !local.dynamodb_recovery_quiesced
   function_response_types = ["ReportBatchItemFailures"]
 
   depends_on = [aws_iam_role_policy.target_lambda_verification_worker]

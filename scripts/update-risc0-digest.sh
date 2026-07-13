@@ -97,7 +97,7 @@ DIGEST=$(aws ecr describe-images \
 
 if [ -z "$DIGEST" ] || [ "$DIGEST" = "None" ]; then
   echo "Image not found in ECR: $REPOSITORY:$IMAGE_TAG" >&2
-  echo "Build and push the base image first. See docs/current/guides/3-deployment/risc0-base-image.md" >&2
+  echo "Build and push the base image first. See docs/infrastructure/risc0-base-image.md" >&2
   exit 1
 fi
 

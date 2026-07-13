@@ -18,15 +18,21 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Setup pnpm
-      uses: pnpm/action-setup@v6
-
     - name: Setup Node.js
       uses: actions/setup-node@v6
       with:
         node-version: ${{ inputs.node-version }}
-        cache: 'pnpm'
-        cache-dependency-path: ${{ inputs.lockfile }}
+
+    - name: Setup pnpm
+      shell: bash
+      run: |
+        export COREPACK_HOME="$RUNNER_TEMP/corepack"
+        mkdir -p "$RUNNER_TEMP/pnpm-bin"
+        corepack enable --install-directory "$RUNNER_TEMP/pnpm-bin"
+        corepack prepare pnpm@11.12.0 --activate
+        printf '%s\n' "$RUNNER_TEMP/pnpm-bin" >> "$GITHUB_PATH"
+        printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
+        "$RUNNER_TEMP/pnpm-bin/pnpm" --version
 
     - name: Install dependencies
       if: ${{ inputs.install == 'true' }}

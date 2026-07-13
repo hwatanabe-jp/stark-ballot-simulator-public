@@ -1,6 +1,6 @@
 /**
  * Tests for MockZkVM executor
- * Following final_design.md v1.0 specifications
+ * Following final-design.md v1.0 specifications
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';

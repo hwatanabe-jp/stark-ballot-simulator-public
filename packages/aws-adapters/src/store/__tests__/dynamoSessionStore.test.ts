@@ -13,6 +13,10 @@ import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpe
 import { createTestPublicInputArtifact } from '@stark-ballot/test-support/testing/public-input-artifact';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
 import { encryptVoteSecret } from '@stark-ballot/aws-adapters/security/voteSecretCipher';
+import {
+  createSessionCapabilityToken,
+  verifySessionCapabilityToken,
+} from '@stark-ballot/domain/security/sessionCapabilityToken';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -56,6 +60,11 @@ class FakeDynamoDocumentClient {
   readonly extraVoteRows = new Map<string, Array<Record<string, unknown>>>();
   private beforeNextTransactWrite: (() => Promise<void> | void) | null = null;
 
+  constructor(
+    private readonly sessionsTableName = 'sessions',
+    private readonly votesTableName = 'votes',
+  ) {}
+
   async send(command: CommandLike): Promise<Record<string, unknown>> {
     switch (command.constructor.name) {
       case 'PutCommand':
@@ -67,7 +76,7 @@ class FakeDynamoDocumentClient {
       case 'QueryCommand':
         return this.query(command.input);
       case 'ScanCommand':
-        return this.scan();
+        return this.scan(command.input);
       case 'UpdateCommand':
         return this.update(command.input);
       default:
@@ -162,10 +171,24 @@ class FakeDynamoDocumentClient {
     return structuredClone(this.sessions.get(`RECEIPT#${sessionId}`));
   }
 
+  restoreSnapshotTo(sessionsTableName: string, votesTableName: string): FakeDynamoDocumentClient {
+    const restored = new FakeDynamoDocumentClient(sessionsTableName, votesTableName);
+    for (const [key, value] of this.sessions) {
+      restored.sessions.set(key, structuredClone(value));
+    }
+    for (const [sessionId, rows] of this.votes) {
+      restored.votes.set(sessionId, new Map(structuredClone(Array.from(rows.entries()))));
+    }
+    for (const [sessionId, rows] of this.extraVoteRows) {
+      restored.extraVoteRows.set(sessionId, structuredClone(rows));
+    }
+    return restored;
+  }
+
   private put(input: Record<string, unknown>): Record<string, unknown> {
     const tableName = strictString(input['TableName'], 'TableName');
     const item = input['Item'] as Record<string, unknown>;
-    if (tableName === 'sessions') {
+    if (tableName === this.sessionsTableName) {
       const sessionId = strictString(item['sessionId'], 'sessionId');
       const condition = typeof input['ConditionExpression'] === 'string' ? input['ConditionExpression'] : '';
       const existing = this.sessions.get(sessionId);
@@ -187,6 +210,10 @@ class FakeDynamoDocumentClient {
       this.assertFinalizationCondition(condition, input['ExpressionAttributeValues'], existing);
       this.sessions.set(sessionId, structuredClone(item));
       return {};
+    }
+
+    if (tableName !== this.votesTableName) {
+      throw new Error(`Unexpected table: ${tableName}`);
     }
 
     const sessionId = strictString(item['sessionId'], 'sessionId');
@@ -431,6 +458,7 @@ class FakeDynamoDocumentClient {
   }
 
   private get(input: Record<string, unknown>): Record<string, unknown> {
+    this.assertTable(input, this.sessionsTableName);
     const key = input['Key'] as { sessionId: string };
     return {
       Item: structuredClone(this.sessions.get(key.sessionId)),
@@ -438,6 +466,7 @@ class FakeDynamoDocumentClient {
   }
 
   private query(input: Record<string, unknown>): Record<string, unknown> {
+    this.assertTable(input, this.votesTableName);
     const values = input['ExpressionAttributeValues'] as { ':sessionId': string };
     const rows = this.votes.get(values[':sessionId']);
     return {
@@ -448,13 +477,15 @@ class FakeDynamoDocumentClient {
     };
   }
 
-  private scan(): Record<string, unknown> {
+  private scan(input: Record<string, unknown>): Record<string, unknown> {
+    this.assertTable(input, this.sessionsTableName);
     return {
       Items: Array.from(this.sessions.values()).map((item) => structuredClone(item)),
     };
   }
 
   private update(input: Record<string, unknown>): Record<string, unknown> {
+    this.assertTable(input, this.sessionsTableName);
     const key = input['Key'] as { sessionId: string };
     const current = this.sessions.get(key.sessionId);
     const condition = typeof input['ConditionExpression'] === 'string' ? input['ConditionExpression'] : '';
@@ -481,6 +512,13 @@ class FakeDynamoDocumentClient {
         value: nextValue,
       },
     };
+  }
+
+  private assertTable(input: Record<string, unknown>, expectedTableName: string): void {
+    const tableName = strictString(input['TableName'], 'TableName');
+    if (tableName !== expectedTableName) {
+      throw new Error(`Unexpected table: ${tableName}; expected ${expectedTableName}`);
+    }
   }
 }
 
@@ -581,6 +619,120 @@ describe('DynamoSessionStore', () => {
     expect(proof?.treeSize).toBe(1);
     expect(proof?.bulletinRootAtCast).toBe(castResult.bulletinRootAtCast);
     expect(await reader.getVoteById('wrong-session', voteId)).toBeNull();
+  });
+
+  it('restores the complete session authority from a distinct replacement-table fixture', async () => {
+    const primaryClient = new FakeDynamoDocumentClient('primary-sessions', 'primary-votes');
+    const primary = new DynamoSessionStore({
+      sessionsTableName: 'primary-sessions',
+      votesTableName: 'primary-votes',
+      documentClient: asDocumentClient(primaryClient),
+    });
+    const session = await primary.createSession();
+    const capabilitySecret = 'replacement-fixture-capability-secret-at-least-32-bytes';
+    const capability = createSessionCapabilityToken(
+      { sessionId: session.sessionId, nowMs: 1_000, ttlSeconds: 300, nonce: 'recovery-fixture' },
+      capabilitySecret,
+    );
+    const voteId = generateVoteId();
+    const rawRandom = `0x${'e'.repeat(64)}`;
+    const cast = await primary.addVote(session.sessionId, {
+      voteId,
+      vote: VoteChoice.A,
+      rand: rawRandom,
+      commit: `0x${'0'.repeat(64)}`,
+      path: [],
+      timestamp: 123,
+    });
+    await primary.addBotVotes(session.sessionId, [buildVote(generateVoteId(), VoteChoice.B, 'b')]);
+    const includedBitmap = [true, true];
+    const seenBitmap = [true, true];
+    const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
+    const seenBitmapRoot = computeIncludedBitmapRoot(seenBitmap);
+    const votedSession = await primary.getSession(session.sessionId);
+    const bulletinRoot = votedSession?.bulletinRootHistory?.at(-1)?.root;
+    if (!bulletinRoot) {
+      throw new Error('Expected bulletin root before recovery fixture finalization');
+    }
+    const journal = {
+      ...createTestJournal({ totalExpected: 2, validVotes: 2, seenIndicesCount: 2 }),
+      bulletinRoot,
+      treeSize: 2,
+      totalExpected: 2,
+      includedBitmapRoot,
+      seenBitmapRoot,
+    };
+    await primary.finalizeSessionWithReceiptPublication(
+      session.sessionId,
+      buildFinalizationResult('exec-recovery', { journal }),
+      session.contractGeneration ?? 'current',
+      { receipt: '{"receipt":"recovered"}', timestamp: 2_000 },
+      'exec-recovery',
+    );
+    await primary.saveBitmapData(session.sessionId, {
+      includedBitmap,
+      includedBitmapRoot,
+      seenBitmap,
+      seenBitmapRoot,
+      treeSize: 2,
+      finalizedAt: 2_000,
+    });
+
+    const primaryVoteRow = primaryClient.firstVoteRow(session.sessionId);
+    expect(primaryVoteRow?.['vote']).toMatch(/^enc:v1:/);
+    expect(primaryVoteRow?.['rand']).toMatch(/^enc:v1:/);
+    expect(JSON.stringify(primaryVoteRow)).not.toContain(rawRandom);
+
+    const replacementClient = primaryClient.restoreSnapshotTo('replacement-sessions', 'replacement-votes');
+    const stalePrimaryBinding = new DynamoSessionStore({
+      sessionsTableName: 'primary-sessions',
+      votesTableName: 'primary-votes',
+      documentClient: asDocumentClient(replacementClient),
+    });
+    await expect(stalePrimaryBinding.getSession(session.sessionId)).rejects.toThrow(
+      'Unexpected table: primary-sessions',
+    );
+    const replacement = new DynamoSessionStore({
+      sessionsTableName: 'replacement-sessions',
+      votesTableName: 'replacement-votes',
+      documentClient: asDocumentClient(replacementClient),
+    });
+    const restoredSession = await replacement.getSession(session.sessionId);
+    const restoredVote = await replacement.getVoteByIdWithProof(session.sessionId, voteId);
+    const restoredBitmap = await replacement.getBitmapData(session.sessionId);
+
+    expect(restoredSession).toMatchObject({
+      sessionId: session.sessionId,
+      finalized: true,
+    });
+    expect(getVerificationExecutionId(restoredSession?.finalizationResult)).toBe('exec-recovery');
+    expect(restoredVote).toMatchObject({
+      leafIndex: 0,
+      treeSize: 1,
+      bulletinRootAtCast: cast.bulletinRootAtCast,
+      voteData: { voteId, vote: VoteChoice.A, rand: rawRandom },
+    });
+    expect(restoredBitmap).toMatchObject({
+      sessionId: session.sessionId,
+      includedBitmap,
+      seenBitmap,
+      treeSize: 2,
+    });
+    expect(replacementClient.receiptRow(session.sessionId)).toMatchObject({
+      receiptEntry: { receipt: { receipt: '{"receipt":"recovered"}', timestamp: 2_000 } },
+    });
+    expect(
+      verifySessionCapabilityToken(capability, capabilitySecret, {
+        sessionId: restoredSession?.sessionId ?? '',
+        nowMs: 2_000,
+      }),
+    ).toMatchObject({ ok: true, payload: { sessionId: session.sessionId } });
+    expect(
+      verifySessionCapabilityToken(capability, capabilitySecret, {
+        sessionId: 'different-session',
+        nowMs: 2_000,
+      }),
+    ).toEqual({ ok: false, reason: 'session_mismatch' });
   });
 
   it('persists updateSession partial updates and rejects stale or missing session authority', async () => {

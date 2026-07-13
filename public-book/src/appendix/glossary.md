@@ -38,7 +38,7 @@
 ### 包含証明（Inclusion Proof）
 
 **包含証明**：特定の投票コミットメントが掲示板に含まれていることを暗号学的に証明するデータです。
-リーフインデックス、監査パス、ツリーサイズから構成されます。
+リーフインデックス、Merkle パス、ツリーサイズから構成されます。
 RFC 6962 のハッシュ規則に従い、リーフとパスからルートを再計算して期待値と照合します。
 
 詳細: [CT Merkle ツリー](../protocol/ct-merkle.md)
@@ -426,6 +426,43 @@ zkVM の入力、レシート、ジャーナルは正常なまま、公開表示
 
 **同期証明モード**：ローカルプロセスで zkVM ホストバイナリを直接実行し、STARK 証明を同期的に生成するモードです。
 開発環境で使用されます。
+
+### Prover semaphore
+
+**Prover semaphore**：DynamoDB の単一 lock item で、証明生成（`RunProver`）への同時進入数を制限する仕組みです。
+通常の解放は Step Functions が行い、`semaphore-janitor` Lambda が terminal execution event と定期 sweep で残った owner を補償的に解放します。
+
+詳細: [非同期プローバー](../aws/async-prover.md)
+
+### Quiesced phase
+
+**Quiesced phase**：DynamoDB recovery の 4 phase（`primary_active`、`primary_quiesced`、`replacement_quiesced`、`replacement_active`）のうち、新規 session admission と prover / verification queue の consumption を止める切替中 phase です。
+切替中の新規書き込みや非同期処理を fail-closed に抑止します。
+
+詳細: [現行構成とサービス一覧](../aws/design-and-services.md)
+
+### Develop operator gate
+
+**Develop operator gate**：develop target で静的 frontend と API への viewer access を制限する、CloudFront signed-cookie gate です。
+署名用の秘密鍵は KMS 内で管理し、導出した公開鍵だけを CloudFront trusted key group に登録します。
+環境全体への入口を制限するもので、session-scoped な capability token の代わりにはなりません。
+
+詳細: [AWS runtime boundary](../aws/runtime-boundary.md)
+
+### Saved-plan lane
+
+**Saved-plan lane**：plan stage が作成した exact saved plan だけを apply する deployment lane です。
+`normal` と `rollback` を分け、`rollback` は Terraform plan が空でも approval を必須とします。
+
+詳細: [Terraform](../aws/terraform.md)
+
+### Release authority
+
+**Release authority**：どの toolchain / prover image と application artifact をデプロイに使えるかを決める、受理済みの記録群です。
+承認済み prover release record、それを選択する accepted pointer、そこから生成された app deployment record、および必要な承認・scan・signing evidence で構成されます。
+target は現行 AWS 構成、legacy は退役対象の旧構成を指し、legacy 側のリソースは target runtime の authority に含めません。
+
+詳細: [イメージ署名](../aws/image-signing.md)、[Terraform](../aws/terraform.md)
 
 ### イメージ署名検証（Image Signing）
 

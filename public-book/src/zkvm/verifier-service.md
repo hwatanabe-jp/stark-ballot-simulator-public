@@ -217,8 +217,7 @@ status 未設定または `not_run` のときだけ、新しい検証実行ま�
 
 ### verification.json の非公開性
 
-`verification.json` は配布対象アーカイブ `bundle.zip` には含まれません。
-必要に応じてレポート用の capability 保護エンドポイント経由で配布されます。
+`verification.json` は `bundle.zip` に含めず、必要時のみ capability 保護の report エンドポイントで配布します（境界は [公開境界](../verification/public-boundary.md)）。
 第三者検証では、レシートファイルを直接使った独立検証が推奨されます。
 
 <!-- source: verifier-service/src/main.rs, verifier-service/src/lib.rs, apps/api/src/server/api/handlers/verificationRun.ts, infra/lambdas/verification-worker/, packages/aws-adapters/src/sqs/verificationWorkMessage.ts, packages/aws-adapters/src/sqs/publishVerificationWorkMessage.ts -->

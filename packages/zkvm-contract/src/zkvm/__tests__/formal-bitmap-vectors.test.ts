@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import bitmapCasesJson from '../../../../../docs/current/formal/generated-vectors/bitmap-cases.json';
+import bitmapCasesJson from '../../../../../docs/formal/generated-vectors/bitmap-cases.json';
 import { extractBitFromChunkBuffer, getBitmapLeafChunkBuffer, packBitsToBytes } from '../bitmap';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {

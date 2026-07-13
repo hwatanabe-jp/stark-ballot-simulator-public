@@ -1,6 +1,6 @@
 /**
  * Tests for bitmap Merkle tree proof generation
- * Following final_design.md §2.6 specifications
+ * Following final-design.md §2.6 specifications
  *
  * Verifies bitmap Merkle proof generation after implementation.
  */

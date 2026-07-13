@@ -224,6 +224,138 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
   }
 
   statement {
+    sid    = "DenyRetainedDeploymentEvidenceDeletion"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = [
+      "s3:DeleteObject",
+      "s3:DeleteObjectVersion",
+    ]
+    resources = [
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/accepted-deployments/*",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/lambda-artifacts/*",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/static-frontend-artifacts/*",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/approval-evidence/*",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/recovery-manifests/*",
+    ]
+  }
+
+  statement {
+    sid    = "DenyUnconditionalRetainedEvidenceWrites"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.app_accepted_marker_path}/*/*",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/lambda-artifacts/*",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/static-frontend-artifacts/*",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/approval-evidence/*",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/recovery-manifests/*",
+    ]
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-none-match"
+      values   = ["true"]
+    }
+  }
+
+  statement {
+    sid    = "DenyUnconditionalAcceptedDeploymentIndexWrites"
+    effect = "Deny"
+
+    # IAM combines these Null conditions with AND: first-create may use
+    # If-None-Match, while later index updates must use If-Match.
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.app_accepted_marker_path}/index.json"]
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-none-match"
+      values   = ["true"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-match"
+      values   = ["true"]
+    }
+  }
+
+  statement {
+    sid    = "DenyApprovalEvidenceWritesOutsideApplyRole"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/approval-evidence/*"]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [aws_iam_role.app_terraform_apply[0].arn]
+    }
+  }
+
+  statement {
+    sid    = "DenyLambdaArtifactWritesOutsidePlanRole"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/lambda-artifacts/*"]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [aws_iam_role.app_terraform_plan[0].arn]
+    }
+  }
+
+  statement {
+    sid    = "DenyStaticFrontendArtifactWritesOutsideStaticRole"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/static-frontend-artifacts/*"]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [aws_iam_role.app_static_deploy[0].arn]
+    }
+  }
+
+  statement {
     sid    = "DenyCodeBuildCacheWritesOutsideValidatePlanRole"
     effect = "Deny"
 

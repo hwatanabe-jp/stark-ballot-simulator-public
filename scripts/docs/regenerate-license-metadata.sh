@@ -7,7 +7,7 @@ usage() {
 Usage:
   scripts/docs/regenerate-license-metadata.sh
 
-Regenerates tracked third-party license metadata under docs/current/licenses/.
+Regenerates tracked third-party license metadata under docs/licenses/.
 Absolute local paths are replaced with <REPO_ROOT> and <CARGO_HOME> before the
 files are written.
 EOF
@@ -49,7 +49,7 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$repo_root"
 
 cargo_home="${CARGO_HOME:-$HOME/.cargo}"
-license_dir="docs/current/licenses"
+license_dir="docs/licenses"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 

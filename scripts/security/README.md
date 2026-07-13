@@ -16,7 +16,11 @@ IDs, AWS resource IDs, non-canonical project S3 bucket names, presigned AWS URLs
 URLs, concrete Amplify app origins, and local user paths. It reports only `file:line` and rule IDs,
 not matched values.
 
+Strict account-ID hygiene also rejects every non-zero bare 12-digit value in Terraform variable files,
+the root documentation entry points, `public-book/`, and public documentation areas. Private operational
+and archived documentation areas are exempt only from this strict bare-ID rule; the general safety rules
+still scan them.
+
 `public-boundary-scan.ts` is the TypeScript scanner used by contract tests to keep public-shaped
 fixtures free of retired fields, private artifact names, private locators, vote openings, capability
 tokens outside explicit allowlists, raw paths, stack traces, signed URLs, and private S3 keys.
-

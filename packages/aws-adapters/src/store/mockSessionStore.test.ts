@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { MockSessionStore } from './mockSessionStore';
+import { logger } from '@stark-ballot/diagnostics/logger';
 import type { VoteData } from '@stark-ballot/domain/types/server';
 import { generateVoteId } from '@stark-ballot/domain/vote/voteId';
 import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
@@ -1071,6 +1072,50 @@ describe('MockSessionStore', () => {
 
     session.finalizationArtifactState = 'corrupt_or_unreadable';
     expect(await store.getActiveSessionCount()).toBe(0);
+  });
+
+  it('summarizes a batch of bot votes in one debug log entry', async () => {
+    const userVote = createTestCommitment(0);
+    await store.addVote(sessionId, {
+      voteId: generateVoteId(),
+      vote: VoteChoice.A,
+      rand: userVote.random,
+      commit: userVote.commitment,
+      path: [],
+      timestamp: Date.now(),
+    });
+    const botVotes = [1, 2, 3].map((index) => {
+      const vote = createTestCommitment(index);
+      return {
+        voteId: generateVoteId(),
+        vote: VoteChoice.B,
+        rand: vote.random,
+        commit: vote.commitment,
+        path: [],
+        timestamp: Date.now(),
+      };
+    });
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+
+    try {
+      await store.addBotVotes(sessionId, botVotes);
+
+      const botVoteLogs = debugSpy.mock.calls.filter(([message]) => String(message).includes('[MockStore] Bot vote'));
+      expect(botVoteLogs).toEqual([
+        [
+          '[MockStore] Bot votes added:',
+          expect.objectContaining({
+            addedCount: 3,
+            totalBotCount: 3,
+            firstBotIndex: 1,
+            lastBotIndex: 3,
+            bulletinSize: 4,
+          }),
+        ],
+      ]);
+    } finally {
+      debugSpy.mockRestore();
+    }
   });
 
   it('fails closed when addBotVotes targets a stale live session', async () => {

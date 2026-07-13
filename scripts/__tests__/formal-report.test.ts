@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const REPORT_PATH = path.resolve(process.cwd(), 'docs/current/formal/formal-report.json');
+const REPORT_PATH = path.resolve(process.cwd(), 'docs/formal/formal-report.json');
 
 type FormalReport = {
   schema: string;
@@ -53,7 +53,7 @@ describe('formal-report.json', () => {
     expect(report.generatedAt).toBeUndefined();
     expect(report.repoCommit).toBeUndefined();
     expect(report.modelModules).toContain('formal/StarkBallotFormal/GuestModel.lean');
-    expect(report.formalAuditArtifact).toBe('docs/current/formal/formal-audit.json');
+    expect(report.formalAuditArtifact).toBe('docs/formal/formal-audit.json');
     expect(existsSync(path.resolve(process.cwd(), report.formalAuditArtifact))).toBe(true);
   });
 
@@ -115,8 +115,8 @@ describe('formal-report.json', () => {
 
     expect(report.generatedVectorArtifacts).toEqual(
       expect.arrayContaining([
-        'docs/current/formal/generated-vectors/check-definitions.json',
-        'docs/current/formal/generated-vectors/guest-model-cases.json',
+        'docs/formal/generated-vectors/check-definitions.json',
+        'docs/formal/generated-vectors/guest-model-cases.json',
       ]),
     );
     expect([...statementsByName.keys()].sort()).toEqual([...reportTheoremsByName.keys()].sort());

@@ -4,7 +4,7 @@ version: 0.2
 # Purpose: Build an ARM64 toolchain image candidate for release artifact review.
 # This buildspec is a build primitive. It is not release authority by itself.
 # Build time: 100-120 minutes (one-time setup)
-# See: docs/current/guides/3-deployment/risc0-base-image.md
+# See: docs/infrastructure/risc0-base-image.md
 
 env:
   variables:
@@ -141,7 +141,7 @@ phases:
           SCAN_STATUS="FINDINGS_PRESENT"
           echo "[WARN] ECR scan found $CRITICAL_HIGH_COUNT HIGH/CRITICAL findings."
           echo "Review vulnerabilities before using this base image in production."
-          # Note: Not failing build for base image - vulnerabilities are tracked in docs/current/runbooks/security.md
+          # Note: Not failing build for base image - vulnerabilities are tracked in docs/runbooks/security.md
         else
           SCAN_STATUS="PASS"
           echo "[OK] ECR scan passed with no HIGH/CRITICAL findings."

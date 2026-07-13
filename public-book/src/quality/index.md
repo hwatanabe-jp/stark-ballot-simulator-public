@@ -58,4 +58,4 @@ Lean が扱う射程と扱わない射程の詳細は [Lean による形式化 >
 - [ゲーティングロジック](../verification/gating-logic.md): 不変条件として品質保証が支える側のロジック
 - [バンドル構造](../verification/bundle-structure.md): 公開境界の判定に関わる安全境界
 
-<!-- source: README.md, docs/current/formal/README.md, formal/README.md, package.json, .github/workflows/rust-tests.yml -->
+<!-- source: README.md, docs/formal/README.md, formal/README.md, package.json, .github/workflows/rust-tests.yml -->

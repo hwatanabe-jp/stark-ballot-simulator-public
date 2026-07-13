@@ -190,7 +190,7 @@ export function ProgressDisplay({
     [stopCompletionAnimation],
   );
 
-  // Get phase description (simplified - queue details shown in separate panel)
+  // Get phase description (simplified - queue timing shown in separate panel)
   const getPhaseText = (): string => {
     const withEllipsis = (text: string) => (text.endsWith('...') ? text : `${text}...`);
     if (status === 'pending') {
@@ -238,10 +238,6 @@ export function ProgressDisplay({
             </span>
           </div>
 
-          <div className="flex justify-between items-center text-sm mb-2">
-            <span className="text-text-muted">{t('pages.aggregate.progress.queue.concurrentProofs')}</span>
-            <span className="font-mono font-features-none text-ink-700 font-medium">{concurrencyLimit}</span>
-          </div>
           <div className="flex justify-between items-center text-sm">
             <span className="text-text-muted">{t('pages.aggregate.progress.queue.typicalDuration')}</span>
             <span className="font-mono font-features-none text-text-secondary">{formattedTypicalDuration}</span>

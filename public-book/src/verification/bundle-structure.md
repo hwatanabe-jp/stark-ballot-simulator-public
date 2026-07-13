@@ -8,7 +8,7 @@
 [証明バンドル](../appendix/glossary.md#証明バンドルproof-bundle) は、zkVM の実行結果を検証可能な形で保存し、配布するためのアーティファクト群です。
 実際に配布される [`bundle.zip`](../appendix/glossary.md#配布対象アーカイブbundlezip) は、厳格な許可リストによって公開可能アーティファクトだけを含める配布対象アーカイブです。
 
-この章でいう `public` / 「公開可能」は「秘密を含まず第三者検証に使える」という機密性の分類であり、無認証公開を意味しません。
+ここでいう `public` / 「公開可能」は「秘密を含まず第三者検証に使える」という機密性の分類であり、無認証公開を意味しません。
 アクセス経路は [バンドルのアクセス方法](#バンドルのアクセス方法) を参照してください。
 
 `bundle.zip` は監査用成果物であり、`/verify` 画面の最終判定を単体で完全再現することは目的としていません。
@@ -70,8 +70,7 @@ flowchart TB
 | `sth.json`               | 第三者 STH 検証のスナップショット（任意）                          | STH 合意の再現可能な証拠                   |
 | `consistency-proof.json` | RFC 6962 整合性証明（任意）                                        | 追記専用性の独立検証                       |
 
-`receipt.json` が含まれていても、それだけで production STARK proof として成功扱いにはなりません。
-`RISC0_DEV_MODE=1` の receipt は production STARK proof ではなく、production 検証では fail-closed に扱います。
+`receipt.json` の存在だけでは成功扱いにならず、dev-mode（`RISC0_DEV_MODE=1`）の receipt は production 検証で fail-closed に扱います（[公開境界](public-boundary.md) と同じ規則）。
 `sth.json` と `consistency-proof.json` は許可リストに含まれますが、現行フローでは通常生成されません。
 
 ### `bundle.zip` に入れない保護対象アーティファクト

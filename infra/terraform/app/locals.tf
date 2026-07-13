@@ -35,6 +35,34 @@ locals {
     }
   }
 
+  dynamodb_recovery_quiesced = contains([
+    "primary_quiesced",
+    "replacement_quiesced",
+  ], var.dynamodb_recovery_phase)
+  dynamodb_recovery_serves_replacement = contains([
+    "replacement_quiesced",
+    "replacement_active",
+  ], var.dynamodb_recovery_phase)
+
+  recovery_sessions_table_arn  = var.dynamodb_recovery_activation == null ? aws_dynamodb_table.sessions.arn : var.dynamodb_recovery_activation.sessions.table_arn
+  recovery_votes_table_arn     = var.dynamodb_recovery_activation == null ? aws_dynamodb_table.votes.arn : var.dynamodb_recovery_activation.votes.table_arn
+  recovery_sessions_table_name = var.dynamodb_recovery_activation == null ? local.dynamodb_tables.sessions.name : var.dynamodb_recovery_activation.sessions.table_name
+  recovery_votes_table_name    = var.dynamodb_recovery_activation == null ? local.dynamodb_tables.votes.name : var.dynamodb_recovery_activation.votes.table_name
+
+  active_sessions_table_arn  = local.dynamodb_recovery_serves_replacement ? local.recovery_sessions_table_arn : aws_dynamodb_table.sessions.arn
+  active_votes_table_arn     = local.dynamodb_recovery_serves_replacement ? local.recovery_votes_table_arn : aws_dynamodb_table.votes.arn
+  active_sessions_table_name = local.dynamodb_recovery_serves_replacement ? local.recovery_sessions_table_name : local.dynamodb_tables.sessions.name
+  active_votes_table_name    = local.dynamodb_recovery_serves_replacement ? local.recovery_votes_table_name : local.dynamodb_tables.votes.name
+
+  runtime_sessions_table_arns = distinct([
+    aws_dynamodb_table.sessions.arn,
+    local.recovery_sessions_table_arn,
+  ])
+  runtime_votes_table_arns = distinct([
+    aws_dynamodb_table.votes.arn,
+    local.recovery_votes_table_arn,
+  ])
+
   runtime_reference_names = {
     SESSION_CAPABILITY_SECRET_REF      = "/${var.project_name}/${var.account_alias}/${var.deployment_environment}/app/secrets/session-capability-secret"
     VOTE_SECRET_ENCRYPTION_KEY_REF     = "/${var.project_name}/${var.account_alias}/${var.deployment_environment}/app/secrets/vote-secret-encryption-key"
@@ -65,13 +93,15 @@ locals {
     "arn:aws:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:${reference}-*"
   ]
 
-  dynamodb_table_names = [
+  dynamodb_table_names = distinct([
     local.dynamodb_tables.sessions.name,
     local.dynamodb_tables.votes.name,
+    local.recovery_sessions_table_name,
+    local.recovery_votes_table_name,
     local.dynamodb_tables.rate_limit_events.name,
     local.dynamodb_tables.rate_limit_counters.name,
     local.dynamodb_tables.prover_semaphore.name,
-  ]
+  ])
 
   target_lambda_names = {
     public_api           = "${local.name_prefix}-public-api"
@@ -107,14 +137,12 @@ locals {
   cloudfront_custom_hostname_enabled     = var.public_hostname_disposition != "generated-cloudfront-hostname"
   cloudfront_aliases                     = local.cloudfront_custom_hostname_enabled ? [var.public_hostname] : []
   target_develop_operator_gate_requested = var.deployment_environment == "develop" && var.develop_operator_gate_enabled
-  operator_gate_public_key_configured    = local.target_develop_operator_gate_requested && var.develop_operator_gate_public_key_pem != null && trimspace(var.develop_operator_gate_public_key_pem) != ""
-  operator_gate_trusted_key_groups       = local.operator_gate_public_key_configured ? [aws_cloudfront_key_group.develop_operator_gate[0].id] : []
   api_origin_verify_header_name          = "X-Stark-Ballot-Origin-Verify"
   api_origin_verify_header_secret_ref    = local.runtime_reference_names.EXPECTED_ORIGIN_VERIFY_HEADER_REF
   api_origin_verify_header_configured    = true
   api_origin_verify_header_value         = local.api_origin_verify_header_configured ? trimspace(data.aws_secretsmanager_secret_version.api_origin_verify_header[0].secret_string) : ""
-  target_develop_operator_gate_enabled   = local.operator_gate_public_key_configured && local.api_origin_verify_header_configured
-  target_public_session_create_enabled   = local.target_develop_operator_gate_enabled
+  target_develop_operator_gate_enabled   = local.operator_gate_keyset_configured && local.api_origin_verify_header_configured
+  target_public_session_create_enabled   = !local.dynamodb_recovery_quiesced && local.target_develop_operator_gate_enabled
   session_create_turnstile_required      = !local.target_develop_operator_gate_enabled
   target_state_machine_name              = "${local.name_prefix}-finalization"
   target_state_machine_arn               = "arn:aws:states:${var.aws_region}:${var.aws_account_id}:stateMachine:${local.target_state_machine_name}"

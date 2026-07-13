@@ -1,5 +1,5 @@
 /**
- * zkVM v2 type definitions following final_design.md v1.0
+ * zkVM v2 type definitions following final-design.md v1.0
  * These types implement the new structure without claimedTally/tamperDetected
  */
 
@@ -54,7 +54,7 @@ export interface VoteWithProof {
 }
 
 /**
- * zkVM Input structure v2 following final_design.md §1.2
+ * zkVM Input structure v2 following final-design.md §1.2
  * All fields are required as per specification
  */
 export interface ZkVMInput {
@@ -82,7 +82,7 @@ export interface ZkVMInput {
 }
 
 /**
- * zkVM Output (Journal) structure v2 following final_design.md §1.3
+ * zkVM Output (Journal) structure v2 following final-design.md §1.3
  * Public output with no individual vote information
  */
 export interface ZkVMJournal {

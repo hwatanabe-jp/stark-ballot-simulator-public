@@ -7,7 +7,7 @@ import {
   type VerificationCheckRole,
 } from '@stark-ballot/verification/checks';
 import type { VerificationStepId } from '../step-types';
-import checkDefinitionsJson from '../../../../../docs/current/formal/generated-vectors/check-definitions.json';
+import checkDefinitionsJson from '../../../../../docs/formal/generated-vectors/check-definitions.json';
 
 interface FormalCheckDefinition {
   id: VerificationCheckId;

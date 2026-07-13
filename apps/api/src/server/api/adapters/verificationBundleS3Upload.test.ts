@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { extractZipFromFile } from '@stark-ballot/node-adapters/zip';
+import { logger } from '@stark-ballot/diagnostics/logger';
 import { uploadVerificationBundleToS3 } from './verificationBundleS3Upload';
 
 vi.mock('@stark-ballot/aws-adapters/aws/s3-upload', () => ({
@@ -17,9 +18,11 @@ vi.mock('@stark-ballot/aws-adapters/aws/s3-upload', () => ({
 
 describe('uploadVerificationBundleToS3', () => {
   let testWorkDir: string;
+  let loggerWarnSpy: MockInstance<typeof logger.warn>;
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     const { uploadFileToS3 } = await import('@stark-ballot/aws-adapters/aws/s3-upload');
     vi.mocked(uploadFileToS3).mockImplementation(({ filePath }: { filePath: string }) =>
       Promise.resolve({
@@ -36,6 +39,7 @@ describe('uploadVerificationBundleToS3', () => {
   });
 
   afterEach(async () => {
+    loggerWarnSpy.mockRestore();
     delete process.env['USE_S3'];
     delete process.env['TARGET_AWS_RUNTIME'];
     await fs.rm(testWorkDir, { recursive: true, force: true });
@@ -91,6 +95,7 @@ describe('uploadVerificationBundleToS3', () => {
     expect(result.s3UploadedAt).toBe('2025-01-01T00:00:00.000Z');
     expect(result).not.toHaveProperty('s3BundleUrl');
     expect(result).not.toHaveProperty('s3BundleExpiresAt');
+    expect(loggerWarnSpy).not.toHaveBeenCalledWith(expect.stringContaining('bitmap'), expect.anything());
   });
 
   it('fails closed when target runtime has S3 upload disabled', async () => {
@@ -167,6 +172,32 @@ describe('uploadVerificationBundleToS3', () => {
     );
 
     await expect(uploadVerificationBundleToS3(bundleDir, sessionId, executionId)).rejects.toThrow(expectedMessage);
+  });
+
+  it('fails closed when target runtime cannot access an optional private sidecar unexpectedly', async () => {
+    const sessionId = 'session-upload';
+    const executionId = 'exec-sidecar-access';
+    process.env['TARGET_AWS_RUNTIME'] = '1';
+    process.env['USE_S3'] = 'true';
+
+    const bundleDir = path.join(testWorkDir, sessionId, executionId);
+    await writeUploadBundleWithPrivateSidecars(bundleDir);
+    const realAccess = fs.access.bind(fs);
+    const accessSpy = vi.spyOn(fs, 'access').mockImplementation(async (filePath) => {
+      if (path.basename(String(filePath)) === 'included-bitmap.json') {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      }
+      return await realAccess(filePath);
+    });
+
+    try {
+      await expect(uploadVerificationBundleToS3(bundleDir, sessionId, executionId)).rejects.toThrow(
+        'permission denied',
+      );
+      expect(loggerWarnSpy).toHaveBeenCalledWith('[Bundle] Included bitmap access failed:', 'permission denied');
+    } finally {
+      accessSpy.mockRestore();
+    }
   });
 
   it('fails closed when target runtime private bitmap sidecar upload throws', async () => {
