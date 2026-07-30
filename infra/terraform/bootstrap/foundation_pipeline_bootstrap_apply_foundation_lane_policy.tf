@@ -13,7 +13,7 @@ data "aws_iam_policy_document" "bootstrap_apply_foundation_lane_pipeline_managem
       "codebuild:UntagResource",
       "codebuild:UpdateProject",
     ]
-    resources = local.foundation_codebuild_project_arns
+    resources = local.foundation_bootstrap_managed_codebuild_project_arns
   }
 
   statement {
@@ -32,8 +32,6 @@ data "aws_iam_policy_document" "bootstrap_apply_foundation_lane_pipeline_managem
     resources = [
       local.foundation_pipeline_arn,
       local.foundation_pipeline_action_arn_pattern,
-      local.release_candidate_pipeline_arn,
-      local.release_candidate_pipeline_action_arn_pattern,
       local.prover_release_pipeline_arn,
       local.prover_release_pipeline_action_arn_pattern,
       local.toolchain_release_pipeline_arn,
@@ -118,7 +116,7 @@ data "aws_iam_policy_document" "bootstrap_apply_foundation_lane_iam_management" 
       "iam:CreateRole",
       "iam:PutRolePermissionsBoundary",
     ]
-    resources = local.foundation_pipeline_role_name_arns
+    resources = local.foundation_bootstrap_managed_role_arn_patterns
 
     condition {
       test     = "StringEquals"
@@ -136,10 +134,12 @@ data "aws_iam_policy_document" "bootstrap_apply_foundation_lane_iam_management" 
     effect = "Allow"
     actions = [
       "iam:DeleteRole",
+      "iam:DeleteRolePermissionsBoundary",
       "iam:DeleteRolePolicy",
       "iam:GetRole",
       "iam:GetRolePolicy",
       "iam:ListAttachedRolePolicies",
+      "iam:ListInstanceProfilesForRole",
       "iam:ListRolePolicies",
       "iam:ListRoleTags",
       "iam:PutRolePolicy",
@@ -147,7 +147,7 @@ data "aws_iam_policy_document" "bootstrap_apply_foundation_lane_iam_management" 
       "iam:UntagRole",
       "iam:UpdateAssumeRolePolicy",
     ]
-    resources = local.foundation_pipeline_role_name_arns
+    resources = local.foundation_bootstrap_managed_role_arn_patterns
   }
 
   statement {
@@ -170,7 +170,7 @@ data "aws_iam_policy_document" "bootstrap_apply_foundation_lane_iam_management" 
     sid       = "PassFoundationPipelineRoles"
     effect    = "Allow"
     actions   = ["iam:PassRole"]
-    resources = local.foundation_pipeline_role_name_arns
+    resources = local.foundation_bootstrap_managed_role_arn_patterns
 
     condition {
       test     = "StringEquals"
@@ -283,14 +283,9 @@ data "aws_iam_policy_document" "bootstrap_apply_foundation_lane_artifacts_manage
       "logs:TagResource",
       "logs:UntagResource",
     ]
-    resources = concat(
-      local.foundation_codebuild_log_group_arns,
-      [
-        for arn in local.foundation_codebuild_log_group_arns :
-        "${arn}:*"
-      ],
-    )
+    resources = local.foundation_bootstrap_managed_codebuild_log_group_resource_arn_patterns
   }
+
 }
 
 resource "aws_iam_policy" "bootstrap_apply_foundation_lane_pipeline_management" {
@@ -317,6 +312,16 @@ resource "aws_iam_policy" "bootstrap_apply_foundation_lane_iam_management" {
     aws_iam_policy.bootstrap_deploy_permissions_boundary,
     aws_iam_policy.terraform_apply_app_lane_policy_admin,
   ]
+}
+
+check "bootstrap_apply_foundation_lane_iam_policy_size" {
+  assert {
+    condition = (
+      !local.foundation_pipeline_enabled
+      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.bootstrap_apply_foundation_lane_iam_management[0].json))) <= 6144, false)
+    )
+    error_message = "The bootstrap Foundation-lane IAM managed policy must remain within the IAM 6,144-character quota."
+  }
 }
 
 resource "aws_iam_policy" "bootstrap_apply_foundation_lane_artifacts_management" {

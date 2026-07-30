@@ -75,6 +75,11 @@ describe('mockApiFetch', () => {
       init: { method: 'POST' },
     },
     {
+      name: 'verification observation',
+      url: 'http://localhost/api/verification/observation?unexpected=1',
+      init: { method: 'POST' },
+    },
+    {
       name: 'bulletin vote proof',
       url: 'http://localhost/api/bulletin/11111111-1111-4111-8111-111111111111/proof?unexpected=1',
       init: { method: 'GET' },
@@ -221,6 +226,106 @@ describe('mockApiFetch', () => {
 
     expect(response.status).toBe(401);
     expect(payload.error).toBe('SESSION_CAPABILITY_REQUIRED');
+  });
+
+  it('requires capability token for /api/verification/observation', async () => {
+    const { sessionId } = await createSession();
+
+    const response = mockApiFetch('http://localhost/api/verification/observation', {
+      method: 'POST',
+      headers: { 'X-Session-ID': sessionId, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        verificationExecutionId: 'mock-verification-001',
+        castChecks: {
+          cast_receipt_present: 'success',
+          cast_choice_range: 'success',
+          cast_random_format: 'success',
+          cast_commitment_match: 'success',
+        },
+      }),
+    });
+    const payload = (await response.json()) as { error?: string };
+
+    expect(response.status).toBe(401);
+    expect(payload.error).toBe('SESSION_CAPABILITY_REQUIRED');
+  });
+
+  it('validates and idempotently records a browser-local verification observation', async () => {
+    const { sessionId, capabilityToken } = await createSession();
+    const now = Date.now();
+    updateMockState((current) => {
+      current.finalizationQueuedAt = now - 22_000;
+      current.finalizationStartedAt = now - 20_000;
+      current.finalizationCompletedAt = now - 1_000;
+      current.verificationStatus = 'success';
+    });
+    const request = {
+      method: 'POST',
+      headers: {
+        'X-Session-ID': sessionId,
+        'X-Session-Capability': capabilityToken,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        verificationExecutionId: 'mock-verification-001',
+        castChecks: {
+          cast_receipt_present: 'success',
+          cast_choice_range: 'success',
+          cast_random_format: 'success',
+          cast_commitment_match: 'success',
+        },
+      }),
+    };
+
+    const first = mockApiFetch('http://localhost/api/verification/observation', request);
+    const second = mockApiFetch('http://localhost/api/verification/observation', request);
+
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ data: { status: 'recorded' } });
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ data: { status: 'idempotent' } });
+  });
+
+  it('rejects a verification observation before finalization or while verification is non-terminal', async () => {
+    const { sessionId, capabilityToken } = await createSession();
+    const request = {
+      method: 'POST',
+      headers: {
+        'X-Session-ID': sessionId,
+        'X-Session-Capability': capabilityToken,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        verificationExecutionId: 'mock-verification-001',
+        castChecks: {
+          cast_receipt_present: 'success',
+          cast_choice_range: 'success',
+          cast_random_format: 'success',
+          cast_commitment_match: 'success',
+        },
+      }),
+    };
+
+    const beforeFinalization = mockApiFetch('http://localhost/api/verification/observation', request);
+    expect(beforeFinalization.status).toBe(409);
+    expect(await beforeFinalization.json()).toMatchObject({
+      error: 'VERIFICATION_OBSERVATION_CONFLICT',
+      statusCode: 409,
+    });
+
+    const now = Date.now();
+    updateMockState((current) => {
+      current.finalizationQueuedAt = now - 22_000;
+      current.finalizationStartedAt = now - 20_000;
+      current.finalizationCompletedAt = now - 1_000;
+      current.verificationStatus = 'running';
+    });
+    const whileRunning = mockApiFetch('http://localhost/api/verification/observation', request);
+    expect(whileRunning.status).toBe(409);
+    expect(await whileRunning.json()).toMatchObject({
+      error: 'VERIFICATION_OBSERVATION_CONFLICT',
+      statusCode: 409,
+    });
   });
 
   it('requires capability token for /api/progress', async () => {

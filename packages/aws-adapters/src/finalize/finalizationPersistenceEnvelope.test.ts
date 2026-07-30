@@ -25,6 +25,8 @@ describe('AWS finalization persistence envelope', () => {
       verificationExecutionId: 'exec-1',
       verificationResult: {
         status: 'success',
+        failureCategory: 'none',
+        devModeReceipt: false,
         ...omitUndefinedProperties({ s3BundleKey: 'sessions/session-123/exec-1/bundle.zip' }),
         s3ReportKey: 'sessions/session-123/exec-1/verification.json',
         s3UploadedAt: '2026-01-01T00:00:00.000Z',
@@ -38,11 +40,39 @@ describe('AWS finalization persistence envelope', () => {
     expect(parsed?.verificationExecutionId).toBe('exec-1');
     expect(parsed?.verificationResult).toEqual({
       status: 'success',
+      failureCategory: 'none',
+      devModeReceipt: false,
       ...omitUndefinedProperties({ s3BundleKey: 'sessions/session-123/exec-1/bundle.zip' }),
       s3ReportKey: 'sessions/session-123/exec-1/verification.json',
       s3UploadedAt: '2026-01-01T00:00:00.000Z',
       executionId: 'exec-1',
     });
+  });
+
+  it('rejects non-registry verification failure categories at the AWS persistence boundary', () => {
+    const authority = buildFinalizationResultFromJournal({
+      journal: createTestJournal(),
+      imageId: '0x' + '1'.repeat(64),
+    });
+
+    expect(
+      parseAwsPersistedFinalizationResult({
+        ...authority,
+        verificationResult: {
+          status: 'failed',
+          failureCategory: 'AccessDenied: private object key',
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      parseAwsPersistedFinalizationResult({
+        ...authority,
+        verificationResult: {
+          status: 'success',
+          devModeReceipt: 'false',
+        },
+      }),
+    ).toBeUndefined();
   });
 
   it('rejects raw receipt payloads at the persisted finalization result boundary', () => {

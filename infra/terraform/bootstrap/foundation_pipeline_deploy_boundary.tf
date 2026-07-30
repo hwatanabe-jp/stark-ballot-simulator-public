@@ -100,6 +100,13 @@ data "aws_iam_policy_document" "foundation_deploy_permissions_boundary" {
   }
 
   statement {
+    sid       = "FoundationSigningJobRevocationReadGuardrail"
+    effect    = "Allow"
+    actions   = ["signer:GetRevocationStatus"]
+    resources = [local.foundation_signing_job_arn_pattern]
+  }
+
+  statement {
     sid    = "FoundationEcrAuthGuardrail"
     effect = "Allow"
     actions = [

@@ -19,7 +19,9 @@ import {
 } from '@stark-ballot/domain/bulletin/ctSessionState';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import type { SerializableSessionData } from './types';
+import { parseVerificationObservation } from '@stark-ballot/domain/types/verificationObservation';
 
 function serializeFinalizationResult(
   result: SessionData['finalizationResult'],
@@ -132,6 +134,7 @@ export function serializeSession(session: SessionData): SerializableSessionData 
     finalizationArtifactState: session.finalizationArtifactState,
     userVoteIndex: session.userVoteIndex,
     bulletinRootHistory: session.bulletinRootHistory,
+    verificationObservation: parseVerificationObservation(session.verificationObservation),
   });
 }
 
@@ -174,7 +177,7 @@ export function deserializeSession(data: SerializableSessionData): SessionData {
 
   if (data.botCount !== canonicalProjection.botCount) {
     logger.warn('[FileMockStore] Reconciled stale botCount from persisted votes', {
-      sessionId: data.sessionId,
+      session_id_hash: hashSessionIdForLogging(data.sessionId),
       persistedBotCount: data.botCount,
       derivedBotCount: canonicalProjection.botCount,
     });
@@ -182,7 +185,7 @@ export function deserializeSession(data: SerializableSessionData): SessionData {
 
   if (data.userVoteIndex !== canonicalProjection.userVoteIndex) {
     logger.warn('[FileMockStore] Reconciled stale userVoteIndex from persisted votes', {
-      sessionId: data.sessionId,
+      session_id_hash: hashSessionIdForLogging(data.sessionId),
       persistedUserVoteIndex: data.userVoteIndex,
       derivedUserVoteIndex: canonicalProjection.userVoteIndex,
     });
@@ -195,6 +198,7 @@ export function deserializeSession(data: SerializableSessionData): SessionData {
     finalizationArtifactState,
     ...omitUndefinedProperties({ votes: votesMap }),
     bulletin,
+    verificationObservation: parseVerificationObservation(data.verificationObservation),
   });
   applyCanonicalCtSessionProjection(session, canonicalProjection);
 

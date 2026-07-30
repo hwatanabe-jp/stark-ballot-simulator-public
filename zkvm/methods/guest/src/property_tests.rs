@@ -1,3 +1,4 @@
+use alloc::{vec, vec::Vec};
 use contract_core::{
     compute_bitmap_merkle_root, compute_commitment, compute_input_commitment_v4,
     compute_root_from_proof, verify_inclusion_proof_rfc6962, AggregatorInput, VoteWithProof,

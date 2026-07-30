@@ -352,6 +352,8 @@ require_allowed_caller() {
     echo "Current caller ARN did not match the required role." >&2
     exit 2
   fi
+
+  current_terraform_caller_arn="$arn"
 }
 
 require_terraform_admin_caller() {
@@ -396,6 +398,24 @@ app_smoke_role_name() {
   printf 'stark-ballot-sim-tf-smoke-%s-%s-app' "$target_account_alias" "$target_environment"
 }
 
+app_signature_preflight_plan_role_name() {
+  printf 'stark-ballot-sim-sig-preflight-plan-%s-%s-app' "$target_account_alias" "$target_environment"
+}
+
+app_signature_preflight_apply_role_name() {
+  printf 'stark-ballot-sim-sig-preflight-apply-%s-%s-app' "$target_account_alias" "$target_environment"
+}
+
+app_signature_state_refresh_apply_role_name() {
+  printf 'stark-ballot-sim-sig-state-refresh-apply-%s-%s-app' "$target_account_alias" "$target_environment"
+}
+
+is_app_signature_preflight_plan_caller() {
+  local role_name
+  role_name="$(app_signature_preflight_plan_role_name)"
+  [[ "${current_terraform_caller_arn:-}" =~ ^arn:aws:sts::[0-9]{12}:assumed-role/${role_name}/.+$ ]]
+}
+
 foundation_plan_role_name() {
   printf 'stark-ballot-sim-tf-plan-%s-%s-foundation' "$target_account_alias" "$target_environment"
 }
@@ -415,15 +435,15 @@ require_app_caller_for_command() {
 
   case "$command_name" in
     init)
-      role_name="$(app_plan_role_name)|$(app_apply_role_name)"
+      role_name="$(app_plan_role_name)|$(app_apply_role_name)|$(app_signature_preflight_plan_role_name)|$(app_signature_preflight_apply_role_name)|$(app_signature_state_refresh_apply_role_name)"
       role_label="plan or apply"
       ;;
     validate|plan)
-      role_name="$(app_plan_role_name)"
+      role_name="$(app_plan_role_name)|$(app_signature_preflight_plan_role_name)"
       role_label="plan"
       ;;
     apply)
-      role_name="$(app_apply_role_name)"
+      role_name="$(app_apply_role_name)|$(app_signature_preflight_apply_role_name)|$(app_signature_state_refresh_apply_role_name)"
       role_label="apply"
       ;;
     smoke)
@@ -619,6 +639,48 @@ require_app_apply_saved_plan_args() {
 
 require_app_plan_args() {
   shift
+
+  if is_app_signature_preflight_plan_caller; then
+    local -a actual_args=("$@")
+    local -a expected_args
+    if [ "${1:-}" = "-refresh-only" ]; then
+      expected_args=(
+        "-refresh-only"
+        "-out=tfplan"
+        "-var-file=pipeline.auto.tfvars"
+        "-target=terraform_data.image_signature_verifier_permissions_boundary_authority"
+        "-target=aws_cloudwatch_log_group.image_signature_verifier"
+        "-target=aws_iam_role.image_signature_verifier"
+        "-target=aws_iam_role_policy.image_signature_verifier"
+        "-target=aws_lambda_function.image_signature_verifier"
+        "-target=aws_lambda_alias.image_signature_verifier_preflight"
+      )
+    else
+      expected_args=(
+        "-out=tfplan"
+        "-var-file=pipeline.auto.tfvars"
+        "-target=terraform_data.image_signature_verifier_permissions_boundary_authority"
+        "-target=aws_cloudwatch_log_group.image_signature_verifier"
+        "-target=aws_iam_role.image_signature_verifier"
+        "-target=aws_iam_role_policy.image_signature_verifier"
+        "-target=aws_lambda_function.image_signature_verifier"
+        "-target=aws_lambda_alias.image_signature_verifier_preflight"
+      )
+    fi
+    if [ "$#" -ne "${#expected_args[@]}" ]; then
+      echo "signature preflight plan accepts only the exact verifier-only saved-plan target set." >&2
+      exit 2
+    fi
+    local index
+    for index in "${!expected_args[@]}"; do
+      if [ "${actual_args[$index]}" != "${expected_args[$index]}" ]; then
+        echo "signature preflight plan accepts only the exact verifier-only saved-plan target set." >&2
+        exit 2
+      fi
+    done
+    return 0
+  fi
+
   if [ "$#" -ne 2 ] || [ "$1" != "-out=tfplan" ] || [ "$2" != "-var-file=pipeline.auto.tfvars" ]; then
     echo "app plan accepts only the reviewed pipeline plan command shape: plan -out=tfplan -var-file=pipeline.auto.tfvars." >&2
     exit 2

@@ -26,7 +26,7 @@ data "aws_iam_policy_document" "foundation_pipeline" {
       "codebuild:BatchGetBuilds",
       "codebuild:StartBuild",
     ]
-    resources = local.foundation_codebuild_project_arns
+    resources = local.foundation_routine_codebuild_project_arns
   }
 
   statement {

@@ -4,7 +4,12 @@ import path from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { invokeVerifierService, parseVerifierServiceReport, type SpawnImpl } from './verifier-service-client';
+import {
+  VERIFIER_STDERR_CAPTURE_LIMIT_BYTES,
+  invokeVerifierService,
+  parseVerifierServiceReport,
+  type SpawnImpl,
+} from './verifier-service-client';
 import type { VerifierInvocationOptions } from './verifier-service-client';
 
 // Mock child_process spawn
@@ -123,7 +128,102 @@ describe('verifier-service-client', () => {
       expect(result.report.status).toBe('success');
       expect(result.report).not.toHaveProperty('bundle_path');
       expect(result.report).not.toHaveProperty('receipt_path');
+      expect(result.diagnostics).toEqual({ stderrCategory: 'none', stderrBytes: 0, stderrTruncated: false });
       expect(spawnCalled).toBe(true);
+    });
+
+    it('bounds success-path stderr during streaming and exposes only closed diagnostics', async () => {
+      const bundlePath = path.join(testWorkDir, 'bundle-noisy-success');
+      const reportPath = path.join(testWorkDir, 'report-noisy-success.json');
+      const mockBinaryPath = path.join(testWorkDir, 'verifier-service-noisy-success');
+      const privateStderr = `s3://private-bucket/raw-session/input.json ${'private-receipt-byte'.repeat(1_000)}`;
+      await fs.mkdir(bundlePath, { recursive: true });
+      await fs.writeFile(mockBinaryPath, '#!/bin/bash\necho test', { mode: 0o755 });
+
+      const mockReport = {
+        status: 'success' as const,
+        verifier_version: '0.1.0',
+        verified_at: '2025-10-16T00:00:00Z',
+        duration_ms: 42,
+        expected_image_id: `0x${'a'.repeat(64)}`,
+        receipt_image_id: `0x${'a'.repeat(64)}`,
+        bundle_path: bundlePath,
+        receipt_path: path.join(bundlePath, 'receipt.json'),
+        dev_mode_receipt: false,
+        errors: [],
+      };
+      const mockChild = createMockChild();
+      const spawnImpl: SpawnImpl = () => {
+        process.nextTick(async () => {
+          await fs.writeFile(reportPath, JSON.stringify(mockReport), 'utf8');
+          mockChild.stderr.emit('data', Buffer.from(privateStderr));
+          mockChild.stderr.emit('data', Buffer.from(privateStderr));
+          mockChild.emit('close', 0);
+        });
+        return mockChild;
+      };
+
+      const result = await invokeVerifierService({
+        bundlePath,
+        expectedImageId: `0x${'a'.repeat(64)}`,
+        reportPath,
+        binaryPath: mockBinaryPath,
+        spawnImpl,
+      });
+
+      expect(result.diagnostics).toEqual({
+        stderrCategory: 'truncated',
+        stderrBytes: VERIFIER_STDERR_CAPTURE_LIMIT_BYTES,
+        stderrTruncated: true,
+      });
+      expect(JSON.stringify(result)).not.toContain(privateStderr);
+      expect(JSON.stringify(result)).not.toContain('private-bucket');
+      expect(JSON.stringify(result)).not.toContain('private-receipt-byte');
+    });
+
+    it('preserves closed stderr diagnostics when report parsing fails without exposing report or stderr text', async () => {
+      const bundlePath = path.join(testWorkDir, 'bundle-invalid-report');
+      const reportPath = path.join(testWorkDir, 'report-invalid.json');
+      const mockBinaryPath = path.join(testWorkDir, 'verifier-service-invalid-report');
+      const privateStderr = `s3://private-bucket/raw-session/input.json ${'private-stderr'.repeat(1_000)}`;
+      const privateInvalidReport = '{"privateReceipt":"private-report-bytes"';
+      await fs.mkdir(bundlePath, { recursive: true });
+      await fs.writeFile(mockBinaryPath, '#!/bin/bash\necho test', { mode: 0o755 });
+
+      const mockChild = createMockChild();
+      const spawnImpl: SpawnImpl = () => {
+        process.nextTick(() => {
+          mockChild.stdout.emit('data', Buffer.from(privateInvalidReport));
+          mockChild.stderr.emit('data', Buffer.from(privateStderr));
+          mockChild.emit('close', 0);
+        });
+        return mockChild;
+      };
+
+      let caught: unknown;
+      try {
+        await invokeVerifierService({
+          bundlePath,
+          expectedImageId: `0x${'a'.repeat(64)}`,
+          reportPath,
+          binaryPath: mockBinaryPath,
+          spawnImpl,
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toMatchObject({
+        message: 'verifier-service report unavailable or invalid',
+        diagnostics: {
+          stderrCategory: 'truncated',
+          stderrBytes: VERIFIER_STDERR_CAPTURE_LIMIT_BYTES,
+          stderrTruncated: true,
+        },
+      });
+      expect(String(caught)).not.toContain('private-bucket');
+      expect(String(caught)).not.toContain('private-stderr');
+      expect(String(caught)).not.toContain('private-report-bytes');
     });
 
     it('should handle dev mode receipts (exit code 2)', async () => {
@@ -256,7 +356,16 @@ describe('verifier-service-client', () => {
       };
 
       // Act & Assert
-      await expect(invokeVerifierService({ ...options, spawnImpl })).rejects.toThrow('invalid arguments');
+      const invocation = invokeVerifierService({ ...options, spawnImpl });
+      await expect(invocation).rejects.toMatchObject({
+        message: 'verifier-service exited with status 1',
+        diagnostics: {
+          stderrCategory: 'present',
+          stderrBytes: Buffer.byteLength('invalid arguments'),
+          stderrTruncated: false,
+        },
+      });
+      await expect(invocation).rejects.not.toThrow('invalid arguments');
     });
 
     it('should throw error when binary not found', async () => {

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { validateEnv } from '@stark-ballot/runtime-config/env/validate';
+import { RuntimeConfigValidationError } from '@stark-ballot/runtime-config/env/configValidationError';
 
 const originalEnv = { ...process.env };
 const VALID_SESSION_CAPABILITY_SECRET = 'prod-session-capability-secret-0123456789abcdef';
@@ -159,6 +160,10 @@ describe('validateEnv', () => {
     process.env['VERIFIER_PUBLIC_BASE_URL'] = 'https://develop.stark-ballot-sim.hwatanabe.dev';
     process.env['EXPECTED_IMAGE_ID'] = '0x' + '1'.repeat(64);
     process.env['LOG_IP_HASH_SALT'] = 'resolved-target-log-hash-salt';
+    process.env['LOG_FORMAT'] = 'json';
+    process.env['DEPLOYMENT_ID'] = `dep_${'1'.repeat(32)}`;
+    process.env['APP_SOURCE_SHA'] = '2'.repeat(40);
+    process.env['DEPLOY_MODE'] = 'normal';
     process.env['EXPECTED_ORIGIN_VERIFY_HEADER'] = 'resolved-origin-verify-header-0123456789abcdef';
     process.env['TARGET_DEVELOP_OPERATOR_GATE_ENABLED'] = 'true';
     process.env['TARGET_PUBLIC_SESSION_CREATE_ENABLED'] = 'true';
@@ -188,6 +193,29 @@ describe('validateEnv', () => {
     expect(() => validateEnv()).not.toThrow();
   });
 
+  it.each([
+    ['PROVER_WORK_QUEUE_URL', 'not-an-sqs-url'],
+    ['PROVER_STATE_MACHINE_ARN', 'not-a-state-machine-arn'],
+    ['EXPECTED_IMAGE_ID', 'not-an-image-id'],
+    ['DYNAMODB_SESSIONS_TABLE', 'legacy-amplify-table'],
+    ['SESSION_CAPABILITY_SECRET_REF', '/unexpected/secret/reference'],
+    ['ALLOW_INSECURE_ZKVM', 'true'],
+  ] as const)('throws a typed exact-name error when target %s is invalid', (name, value) => {
+    vi.stubEnv('NODE_ENV', 'development');
+    configureTargetAwsRuntimeEnv();
+    process.env[name] = value;
+
+    let failure: unknown;
+    try {
+      validateEnv();
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(RuntimeConfigValidationError);
+    expect((failure as RuntimeConfigValidationError).invalidNames).toEqual([name]);
+  });
+
   it('requires LOG_IP_HASH_SALT_REF in target AWS runtime', () => {
     vi.stubEnv('NODE_ENV', 'development');
     configureTargetAwsRuntimeEnv();
@@ -204,6 +232,28 @@ describe('validateEnv', () => {
     expect(() => validateEnv()).toThrow(
       'LOG_IP_HASH_SALT must be resolved from LOG_IP_HASH_SALT_REF when TARGET_AWS_RUNTIME=1.',
     );
+  });
+
+  it('rejects the public local-development log hash salt in target AWS runtime', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    configureTargetAwsRuntimeEnv();
+    process.env['LOG_IP_HASH_SALT'] = 'stark-ballot-log-salt';
+
+    expect(() => validateEnv()).toThrow(
+      'LOG_IP_HASH_SALT must not use the public local-development default when TARGET_AWS_RUNTIME=1.',
+    );
+  });
+
+  it.each([undefined, 'text'])('requires target LOG_FORMAT=json instead of %s', (logFormat) => {
+    vi.stubEnv('NODE_ENV', 'development');
+    configureTargetAwsRuntimeEnv();
+    if (logFormat === undefined) {
+      delete process.env['LOG_FORMAT'];
+    } else {
+      process.env['LOG_FORMAT'] = logFormat;
+    }
+
+    expect(() => validateEnv()).toThrow('LOG_FORMAT=json is required when TARGET_AWS_RUNTIME=1.');
   });
 
   it('requires EXPECTED_ORIGIN_VERIFY_HEADER_REF in target AWS runtime', () => {

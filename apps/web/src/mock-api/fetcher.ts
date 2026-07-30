@@ -12,6 +12,7 @@ import {
   buildBulletinResponse,
   buildBulletinProofResponse,
   buildConsistencyProofResponse,
+  MOCK_VERIFICATION_EXECUTION_ID,
 } from './fixtures';
 import type { ScenarioId } from './types';
 import {
@@ -25,6 +26,9 @@ import {
   SessionStatusResponseSchema,
   VerificationRunRequestSchema,
   VerificationRunResponseSchema,
+  VerificationObservationRequestSchema,
+  VerificationObservationResponseSchema,
+  VERIFICATION_OBSERVATION_CAST_CHECK_IDS,
   VerifyResponseSchema,
   VoteRequestSchema,
   VoteResponseSchema,
@@ -53,7 +57,7 @@ const toResponse = (payload: unknown, status: number = 200): Response => {
 };
 
 const errorResponse = (status: number, error: string, message: string): Response =>
-  toResponse({ error, message }, status);
+  toResponse({ error, message, statusCode: status }, status);
 
 type MockBodyParseResult<T> =
   | {
@@ -499,6 +503,69 @@ export const mockApiFetch = (input: RequestInfo | URL, init?: RequestInit): Resp
     });
     const payload = buildVerificationRunResponse();
     validateMockPayload(VerificationRunResponseSchema, payload, '/api/verification/run');
+    return toResponse(payload);
+  }
+
+  if (url.pathname === '/api/verification/observation' && method === 'POST') {
+    const queryError = validateNoQueryParams(url);
+    if (queryError) {
+      return queryError;
+    }
+
+    const authResult = authorizeSensitiveHeaderRoute(input, init);
+    if (authResult instanceof Response) {
+      return authResult;
+    }
+
+    const parsed = parseJsonBody(init, VerificationObservationRequestSchema);
+    if (!parsed.success) {
+      return parsed.response;
+    }
+
+    const state = getMockState();
+    const verificationStatus = state.verificationStatus ?? 'success';
+    const finalizationIsComplete =
+      typeof state.finalizationCompletedAt === 'number' &&
+      now >= state.finalizationCompletedAt &&
+      typeof state.finalizationFailedAt !== 'number';
+    if (
+      !finalizationIsComplete ||
+      (verificationStatus !== 'success' && verificationStatus !== 'failed' && verificationStatus !== 'dev_mode') ||
+      parsed.data.verificationExecutionId !== MOCK_VERIFICATION_EXECUTION_ID
+    ) {
+      return errorResponse(
+        409,
+        'VERIFICATION_OBSERVATION_CONFLICT',
+        'Verification execution does not match the current session',
+      );
+    }
+    const fingerprint = JSON.stringify([
+      parsed.data.verificationExecutionId,
+      ...VERIFICATION_OBSERVATION_CAST_CHECK_IDS.map((id) => parsed.data.castChecks[id]),
+    ]);
+    const existing = state.verificationObservation;
+    if (
+      existing &&
+      (existing.executionId !== parsed.data.verificationExecutionId || existing.fingerprint !== fingerprint)
+    ) {
+      return errorResponse(
+        409,
+        'VERIFICATION_OBSERVATION_CONFLICT',
+        'A different verification observation is already recorded',
+      );
+    }
+
+    const status = existing ? 'idempotent' : 'recorded';
+    if (!existing) {
+      updateMockState((current) => {
+        current.verificationObservation = {
+          executionId: parsed.data.verificationExecutionId,
+          fingerprint,
+        };
+      });
+    }
+    const payload = { data: { status } };
+    validateMockPayload(VerificationObservationResponseSchema, payload, '/api/verification/observation');
     return toResponse(payload);
   }
 

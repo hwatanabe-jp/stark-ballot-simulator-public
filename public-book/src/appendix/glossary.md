@@ -200,7 +200,7 @@ STARK レシート本体を `image_id` と一緒に運ぶための受け渡し�
 要求された証拠が揃わない限り Verified に到達させない設計姿勢を指します。
 [cast-time 証跡](#cast-time-証跡cast-time-ct-artifact)の `not_run` 扱い、[ゲーティングロジックの不変条件](../verification/gating-logic.md#不変条件のまとめ)、[重要度](#重要度criticality)の required 扱いは、いずれもこの方針の具体化です。
 
-本文での使用: [ゲーティングロジック](../verification/gating-logic.md)、[設計と流れ](../verification/design-and-flow.md)、[チェック一覧](../verification/checks-catalog.md)
+本文での使用: [ゲーティングロジック](../verification/gating-logic.md)、[設計と実行フロー](../verification/design-and-flow.md)、[チェック一覧](../verification/checks-catalog.md)
 
 ### E2E 検証可能投票（End-to-End Verifiable Voting）
 
@@ -257,11 +257,11 @@ STARK レシートが暗号学的に正当であること、および期待さ�
 ### 検証チェック（Verification Check）
 
 **検証チェック**：検証パイプラインを構成する個別の原子的な検証項目です。
-現行実装では 22 個のチェックがあり、それぞれ一意の ID、所属する検証段階、証拠種別、重要度を持ちます。
+それぞれ一意の ID、所属する検証段階、証拠種別、重要度を持ちます（現行のチェック数と内訳は [チェック一覧](../verification/checks-catalog.md) を参照）。
 Counted-as-Recorded には `counted_election_manifest_consistent` と `counted_close_statement_consistent` も含まれ、公開監査アーティファクトとの整合も required 条件です。
 
 詳細: [チェック一覧](../verification/checks-catalog.md)
-本文での使用: [設計と流れ](../verification/design-and-flow.md)、[ゲーティングロジック](../verification/gating-logic.md)
+本文での使用: [設計と実行フロー](../verification/design-and-flow.md)、[ゲーティングロジック](../verification/gating-logic.md)
 
 ### ゲーティングロジック（Gating Logic）
 
@@ -270,7 +270,7 @@ required 扱いのチェックが 1 つでも `failed` なら Verified は表示
 Stage のステータスも、その Stage で required 扱いになるチェック群全体から導出されます。
 
 詳細: [ゲーティングロジック](../verification/gating-logic.md)
-本文での使用: [設計と流れ](../verification/design-and-flow.md)、[チェック一覧](../verification/checks-catalog.md)
+本文での使用: [設計と実行フロー](../verification/design-and-flow.md)、[チェック一覧](../verification/checks-catalog.md)
 
 ### 公開監査アーティファクト
 

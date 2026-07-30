@@ -14,7 +14,7 @@ import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpe
 import { createTestPublicInputArtifact } from '@stark-ballot/test-support/testing/public-input-artifact';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
 
-const COMPARATOR_VERSION = 'public-contract-baseline-v1';
+const COMPARATOR_TYPE = 'public-contract-baseline' as const;
 const DEFAULT_BASELINE_PATH = '.tmp/type-system-redesign/pre-redesign-public-contract-baseline.json';
 const DEFAULT_CURRENT_PATH = '.tmp/type-system-redesign/current-public-contract-baseline.json';
 const DETERMINISTIC_CAPTURED_AT = '1970-01-01T00:00:00.000Z';
@@ -77,7 +77,7 @@ interface MountedBehaviorCoverageEntry {
 }
 
 export interface PublicContractSnapshot {
-  comparatorVersion: typeof COMPARATOR_VERSION;
+  comparatorType: typeof COMPARATOR_TYPE;
   sourceRef: string;
   sourceSha: string;
   dirtyStatus: 'clean' | 'dirty' | 'source-ref' | 'source-archive';
@@ -98,7 +98,7 @@ export interface PublicContractDrift {
 }
 
 interface DriftClassification {
-  comparatorVersion?: string;
+  comparatorType?: string;
   allowedDriftPaths?: string[];
 }
 
@@ -404,6 +404,12 @@ const MOUNTED_BEHAVIOR_COVERAGE: MountedBehaviorCoverageEntry[] = [
     status: 'exempt',
     exemption:
       'POST /api/verification/run invokes verifier-service orchestration and verifier-result persistence; covered by verification-run handler tests, route-contract metadata, browser polling admission, and CLI verification evidence.',
+  },
+  {
+    caseId: 'verification-observation-flow',
+    status: 'exempt',
+    exemption:
+      'POST /api/verification/observation rebuilds server verification authority and performs a durable exact-execution CAS; covered by strict schema, handler, Hono integration, store-concurrency, and browser mock admission tests.',
   },
   {
     caseId: 'cross-session-cross-capability-denial',
@@ -1064,7 +1070,7 @@ export async function capturePublicContractSnapshot(
     };
 
     return {
-      comparatorVersion: COMPARATOR_VERSION,
+      comparatorType: COMPARATOR_TYPE,
       ...omitUndefinedProperties({ sourceRef: options.sourceRef ?? 'HEAD' }),
       sourceSha,
       dirtyStatus,

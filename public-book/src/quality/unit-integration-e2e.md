@@ -95,13 +95,7 @@ Turnstile bypass や `ALLOW_INSECURE_ZKVM=true` は mock E2E 用の test-only �
 ### 公開 artifact 境界
 
 `bundle.zip` は第三者検証に必要な公開可能 artifact だけを含みます。
-
-公開してよいものは allowlist で管理し、次の artifact は配布対象に含めません。
-
-- `input.json`
-- `verification.json`
-- `included-bitmap.json`
-- `seen-bitmap.json`
+公開してよいものは allowlist で管理し、`input.json`、`verification.json`、`included-bitmap.json`、`seen-bitmap.json` の保護対象 4 artifact は配布対象に含めません（[公開境界](../verification/public-boundary.md)）。
 
 この境界は sync 生成、async container、bundle/report delivery の複数箇所にまたがるため、テストで契約として固定します。
 

@@ -7,7 +7,10 @@ import { buildCloseStatement, buildElectionManifest } from '@stark-ballot/verifi
 import { admitReceiptPayload } from '@stark-ballot/verification/receipt-normalizer';
 import {
   buildAsyncProverArtifactKeys,
+  buildAsyncProverFailureMarkerKey,
   buildFinalizationResultFromS3Bundle,
+  parseProverFailureMarker,
+  readAsyncProverFailureCategory,
   persistAsyncProverInputToS3,
   validateAsyncProverArtifactKeys,
   validateAsyncProverBundleKey,
@@ -26,6 +29,11 @@ vi.mock('@stark-ballot/aws-adapters/aws/s3-client', () => ({
 
 vi.mock('@stark-ballot/aws-adapters/aws/bundle-restore', () => ({
   restoreReceiptFromS3: vi.fn(),
+}));
+
+vi.mock('@stark-ballot/aws-adapters/aws/s3-download', () => ({
+  headS3Object: vi.fn(),
+  downloadRangeFromS3: vi.fn(),
 }));
 
 const zkvmInput: ZkVMInput = {
@@ -60,6 +68,99 @@ describe('async prover artifacts', () => {
       outputS3Prefix: 'sessions/session-1/exec-1',
       bundleS3Key: 'sessions/session-1/exec-1/bundle.zip',
     });
+  });
+
+  it('builds the private failure marker key under the canonical execution prefix', () => {
+    expect(buildAsyncProverFailureMarkerKey('session-1', 'exec-1')).toBe(
+      'sessions/session-1/exec-1/failure-marker.json',
+    );
+  });
+
+  it.each([
+    'configuration',
+    'input',
+    'prover_execution',
+    'infrastructure_interruption',
+    'artifact',
+    'upload',
+    'timeout',
+    'unknown',
+  ] as const)('admits the exact bounded failure marker category %s', (category) => {
+    expect(parseProverFailureMarker(Buffer.from(JSON.stringify({ category })))).toBe(category);
+  });
+
+  it.each([
+    ['extra key', { category: 'artifact', message: 'private failure' }],
+    ['legacy schema_version', { schema_version: 1, category: 'artifact' }],
+    ['missing category', {}],
+    ['open category', { category: 's3://private-bucket/raw-key' }],
+  ])('rejects a failure marker with %s', (_label, marker) => {
+    expect(parseProverFailureMarker(Buffer.from(JSON.stringify(marker)))).toBeUndefined();
+  });
+
+  it('rejects oversized failure markers before parsing their contents', () => {
+    const oversized = Buffer.from(JSON.stringify({ category: 'artifact', padding: 'private'.repeat(100) }));
+    expect(parseProverFailureMarker(oversized)).toBeUndefined();
+  });
+
+  it('bounded-reads a valid private failure marker and returns only its closed category', async () => {
+    const { headS3Object, downloadRangeFromS3 } = await import('@stark-ballot/aws-adapters/aws/s3-download');
+    const marker = Buffer.from(JSON.stringify({ category: 'upload' }));
+    vi.mocked(headS3Object).mockResolvedValue({ contentLength: marker.byteLength });
+    vi.mocked(downloadRangeFromS3).mockResolvedValue({ body: marker });
+
+    await expect(readAsyncProverFailureCategory('session-1', 'exec-1')).resolves.toBe('upload');
+    expect(headS3Object).toHaveBeenCalledWith('sessions/session-1/exec-1/failure-marker.json');
+    expect(downloadRangeFromS3).toHaveBeenCalledWith('sessions/session-1/exec-1/failure-marker.json', {
+      start: 0,
+      end: marker.byteLength - 1,
+    });
+  });
+
+  it('fails closed without downloading an oversized private failure marker', async () => {
+    const { headS3Object, downloadRangeFromS3 } = await import('@stark-ballot/aws-adapters/aws/s3-download');
+    vi.mocked(headS3Object).mockResolvedValue({ contentLength: 10_000 });
+
+    await expect(readAsyncProverFailureCategory('session-1', 'exec-1')).resolves.toBeUndefined();
+    expect(downloadRangeFromS3).not.toHaveBeenCalled();
+  });
+
+  it('treats a missing private failure marker as absent evidence', async () => {
+    const { headS3Object, downloadRangeFromS3 } = await import('@stark-ballot/aws-adapters/aws/s3-download');
+    vi.mocked(headS3Object).mockRejectedValue(
+      Object.assign(new Error('marker does not exist'), {
+        name: 'NoSuchKey',
+        $metadata: { httpStatusCode: 404 },
+      }),
+    );
+
+    await expect(readAsyncProverFailureCategory('session-1', 'exec-1')).resolves.toBeUndefined();
+    expect(downloadRangeFromS3).not.toHaveBeenCalled();
+  });
+
+  it('rethrows transient failure-marker HEAD errors for callback retry', async () => {
+    const { headS3Object, downloadRangeFromS3 } = await import('@stark-ballot/aws-adapters/aws/s3-download');
+    vi.mocked(headS3Object).mockRejectedValue(
+      Object.assign(new Error('S3 temporarily unavailable'), {
+        name: 'ServiceUnavailable',
+        $metadata: { httpStatusCode: 503 },
+      }),
+    );
+
+    await expect(readAsyncProverFailureCategory('session-1', 'exec-1')).rejects.toThrow('S3 temporarily unavailable');
+    expect(downloadRangeFromS3).not.toHaveBeenCalled();
+  });
+
+  it('rethrows transient failure-marker GET errors for callback retry', async () => {
+    const { headS3Object, downloadRangeFromS3 } = await import('@stark-ballot/aws-adapters/aws/s3-download');
+    vi.mocked(headS3Object).mockResolvedValue({ contentLength: 24 });
+    vi.mocked(downloadRangeFromS3).mockRejectedValue(
+      Object.assign(new Error('S3 read timed out'), {
+        name: 'TimeoutError',
+      }),
+    );
+
+    await expect(readAsyncProverFailureCategory('session-1', 'exec-1')).rejects.toThrow('S3 read timed out');
   });
 
   it.each([

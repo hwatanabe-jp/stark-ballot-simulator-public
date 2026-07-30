@@ -20,6 +20,11 @@ function isPackageModule(moduleId: string, packageNames: readonly string[]): boo
 
 export default defineConfig(({ mode }) => {
   const isTargetBuild = mode === 'target';
+  const configuredDeploymentId = process.env['VITE_DEPLOYMENT_ID'];
+  const deploymentId =
+    configuredDeploymentId && /^dep_[0-9a-f]{32}$/.test(configuredDeploymentId)
+      ? configuredDeploymentId
+      : 'local-unaccepted';
   const webSrcDir = path.resolve(__dirname, './apps/web/src');
   const domainSrcDir = path.resolve(__dirname, './packages/domain/src');
   const applicationSrcDir = path.resolve(__dirname, './packages/application/src');
@@ -63,7 +68,15 @@ export default defineConfig(({ mode }) => {
   ];
 
   return {
-    plugins: [react()],
+    plugins: [
+      react(),
+      {
+        name: 'accepted-deployment-stamp',
+        transformIndexHtml(html) {
+          return html.replace('__STARK_BALLOT_DEPLOYMENT_ID__', deploymentId);
+        },
+      },
+    ],
     resolve: {
       alias: [
         {

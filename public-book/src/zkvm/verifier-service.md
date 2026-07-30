@@ -6,9 +6,7 @@
 
 ## 概要
 
-STARK 証明の検証は、証明生成に比べれば計算コストが低い処理です。
-ただし、ブラウザ上で RISC Zero の検証ロジックを実行することは、現時点では実用的ではありません。
-そのため、本システムではサーバー側で検証を行い、その結果をレポートとしてクライアントに提供します。
+STARK 証明の検証は証明生成に比べれば計算コストが低い処理で、本システムではサーバー側で検証を行い、その結果をレポートとしてクライアントに提供します（委任の理由と信頼境界は [サーバー側検証の信頼境界](#サーバー側検証の信頼境界) を参照）。
 
 ```mermaid
 flowchart LR
@@ -66,16 +64,13 @@ flowchart TD
 
 ### Image ID 照合と Fake receipt の扱い
 
-ラッパーの `image_id` を期待値と照合し、不一致なら `failed` として即時拒否します。
+ラッパーの `image_id` は、開発モード生成を示す `Fake` 型（`InnerReceipt`）でも期待値との一致が必須であり、不一致なら `failed` として即時拒否します。
+`image_id` が欠落した場合は、非 `Fake` 型は `failed` になり、`Fake` 型だけが `Receipt::verify` まで進んで結果に応じて `dev_mode` または `failed` に振り分けられます（分岐の全体は上のフローチャートを参照）。
 Image ID の管理は [Image ID](image-id.md) を参照してください。
-
-レシートの内部構造（`InnerReceipt`）が `Fake` 型の場合、そのレシートは開発モードで生成されたものです。
-ただし、`Fake` 型であることだけでは即座に `dev_mode` になりません。
-Image ID が不一致なら `failed` になり、Image ID が一致した場合だけ `Receipt::verify` の結果に応じて `dev_mode` に振り分けられます。
 
 ### STARK 検証の実行
 
-Image ID 照合に成功した後、RISC Zero SDK の `Receipt::verify(expected_image_id)` で STARK 証明を検証します。
+top-level の Image ID 照合に成功した後、または `Fake` 型で `image_id` が欠落している場合に、RISC Zero SDK の `Receipt::verify(expected_image_id)` でレシートを検証します。
 検証成功は、次の内容を保証します。
 
 - レシートに含まれる seal（証明データ）が有効
@@ -124,7 +119,32 @@ exit code とレポート出力の関係は次のとおりです。
 ## デプロイメントモデル
 
 検証サービス（Rust バイナリ `verifier-service`）は、呼び出し経路ごとに実行場所が異なります。
-詳細は下の「呼び出しパターン」を参照してください。
+
+### 呼び出しパターン
+
+検証サービスの呼び出しは 3 分類で、明示的 S3 実行が target / direct の 2 経路に分かれるため、実行経路としては下表の 4 行になります。
+明示的検証はいずれも、サーバー側で保持している finalization result に紐付いた **権威ある bundle locator** だけを使います。
+クライアントが任意の S3 キーや local パスを指定し、検証サービスに検証させることはできません。
+
+| パターン                 | トリガー                                 | 説明                                                                                               |
+| ------------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| 同期実行                 | 同期 finalization (`POST /api/finalize`) | real executor 時のみ実行。mock executor 時は `verifier-service` を呼ばず `dev_mode` 扱いとして帰る |
+| 明示的 S3 実行（target） | クライアントが検証を要求                 | `POST /api/verification/run` が検証 work を SQS に積み、`verification-worker` が後続で処理する     |
+| 明示的 S3 実行（direct） | クライアントが検証を要求                 | non-target S3 実行では API が `verification-worker` Lambda を同期呼び出しする                      |
+| 明示的 local 実行        | クライアントが検証を要求                 | `POST /api/verification/run` が信頼済み local bundle を API サーバープロセス内で直接検証する       |
+
+非同期 finalization のコールバック Lambda は、結果の復元と保存を担当します。
+STARK 検証は自動実行されず、`POST /api/verification/run` で実行します。
+target AWS runtime では、この POST は `verifier-service` の完了を待たず、`verificationResult.status=running` を保存して SQS work を発行します。
+`verification-worker` は SQS event を受け取り、S3 bundle を展開して `verifier-service` を実行し、`verification.json` の report locator と terminal `verificationResult` をセッションストアへ保存します。
+
+`verificationResult.status` が `success` / `failed` / `dev_mode` のような終端状態にある場合、`POST /api/verification/run` は再検証せず idempotent な応答を返します。
+`running` の場合も実行中として idempotent に扱いますが、target AWS runtime で queue marker が未保存なら同じ execution の SQS work を補修発行します。
+status 未設定または `not_run` のときだけ、新しい検証実行または検証 work の enqueue に進みます。
+
+### 実行シーケンス（補足）
+
+次のシーケンス図は、上記 3 分類の実行経路を補足するものです。
 
 ```mermaid
 sequenceDiagram
@@ -147,7 +167,7 @@ sequenceDiagram
     RUNNER->>VS: bundle ディレクトリ + 期待 Image ID + reportPath
     VS->>VS: STARK 検証実行 + verification.json 書き出し
     VS-->>RUNNER: 検証レポート
-    RUNNER->>S3: public bundle / verification.json / sidecar を保存
+    RUNNER->>S3: public bundle.zip / verification.json / sidecar を保存
     RUNNER->>STORE: report locator と terminal verificationResult を保存
   else non-target S3 bundle locator がある
     API->>RUNNER: 同期実行要求（sessionId, executionId, bundleKey, expectedImageId）
@@ -165,28 +185,6 @@ sequenceDiagram
     API-->>C: 検証結果
   end
 ```
-
-### 呼び出しパターン
-
-検証サービスの呼び出しには、主に 3 つのパターンがあります。
-明示的検証はいずれも、サーバー側で保持している finalization result に紐付いた **権威ある bundle locator** だけを使います。
-クライアントが任意の S3 キーや local パスを指定し、検証サービスに検証させることはできません。
-
-| パターン                 | トリガー                                 | 説明                                                                                               |
-| ------------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| 同期実行                 | 同期 finalization (`POST /api/finalize`) | real executor 時のみ実行。mock executor 時は `verifier-service` を呼ばず `dev_mode` 扱いとして帰る |
-| 明示的 S3 実行（target） | クライアントが検証を要求                 | `POST /api/verification/run` が検証 work を SQS に積み、`verification-worker` が後続で処理する     |
-| 明示的 S3 実行（direct） | クライアントが検証を要求                 | non-target S3 実行では API が `verification-worker` Lambda を同期呼び出しする                      |
-| 明示的 local 実行        | クライアントが検証を要求                 | `POST /api/verification/run` が信頼済み local bundle を API サーバープロセス内で直接検証する       |
-
-非同期 finalization のコールバック Lambda は、結果の復元と保存を担当します。
-STARK 検証は自動実行されず、`POST /api/verification/run` で実行します。
-target AWS runtime では、この POST は `verifier-service` の完了を待たず、`verificationResult.status=running` を保存して SQS work を発行します。
-`verification-worker` は SQS event を受け取り、S3 bundle を展開して `verifier-service` を実行し、`verification.json` の report locator と terminal `verificationResult` をセッションストアへ保存します。
-
-`verificationResult.status` が `success` / `failed` / `dev_mode` のような終端状態にある場合、`POST /api/verification/run` は再検証せず idempotent な応答を返します。
-`running` の場合も実行中として idempotent に扱いますが、target AWS runtime で queue marker が未保存なら同じ execution の SQS work を補修発行します。
-status 未設定または `not_run` のときだけ、新しい検証実行または検証 work の enqueue に進みます。
 
 ## 検証パイプラインにおける役割
 
@@ -212,7 +210,7 @@ status 未設定または `not_run` のときだけ、新しい検証実行ま�
 この PoC における信頼モデルは次のとおりです。
 
 - **STARK 証明自体は秘密データを含まない検証データ**: レシートと Image ID があれば、第三者が独立に検証可能
-- **検証サービスは利便性のための委任**: ブラウザでの STARK 検証が実用的になれば、クライアント側のみで完結させることも理論上は可能
+- **検証サービスは利便性のための委任**: ブラウザ上で RISC Zero の検証ロジックを実行することは現時点では実用的でないため、サーバー側で検証する。実用的になれば、クライアント側のみで完結させることも理論上は可能
 - **配布対象アーカイブ**: レシートと `public-input.json` は [ZIP ローカル検証（Ubuntu）](../reproducibility/audit-bundle.md) の手順で独立検証できる
 
 ### verification.json の非公開性

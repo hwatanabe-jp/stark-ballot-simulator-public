@@ -122,12 +122,13 @@ resource "aws_codepipeline" "development_foundation" {
     name = "PostApplySmoke"
 
     action {
-      name            = "FoundationStateAbsenceOfAppRuntime"
-      category        = "Build"
-      owner           = "AWS"
-      provider        = "CodeBuild"
-      version         = "1"
-      input_artifacts = ["SourceOutput", "ApplyOutput"]
+      name             = "FoundationStateAbsenceOfAppRuntime"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      input_artifacts  = ["SourceOutput", "ApplyOutput"]
+      output_artifacts = ["FoundationSmokeOutput"]
 
       configuration = {
         EnvironmentVariables = jsonencode([{ name = "FOUNDATION_PIPELINE_EXECUTION_ID", value = "#{codepipeline.PipelineExecutionId}", type = "PLAINTEXT" }])

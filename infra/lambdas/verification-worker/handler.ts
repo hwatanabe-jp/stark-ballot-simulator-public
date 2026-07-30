@@ -11,16 +11,118 @@ import { invokeVerifierService } from '@stark-ballot/node-adapters/verifier-serv
 import type { VerificationWorkerResponse } from '@stark-ballot/aws-adapters/lambda/verification-worker-contract';
 import { ensureAwsRuntimeConfigReferencesLoaded } from '@stark-ballot/aws-adapters/config/awsRuntimeConfigReferenceResolver';
 import { validateEnv } from '@stark-ballot/runtime-config/env/validate';
+import { validateTargetObservabilityEnv } from '@stark-ballot/runtime-config/env/observability';
 import { isTargetAwsRuntime } from '@stark-ballot/runtime-config/env/targetRuntime';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashKeyPrefixForLogging, hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { SAFE_VERIFIER_SEGMENT_PATTERN } from '@stark-ballot/validation/safe-verifier-segment';
-import type { VerificationStatus } from '@stark-ballot/verification/shared/types';
+import type { VerificationFailureCategory, VerificationStatus } from '@stark-ballot/verification/shared/types';
 import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/domain/utils/hex';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { uploadVerificationBundleToS3 } from './verificationBundleS3Upload.js';
+import { RuntimeConfigValidationError, bootstrapLambdaRuntime, type RuntimeConfigName } from '../runtimeBootstrap.js';
 
 const INVALID_PAYLOAD_DETAILS = 'Invalid verifier invocation payload';
 const VERIFIER_EXECUTION_FAILURE_DETAILS = 'Verifier service execution failed';
+const MAX_VERIFIER_STDERR_DIAGNOSTIC_BYTES = 4 * 1024;
+const VERIFIER_STDERR_DIAGNOSTIC_CATEGORIES = new Set(['none', 'present', 'truncated']);
+
+class VerificationInfrastructureError extends Error {
+  readonly failureCategory: VerificationFailureCategory;
+
+  constructor(failureCategory: VerificationFailureCategory) {
+    super('Verification infrastructure stage failed');
+    this.name = 'VerificationInfrastructureError';
+    this.failureCategory = failureCategory;
+  }
+}
+
+function readErrorIdentity(error: unknown): ReadonlySet<string> {
+  if (typeof error !== 'object' || error === null) {
+    return new Set();
+  }
+  const candidate = error as { name?: unknown; code?: unknown };
+  return new Set([candidate.name, candidate.code].filter((value): value is string => typeof value === 'string'));
+}
+
+function classifyS3Failure(error: unknown): VerificationFailureCategory {
+  const identities = readErrorIdentity(error);
+  if (identities.has('AccessDenied') || identities.has('Forbidden')) {
+    return 's3_denied';
+  }
+  if (identities.has('NoSuchKey') || identities.has('NotFound')) {
+    return 's3_missing';
+  }
+  if (
+    identities.has('TimeoutError') ||
+    identities.has('RequestTimeout') ||
+    identities.has('RequestTimeoutException') ||
+    identities.has('ETIMEDOUT')
+  ) {
+    return 'timeout';
+  }
+  return 'unknown';
+}
+
+function classifyVerifierFailure(error: unknown): VerificationFailureCategory {
+  const identities = readErrorIdentity(error);
+  if (
+    identities.has('TimeoutError') ||
+    identities.has('AbortError') ||
+    identities.has('RequestTimeout') ||
+    identities.has('ETIMEDOUT') ||
+    identities.has('ERR_CHILD_PROCESS_TIMEOUT')
+  ) {
+    return 'timeout';
+  }
+  return 'verifier_crash';
+}
+
+function infrastructureFailure(failureCategory: VerificationFailureCategory): VerificationInfrastructureError {
+  return new VerificationInfrastructureError(failureCategory);
+}
+
+function resolveInfrastructureFailureCategory(error: unknown): VerificationFailureCategory {
+  return error instanceof VerificationInfrastructureError ? error.failureCategory : 'unknown';
+}
+
+function readOwnDataProperty(value: unknown, key: string): unknown {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+
+  try {
+    return Object.getOwnPropertyDescriptor(value, key)?.value;
+  } catch {
+    return undefined;
+  }
+}
+
+function emitVerifierServiceDiagnostics(
+  input: Pick<HandlerEvent, 'sessionId' | 'executionId'>,
+  diagnostics: unknown,
+): void {
+  const category = readOwnDataProperty(diagnostics, 'stderrCategory');
+  const bytes = readOwnDataProperty(diagnostics, 'stderrBytes');
+  const truncated = readOwnDataProperty(diagnostics, 'stderrTruncated');
+  const valid =
+    typeof category === 'string' &&
+    VERIFIER_STDERR_DIAGNOSTIC_CATEGORIES.has(category) &&
+    typeof bytes === 'number' &&
+    Number.isInteger(bytes) &&
+    bytes >= 0 &&
+    bytes <= MAX_VERIFIER_STDERR_DIAGNOSTIC_BYTES &&
+    typeof truncated === 'boolean';
+
+  logger.info('[VerificationWorker] verifier-service diagnostics', {
+    event: 'verifier_service_diagnostic',
+    session_id_hash: hashSessionIdForLogging(input.sessionId),
+    execution_id: input.executionId,
+    stderr_category: valid ? category : 'none',
+    stderr_bytes: valid ? bytes : 0,
+    stderr_truncated: valid ? truncated : false,
+  });
+}
 
 type HandlerEvent = {
   mode: 's3_bundle';
@@ -35,13 +137,15 @@ type HandlerEvent = {
 };
 
 type SqsEvent = {
-  Records?: Array<{
-    messageId?: string;
-    body?: string;
-    attributes?: {
-      ApproximateReceiveCount?: string;
-    };
-  }>;
+  Records: unknown[];
+};
+
+type SqsRecord = {
+  messageId?: string;
+  body?: string;
+  attributes?: {
+    ApproximateReceiveCount?: string;
+  };
 };
 
 type SqsBatchResponse = {
@@ -129,23 +233,52 @@ async function runVerificationPayload(
   process.env['VERIFIER_WORK_DIR'] = workDir;
 
   try {
-    const bundleKey = validateAsyncProverBundleKey(input.sessionId, input.executionId, input.bundleKey);
+    let bundleKey: string;
+    try {
+      bundleKey = validateAsyncProverBundleKey(input.sessionId, input.executionId, input.bundleKey);
+    } catch {
+      throw infrastructureFailure('corrupt_bundle');
+    }
     const bundlePath = path.join(workDir, input.sessionId, input.executionId);
-    await fs.mkdir(bundlePath, { recursive: true });
+    try {
+      await fs.mkdir(bundlePath, { recursive: true });
+    } catch {
+      throw infrastructureFailure('unknown');
+    }
 
-    const zipBuffer = await downloadFromS3(bundleKey);
-    await extractZipFromBuffer(zipBuffer, { destination: bundlePath });
+    let zipBuffer: Buffer;
+    try {
+      zipBuffer = await downloadFromS3(bundleKey);
+    } catch (error) {
+      throw infrastructureFailure(classifyS3Failure(error));
+    }
+    try {
+      await extractZipFromBuffer(zipBuffer, { destination: bundlePath });
+    } catch {
+      throw infrastructureFailure('corrupt_bundle');
+    }
 
     const reportPath = path.join(bundlePath, 'verification.json');
-    const invocation = await invokeVerifierService({
-      bundlePath,
-      expectedImageId: input.expectedImageId,
-      reportPath,
-    });
+    let invocation: Awaited<ReturnType<typeof invokeVerifierService>>;
+    try {
+      invocation = await invokeVerifierService({
+        bundlePath,
+        expectedImageId: input.expectedImageId,
+        reportPath,
+      });
+    } catch (error) {
+      emitVerifierServiceDiagnostics(input, readOwnDataProperty(error, 'diagnostics'));
+      throw infrastructureFailure(classifyVerifierFailure(error));
+    }
+    emitVerifierServiceDiagnostics(input, invocation.diagnostics);
 
     let s3Result: Awaited<ReturnType<typeof uploadVerificationBundleToS3>> | undefined;
     if (input.options?.uploadToS3 ?? true) {
-      s3Result = await uploadVerificationBundleToS3(bundlePath, input.sessionId, input.executionId);
+      try {
+        s3Result = await uploadVerificationBundleToS3(bundlePath, input.sessionId, input.executionId);
+      } catch (error) {
+        throw infrastructureFailure(classifyS3Failure(error));
+      }
     }
 
     return {
@@ -168,9 +301,10 @@ async function runVerificationPayload(
     logger.error(
       '[VerificationWorker] Verifier service execution failed',
       {
-        sessionId: input.sessionId,
+        session_id_hash: hashSessionIdForLogging(input.sessionId),
         executionId: input.executionId,
-        bundleKey: input.bundleKey,
+        bundle_key_prefix: hashKeyPrefixForLogging(input.bundleKey),
+        failure_category: resolveInfrastructureFailureCategory(error),
       },
       error,
     );
@@ -191,13 +325,76 @@ async function runVerificationPayload(
   }
 }
 
+function hasSqsRecordsField(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && Object.prototype.hasOwnProperty.call(value, 'Records');
+}
+
 function isSqsEvent(value: unknown): value is SqsEvent {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    Array.isArray((value as { Records?: unknown }).Records) &&
-    ((value as SqsEvent).Records ?? []).some((record) => typeof record.body === 'string')
-  );
+  return typeof value === 'object' && value !== null && Array.isArray((value as { Records?: unknown }).Records);
+}
+
+function isSqsRecord(value: unknown): value is SqsRecord {
+  return typeof value === 'object' && value !== null && typeof (value as { body?: unknown }).body === 'string';
+}
+
+function logInvalidSqsInvocation(reason: 'event_shape_invalid' | 'record_body_invalid'): void {
+  logger.warn('Invocation payload is invalid', {
+    event: 'invocation_invalid',
+    source_kind: 'sqs',
+    reason,
+  });
+}
+
+function validateVerificationWorkerConfig(): void {
+  const invalidNames: RuntimeConfigName[] = [];
+  const requireValue = (name: RuntimeConfigName): string | undefined => {
+    const value = process.env[name]?.trim();
+    if (!value) invalidNames.push(name);
+    return value;
+  };
+
+  if (process.env['TARGET_AWS_RUNTIME'] !== '1') invalidNames.push('TARGET_AWS_RUNTIME');
+  if (process.env['USE_MOCK_STORE'] !== 'false') invalidNames.push('USE_MOCK_STORE');
+  if (process.env['USE_S3'] !== 'true') invalidNames.push('USE_S3');
+  const accountId = requireValue('AWS_ACCOUNT_ID');
+  if (accountId && !/^[0-9]{12}$/.test(accountId)) invalidNames.push('AWS_ACCOUNT_ID');
+  if (!process.env['AWS_REGION']?.trim() && !process.env['AWS_DEFAULT_REGION']?.trim()) {
+    invalidNames.push('AWS_REGION');
+  }
+  requireValue('DYNAMODB_SESSIONS_TABLE');
+  requireValue('DYNAMODB_VOTES_TABLE');
+  requireValue('S3_PROOF_BUCKET');
+  requireValue('S3_PROOF_PREFIX');
+  for (const [name, invalid] of [
+    ['USE_MOCK_ZKVM', process.env['USE_MOCK_ZKVM'] === 'true'],
+    ['RISC0_DEV_MODE', process.env['RISC0_DEV_MODE'] === '1'],
+    ['FORCE_DEV_MODE', process.env['FORCE_DEV_MODE'] === '1' || process.env['FORCE_DEV_MODE'] === 'true'],
+    [
+      'ALLOW_INSECURE_ZKVM',
+      process.env['ALLOW_INSECURE_ZKVM'] === '1' || process.env['ALLOW_INSECURE_ZKVM'] === 'true',
+    ],
+    [
+      'ALLOW_DEV_MODE_VERIFICATION',
+      process.env['ALLOW_DEV_MODE_VERIFICATION'] === '1' || process.env['ALLOW_DEV_MODE_VERIFICATION'] === 'true',
+    ],
+  ] as const satisfies ReadonlyArray<readonly [RuntimeConfigName, boolean]>) {
+    if (invalid) {
+      invalidNames.push(name);
+    }
+  }
+
+  if (invalidNames.length > 0) {
+    const primaryName = invalidNames[0];
+    const messages: Partial<Record<RuntimeConfigName, string>> = {
+      USE_MOCK_ZKVM: 'USE_MOCK_ZKVM=true is not allowed when TARGET_AWS_RUNTIME=1.',
+      RISC0_DEV_MODE: 'RISC0_DEV_MODE=1 is not allowed when TARGET_AWS_RUNTIME=1.',
+      FORCE_DEV_MODE: 'FORCE_DEV_MODE is not allowed when TARGET_AWS_RUNTIME=1.',
+      ALLOW_INSECURE_ZKVM: 'ALLOW_INSECURE_ZKVM is not allowed when TARGET_AWS_RUNTIME=1.',
+      ALLOW_DEV_MODE_VERIFICATION: 'ALLOW_DEV_MODE_VERIFICATION is not allowed when TARGET_AWS_RUNTIME=1.',
+    };
+    const message = messages[primaryName ?? ''] ?? 'Verification worker runtime configuration is invalid';
+    throw new RuntimeConfigValidationError(invalidNames, undefined, message);
+  }
 }
 
 function toVerificationStatus(value: string): VerificationStatus {
@@ -210,7 +407,7 @@ function isTerminalVerificationStatus(status: VerificationStatus | undefined): b
   return status === 'success' || status === 'failed' || status === 'dev_mode';
 }
 
-function parseApproximateReceiveCount(record: NonNullable<SqsEvent['Records']>[number]): number {
+function parseApproximateReceiveCount(record: SqsRecord): number {
   const rawValue = record.attributes?.ApproximateReceiveCount;
   if (!rawValue) {
     return 1;
@@ -225,11 +422,13 @@ async function persistTerminalFailureAfterRetryExhaustion(
     sessionId: string;
     executionId: string;
   },
+  failureCategory: VerificationFailureCategory,
 ): Promise<void> {
   await store.completeVerificationResult(message.sessionId, {
     executionId: message.executionId,
     verificationResult: {
       status: 'failed',
+      failureCategory,
     },
   });
 }
@@ -263,12 +462,27 @@ async function handleSqsEvent(rawEvent: SqsEvent): Promise<SqsBatchResponse> {
   const processedWorkKeys = new Set<string>();
   const store = getGlobalStore();
 
-  for (const record of rawEvent.Records ?? []) {
+  for (const rawRecord of rawEvent.Records) {
+    if (!isSqsRecord(rawRecord)) {
+      logInvalidSqsInvocation('record_body_invalid');
+      throw new Error('Invalid SQS invocation');
+    }
+    const record = rawRecord;
     const itemIdentifier = record.messageId ?? '';
-    let parsedMessage: ReturnType<typeof parseVerificationWorkMessage> | undefined;
+    let parsedMessage: ReturnType<typeof parseVerificationWorkMessage>;
     try {
-      const message = parseVerificationWorkMessage(JSON.parse(record.body ?? '{}'));
-      parsedMessage = message;
+      parsedMessage = parseVerificationWorkMessage(JSON.parse(record.body ?? '{}'));
+    } catch {
+      logInvalidSqsInvocation('record_body_invalid');
+      if (itemIdentifier) {
+        batchItemFailures.push({ itemIdentifier });
+        continue;
+      }
+      throw new Error('Invalid SQS invocation');
+    }
+
+    try {
+      const message = parsedMessage;
       const workKey = `${message.sessionId}/${message.executionId}`;
       if (processedWorkKeys.has(workKey)) {
         continue;
@@ -277,7 +491,7 @@ async function handleSqsEvent(rawEvent: SqsEvent): Promise<SqsBatchResponse> {
       const disposition = await resolveVerificationWorkDisposition(store, message.sessionId, message.executionId);
       if (disposition !== 'process') {
         logger.info('[VerificationWorker] Skipping idempotent SQS verification work', {
-          sessionId: message.sessionId,
+          session_id_hash: hashSessionIdForLogging(message.sessionId),
           executionId: message.executionId,
           disposition,
         });
@@ -301,6 +515,7 @@ async function handleSqsEvent(rawEvent: SqsEvent): Promise<SqsBatchResponse> {
           executionId: message.executionId,
           verificationResult: {
             status: 'failed',
+            failureCategory: 'unknown',
           },
         });
         continue;
@@ -316,19 +531,24 @@ async function handleSqsEvent(rawEvent: SqsEvent): Promise<SqsBatchResponse> {
         verificationResult: {
           status: toVerificationStatus(response.verifierStatus),
           report: response.verificationReport,
+          failureCategory: 'none',
         },
       });
     } catch (error) {
       logger.error('[VerificationWorker] SQS verification work failed', { itemIdentifier }, error);
-      if (parsedMessage && parseApproximateReceiveCount(record) >= VERIFICATION_WORK_MAX_RECEIVE_COUNT) {
+      if (parseApproximateReceiveCount(record) >= VERIFICATION_WORK_MAX_RECEIVE_COUNT) {
         try {
-          await persistTerminalFailureAfterRetryExhaustion(store, parsedMessage);
+          await persistTerminalFailureAfterRetryExhaustion(
+            store,
+            parsedMessage,
+            resolveInfrastructureFailureCategory(error),
+          );
         } catch (persistenceError) {
           logger.error(
             '[VerificationWorker] Failed to persist terminal verification failure after retry exhaustion',
             {
               itemIdentifier,
-              sessionId: parsedMessage.sessionId,
+              session_id_hash: hashSessionIdForLogging(parsedMessage.sessionId),
               executionId: parsedMessage.executionId,
             },
             persistenceError,
@@ -345,11 +565,30 @@ async function handleSqsEvent(rawEvent: SqsEvent): Promise<SqsBatchResponse> {
 }
 
 export const handler = async (rawEvent: unknown): Promise<VerificationWorkerResponse | SqsBatchResponse> => {
-  await ensureAwsRuntimeConfigReferencesLoaded('verification_worker');
-  validateEnv();
+  await bootstrapLambdaRuntime({
+    serviceName: 'verification-worker',
+    resolveRuntimeReferences: async (invalidNameCollector) => {
+      await ensureAwsRuntimeConfigReferencesLoaded('verification_worker', { invalidNameCollector });
+    },
+    validationSteps: [
+      {
+        validate: validateTargetObservabilityEnv,
+      },
+      {
+        validate: validateVerificationWorkerConfig,
+      },
+      {
+        validate: validateEnv,
+      },
+    ],
+  });
 
   if (isSqsEvent(rawEvent)) {
     return await handleSqsEvent(rawEvent);
+  }
+  if (hasSqsRecordsField(rawEvent)) {
+    logInvalidSqsInvocation('event_shape_invalid');
+    throw new Error('Invalid SQS invocation');
   }
 
   let input: HandlerEvent;

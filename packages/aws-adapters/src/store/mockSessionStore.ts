@@ -5,6 +5,7 @@
 import type { VoteData, SessionData, AddVoteResult } from '@stark-ballot/domain/types/server';
 import type {
   FinalizationFailedPayload,
+  FinalizationQueuedPayload,
   FinalizationRunningPayload,
   FinalizationSucceededPayload,
   FinalizationTimedOutPayload,
@@ -44,6 +45,7 @@ import {
   type AwsRuntimeTransitionMetadata,
   type AwsSucceededTransitionMetadata,
 } from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
+import { recordFinalizationStorePersistenceOutcome } from '@stark-ballot/aws-adapters/finalize/finalizationTransitionObservability';
 import type { SessionStoreUpdate, VoteStore } from '@stark-ballot/domain/types/voteStore';
 import crypto from 'crypto';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
@@ -64,6 +66,7 @@ import { stageCtVoteWrites } from '@stark-ballot/aws-adapters/store/stagedCtWrit
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { normalizeHex } from '@stark-ballot/domain/utils/hex';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import {
   assertAdmissibleFinalizationArtifactPatch,
   assertWritableFinalizationArtifact,
@@ -82,6 +85,12 @@ import {
   resolveAuthoritativeWriteContractGeneration,
   resolveCurrentContractGeneration,
 } from '@stark-ballot/domain/contract';
+import {
+  requireVerificationObservation,
+  resolveVerificationObservationRecord,
+  type RecordVerificationObservationResult,
+  type VerificationObservation,
+} from '@stark-ballot/domain/types/verificationObservation';
 
 interface ReceiptEntry {
   receiptHash: string;
@@ -178,6 +187,32 @@ export class MockSessionStore
     return nextState;
   }
 
+  protected shouldDeferFinalizationPersistenceObservation(): boolean {
+    return false;
+  }
+
+  private async observeFinalizationPersistence(
+    sessionId: string,
+    requestedTo: FinalizationState['status'],
+    payload: Pick<FinalizationQueuedPayload, 'executionId' | 'observability'>,
+    operation: () => Promise<FinalizationState>,
+  ): Promise<FinalizationState> {
+    const before = parsePersistedFinalizationState(this.sessions.get(sessionId)?.finalizationState);
+    const actual = await operation();
+    if (!this.shouldDeferFinalizationPersistenceObservation()) {
+      recordFinalizationStorePersistenceOutcome({
+        sessionId,
+        requestedExecutionId: payload.executionId,
+        requestedTo,
+        ...(before ? { before } : {}),
+        actual,
+        authoritativeWrite: true,
+        ...(payload.observability ? { metadata: payload.observability } : {}),
+      });
+    }
+    return actual;
+  }
+
   private getStickyTerminalFinalizationState(
     current: FinalizationState | undefined,
     executionId: string,
@@ -247,27 +282,37 @@ export class MockSessionStore
     };
 
     this.sessions.set(sessionId, sessionData);
-    logger.info('[MockStore] Created session:', sessionId);
+    logger.info('[MockStore] Created session', {
+      session_id_hash: hashSessionIdForLogging(sessionId),
+    });
 
     return Promise.resolve(sessionData);
   }
 
   getSession(sessionId: string): Promise<SessionData | null> {
-    logger.debug('[MockStore] Getting session:', sessionId);
-    logger.debug('[MockStore] Available sessions:', Array.from(this.sessions.keys()));
+    logger.debug('[MockStore] Getting session', {
+      session_id_hash: hashSessionIdForLogging(sessionId),
+    });
+    logger.debug('[MockStore] Available session count:', this.sessions.size);
     const session = this.sessions.get(sessionId);
     if (session) {
       // Why not rebuild canonical CT state here? Read-time repair would recreate
       // missing bulletin state and mask fail-closed conditions that callers must see.
-      logger.debug('[MockStore] Session found:', sessionId);
+      logger.debug('[MockStore] Session found', {
+        session_id_hash: hashSessionIdForLogging(sessionId),
+      });
     } else {
-      logger.debug('[MockStore] Session not found:', sessionId);
+      logger.debug('[MockStore] Session not found', {
+        session_id_hash: hashSessionIdForLogging(sessionId),
+      });
     }
     return Promise.resolve(session || null);
   }
 
   async addVote(sessionId: string, voteData: VoteData): Promise<AddVoteResult> {
-    logger.debug('[MockStore] addVote called for session:', sessionId);
+    logger.debug('[MockStore] addVote called for session', {
+      session_id_hash: hashSessionIdForLogging(sessionId),
+    });
     const session = await this.getSession(sessionId);
 
     if (!session) {
@@ -368,6 +413,28 @@ export class MockSessionStore
     if (data) {
       return session;
     }
+  }
+
+  async recordVerificationObservation(
+    sessionId: string,
+    input: VerificationObservation,
+  ): Promise<RecordVerificationObservationResult> {
+    const observation = requireVerificationObservation(input);
+    const session = await this.getSession(sessionId);
+    if (!session) {
+      throw new Error('Session not found');
+    }
+    const currentExecutionId = parseAwsPersistedFinalizationResult(session.finalizationResult)?.verificationExecutionId;
+    const resolution = resolveVerificationObservationRecord(
+      currentExecutionId,
+      session.verificationObservation,
+      observation,
+    );
+    if (resolution.status === 'recorded') {
+      session.verificationObservation = observation;
+      session.lastActivity = Date.now();
+    }
+    return resolution;
   }
 
   async updateFinalizationArtifactMetadata(
@@ -545,10 +612,18 @@ export class MockSessionStore
 
   async markFinalizationQueued(
     sessionId: string,
-    payload: {
-      executionId: string;
-      queuedAt: number;
-      contractGeneration: string;
+    payload: FinalizationQueuedPayload & {
+      scenarioContext?: SessionData['finalizationScenarioContext'] | null;
+    },
+  ): Promise<FinalizationState> {
+    return this.observeFinalizationPersistence(sessionId, 'pending', payload, () =>
+      this.applyFinalizationQueued(sessionId, payload),
+    );
+  }
+
+  private async applyFinalizationQueued(
+    sessionId: string,
+    payload: FinalizationQueuedPayload & {
       scenarioContext?: SessionData['finalizationScenarioContext'] | null;
     },
   ): Promise<FinalizationState> {
@@ -593,14 +668,18 @@ export class MockSessionStore
       scenarioContext?: SessionData['finalizationScenarioContext'] | null;
     },
   ): Promise<FinalizationState> {
-    return this.applyFinalizationRunning(sessionId, payload, 'pure');
+    return this.observeFinalizationPersistence(sessionId, 'running', payload, () =>
+      this.applyFinalizationRunning(sessionId, payload, 'pure'),
+    );
   }
 
   async markAwsFinalizationRunning(
     sessionId: string,
     payload: AwsFinalizationRunningPayload,
   ): Promise<FinalizationState> {
-    return this.applyFinalizationRunning(sessionId, payload, 'aws');
+    return this.observeFinalizationPersistence(sessionId, 'running', payload, () =>
+      this.applyFinalizationRunning(sessionId, payload, 'aws'),
+    );
   }
 
   private async applyFinalizationRunning(
@@ -655,14 +734,18 @@ export class MockSessionStore
     sessionId: string,
     payload: FinalizationSucceededPayload,
   ): Promise<FinalizationState> {
-    return this.applyFinalizationSucceeded(sessionId, payload, 'pure');
+    return this.observeFinalizationPersistence(sessionId, 'succeeded', payload, () =>
+      this.applyFinalizationSucceeded(sessionId, payload, 'pure'),
+    );
   }
 
   async markAwsFinalizationSucceeded(
     sessionId: string,
     payload: AwsFinalizationSucceededPayload,
   ): Promise<FinalizationState> {
-    return this.applyFinalizationSucceeded(sessionId, payload, 'aws');
+    return this.observeFinalizationPersistence(sessionId, 'succeeded', payload, () =>
+      this.applyFinalizationSucceeded(sessionId, payload, 'aws'),
+    );
   }
 
   private async applyFinalizationSucceeded(
@@ -738,14 +821,18 @@ export class MockSessionStore
   }
 
   async markFinalizationFailed(sessionId: string, payload: FinalizationFailedPayload): Promise<FinalizationState> {
-    return this.applyFinalizationFailed(sessionId, payload, 'pure');
+    return this.observeFinalizationPersistence(sessionId, 'failed', payload, () =>
+      this.applyFinalizationFailed(sessionId, payload, 'pure'),
+    );
   }
 
   async markAwsFinalizationFailed(
     sessionId: string,
     payload: AwsFinalizationFailedPayload,
   ): Promise<FinalizationState> {
-    return this.applyFinalizationFailed(sessionId, payload, 'aws');
+    return this.observeFinalizationPersistence(sessionId, 'failed', payload, () =>
+      this.applyFinalizationFailed(sessionId, payload, 'aws'),
+    );
   }
 
   private async applyFinalizationFailed(
@@ -792,14 +879,18 @@ export class MockSessionStore
   }
 
   async markFinalizationTimedOut(sessionId: string, payload: FinalizationTimedOutPayload): Promise<FinalizationState> {
-    return this.applyFinalizationTimedOut(sessionId, payload, 'pure');
+    return this.observeFinalizationPersistence(sessionId, 'timeout', payload, () =>
+      this.applyFinalizationTimedOut(sessionId, payload, 'pure'),
+    );
   }
 
   async markAwsFinalizationTimedOut(
     sessionId: string,
     payload: AwsFinalizationTimedOutPayload,
   ): Promise<FinalizationState> {
-    return this.applyFinalizationTimedOut(sessionId, payload, 'aws');
+    return this.observeFinalizationPersistence(sessionId, 'timeout', payload, () =>
+      this.applyFinalizationTimedOut(sessionId, payload, 'aws'),
+    );
   }
 
   private async applyFinalizationTimedOut(
@@ -849,7 +940,9 @@ export class MockSessionStore
     const now = Date.now();
     for (const [id, session] of this.sessions.entries()) {
       if (now - session.lastActivity > 5 * 60 * 1000) {
-        logger.info('[MockStore] Removing expired session:', id);
+        logger.info('[MockStore] Removing expired session', {
+          session_id_hash: hashSessionIdForLogging(id),
+        });
         this.sessions.delete(id);
       }
     }
@@ -877,14 +970,14 @@ export class MockSessionStore
     const canonicalProjection = buildCanonicalCtSessionProjection(session);
     if (session.botCount !== canonicalProjection.botCount) {
       logger.warn('[MockStore] Reconciled stale botCount before appending bot votes', {
-        sessionId,
+        session_id_hash: hashSessionIdForLogging(sessionId),
         persistedBotCount: session.botCount,
         derivedBotCount: canonicalProjection.botCount,
       });
     }
     if (session.userVoteIndex !== canonicalProjection.userVoteIndex) {
       logger.warn('[MockStore] Reconciled stale userVoteIndex before appending bot votes', {
-        sessionId,
+        session_id_hash: hashSessionIdForLogging(sessionId),
         persistedUserVoteIndex: session.userVoteIndex,
         derivedUserVoteIndex: canonicalProjection.userVoteIndex,
       });
@@ -987,7 +1080,9 @@ export class MockSessionStore
     session.finalizationResult = admitAwsPersistedFinalizationResultBranch(finalizationResult);
     session.lastActivity = Date.now();
 
-    logger.info('[MockStore] Session finalized:', sessionId);
+    logger.info('[MockStore] Session finalized', {
+      session_id_hash: hashSessionIdForLogging(sessionId),
+    });
   }
 
   /**
@@ -1143,7 +1238,7 @@ export class MockSessionStore
     session.lastActivity = Date.now();
 
     logger.info('[MockStore] Saved bitmap data:', {
-      sessionId,
+      session_id_hash: hashSessionIdForLogging(sessionId),
       bitmapSize: bitmapData.includedBitmap.length,
       root: bitmapData.includedBitmapRoot.substring(0, 10) + '...',
       ...(bitmapData.seenBitmapRoot ? { seenRoot: bitmapData.seenBitmapRoot.substring(0, 10) + '...' } : {}),
@@ -1166,7 +1261,9 @@ export class MockSessionStore
     treeSize: number;
     finalizedAt: number;
   } | null> {
-    logger.debug('[MockStore] Getting bitmap data for session:', sessionId);
+    logger.debug('[MockStore] Getting bitmap data for session', {
+      session_id_hash: hashSessionIdForLogging(sessionId),
+    });
     const bitmapData = this.bitmapDataBySession.get(sessionId);
     if (!bitmapData) {
       return Promise.resolve(null);
@@ -1218,7 +1315,7 @@ export class MockSessionStore
     });
 
     logger.info('[MockStore] Atomically finalized receipt publication:', {
-      sessionId,
+      session_id_hash: hashSessionIdForLogging(sessionId),
       receiptHash: receiptHash.substring(0, 10) + '...',
       boardIndex,
     });

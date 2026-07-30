@@ -7,6 +7,11 @@ import type { MockInstance } from 'vitest';
 const sfnSendMock = vi.hoisted(() => vi.fn());
 const getSessionMock = vi.hoisted(() => vi.fn());
 const markAwsFinalizationRunningMock = vi.hoisted(() => vi.fn());
+const emitCanonicalEventMock = vi.hoisted(() => vi.fn());
+
+vi.mock('@stark-ballot/diagnostics/canonicalEvents', () => ({
+  emitCanonicalEvent: emitCanonicalEventMock,
+}));
 
 vi.mock('@aws-sdk/client-sfn', () => {
   class MockSFNClient {
@@ -42,6 +47,11 @@ vi.mock('@stark-ballot/aws-adapters/config/awsRuntimeConfigReferenceResolver', (
 
 vi.mock('@stark-ballot/runtime-config/env/validate', () => ({
   validateEnv: vi.fn(),
+}));
+
+vi.mock('@stark-ballot/runtime-config/env/observability', () => ({
+  collectInvalidTargetObservabilityEnvNames: vi.fn(() => []),
+  validateTargetObservabilityEnv: vi.fn(),
 }));
 
 vi.mock('@stark-ballot/aws-adapters/store/storeInstance', () => ({
@@ -94,10 +104,12 @@ vi.mock('@stark-ballot/aws-adapters/finalize/async-prover-artifacts', () => ({
 }));
 
 const artifactsModule = await import('@stark-ballot/aws-adapters/finalize/async-prover-artifacts');
+const resolverModule = await import('@stark-ballot/aws-adapters/config/awsRuntimeConfigReferenceResolver');
 const envModule = await import('@stark-ballot/runtime-config/env/validate');
 const { parseAwsFinalizationRuntimeState } =
   await import('@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope');
 const { logger } = await import('@stark-ballot/diagnostics/logger');
+const { hashSessionIdForLogging } = await import('@stark-ballot/diagnostics/logging');
 const { handler } = await import('./handler');
 
 const DEFAULT_SESSION_ID = '550e8400-e29b-41d4-a716-446655440000';
@@ -168,15 +180,31 @@ function expectNoDispatchSideEffects(): void {
   expect(markAwsFinalizationRunningMock).not.toHaveBeenCalled();
 }
 
+function expectDispatchDropped(
+  message: DispatchTestMessage,
+  reason: 'session_missing' | 'not_pending' | 'already_dispatched' | 'already_processed' | 'malformed',
+): void {
+  expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+    event: 'dispatch_dropped',
+    reason,
+    session_id_hash: hashSessionIdForLogging(message.sessionId),
+    execution_id: message.executionId,
+  });
+  expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(message.sessionId);
+  expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(message.inputS3Key);
+}
+
 describe('target proof-dispatcher handler', () => {
   const originalEnv = { ...process.env };
   let infoSpy: MockInstance<typeof logger.info>;
   let warnSpy: MockInstance<typeof logger.warn>;
+  let errorSpy: MockInstance<typeof logger.error>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => {});
     warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
     process.env['PROVER_STATE_MACHINE_ARN'] =
       'arn:aws:states:ap-northeast-1:123456789012:stateMachine:stark-ballot-simulator-stark-dev-develop-finalization';
     process.env['TARGET_AWS_RUNTIME'] = '1';
@@ -202,6 +230,7 @@ describe('target proof-dispatcher handler', () => {
     Object.assign(process.env, originalEnv);
     infoSpy.mockRestore();
     warnSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 
   it('starts the configured state machine with the execution id as name without marking finalization running', async () => {
@@ -235,6 +264,15 @@ describe('target proof-dispatcher handler', () => {
     expect(stepFunctionInput).not.toHaveProperty('requestMeta');
     expect(JSON.stringify(stepFunctionInput)).not.toContain(hex('e'));
     expect(markAwsFinalizationRunningMock).not.toHaveBeenCalled();
+    expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+      event: 'finalize_transition_attempted',
+      to: 'running',
+      source: 'proof_dispatcher',
+      reason: 'DISPATCH_REQUESTED',
+      session_id_hash: hashSessionIdForLogging(message.sessionId),
+      execution_id: message.executionId,
+    });
+    expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(message.sessionId);
   });
 
   it('drops a message whose session finalization state is failed for the message execution id', async () => {
@@ -258,6 +296,7 @@ describe('target proof-dispatcher handler', () => {
 
     expect(sfnSendMock).not.toHaveBeenCalled();
     expect(markAwsFinalizationRunningMock).not.toHaveBeenCalled();
+    expectDispatchDropped(message, 'not_pending');
   });
 
   it('drops a message whose session finalization state belongs to a different execution id', async () => {
@@ -276,6 +315,7 @@ describe('target proof-dispatcher handler', () => {
 
     expect(sfnSendMock).not.toHaveBeenCalled();
     expect(markAwsFinalizationRunningMock).not.toHaveBeenCalled();
+    expectDispatchDropped(message, 'already_processed');
   });
 
   it('drops a message whose session finalization state is running for the same execution id', async () => {
@@ -298,7 +338,7 @@ describe('target proof-dispatcher handler', () => {
     expect(infoSpy).toHaveBeenCalledWith(
       '[ProofDispatcher] Dropping stale finalization work item',
       expect.objectContaining({
-        sessionId: message.sessionId,
+        session_id_hash: hashSessionIdForLogging(message.sessionId),
         executionId: message.executionId,
         currentExecutionId: message.executionId,
         currentStatus: 'running',
@@ -306,6 +346,7 @@ describe('target proof-dispatcher handler', () => {
       }),
     );
     expect(warnSpy).not.toHaveBeenCalled();
+    expectDispatchDropped(message, 'already_dispatched');
   });
 
   it('drops a message with a distinct unparsable-state warning when finalizationState is present but invalid', async () => {
@@ -329,7 +370,7 @@ describe('target proof-dispatcher handler', () => {
     expect(warnSpy).toHaveBeenCalledWith(
       '[ProofDispatcher] Dropping finalization work item with unparsable finalization state',
       expect.objectContaining({
-        sessionId: message.sessionId,
+        session_id_hash: hashSessionIdForLogging(message.sessionId),
         executionId: message.executionId,
         reason: 'finalization_state_unparsable',
       }),
@@ -340,17 +381,20 @@ describe('target proof-dispatcher handler', () => {
         reason: 'finalization_state_not_pending_for_execution',
       }),
     );
+    expectDispatchDropped(message, 'malformed');
   });
 
   it('drops a message whose session no longer exists', async () => {
+    const message = buildMessage();
     getSessionMock.mockResolvedValueOnce(null);
 
-    await expect(handler({ Records: [{ body: JSON.stringify(buildMessage()) }] })).resolves.toEqual({
+    await expect(handler({ Records: [{ body: JSON.stringify(message) }] })).resolves.toEqual({
       batchItemFailures: [],
     });
 
     expect(sfnSendMock).not.toHaveBeenCalled();
     expect(markAwsFinalizationRunningMock).not.toHaveBeenCalled();
+    expectDispatchDropped(message, 'session_missing');
   });
 
   it('proceeds when the session is still pending for the message execution id', async () => {
@@ -407,11 +451,12 @@ describe('target proof-dispatcher handler', () => {
     expect(infoSpy).toHaveBeenCalledWith(
       '[ProofDispatcher] Treating existing Step Functions execution as processed after state re-read',
       expect.objectContaining({
-        sessionId: message.sessionId,
+        session_id_hash: hashSessionIdForLogging(message.sessionId),
         executionId: message.executionId,
         currentStatus: 'failed',
       }),
     );
+    expectDispatchDropped(message, 'already_processed');
   });
 
   it('drops ExecutionAlreadyExists when a fresh session read is still pending but the execution is open', async () => {
@@ -439,11 +484,12 @@ describe('target proof-dispatcher handler', () => {
     expect(infoSpy).toHaveBeenCalledWith(
       '[ProofDispatcher] Treating existing open Step Functions execution as already dispatched',
       expect.objectContaining({
-        sessionId: message.sessionId,
+        session_id_hash: hashSessionIdForLogging(message.sessionId),
         executionId: message.executionId,
         currentStatus: 'pending',
       }),
     );
+    expectDispatchDropped(message, 'already_dispatched');
   });
 
   it.each(['SUCCEEDED', 'FAILED'])(
@@ -471,20 +517,82 @@ describe('target proof-dispatcher handler', () => {
       expect(warnSpy).toHaveBeenCalledWith(
         '[ProofDispatcher] Step Functions execution already exists but finalization is still pending and execution is closed',
         expect.objectContaining({
-          sessionId: message.sessionId,
+          session_id_hash: hashSessionIdForLogging(message.sessionId),
           executionId: message.executionId,
           currentStatus: 'pending',
           executionStatus: status,
         }),
       );
+      expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+        event: 'finalize_transition_attempted',
+        to: 'running',
+        source: 'proof_dispatcher',
+        reason: 'STEP_FUNCTIONS_EXECUTION_CLOSED',
+        session_id_hash: hashSessionIdForLogging(message.sessionId),
+        execution_id: message.executionId,
+      });
     },
   );
 
   it('rejects malformed SQS bodies before starting Step Functions', async () => {
-    await expect(handler({ Records: [{ body: '{"messageVersion":' }] })).rejects.toThrow();
+    await expect(handler({ Records: [{ body: '{"messageVersion":' }] })).rejects.toThrow('Invalid SQS invocation');
 
     expect(sfnSendMock).not.toHaveBeenCalled();
     expect(markAwsFinalizationRunningMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith('Invocation payload is invalid', {
+      event: 'invocation_invalid',
+      source_kind: 'sqs',
+      reason: 'record_body_invalid',
+    });
+    expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+      event: 'dispatch_dropped',
+      reason: 'malformed',
+    });
+  });
+
+  it('rejects malformed SQS envelopes without logging attacker-controlled values', async () => {
+    const privateUri = 's3://private-bucket/sessions/raw-session/input.json';
+
+    await expect(handler({ Records: privateUri })).rejects.toThrow('Invalid SQS invocation');
+
+    expect(warnSpy).toHaveBeenCalledWith('Invocation payload is invalid', {
+      event: 'invocation_invalid',
+      source_kind: 'sqs',
+      reason: 'event_shape_invalid',
+    });
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(privateUri);
+    expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+      event: 'dispatch_dropped',
+      reason: 'malformed',
+    });
+    expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(privateUri);
+    expectNoDispatchSideEffects();
+  });
+
+  it('emits runtime reference names only when cold-start resolution fails', async () => {
+    const secretValue = 'never-log-this-resolved-secret';
+    const resolutionError = new Error(`resolver failure: ${secretValue}`);
+    vi.mocked(resolverModule.ensureAwsRuntimeConfigReferencesLoaded).mockImplementationOnce(
+      async (_entrypoint, options) => {
+        if (!options) throw new Error('Expected runtime-reference resolver options');
+        options.invalidNameCollector?.add('SESSION_CAPABILITY_TTL_SECONDS_REF');
+        await Promise.reject(resolutionError);
+      },
+    );
+
+    await expect(handler({ Records: [] })).rejects.toMatchObject({
+      name: 'RuntimeConfigValidationError',
+      message: 'Runtime configuration validation failed',
+      invalidNames: ['SESSION_CAPABILITY_TTL_SECONDS_REF'],
+    });
+
+    expect(errorSpy).toHaveBeenCalledWith('Runtime configuration is invalid', {
+      event: 'config_invalid',
+      invalid_names: ['SESSION_CAPABILITY_TTL_SECONDS_REF'],
+    });
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secretValue);
+    expect(envModule.validateEnv).not.toHaveBeenCalled();
+    expectNoDispatchSideEffects();
   });
 
   it.each(['bad/segment-123', 'bad.segment-123', 'https://example.invalid/execution'])(
@@ -508,6 +616,10 @@ describe('target proof-dispatcher handler', () => {
       ).rejects.toThrow();
 
       expectNoDispatchSideEffects();
+      expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+        event: 'dispatch_dropped',
+        reason: 'malformed',
+      });
     },
   );
 
@@ -522,11 +634,15 @@ describe('target proof-dispatcher handler', () => {
     }
 
     await expect(handler({ Records: [{ body: JSON.stringify(buildMessage()) }] })).rejects.toThrow(
-      'TARGET_AWS_RUNTIME=1 is required for target prover dispatch',
+      'Runtime configuration validation failed',
     );
 
     expect(envModule.validateEnv).not.toHaveBeenCalled();
     expectNoDispatchSideEffects();
+    expect(errorSpy).toHaveBeenCalledWith('Runtime configuration is invalid', {
+      event: 'config_invalid',
+      invalid_names: ['TARGET_AWS_RUNTIME'],
+    });
   });
 
   it('fails closed when target prover messages omit required S3 artifact keys', async () => {
@@ -566,6 +682,7 @@ describe('target proof-dispatcher handler', () => {
     );
 
     expectNoDispatchSideEffects();
+    expectDispatchDropped(message, 'malformed');
   });
 
   it.each([
@@ -588,21 +705,27 @@ describe('target proof-dispatcher handler', () => {
       },
     ],
   ])('fails closed when target prover messages use a %s artifact key', async (_label, overrides) => {
-    await expect(handler({ Records: [{ body: JSON.stringify(buildMessage(overrides)) }] })).rejects.toThrow(
+    const message = buildMessage(overrides);
+    await expect(handler({ Records: [{ body: JSON.stringify(message) }] })).rejects.toThrow(
       'Async prover artifact keys must match the canonical session/execution S3 layout',
     );
 
     expectNoDispatchSideEffects();
+    expectDispatchDropped(message, 'malformed');
   });
 
   it('rejects missing state-machine configuration before reading records', async () => {
     delete process.env['PROVER_STATE_MACHINE_ARN'];
 
     await expect(handler({ Records: [{ body: JSON.stringify(buildMessage()) }] })).rejects.toThrow(
-      'PROVER_STATE_MACHINE_ARN is required for target prover dispatch',
+      'Runtime configuration validation failed',
     );
 
     expectNoDispatchSideEffects();
+    expect(errorSpy).toHaveBeenCalledWith('Runtime configuration is invalid', {
+      event: 'config_invalid',
+      invalid_names: ['PROVER_STATE_MACHINE_ARN'],
+    });
   });
 
   it('does not mark finalization running when Step Functions start fails', async () => {
@@ -620,5 +743,13 @@ describe('target proof-dispatcher handler', () => {
 
     expect(sfnSendMock).toHaveBeenCalledTimes(1);
     expect(markAwsFinalizationRunningMock).not.toHaveBeenCalled();
+    expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+      event: 'finalize_transition_attempted',
+      to: 'running',
+      source: 'proof_dispatcher',
+      reason: 'DISPATCH_REQUESTED',
+      session_id_hash: hashSessionIdForLogging(message.sessionId),
+      execution_id: message.executionId,
+    });
   });
 });

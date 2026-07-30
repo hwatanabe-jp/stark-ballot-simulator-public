@@ -23,6 +23,8 @@ import {
 import { projectFinalizationStateForPublicResponse } from '../utils/finalizationStateProjection';
 import { stopFinalizationExecution } from '../adapters/finalizationStepFunctions';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import { emitCanonicalEvent } from '@stark-ballot/diagnostics/canonicalEvents';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 
 function isCancellable(
   state: AwsFinalizationRuntimeState | null,
@@ -118,6 +120,14 @@ export async function cancelFinalizationHandler({ request, store, clientIp }: Ap
 
   const currentState = parseAwsFinalizationRuntimeState(session.finalizationState) ?? null;
   if (!isCancellable(currentState, executionId)) {
+    emitCanonicalEvent({
+      event: 'finalize_transition_attempted',
+      to: 'failed',
+      source: 'cancel',
+      reason: 'FINALIZATION_NOT_CANCELLABLE',
+      session_id_hash: hashSessionIdForLogging(sessionIdResult),
+      execution_id: executionId,
+    });
     return buildErrorResponse('Finalization cannot be cancelled in its current state', 409);
   }
 
@@ -151,7 +161,19 @@ export async function cancelFinalizationHandler({ request, store, clientIp }: Ap
         code: 'USER_CANCELLED',
         message: cancellationReason,
       },
+      observability: {
+        source: 'cancel',
+        reason: 'USER_CANCELLED',
+      },
     };
+    emitCanonicalEvent({
+      event: 'finalize_transition_attempted',
+      to: 'failed',
+      source: 'cancel',
+      reason: 'USER_CANCELLED',
+      session_id_hash: hashSessionIdForLogging(sessionIdResult),
+      execution_id: executionId,
+    });
     failedState = isAwsFinalizationRuntimeTransitionStore(store)
       ? await store.markAwsFinalizationFailed(sessionIdResult, {
           ...failedPayload,

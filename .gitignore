@@ -127,7 +127,7 @@ terraform.*.tfvars
 /infra/terraform/app/dynamodb-recovery.auto.tfvars.json
 /infra/terraform/app/evidence/
 /app-smoke-*
-/accepted-index-existing.*
+/accepted-current-existing.*
 /accepted-deployments/
 crash.log
 crash.*.log

@@ -4,10 +4,43 @@ data "aws_iam_policy_document" "app_terraform_smoke" {
   source_policy_documents = [data.aws_iam_policy_document.app_codebuild_common[0].json]
 
   statement {
+    sid    = "ReadImmutableReleaseAuthority"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+    ]
+    resources = [
+      local.app_deployment_record_objects_arn,
+      local.app_toolchain_artifact_records_objects_arn,
+      local.app_prover_release_records_objects_arn,
+    ]
+  }
+
+  statement {
     sid       = "ReadOnlySmokeIdentity"
     effect    = "Allow"
     actions   = ["sts:GetCallerIdentity"]
     resources = ["*"]
+  }
+
+  statement {
+    sid       = "PublishAcceptedDeploymentEvent"
+    effect    = "Allow"
+    actions   = ["events:PutEvents"]
+    resources = ["arn:aws:events:${var.aws_region}:${var.aws_account_id}:event-bus/default"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "events:source"
+      values   = ["stark-ballot.observability"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "events:detail-type"
+      values   = ["Accepted Deployment"]
+    }
   }
 
   statement {
@@ -110,10 +143,35 @@ data "aws_iam_policy_document" "app_terraform_smoke" {
   }
 
   statement {
-    sid       = "ReadTargetRecoveryLambdaConfig"
-    effect    = "Allow"
-    actions   = ["lambda:GetFunctionConfiguration"]
-    resources = local.app_target_lambda_arns
+    sid    = "ReadTargetRecoveryLambdaConfig"
+    effect = "Allow"
+    actions = [
+      "lambda:GetAlias",
+      "lambda:GetFunction",
+      "lambda:GetFunctionConfiguration",
+    ]
+    resources = concat(
+      local.app_target_lambda_arns,
+      ["${local.app_signature_verifier_lambda_arn}:*"],
+    )
+  }
+
+  statement {
+    sid    = "ReadImageSignatureVerifierLiveIam"
+    effect = "Allow"
+
+    actions = [
+      "iam:GetPolicy",
+      "iam:GetPolicyVersion",
+      "iam:GetRole",
+      "iam:GetRolePolicy",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListRolePolicies",
+    ]
+    resources = [
+      local.app_signature_verifier_role_arn,
+      local.app_signature_verifier_execution_boundary_policy_arn,
+    ]
   }
 
   statement {

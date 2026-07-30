@@ -39,6 +39,15 @@ export const PUBLIC_VERIFICATION_CHECK_IDS = [
   'stark_receipt_verify',
 ] as const;
 export type PublicVerificationCheckId = (typeof PUBLIC_VERIFICATION_CHECK_IDS)[number];
+export const VERIFICATION_OBSERVATION_CAST_CHECK_IDS = [
+  'cast_receipt_present',
+  'cast_choice_range',
+  'cast_random_format',
+  'cast_commitment_match',
+] as const;
+export type VerificationObservationCastCheckId = (typeof VERIFICATION_OBSERVATION_CAST_CHECK_IDS)[number];
+export const VERIFICATION_OBSERVATION_CAST_STATUS_VALUES = ['success', 'failed', 'not_run'] as const;
+export type VerificationObservationCastStatus = (typeof VERIFICATION_OBSERVATION_CAST_STATUS_VALUES)[number];
 export const PUBLIC_VERIFICATION_CHECK_NOTE_KEY_VALUES = [
   'pages.verify.stepsCard.notes.myVoteIncluded.notPresented',
   'pages.verify.stepsCard.notes.myVoteIncluded.presentedButInvalid',
@@ -235,7 +244,22 @@ type FinalizationState =
       startedAt?: number;
       failedAt: number;
       stepFunctionsArn?: string;
-      error: { code: string; message: string; details?: unknown };
+      error: {
+        code: string;
+        message: string;
+        category?:
+          | 'configuration'
+          | 'input'
+          | 'prover_execution'
+          | 'infrastructure_interruption'
+          | 'image_signature'
+          | 'capacity'
+          | 'artifact'
+          | 'upload'
+          | 'timeout'
+          | 'unknown';
+        details?: unknown;
+      };
     };
 type FinalizeQueuePayload = {
   concurrencyLimit: number;
@@ -266,6 +290,10 @@ export type FinalizeCancelRequest = {
   reason?: string;
 };
 export type VerificationRunRequest = Record<string, never>;
+export type VerificationObservationRequest = {
+  verificationExecutionId: string;
+  castChecks: Record<VerificationObservationCastCheckId, VerificationObservationCastStatus>;
+};
 export type FinalizeAcceptedResponse = {
   executionId: string;
   statusUrl: string;
@@ -421,6 +449,11 @@ type VerificationRunResponsePayload = {
     verificationExecutionId: string;
     estimatedDurationMs: number;
     idempotent: boolean;
+  };
+};
+type VerificationObservationResponsePayload = {
+  data: {
+    status: 'recorded' | 'idempotent';
   };
 };
 type FinalizeCallbackResponsePayload = {
@@ -776,6 +809,18 @@ export const FinalizeCancelRequestSchema: Schema<FinalizeCancelRequest> = s.type
 );
 
 export const VerificationRunRequestSchema: Schema<VerificationRunRequest> = s.typed(publicObject({}));
+const verificationObservationCastStatusSchema = s.enum(VERIFICATION_OBSERVATION_CAST_STATUS_VALUES);
+export const VerificationObservationRequestSchema: Schema<VerificationObservationRequest> = s.typed(
+  publicObject({
+    verificationExecutionId: verificationExecutionIdSchema.max(256),
+    castChecks: publicObject({
+      cast_receipt_present: verificationObservationCastStatusSchema,
+      cast_choice_range: verificationObservationCastStatusSchema,
+      cast_random_format: verificationObservationCastStatusSchema,
+      cast_commitment_match: verificationObservationCastStatusSchema,
+    }),
+  }),
+);
 
 export const SessionResponseSchema: Schema<SessionResponsePayload> = s.typed(
   apiResponseSchema(
@@ -818,6 +863,19 @@ const finalizeStateBaseFields = {
   executionId: safeVerifierSegmentSchema,
   queuedAt: timestampMsSchema,
 };
+
+const finalizationFailureCategorySchema = s.enum([
+  'configuration',
+  'input',
+  'prover_execution',
+  'infrastructure_interruption',
+  'image_signature',
+  'capacity',
+  'artifact',
+  'upload',
+  'timeout',
+  'unknown',
+]);
 
 const publicFinalizeStateBaseSchema = s.object(finalizeStateBaseFields).strict();
 
@@ -899,6 +957,7 @@ const internalFinalizeFailedStateSchema = internalFinalizeStateBaseSchema.extend
     .object({
       code: s.string().min(1),
       message: s.string().min(1),
+      category: finalizationFailureCategorySchema.optional(),
       details: s.unknown().optional(),
     })
     .strict(),
@@ -1179,6 +1238,13 @@ export const VerificationRunResponseSchema: Schema<VerificationRunResponsePayloa
     }),
   ),
 );
+export const VerificationObservationResponseSchema: Schema<VerificationObservationResponsePayload> = s.typed(
+  apiResponseSchema(
+    publicObject({
+      status: s.enum(['recorded', 'idempotent']),
+    }),
+  ),
+);
 
 export const FinalizeCallbackResponseSchema: Schema<FinalizeCallbackResponsePayload> = s.typed(
   s
@@ -1204,6 +1270,8 @@ export type FinalizeSyncResponse = Infer<typeof FinalizeSyncResponseSchema>;
 export type SessionStatusResponse = Infer<typeof SessionStatusResponseSchema>;
 export type VerifyResponse = Infer<typeof VerifyResponseSchema>;
 export type VerificationRunResponse = Infer<typeof VerificationRunResponseSchema>;
+export type VerificationObservationResponse = Infer<typeof VerificationObservationResponseSchema>;
+export type FinalizeCallbackResponse = Infer<typeof FinalizeCallbackResponseSchema>;
 export type BulletinResponse = Infer<typeof BulletinResponseSchema>;
 export type BulletinProofResponse = Infer<typeof BulletinProofResponseSchema>;
 export type ConsistencyProofResponse = Infer<typeof ConsistencyProofResponseSchema>;

@@ -3,6 +3,7 @@ import { buildFinalizationResultFromJournal } from '@stark-ballot/application/fi
 import {
   parseFinalizationResultAuthority,
   parseFinalizationState,
+  parseVerificationResult,
 } from '@stark-ballot/application/finalize/finalization-storage';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 
@@ -59,6 +60,32 @@ describe('parseFinalizationResultAuthority', () => {
   });
 });
 
+describe('parseVerificationResult', () => {
+  it.each(['none', 'verifier_crash', 'corrupt_bundle', 's3_denied', 's3_missing', 'timeout', 'unknown'] as const)(
+    'round-trips the closed internal failure category %s',
+    (failureCategory) => {
+      expect(
+        parseVerificationResult({
+          status: 'failed',
+          failureCategory,
+        }),
+      ).toEqual({
+        status: 'failed',
+        failureCategory,
+      });
+    },
+  );
+
+  it('rejects arbitrary infrastructure failure text', () => {
+    expect(
+      parseVerificationResult({
+        status: 'failed',
+        failureCategory: 'AccessDenied: s3://private-bucket/sessions/raw-session/input.json',
+      }),
+    ).toBeUndefined();
+  });
+});
+
 describe('parseFinalizationState', () => {
   it('rejects unsupported top-level keys at the pure state boundary', () => {
     expect(
@@ -68,6 +95,38 @@ describe('parseFinalizationState', () => {
         queuedAt: 1,
         startedAt: 2,
         s3BundleUrl: 'https://old.example.com/bundle.zip',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('round-trips a closed finalization failure category', () => {
+    const state = {
+      status: 'failed',
+      executionId: 'exec-1',
+      queuedAt: 1,
+      failedAt: 2,
+      error: {
+        code: 'PROVER_TASK_FAILED',
+        message: 'Target prover task failed',
+        category: 'prover_execution',
+      },
+    };
+
+    expect(parseFinalizationState(state)).toEqual(state);
+  });
+
+  it('rejects failure categories outside the closed registry', () => {
+    expect(
+      parseFinalizationState({
+        status: 'failed',
+        executionId: 'exec-1',
+        queuedAt: 1,
+        failedAt: 2,
+        error: {
+          code: 'PROVER_TASK_FAILED',
+          message: 'Target prover task failed',
+          category: 'raw-provider-error',
+        },
       }),
     ).toBeUndefined();
   });

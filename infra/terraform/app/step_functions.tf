@@ -92,14 +92,11 @@ data "aws_iam_policy_document" "target_sfn" {
   }
 
   statement {
-    sid    = "InvokeImageSignatureCheck"
+    sid    = "InvokeImageSignatureVerifier"
     effect = "Allow"
 
-    actions = ["lambda:InvokeFunction"]
-    resources = [
-      aws_lambda_function.target["image_signature_gate"].arn,
-      "${aws_lambda_function.target["image_signature_gate"].arn}:*",
-    ]
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_alias.image_signature_verifier_runtime.arn]
   }
 
   statement {
@@ -179,19 +176,24 @@ resource "aws_sfn_state_machine" "target_finalization" {
     StartAt = "VerifyImageSignature"
     States = {
       VerifyImageSignature = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::lambda:invoke"
+        Type           = "Task"
+        Resource       = "arn:aws:states:::lambda:invoke"
+        TimeoutSeconds = var.image_signature_verifier_step_timeout_seconds
         Parameters = {
-          FunctionName = aws_lambda_function.target["image_signature_gate"].arn
+          FunctionName = aws_lambda_alias.image_signature_verifier_runtime.arn
           Payload = {
-            imageUri       = var.prover_image_uri
-            registryId     = var.aws_account_id
-            imageRegion    = var.aws_region
-            repositoryName = local.prover_image_repository
-            imageDigest    = local.prover_image_digest
+            imageUri          = var.prover_image_uri
+            registryId        = var.aws_account_id
+            imageRegion       = var.aws_region
+            repositoryName    = local.prover_image_repository
+            imageDigest       = local.prover_image_digest
+            signingProfileArn = local.image_signature_signing_profile_arn
           }
         }
-        ResultPath = "$.signingStatus"
+        ResultSelector = {
+          "response.$" = "$.Payload"
+        }
+        ResultPath = "$.signatureVerification"
         Retry = [
           {
             ErrorEquals = [
@@ -208,19 +210,47 @@ resource "aws_sfn_state_machine" "target_finalization" {
         Catch = [
           {
             ErrorEquals = ["States.ALL"]
-            ResultPath  = "$.error"
-            Next        = "CallbackFailed"
+            ResultPath  = null
+            Next        = "RecordSignatureInvocationFailure"
           },
         ]
         Next = "CheckImageSignature"
+      }
+      RecordSignatureInvocationFailure = {
+        Type = "Pass"
+        Result = {
+          response = {
+            result     = "REJECTED"
+            mode       = "cryptographic"
+            reasonCode = "LAMBDA_INVOCATION_FAILED"
+          }
+        }
+        ResultPath = "$.signatureVerification"
+        Next       = "CheckImageSignature"
       }
       CheckImageSignature = {
         Type = "Choice"
         Choices = [
           {
-            Variable     = "$.signingStatus.Payload.status"
-            StringEquals = "COMPLETE"
-            Next         = "AcquireProverSlot"
+            And = [
+              {
+                Variable  = "$.signatureVerification.response.result"
+                IsPresent = true
+              },
+              {
+                Variable     = "$.signatureVerification.response.result"
+                StringEquals = "VERIFIED"
+              },
+              {
+                Variable  = "$.signatureVerification.response.mode"
+                IsPresent = true
+              },
+              {
+                Variable     = "$.signatureVerification.response.mode"
+                StringEquals = "cryptographic"
+              },
+            ]
+            Next = "AcquireProverSlot"
           },
         ]
         Default = "CallbackSignatureFailed"
@@ -392,9 +422,11 @@ resource "aws_sfn_state_machine" "target_finalization" {
         Resource       = "arn:aws:states:::ecs:runTask.sync"
         TimeoutSeconds = var.prover_task_timeout_seconds
         Parameters = {
-          Cluster        = aws_ecs_cluster.prover.arn
-          TaskDefinition = aws_ecs_task_definition.prover.arn
-          LaunchType     = "FARGATE"
+          Cluster         = aws_ecs_cluster.prover.arn
+          TaskDefinition  = aws_ecs_task_definition.prover.arn
+          "ClientToken.$" = "States.Hash($$.Execution.Name, 'SHA-256')"
+          Group           = var.deployment_id
+          LaunchType      = "FARGATE"
           NetworkConfiguration = {
             AwsvpcConfiguration = {
               AssignPublicIp = "ENABLED"
@@ -422,6 +454,10 @@ resource "aws_sfn_state_machine" "target_finalization" {
                   {
                     Name      = "OUTPUT_S3_PREFIX"
                     "Value.$" = "$.outputS3Prefix"
+                  },
+                  {
+                    Name      = "EXECUTION_ID"
+                    "Value.$" = "$$.Execution.Name"
                   },
                   {
                     Name  = "EXPECTED_IMAGE_ID"
@@ -647,9 +683,6 @@ resource "aws_sfn_state_machine" "target_finalization" {
             error = {
               code    = "PROVER_IMAGE_SIGNATURE_FAILED"
               message = "Target prover image signature verification failed"
-              details = {
-                "signingStatus.$" = "$.signingStatus.Payload.status"
-              }
             }
           }
         }

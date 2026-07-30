@@ -31,14 +31,14 @@ sequenceDiagram
   V->>S: POST /api/verification/run で STARK 検証を開始または継続
   S->>VS: durable queue 経由で public bundle.zip の receipt を検証
   VS-->>S: protected report artifact を保存
-  V->>S: /verify が GET /api/verify を polling
+  V->>S: /verify が GET /api/verify をポーリング
   S-->>V: 段階別チェックと overall verdict を表示
 ```
 
 `finalization` は集計結果、zkVM ジャーナル、STARK レシート、配布用バンドルを作る段階です。
 STARK receipt verification は常に finalization と同時に完了するわけではありません。
-ローカル構成では finalization を同期実行できますが、AWS target runtime では SQS、Step Functions、ECS Fargate を使って非同期実行し、ブラウザが status endpoint を polling します。
-`/result` と `/verify` は `POST /api/verification/run` で durable verification work を開始し、`GET /api/verify` を polling して検証レポートと各チェック結果を表示します。
+ローカル構成では finalization を同期実行できますが、AWS target runtime では SQS、Step Functions、ECS Fargate を使って非同期実行し、ブラウザが status endpoint をポーリングします。
+`/result` と `/verify` は `POST /api/verification/run` で durable verification work を開始し、`GET /api/verify` をポーリング して検証レポートと各チェック結果を表示します。
 
 API payload の `verificationStatus` は STARK receipt verification の状態です。
 これは overall verdict ではありません。
@@ -80,7 +80,7 @@ API payload の `verificationStatus` は STARK receipt verification の状態で
 | [検証パイプライン](verification/index.md)    | 4 段階モデル、チェック一覧、バンドル構造、ゲーティングロジック                                |
 | [改ざんシナリオ](tamper/index.md)            | S0〜S5 シナリオ、検出メカニズム                                                               |
 | [品質保証と形式手法](quality/index.md)       | 単体、結合、E2E、Property-based Testing、Lean による形式化                                    |
-| [AWS アーキテクチャ](aws/index.md)           | トポロジー、非同期プローバー、operator gate、DynamoDB recovery、Terraform                     |
+| [AWS アーキテクチャ](aws/index.md)           | トポロジー、非同期プローバー、可観測性、operator gate、DynamoDB recovery、Terraform           |
 | [API リファレンス](api/index.md)             | エンドポイント一覧、セッションライフサイクル                                                  |
 | [第三者検証ガイド](reproducibility/index.md) | 検証ページで取得した `bundle.zip` を使う Ubuntu 向けローカル検証手順                          |
 | [設計判断](decisions/index.md)               | PoC の意図的な制約、設計ふりかえり                                                            |

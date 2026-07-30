@@ -9,6 +9,7 @@ zkVM 内のゲストは、入力検証から集計、ビットマップ計算ま
 ## 概要
 
 ゲストプログラムは RISC Zero zkVM 上で動作する Rust プログラムです。
+現行の guest crate は `#![no_std]` で構築され、`risc0-zkvm` の default features を無効化した上で `heap-embedded-alloc` を使用します。
 ホストから投票データ（選択肢、乱数、コミットメント、Merkle パスと選挙メタデータ）を受け取り、以下の処理を行います:
 
 1. 各投票の正当性検証（コミットメント再計算 + 包含証明）
@@ -54,10 +55,12 @@ flowchart TD
     I1[入力デシリアライズ] --> I2{掲示板ルート<br/>が非ゼロ?}
     I2 -->|Yes| I3{ツリーサイズ<br/>が正の値?}
     I2 -->|No| FAIL[不正入力]
-    I3 -->|Yes| I4{Phase 4 境界と<br/>Merkle パス長が有効?}
+    I3 -->|Yes| I4{タイムスタンプ<br/>が正の値?}
     I3 -->|No| FAIL
-    I4 -->|Yes| NEXT[フェーズ 2 へ]
+    I4 -->|Yes| I5{Phase 4 境界と<br/>Merkle パス長が有効?}
     I4 -->|No| FAIL
+    I5 -->|Yes| NEXT[フェーズ 2 へ]
+    I5 -->|No| FAIL
   end
 
   subgraph "フェーズ 2: 投票検証と集計"
@@ -76,20 +79,23 @@ flowchart TD
   end
 ```
 
-> **Note:** 次のいずれかに該当する入力は、ジャーナル生成前に fail-closed で拒否されます。
->
-> - `bulletin_root` がゼロ
-> - `tree_size` が 0
-> - `tree_size > 1,000,000`
-> - `total_expected > 1,000,000`
-> - `votes.length > 1,000,000`
-> - 候補別 tally bucket が 1,000,000 を超える
-> - Merkle パス長が `u16::MAX` を超える
-> - Merkle パスノード総数が 1,000,000 を超える
-> - 推定構造化入力サイズが 64 MiB を超える
->
-> `votes.length > tree_size` のような入力は、上記境界内であれば事前 reject されません。
-> 重複や範囲外は record 単位で `rejectedRecords` に反映されます。
+### 入力の境界条件
+
+次のいずれかに該当する入力は、ジャーナル生成前に fail-closed で拒否されます。
+
+- `bulletin_root` がゼロ
+- `tree_size` が 0
+- `timestamp` が 0
+- `tree_size > 1,000,000`
+- `total_expected > 1,000,000`
+- `votes.length > 1,000,000`
+- 候補別 tally bucket が 1,000,000 を超える
+- Merkle パス長が `u16::MAX` を超える
+- Merkle パスノード総数が 1,000,000 を超える
+- 推定構造化入力サイズが 64 MiB を超える
+
+`votes.length > tree_size` のような入力は、上記境界内であれば事前 reject されません。
+重複や範囲外は record 単位で `rejectedRecords` に反映されます。
 
 ## 投票の 6 段階検証
 
@@ -107,9 +113,8 @@ flowchart TD
 | 5   | コミットメント重複 | 既に処理済みのコミットメント値（範囲内かつ初出スロットでも無効化） | `rejectedRecords` + `seenBitmap` 反映 |
 | 6   | RFC 6962 包含証明  | Merkle パスから再計算したルートが `bulletin_root` と不一致         | `rejectedRecords` + `seenBitmap` 反映 |
 
-範囲内かつ初出のスロットが #3〜#6 で無効化された場合、`seenBitmap` ではビットが立ち（提示はされた）、`includedBitmap` ではビットが立ちません（計上されない）。
-このスロットは `invalidPresentedSlots` として観測されます。
-範囲外（#1）や既処理スロットへの重複レコード（#2）は `rejectedRecords` のみに反映され、スロット単位の指標には影響しません。
+#3〜#6 で無効化された範囲内かつ初出のスロットは `invalidPresentedSlots` として観測され、#1〜#2 の却下は `rejectedRecords` のみに反映されます。
+ビットマップへの反映を含む各カウンタの意味論は [スロット / レコード分離モデル](#スロット--レコード分離モデル) を正とします。
 
 ### コミットメント再計算と照合（#4）
 
@@ -126,11 +131,8 @@ flowchart TD
 ## 集計ロジック
 
 6 段階検証をすべて通過した投票は「有効」として集計に加算されます。
-
-- 集計は選択肢ごとの配列（5 要素）で管理
-- 有効投票のインデックスに対応する `includedBitmap` のビットを `true` に設定
-- 無効投票はカウントされず、`includedBitmap` のビットは `false` のまま
-- 範囲内かつ初出として提示された無効票は `seenBitmap` では `true` になり、提示済みだが未計上のスロットとして扱われる
+集計は選択肢ごとの配列（5 要素）で管理し、有効投票のインデックスに対応する `includedBitmap` のビットを `true` に設定します。
+無効票の `seenBitmap` / `includedBitmap` への反映は [スロット / レコード分離モデル](#スロット--レコード分離モデル) を参照してください。
 
 ## スロット / レコード分離モデル
 
@@ -189,27 +191,27 @@ excludedSlots = missingSlots + invalidPresentedSlots
 
 ゲストプログラムがジャーナルにコミットする出力構造（`VerificationOutput`）を示します。
 
-| フィールド            | 型        | 説明                                                                                              |
-| --------------------- | --------- | ------------------------------------------------------------------------------------------------- |
-| electionId            | UUID      | 対象選挙 ID（入力の `election_id` をエコー）                                                      |
-| electionConfigHash    | 32 バイト | 選挙設定ハッシュ（入力の `election_config_hash` をエコー）                                        |
-| bulletinRoot          | 32 バイト | 掲示板ルート（入力の `bulletin_root` をエコー）                                                   |
-| treeSize              | u32       | 掲示板のツリーサイズ（入力をエコー）                                                              |
-| totalExpected         | u32       | 想定総投票数（入力をエコー）                                                                      |
-| sthDigest             | 32 バイト | [STH ダイジェスト](../protocol/sth-digest.md)                                                     |
-| verifiedTally         | u32[5]    | 選択肢 A〜E ごとの得票数                                                                          |
-| totalVotes            | u32       | zkVM が受け取った投票レコード数                                                                   |
-| validVotes            | u32       | 検証に成功した投票数                                                                              |
-| invalidVotes          | u32       | 検証に失敗した投票数                                                                              |
-| seenIndicesCount      | u32       | 範囲内かつ初出のインデックスとして処理した件数                                                    |
-| missingSlots          | u32       | 一度も提示されなかった掲示板スロット数                                                            |
-| invalidPresentedSlots | u32       | 提示はされたが計上されなかった範囲内スロット数                                                    |
-| rejectedRecords       | u32       | 却下されたレコード数（重複、範囲外、各種検証失敗を含む）                                          |
-| seenBitmapRoot        | 32 バイト | prover に提示されたインデックス集合の [ビットマップ Merkle](../protocol/bitmap-merkle.md) ルート  |
-| includedBitmapRoot    | 32 バイト | 実際にカウントされたインデックス集合の [ビットマップ Merkle](../protocol/bitmap-merkle.md) ルート |
-| excludedSlots         | u32       | 除外されたスロットの総数（= missingSlots + invalidPresentedSlots）                                |
-| inputCommitment       | 32 バイト | [入力コミットメント](../protocol/input-commitment.md)                                             |
-| methodVersion         | u32       | ゲストプログラムのバージョン（現行 = `14`）                                                       |
+| フィールド            | 型        | 説明                                                                                                            |
+| --------------------- | --------- | --------------------------------------------------------------------------------------------------------------- |
+| electionId            | UUID      | 対象選挙 ID（入力の `election_id` をエコー）                                                                    |
+| electionConfigHash    | 32 バイト | 選挙設定ハッシュ（入力の `election_config_hash` をエコー）                                                      |
+| bulletinRoot          | 32 バイト | 掲示板ルート（入力の `bulletin_root` をエコー）                                                                 |
+| treeSize              | u32       | 掲示板のツリーサイズ（入力をエコー）                                                                            |
+| totalExpected         | u32       | 想定総投票数（入力をエコー）                                                                                    |
+| sthDigest             | 32 バイト | [STH ダイジェスト](../protocol/sth-digest.md)                                                                   |
+| verifiedTally         | u32[5]    | 選択肢 A〜E ごとの得票数                                                                                        |
+| totalVotes            | u32       | zkVM が受け取った投票レコード数                                                                                 |
+| validVotes            | u32       | 検証に成功した投票数                                                                                            |
+| invalidVotes          | u32       | 検証に失敗した投票数                                                                                            |
+| seenIndicesCount      | u32       | 範囲内かつ初出のインデックスとして処理した件数                                                                  |
+| missingSlots          | u32       | 一度も提示されなかった掲示板スロット数（[スロット / レコード分離モデル](#スロット--レコード分離モデル) を参照） |
+| invalidPresentedSlots | u32       | 提示はされたが計上されなかった範囲内スロット数（同上）                                                          |
+| rejectedRecords       | u32       | 却下されたレコード数（同上）                                                                                    |
+| seenBitmapRoot        | 32 バイト | prover に提示されたインデックス集合の [ビットマップ Merkle](../protocol/bitmap-merkle.md) ルート                |
+| includedBitmapRoot    | 32 バイト | 実際にカウントされたインデックス集合の [ビットマップ Merkle](../protocol/bitmap-merkle.md) ルート               |
+| excludedSlots         | u32       | 除外されたスロットの総数（定義は [スロット / レコード分離モデル](#スロット--レコード分離モデル) の式）          |
+| inputCommitment       | 32 バイト | [入力コミットメント](../protocol/input-commitment.md)                                                           |
+| methodVersion         | u32       | ゲストプログラムのバージョン（現行 = `14`）                                                                     |
 
 ### ジャーナルの信頼モデル
 
@@ -269,4 +271,4 @@ LSB-first のバイト列パッキング、32 バイト境界による単一リ�
 ゲストの抽象 tally / rejection model と guest bounds は、[Lean による形式化](../quality/lean-formalization.md) で説明しています。
 Rust 側の guest-vector tests は、抽象モデルと実装の対応付けを検査します。
 
-<!-- source: zkvm/methods/guest/src/main.rs, zkvm/methods/guest/src/sth.rs, zkvm/contract-core/src/sha256.rs, zkvm/contract-core/src/inclusion_proof.rs, zkvm/contract-core/src/bitmap.rs, zkvm/contract-core/src/encoding.rs, zkvm/contract-core/src/types.rs, zkvm/contract-core/src/work_budget.rs -->
+<!-- source: zkvm/methods/guest/src/main.rs, zkvm/methods/guest/src/tally.rs, zkvm/methods/guest/src/sth.rs, zkvm/contract-core/src/sha256.rs, zkvm/contract-core/src/inclusion_proof.rs, zkvm/contract-core/src/bitmap.rs, zkvm/contract-core/src/encoding.rs, zkvm/contract-core/src/types.rs, zkvm/contract-core/src/work_budget.rs -->

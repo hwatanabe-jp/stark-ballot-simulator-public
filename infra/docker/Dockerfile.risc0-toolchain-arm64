@@ -22,21 +22,24 @@
 
 FROM public.ecr.aws/docker/library/debian:bookworm-slim AS build
 
-ARG RUST_VERSION=1.91.1
-ARG RISC0_VERSION=3.0.5
-ARG RISC0_GIT_TAG=v3.0.5
-ARG RISC0_COMMIT=8eb06ab020a92dc5b63ba6dd0836d432aba6d890
-ARG RUST_TOOLCHAIN_TAG=r0.1.91.1
+ARG RUST_VERSION=1.97.1
+ARG RISC0_RUST_VERSION=1.97.0
+ARG RISC0_VERSION=3.0.6
+ARG RISC0_GIT_TAG=v3.0.6
+ARG RISC0_COMMIT=1cc70cf05033a79ebc90f07c679cb4bd1cd301b9
+ARG RUST_TOOLCHAIN_TAG=r0.1.97.0
 ARG SOURCE_REPOSITORY="https://github.com/hwatanabe-jp/<REPO_NAME>"
 
 # Version pinning for reproducibility
 ENV RUST_VERSION=${RUST_VERSION} \
+    RISC0_RUST_VERSION=${RISC0_RUST_VERSION} \
     RISC0_VERSION=${RISC0_VERSION} \
     RISC0_GIT_TAG=${RISC0_GIT_TAG} \
     RISC0_COMMIT=${RISC0_COMMIT} \
     RUST_TOOLCHAIN_TAG=${RUST_TOOLCHAIN_TAG} \
     CARGO_HOME=/root/.cargo \
     RUSTUP_HOME=/root/.rustup \
+    RISC0_HOME=/root/.risc0 \
     PATH="/root/.cargo/bin:/root/.risc0/bin:$PATH"
 
 # Image metadata
@@ -45,6 +48,7 @@ LABEL org.opencontainers.image.title="RISC Zero Toolchain ARM64" \
       org.opencontainers.image.version="${RISC0_VERSION}" \
       org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       risc0.version="${RISC0_VERSION}" \
+      risc0.rust.version="${RISC0_RUST_VERSION}" \
       rust.version="${RUST_VERSION}"
 
 WORKDIR /tmp/risc0-build
@@ -70,18 +74,22 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust toolchain (pinned version)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --default-toolchain ${RUST_VERSION} --profile minimal \
-    && . "$CARGO_HOME/env" \
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh \
+    && sh /tmp/rustup-init.sh \
+        -y \
+        --no-modify-path \
+        --default-toolchain "${RUST_VERSION}" \
+        --profile minimal \
+    && rm -f /tmp/rustup-init.sh \
     && rustc --version \
     && cargo --version
 
 # Clone RISC Zero at the specific release tag and verify the pinned commit.
-# Use git fetch --tags to ensure tags are available even with shallow clones
-# Cleanup: Remove .git directory after checkout to save space
-RUN git clone https://github.com/risc0/risc0.git . \
-    && git fetch --tags \
-    && git checkout ${RISC0_GIT_TAG} \
+# Cleanup: Remove .git directory after verifying the shallow tag checkout.
+RUN git -c advice.detachedHead=false clone \
+        --branch "${RISC0_GIT_TAG}" \
+        --depth 1 \
+        https://github.com/risc0/risc0.git . \
     && ACTUAL_COMMIT="$(git rev-parse HEAD)" \
     && test "$ACTUAL_COMMIT" = "$RISC0_COMMIT" \
     && git log -1 --oneline \
@@ -91,7 +99,7 @@ RUN git clone https://github.com/risc0/risc0.git . \
 # Step 1: Install rzup (RISC Zero toolchain manager)
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
-    cargo install --path rzup --locked \
+    cargo "+${RUST_VERSION}" install --path rzup --locked \
     && rzup --version
 
 # Step 2: Build Rust toolchain for RISC Zero
@@ -99,7 +107,8 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 # Use the official RISC Zero rust toolchain tag for the selected release.
 # Cleanup: Remove temporary build artifacts in same layer
 RUN --mount=type=cache,target=/tmp/risc0 \
-    rzup build --tag-or-commit ${RUST_TOOLCHAIN_TAG} rust \
+    test "${RUST_TOOLCHAIN_TAG}" = "r0.${RISC0_RUST_VERSION}" \
+    && rzup build --tag-or-commit ${RUST_TOOLCHAIN_TAG} rust \
     && rm -rf /root/.risc0/tmp \
     && find /root/.risc0 -maxdepth 2 -type d -name 'build-*' -exec rm -rf {} + \
     && ls -lh /root/.risc0/
@@ -108,7 +117,7 @@ RUN --mount=type=cache,target=/tmp/risc0 \
 # Note: cargo registry/git are mounted as cache, not persisted in layer
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
-    cargo install --path risc0/cargo-risczero --locked \
+    cargo "+${RUST_VERSION}" install --path risc0/cargo-risczero --locked \
     && cargo risczero --version \
     && r0vm --version
 
@@ -120,15 +129,18 @@ RUN rm -rf /tmp/risc0-build
 # ============================================================
 FROM public.ecr.aws/docker/library/debian:bookworm-slim AS final
 
-ARG RUST_VERSION=1.91.1
-ARG RISC0_VERSION=3.0.5
+ARG RUST_VERSION=1.97.1
+ARG RISC0_RUST_VERSION=1.97.0
+ARG RISC0_VERSION=3.0.6
 ARG SOURCE_REPOSITORY="https://github.com/hwatanabe-jp/<REPO_NAME>"
 
 # Version pinning for reproducibility (match build stage)
 ENV RUST_VERSION=${RUST_VERSION} \
+    RISC0_RUST_VERSION=${RISC0_RUST_VERSION} \
     RISC0_VERSION=${RISC0_VERSION} \
     CARGO_HOME=/root/.cargo \
     RUSTUP_HOME=/root/.rustup \
+    RISC0_HOME=/root/.risc0 \
     PATH="/root/.cargo/bin:/root/.risc0/bin:$PATH"
 
 # Image metadata
@@ -137,6 +149,7 @@ LABEL org.opencontainers.image.title="RISC Zero Toolchain ARM64" \
       org.opencontainers.image.version="${RISC0_VERSION}" \
       org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       risc0.version="${RISC0_VERSION}" \
+      risc0.rust.version="${RISC0_RUST_VERSION}" \
       rust.version="${RUST_VERSION}"
 
 # Install runtime dependencies + minimal build tools
@@ -164,18 +177,30 @@ COPY --from=build /root/.risc0 /root/.risc0
 WORKDIR /build
 
 # Document installed versions for reproducibility
-RUN echo "=== RISC Zero Toolchain ARM64 ===" > /root/.risc0/VERSION.txt \
-    && echo "Build date: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /root/.risc0/VERSION.txt \
-    && echo "Rust: ${RUST_VERSION}" >> /root/.risc0/VERSION.txt \
-    && echo "RISC Zero: ${RISC0_VERSION}" >> /root/.risc0/VERSION.txt \
-    && echo "Debian: $(cat /etc/debian_version)" >> /root/.risc0/VERSION.txt \
-    && echo "" >> /root/.risc0/VERSION.txt \
-    && echo "Installed tools:" >> /root/.risc0/VERSION.txt \
-    && echo "- rustc: $(rustc --version)" >> /root/.risc0/VERSION.txt \
-    && echo "- cargo: $(cargo --version)" >> /root/.risc0/VERSION.txt \
-    && echo "- cargo-risczero: $(cargo-risczero --version)" >> /root/.risc0/VERSION.txt \
-    && echo "- r0vm: $(r0vm --version)" >> /root/.risc0/VERSION.txt \
-    && echo "- rzup: $(rzup --version)" >> /root/.risc0/VERSION.txt \
+RUN BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    && DEBIAN_VERSION="$(cat /etc/debian_version)" \
+    && RUSTC_VERSION="$(rustc --version)" \
+    && RISC0_RUSTC_VERSION="$(rustc +risc0 --version)" \
+    && CARGO_VERSION="$(cargo --version)" \
+    && CARGO_RISCZERO_VERSION="$(cargo risczero --version)" \
+    && R0VM_VERSION="$(r0vm --version)" \
+    && RZUP_VERSION="$(rzup --version)" \
+    && printf '%s\n' \
+        "=== RISC Zero Toolchain ARM64 ===" \
+        "Build date: ${BUILD_DATE}" \
+        "Rust: ${RUST_VERSION}" \
+        "RISC Zero guest Rust: ${RISC0_RUST_VERSION}" \
+        "RISC Zero: ${RISC0_VERSION}" \
+        "Debian: ${DEBIAN_VERSION}" \
+        "" \
+        "Installed tools:" \
+        "- rustc: ${RUSTC_VERSION}" \
+        "- risc0 rustc: ${RISC0_RUSTC_VERSION}" \
+        "- cargo: ${CARGO_VERSION}" \
+        "- cargo-risczero: ${CARGO_RISCZERO_VERSION}" \
+        "- r0vm: ${R0VM_VERSION}" \
+        "- rzup: ${RZUP_VERSION}" \
+        > /root/.risc0/VERSION.txt \
     && cat /root/.risc0/VERSION.txt
 
 CMD ["/bin/bash"]

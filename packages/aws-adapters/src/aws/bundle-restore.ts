@@ -29,6 +29,65 @@ import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashKeyPrefixForLogging } from '@stark-ballot/diagnostics/logging';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
+const TRANSIENT_S3_ERROR_IDENTITIES = new Set([
+  'AbortError',
+  'BandwidthLimitExceeded',
+  'EAI_AGAIN',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'IDPCommunicationError',
+  'InternalError',
+  'InternalServerError',
+  'NetworkingError',
+  'PriorRequestNotComplete',
+  'RequestLimitExceeded',
+  'RequestThrottled',
+  'RequestThrottledException',
+  'RequestTimeout',
+  'RequestTimeoutException',
+  'ServiceUnavailable',
+  'SlowDown',
+  'ThrottledException',
+  'Throttling',
+  'ThrottlingException',
+  'TimeoutError',
+  'TooManyRequestsException',
+]);
+
+class BundleArtifactError extends Error {}
+
+export class TransientBundleRestoreError extends Error {
+  constructor() {
+    super('Receipt restoration temporarily unavailable');
+    this.name = 'TransientBundleRestoreError';
+  }
+}
+
+export function isTransientBundleRestoreError(error: unknown): error is TransientBundleRestoreError {
+  return error instanceof TransientBundleRestoreError;
+}
+
+function isTransientS3Failure(error: unknown): boolean {
+  const identities = [getStringProperty(error, 'name'), getStringProperty(error, 'code')];
+  if (identities.some((identity) => identity !== undefined && TRANSIENT_S3_ERROR_IDENTITIES.has(identity))) {
+    return true;
+  }
+
+  const metadata = getRecordProperty(error, '$metadata');
+  const httpStatusCode = getNumberProperty(metadata, 'httpStatusCode');
+  return httpStatusCode === 429 || (httpStatusCode !== undefined && httpStatusCode >= 500 && httpStatusCode <= 599);
+}
+
+function handleOptionalArtifactFailure(error: unknown, artifactName: string): void {
+  if (isTransientS3Failure(error)) {
+    throw error;
+  }
+  logger.warn(`[S3 Restore] ${artifactName} unavailable`, {
+    failure_kind: 'definitive',
+  });
+}
+
 /**
  * Restored receipt data structure
  */
@@ -51,7 +110,8 @@ export interface RestoredReceipt {
  *
  * @param bundleKey S3 object key (e.g., "sessions/{sessionId}/{executionId}/bundle.zip")
  * @returns Restored receipt and admitted receipt payload
- * @throws Error if download fails, zip is invalid, or receipt.json is missing
+ * @throws TransientBundleRestoreError after the S3 client's transient retries are exhausted
+ * @throws Error if the object is definitively unavailable or the bundle artifact is invalid
  */
 export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredReceipt> {
   const keyPrefix = hashKeyPrefixForLogging(bundleKey);
@@ -76,7 +136,7 @@ export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredR
     ]);
     const receiptBuffer = entries.get('receipt.json');
     if (!receiptBuffer) {
-      throw new Error('receipt.json not found in bundle');
+      throw new BundleArtifactError('receipt.json not found in bundle');
     }
 
     // Step 3: Parse receipt.json
@@ -94,9 +154,8 @@ export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredR
       try {
         journalData = JSON.parse(journalBuffer.toString('utf8'));
         logger.info(`[S3 Restore] Journal restored successfully`);
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        logger.warn(`[S3 Restore] Failed to parse journal.json:`, errorMessage);
+      } catch {
+        logger.warn('[S3 Restore] Failed to parse journal.json');
       }
     }
 
@@ -119,9 +178,8 @@ export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredR
         } else {
           logger.warn('[S3 Restore] public-input.json was readable but did not match the supported contract');
         }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        logger.warn(`[S3 Restore] Failed to parse public-input.json:`, errorMessage);
+      } catch {
+        logger.warn('[S3 Restore] Failed to parse public-input.json');
       }
     }
 
@@ -146,9 +204,8 @@ export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredR
         } else {
           logger.warn('[S3 Restore] election-manifest.json did not match expected shape');
         }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        logger.warn(`[S3 Restore] Failed to parse election-manifest.json:`, errorMessage);
+      } catch {
+        logger.warn('[S3 Restore] Failed to parse election-manifest.json');
       }
     }
 
@@ -161,9 +218,8 @@ export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredR
         } else {
           logger.warn('[S3 Restore] close-statement.json did not match expected shape');
         }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        logger.warn(`[S3 Restore] Failed to parse close-statement.json:`, errorMessage);
+      } catch {
+        logger.warn('[S3 Restore] Failed to parse close-statement.json');
       }
     }
 
@@ -182,8 +238,7 @@ export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredR
           logger.warn('[S3 Restore] included-bitmap.json failed validation or did not match journal bitmap metadata');
         }
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        logger.warn(`[S3 Restore] Included bitmap artifact unavailable:`, errorMessage);
+        handleOptionalArtifactFailure(error, 'Included bitmap artifact');
       }
     }
 
@@ -199,22 +254,28 @@ export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredR
           logger.warn('[S3 Restore] seen-bitmap.json failed validation or did not match journal bitmap metadata');
         }
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        logger.warn(`[S3 Restore] Seen bitmap artifact unavailable:`, errorMessage);
+        handleOptionalArtifactFailure(error, 'Seen bitmap artifact');
       }
     }
 
     return restored;
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const transient = isTransientS3Failure(error);
     logger.error('[S3 Restore] Failed to restore receipt', {
       s3: {
         operation: 'restoreBundle',
         key_prefix: keyPrefix,
       },
-      errorMessage,
+      failure_kind: transient ? 'transient_s3' : 'terminal',
     });
-    throw new Error(`Receipt restoration failed: ${errorMessage}`);
+    if (transient) {
+      throw new TransientBundleRestoreError();
+    }
+    throw new Error(
+      error instanceof BundleArtifactError
+        ? `Receipt restoration failed: ${error.message}`
+        : 'Receipt restoration failed',
+    );
   }
 }
 

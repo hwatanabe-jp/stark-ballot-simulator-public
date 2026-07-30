@@ -14,7 +14,7 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_pipeline_management" {
       "codebuild:UntagResource",
       "codebuild:UpdateProject",
     ]
-    resources = local.app_codebuild_project_arns
+    resources = [local.app_codebuild_project_arn_pattern]
   }
 
   statement {
@@ -273,7 +273,7 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_managem
     sid       = "ListAppApplyAttachedPolicies"
     effect    = "Allow"
     actions   = ["iam:ListAttachedRolePolicies"]
-    resources = local.app_pipeline_role_name_arns
+    resources = local.app_pipeline_role_arn_patterns
   }
 
   statement {
@@ -284,7 +284,7 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_managem
       "iam:CreateRole",
       "iam:PutRolePermissionsBoundary",
     ]
-    resources = local.app_pipeline_role_name_arns
+    resources = local.app_pipeline_role_arn_patterns
 
     condition {
       test     = "StringEquals"
@@ -313,7 +313,7 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_managem
       "iam:UntagRole",
       "iam:UpdateAssumeRolePolicy",
     ]
-    resources = local.app_pipeline_role_name_arns
+    resources = local.app_pipeline_role_arn_patterns
   }
 
   statement {
@@ -321,7 +321,7 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_managem
     effect = "Allow"
 
     actions   = ["iam:PassRole"]
-    resources = local.app_pipeline_role_name_arns
+    resources = local.app_pipeline_role_arn_patterns
 
     condition {
       test     = "StringEquals"
@@ -332,6 +332,7 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_managem
       ]
     }
   }
+
 }
 
 data "aws_iam_policy_document" "bootstrap_apply_app_lane_artifacts_management" {
@@ -487,8 +488,9 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_artifacts_management" {
       "logs:TagResource",
       "logs:UntagResource",
     ]
-    resources = local.app_codebuild_log_group_arns
+    resources = [local.app_codebuild_log_group_arn_pattern]
   }
+
 }
 
 resource "aws_iam_policy" "bootstrap_apply_app_lane_pipeline_management" {
@@ -519,6 +521,16 @@ resource "aws_iam_policy" "bootstrap_apply_app_lane_role_attachment_management" 
   tags   = local.common_tags
 
   depends_on = [aws_iam_policy.bootstrap_deploy_permissions_boundary]
+}
+
+check "bootstrap_apply_app_lane_role_attachment_policy_size" {
+  assert {
+    condition = (
+      !local.app_pipeline_enabled
+      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.bootstrap_apply_app_lane_role_attachment_management[0].json))) <= 6144, false)
+    )
+    error_message = "The bootstrap app-lane role-attachment managed policy must remain within the IAM 6,144-character quota."
+  }
 }
 
 resource "aws_iam_policy" "bootstrap_apply_app_lane_artifacts_management" {

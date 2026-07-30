@@ -13,18 +13,38 @@ describe('resolveExpectedImageId', () => {
   let consoleWarnSpy: MockInstance<typeof console.warn>;
   let consoleErrorSpy: MockInstance<typeof console.error>;
   const mapping = {
+    mappingType: 'image-id-mapping' as const,
     current: String(CURRENT_METHOD_VERSION),
     deprecated: [],
     mappings: {
       [String(CURRENT_METHOD_VERSION)]: {
         methodVersion: CURRENT_METHOD_VERSION,
-        expectedImageID: '0ximageid-from-mapping',
+        variants: {
+          default: {
+            state: 'confirmed' as const,
+            imageId: '0ximageid-from-mapping',
+            provenance: {
+              evidenceType: 'accepted-prover-release' as const,
+              sourceSha: 'a'.repeat(40),
+              proverImageDigest: `sha256:${'b'.repeat(64)}`,
+              candidateMetadataSha256: 'c'.repeat(64),
+              releaseRecordSha256: 'd'.repeat(64),
+              toolchainArtifactRecordSha256: 'e'.repeat(64),
+            },
+          },
+          x86_64: {
+            state: 'unconfirmed' as const,
+            requiredEvidence: 'accepted-prover-release' as const,
+          },
+        },
         description: 'test mapping',
-        compiledAt: 'test',
-        rustVersion: 'test',
-        risc0Version: 'test',
         features: [],
       },
+    },
+    metadata: {
+      lastUpdated: '2026-07-26T00:00:00Z',
+      purpose: 'test',
+      notes: 'test',
     },
   };
   const loadImageIdMapping = vi.fn().mockResolvedValue(mapping);

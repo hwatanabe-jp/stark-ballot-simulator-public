@@ -9,9 +9,6 @@ export interface LogContext {
   http?: {
     method?: string;
     path?: string;
-    host?: string;
-    x_forwarded_host?: string;
-    referer?: string;
     source_ip_hash?: string;
   };
 }

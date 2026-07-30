@@ -17,29 +17,57 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
 }
 
 describe('ImageID Verifier', () => {
+  const provenance = {
+    evidenceType: 'accepted-prover-release' as const,
+    sourceSha: 'a'.repeat(40),
+    proverImageDigest: `sha256:${'b'.repeat(64)}`,
+    candidateMetadataSha256: 'c'.repeat(64),
+    releaseRecordSha256: 'd'.repeat(64),
+    toolchainArtifactRecordSha256: 'e'.repeat(64),
+  };
   const mapping: ImageIdMapping = {
+    mappingType: 'image-id-mapping',
     current: String(CURRENT_METHOD_VERSION),
     deprecated: ['8'],
     mappings: {
       [String(CURRENT_METHOD_VERSION)]: {
         methodVersion: CURRENT_METHOD_VERSION,
-        expectedImageID: '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af',
-        expectedImageID_x86_64: '0x08aa256ee9120045bbdbe2152723ff657cf1cd7329cba46715954d183caa84de',
+        variants: {
+          default: {
+            state: 'confirmed',
+            imageId: '0x417778745b43c82a20db33a55c2b1d6e0805e0fa7eec80c9654e7321121e97af',
+            provenance,
+          },
+          x86_64: {
+            state: 'confirmed',
+            imageId: '0x08aa256ee9120045bbdbe2152723ff657cf1cd7329cba46715954d183caa84de',
+            provenance,
+          },
+        },
         description: 'test current method',
-        compiledAt: 'test',
-        rustVersion: 'test',
-        risc0Version: 'test',
         features: [],
       },
       '8': {
         methodVersion: 8,
-        expectedImageID: '0x1111111111111111111111111111111111111111111111111111111111111111',
+        variants: {
+          default: {
+            state: 'confirmed',
+            imageId: '0x1111111111111111111111111111111111111111111111111111111111111111',
+            provenance,
+          },
+          x86_64: {
+            state: 'unconfirmed',
+            requiredEvidence: 'accepted-prover-release',
+          },
+        },
         description: 'test legacy method',
-        compiledAt: 'test',
-        rustVersion: 'test',
-        risc0Version: 'test',
         features: [],
       },
+    },
+    metadata: {
+      lastUpdated: '2026-07-26T00:00:00Z',
+      purpose: 'test',
+      notes: 'test',
     },
   };
 
@@ -66,60 +94,51 @@ describe('ImageID Verifier', () => {
     it('resolves the default variant unless an explicit variant is requested', async () => {
       const { getExpectedImageId } = await import('../image-id-verifier');
       const current = strictDefined(mapping.mappings[mapping.current]);
-
-      if (!current.expectedImageID) {
-        throw new Error('expectedImageID is not configured for current mapping');
+      const defaultVariant = current.variants.default;
+      if (defaultVariant.state !== 'confirmed') {
+        throw new Error('default ImageID is not confirmed for current mapping');
       }
 
       const imageId = getExpectedImageId(mapping);
-      expect(imageId).toBe(current.expectedImageID);
+      expect(imageId).toBe(defaultVariant.imageId);
     });
 
     it('resolves the x86_64 variant only when explicitly requested', async () => {
       const { getExpectedImageId } = await import('../image-id-verifier');
       const current = strictDefined(mapping.mappings[mapping.current]);
-
-      if (!current.expectedImageID_x86_64) {
-        throw new Error('expectedImageID_x86_64 is not configured for current mapping');
+      const x86Variant = current.variants.x86_64;
+      if (x86Variant.state !== 'confirmed') {
+        throw new Error('x86_64 ImageID is not confirmed for current mapping');
       }
 
       const imageId = getExpectedImageId(mapping, undefined, 'x86_64');
-      expect(imageId).toBe(current.expectedImageID_x86_64);
+      expect(imageId).toBe(x86Variant.imageId);
     });
 
-    it('fails closed when the requested variant is unavailable', async () => {
-      const { getExpectedImageId } = await import('../image-id-verifier');
-      const { expectedImageID_x86_64, ...currentWithoutVariant } = strictDefined(mapping.mappings[mapping.current]);
-      void expectedImageID_x86_64;
-      const mappingWithoutVariant: ImageIdMapping = {
-        ...mapping,
-        mappings: {
-          [mapping.current]: currentWithoutVariant,
-        },
-      };
-
-      expect(() => getExpectedImageId(mappingWithoutVariant, undefined, 'x86_64')).toThrow(
-        'Expected ImageID variant x86_64 is not available',
-      );
-    });
-
-    it('fails closed when the requested variant is not active for the current method version', async () => {
+    it('fails closed with an explicit reason when the requested variant is unconfirmed', async () => {
       const { getExpectedImageId } = await import('../image-id-verifier');
       const current = strictDefined(mapping.mappings[mapping.current]);
-      const x86OnlyMapping: ImageIdMapping = {
+      const mappingWithUnconfirmedVariant: ImageIdMapping = {
         ...mapping,
         mappings: {
           [mapping.current]: {
             ...current,
-            supportedVariants: ['x86_64'],
+            variants: {
+              ...current.variants,
+              x86_64: {
+                state: 'unconfirmed',
+                requiredEvidence: 'accepted-prover-release',
+              },
+            },
           },
         },
       };
 
-      expect(() => getExpectedImageId(x86OnlyMapping, CURRENT_METHOD_VERSION, 'default')).toThrow(
-        'Expected ImageID variant default is not active',
+      expect(() => getExpectedImageId(mappingWithUnconfirmedVariant, undefined, 'x86_64')).toThrow(
+        expect.objectContaining({
+          reason: 'variant_unconfirmed',
+        }),
       );
-      expect(getExpectedImageId(x86OnlyMapping, CURRENT_METHOD_VERSION, 'x86_64')).toBe(current.expectedImageID_x86_64);
     });
 
     it('should get expected ImageID for specific version', async () => {
@@ -165,7 +184,14 @@ describe('ImageID Verifier', () => {
               ...mapping.mappings,
               [mapping.current]: {
                 ...strictDefined(mapping.mappings[mapping.current]),
-                expectedImageID: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                variants: {
+                  ...strictDefined(mapping.mappings[mapping.current]).variants,
+                  default: {
+                    state: 'confirmed',
+                    imageId: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                    provenance,
+                  },
+                },
               },
             },
           }),
@@ -178,7 +204,14 @@ describe('ImageID Verifier', () => {
               ...mapping.mappings,
               [mapping.current]: {
                 ...strictDefined(mapping.mappings[mapping.current]),
-                expectedImageID: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                variants: {
+                  ...strictDefined(mapping.mappings[mapping.current]).variants,
+                  default: {
+                    state: 'confirmed',
+                    imageId: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                    provenance,
+                  },
+                },
               },
             },
           }),

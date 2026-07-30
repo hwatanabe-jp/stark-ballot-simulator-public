@@ -3,7 +3,12 @@ import { EventEmitter } from 'node:events';
 import type { CLITestHelpers } from '@stark-ballot/test-support/testing/cli-test-helpers';
 import type { ImageIdMapping } from '@stark-ballot/verification/image-id-types';
 import type { CLITestConfig, CommandSpawner } from '../cli-e2e-voting-flow';
-import { CLIVotingTest, resolveDefaultCliExpectedImageId, runBuildCiCommand } from '../cli-e2e-voting-flow';
+import {
+  CLIVotingTest,
+  configureCliZkvmEnvironment,
+  resolveDefaultCliExpectedImageId,
+  runBuildCiCommand,
+} from '../cli-e2e-voting-flow';
 import { getStringProperty, requireRecord } from '@stark-ballot/domain/utils/guards';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import imageIdMappingJson from '../../../public/imageId-mapping.json';
@@ -341,20 +346,44 @@ describe('CLIVotingTest regression coverage', () => {
     expect(strictDefined(process.env['RISC0_DEV_MODE'])).toBe('1');
   });
 
-  it('resolves the default ARM64 ImageID variant', () => {
+  it('resolves the accepted managed Prover ImageID as the default variant', () => {
     const resolved = resolveDefaultCliExpectedImageId(imageIdMapping, 'default');
     const current = imageIdMapping.mappings[imageIdMapping.current];
+    const defaultVariant = strictDefined(current).variants.default;
+    if (defaultVariant.state !== 'confirmed') {
+      throw new Error('default test mapping must be confirmed');
+    }
 
     expect(resolved.variant).toBe('default');
-    expect(resolved.imageId).toBe(strictDefined(current).expectedImageID);
+    expect(resolved.imageId).toBe(defaultVariant.imageId);
   });
 
   it('resolves the x86_64 variant when explicitly requested', () => {
     const resolved = resolveDefaultCliExpectedImageId(imageIdMapping, 'x86_64');
     const current = imageIdMapping.mappings[imageIdMapping.current];
+    const x86 = strictDefined(current).variants.x86_64;
+    if (x86.state !== 'confirmed') {
+      throw new Error('x86_64 test mapping must be confirmed');
+    }
 
     expect(resolved.variant).toBe('x86_64');
-    expect(resolved.imageId).toBe(strictDefined(current).expectedImageID_x86_64);
+    expect(resolved.imageId).toBe(x86.imageId);
+  });
+
+  it('makes the explicit CLI zkVM mode override stale local environment defaults before server start', () => {
+    const environment: NodeJS.ProcessEnv = {
+      USE_MOCK_ZKVM: 'true',
+      RISC0_DEV_MODE: '1',
+    };
+
+    configureCliZkvmEnvironment({ useRealZkVM: true, realMode: 'prod' }, environment);
+    expect(environment['USE_MOCK_ZKVM']).toBe('false');
+    expect(environment['RISC0_DEV_MODE']).toBeUndefined();
+
+    environment['USE_MOCK_ZKVM'] = 'true';
+    configureCliZkvmEnvironment({ useRealZkVM: true, realMode: 'dev' }, environment);
+    expect(environment['USE_MOCK_ZKVM']).toBe('false');
+    expect(environment['RISC0_DEV_MODE']).toBe('1');
   });
 
   it('sets the active x86_64 ImageID variant on maintained CLI package scripts', () => {

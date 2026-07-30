@@ -7,15 +7,11 @@
  * silently depend on caller-specific runtime heuristics.
  */
 
-/**
- * @typedef {'default' | 'x86_64'} ImageIdVariant
- */
+import { parseImageIdMapping, resolveConfirmedImageIdVariant } from './image-id-mapping.js';
 
-/**
- * Supported explicit ImageID mapping variants.
- *
- * @type {readonly ImageIdVariant[]}
- */
+/** @typedef {import('./image-id-mapping.js').ImageIdVariant} ImageIdVariant */
+
+/** @type {readonly ImageIdVariant[]} */
 export const IMAGE_ID_VARIANTS = ['default', 'x86_64'];
 
 /**
@@ -27,8 +23,6 @@ export function isImageIdVariant(value) {
 }
 
 /**
- * Resolve the configured ImageID variant, failing closed on unsupported values.
- *
  * @param {unknown} value
  * @param {ImageIdVariant} [fallback]
  * @returns {ImageIdVariant}
@@ -47,54 +41,13 @@ export function resolveConfiguredImageIdVariant(value, fallback = 'default') {
 }
 
 /**
- * @param {{ current?: unknown }} mapping
- * @param {number | undefined} version
- * @returns {string}
- */
-function getVersionKey(mapping, version) {
-  if (typeof version === 'number') {
-    return String(version);
-  }
-  if (typeof mapping?.current === 'string' && mapping.current.length > 0) {
-    return mapping.current;
-  }
-  throw new Error('ImageID mapping does not define a current method version');
-}
-
-/**
- * @param {ImageIdVariant} variant
- * @returns {'expectedImageID' | 'expectedImageID_x86_64'}
- */
-function getVariantField(variant) {
-  return variant === 'x86_64' ? 'expectedImageID_x86_64' : 'expectedImageID';
-}
-
-/**
- * Resolve the expected ImageID from the versioned public mapping.
- *
- * @param {import('./image-id-policy').ImageIdMappingLike} mapping
+ * @param {unknown} mapping
  * @param {number} [version]
  * @param {ImageIdVariant} [variant]
  * @returns {string}
  */
 export function resolveExpectedImageIdFromMapping(mapping, version, variant = 'default') {
   const resolvedVariant = resolveConfiguredImageIdVariant(variant);
-  const versionKey = getVersionKey(mapping, version);
-  const versionMapping = mapping?.mappings?.[versionKey];
-
-  if (!versionMapping || typeof versionMapping !== 'object') {
-    throw new Error(`Unknown method version: ${versionKey}`);
-  }
-
-  if (Array.isArray(versionMapping.supportedVariants) && !versionMapping.supportedVariants.includes(resolvedVariant)) {
-    throw new Error(`Expected ImageID variant ${resolvedVariant} is not active for method version ${versionKey}`);
-  }
-
-  const field = getVariantField(resolvedVariant);
-  const value = versionMapping[field];
-  if (typeof value === 'string' && value.length > 0) {
-    return value;
-  }
-
-  throw new Error(`Expected ImageID variant ${resolvedVariant} is not available for method version ${versionKey}`);
+  const parsed = parseImageIdMapping(mapping);
+  return resolveConfirmedImageIdVariant(parsed, version, resolvedVariant).imageId;
 }

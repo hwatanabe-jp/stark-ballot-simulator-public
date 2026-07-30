@@ -27,6 +27,7 @@ import type { BitmapProofRequest } from '@stark-ballot/verification/bitmap-verif
 import type { VerificationPublicInputAuthority } from '@stark-ballot/verification/engine-types';
 import { normalizeHexString } from '@stark-ballot/domain/utils/hex';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import type { VerificationCheck } from '@stark-ballot/verification/checks';
 import { validateSessionWithCapability } from '../middleware/session';
 import { SESSION_CAPABILITY_HEADER, SESSION_ID_HEADER } from '@stark-ballot/domain/session/capability';
@@ -85,14 +86,14 @@ export async function getVerifyHandler({ request, store }: ApiContext): Promise<
 
     if (debugEnabled) {
       logger.debug('[API][verify][DEBUG] Request started', {
-        sessionId,
+        session_id_hash: hashSessionIdForLogging(sessionId),
         timestamp: new Date().toISOString(),
       });
     }
 
     if (debugEnabled) {
       logger.debug('[API][verify][DEBUG] Session retrieved', {
-        sessionId,
+        session_id_hash: hashSessionIdForLogging(sessionId),
         finalized: session.finalized,
         hasFinalizationResult: !!session.finalizationResult,
         hasFinalizationState: !!session.finalizationState,
@@ -282,7 +283,7 @@ export async function getVerifyHandler({ request, store }: ApiContext): Promise<
 
     if (excludedSlots > 0 && debugEnabled) {
       logger.debug('[API][verify][DEBUG] Tamper detected in verification payload', {
-        sessionId,
+        session_id_hash: hashSessionIdForLogging(sessionId),
         excludedSlots,
         missingSlots: projectedFinalizationResult.missingSlots,
         invalidPresentedSlots: projectedFinalizationResult.invalidPresentedSlots,
@@ -535,7 +536,7 @@ async function resolveExactRecordedVoteArtifacts(params: {
     if (error instanceof Error && error.message === 'CT_PROOF_UNAVAILABLE') {
       if (debugEnabled) {
         logger.debug('[API][verify][DEBUG] Exact CT proof unavailable for user vote', {
-          sessionId,
+          session_id_hash: hashSessionIdForLogging(sessionId),
           ...omitUndefinedProperties({ voteId: userVote.voteId }),
         });
       }

@@ -37,6 +37,82 @@ cleanup() {
 }
 trap cleanup EXIT
 
+summary_log="${tmp_dir}/prover-summary.log"
+TARGET_AWS_RUNTIME=1 \
+  RUNTIME_DEPLOYMENT_ENV=develop \
+  DEPLOYMENT_ID=dep_0123456789abcdef0123456789abcdef \
+  APP_SOURCE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  DEPLOY_MODE=normal \
+  EXECUTION_ID=01J00000000000000000000000 \
+  LOG_IP_HASH_SALT=private-summary-salt \
+  OUTPUT_S3_PREFIX=private/session/execution \
+  emit_prover_summary start started none 0 >"$summary_log"
+python3 - "$summary_log" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    record = json.load(handle)
+
+assert record["event"] == "prover_summary"
+assert record["phase"] == "start"
+assert record["result"] == "started"
+assert record["category"] == "none"
+assert record["duration_ms"] == 0
+assert record["execution_id"] == "01J00000000000000000000000"
+assert record["deployment_id"] == "dep_0123456789abcdef0123456789abcdef"
+assert record["app_source_sha"] == "a" * 40
+assert record["deploy_mode"] == "normal"
+assert record["key_prefix"].startswith("key_")
+assert "private-summary-salt" not in open(sys.argv[1], encoding="utf-8").read()
+assert "private/session/execution" not in open(sys.argv[1], encoding="utf-8").read()
+PY
+
+invalid_observability_log="${tmp_dir}/invalid-prover-observability.log"
+if (
+  TARGET_AWS_RUNTIME=1 \
+    DEPLOYMENT_ID=dep_invalid \
+    APP_SOURCE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    DEPLOY_MODE=normal \
+    EXECUTION_ID=01J00000000000000000000000 \
+    LOG_IP_HASH_SALT=private-summary-salt \
+    validate_prover_observability
+) >"$invalid_observability_log" 2>&1; then
+  echo "target prover observability should reject an invalid deployment ID"
+  exit 1
+fi
+if grep -q 'private-summary-salt' "$invalid_observability_log"; then
+  echo "prover observability validation must not expose the log hash salt"
+  exit 1
+fi
+
+missing_host_log="${tmp_dir}/missing-host.log"
+if (HOST_BIN="${tmp_dir}/private-host-binary" ensure_host_binary) >"$missing_host_log" 2>&1; then
+  echo "ensure_host_binary should reject a missing host binary"
+  exit 1
+fi
+if grep -Eq "${tmp_dir}|private-host-binary" "$missing_host_log"; then
+  echo "missing host errors must not expose local paths"
+  cat "$missing_host_log"
+  exit 1
+fi
+
+missing_input_log="${tmp_dir}/missing-input.log"
+if (
+  INPUT_PATH="${tmp_dir}/private-input-canary.json" \
+    INPUT_S3_BUCKET='' \
+    INPUT_S3_KEY='' \
+    resolve_input_file
+) >"$missing_input_log" 2>&1; then
+  echo "resolve_input_file should reject a missing configured local input"
+  exit 1
+fi
+if grep -Eq "${tmp_dir}|private-input-canary" "$missing_input_log"; then
+  echo "missing local input errors must not expose local paths"
+  cat "$missing_input_log"
+  exit 1
+fi
+
 owner_error="${tmp_dir}/owner-error.txt"
 if (TARGET_AWS_RUNTIME=1 INPUT_S3_BUCKET=proof-inputs AWS_ACCOUNT_ID='' validate_expected_bucket_owner) >"$owner_error" 2>&1; then
   echo "target S3 mode should reject a missing AWS_ACCOUNT_ID"
@@ -72,6 +148,415 @@ printf '{}\n' >"${tmp_dir}/upload.json"
 AWS_ACCOUNT_ID=123456789012 aws_s3_cp "${tmp_dir}/upload.json" "s3://proof-outputs/session/output.json"
 grep -q -- "s3api put-object --bucket proof-outputs --key session/output.json --body ${tmp_dir}/upload.json --expected-bucket-owner 123456789012" "$aws_log"
 
+malformed_source_log="${tmp_dir}/malformed-source.log"
+if (
+  AWS_ACCOUNT_ID=123456789012 aws_s3_cp \
+    's3://malformed-source-private-canary' \
+    "${tmp_dir}/malformed-source.json"
+) >"$malformed_source_log" 2>&1; then
+  echo "target-account S3 download should reject a source URI without an object key"
+  exit 1
+fi
+grep -q 'Invalid S3 source URI' "$malformed_source_log"
+if grep -Eq 'malformed-source-private-canary|s3://' "$malformed_source_log"; then
+  echo "malformed source errors must not expose the S3 URI"
+  cat "$malformed_source_log"
+  exit 1
+fi
+
+malformed_destination_log="${tmp_dir}/malformed-destination.log"
+if (
+  AWS_ACCOUNT_ID=123456789012 aws_s3_cp \
+    "${tmp_dir}/upload.json" \
+    's3://malformed-destination-private-canary'
+) >"$malformed_destination_log" 2>&1; then
+  echo "target-account S3 upload should reject a destination URI without an object key"
+  exit 1
+fi
+grep -q 'Invalid S3 destination URI' "$malformed_destination_log"
+if grep -Eq 'malformed-destination-private-canary|s3://' "$malformed_destination_log"; then
+  echo "malformed destination errors must not expose the S3 URI"
+  cat "$malformed_destination_log"
+  exit 1
+fi
+
+input_log="${tmp_dir}/input-download.log"
+INPUT_S3_BUCKET=private-input-canary \
+  INPUT_S3_KEY=raw-session-canary/private-input.json \
+  WORK_INPUT="${tmp_dir}/downloaded-input.json" \
+  AWS_ACCOUNT_ID='' \
+  resolve_input_file >"$input_log" 2>&1
+grep -q -- "s3 cp s3://private-input-canary/raw-session-canary/private-input.json ${tmp_dir}/downloaded-input.json" "$aws_log"
+if grep -Eq 'private-input-canary|raw-session-canary|s3://' "$input_log"; then
+  echo "resolve_input_file logs must not expose the S3 input URI"
+  cat "$input_log"
+  exit 1
+fi
+
+upload_output_dir="${tmp_dir}/private-upload-output"
+mkdir -p "$upload_output_dir"
+printf '{}\n' >"${upload_output_dir}/receipt.json"
+upload_log="${tmp_dir}/output-upload.log"
+PROVER_DURABLE_ARTIFACTS_COMPLETE=0
+# upload_outputs reads these as globals from the sourced entrypoint.
+# shellcheck disable=SC2034
+OUTPUT_DIR="$upload_output_dir"
+# shellcheck disable=SC2034
+OUTPUT_S3_BUCKET=''
+OUTPUT_S3_PREFIX=''
+# shellcheck disable=SC2034
+AWS_ACCOUNT_ID=''
+upload_outputs >"$upload_log" 2>&1
+if [[ "$PROVER_DURABLE_ARTIFACTS_COMPLETE" != "0" ]]; then
+  echo "local output staging must not be treated as durable publication"
+  exit 1
+fi
+
+# shellcheck disable=SC2034
+OUTPUT_S3_BUCKET=private-output-canary
+# shellcheck disable=SC2034
+OUTPUT_S3_PREFIX=raw-session-canary/execution-canary
+upload_outputs >"$upload_log" 2>&1
+if [[ "$PROVER_DURABLE_ARTIFACTS_COMPLETE" != "1" ]]; then
+  echo "successful S3 output publication must set the durable completion marker"
+  exit 1
+fi
+grep -q -- "s3 cp ${upload_output_dir}/receipt.json s3://private-output-canary/raw-session-canary/execution-canary/receipt.json" "$aws_log"
+if grep -Eq 'private-output-canary|raw-session-canary|execution-canary|s3://' "$upload_log"; then
+  echo "upload_outputs logs must not expose the S3 output URI"
+  cat "$upload_log"
+  exit 1
+fi
+
+durable_signal_output_dir="${tmp_dir}/durable-signal-output"
+mkdir -p "$durable_signal_output_dir"
+printf '{}\n' >"${durable_signal_output_dir}/receipt.json"
+if ! (
+  PROVER_DURABLE_ARTIFACTS_COMPLETE=0
+  # upload_outputs reads these as globals from the sourced entrypoint.
+  # shellcheck disable=SC2034
+  PROVER_SIGNAL_HANDLING_ACTIVE=1
+  # shellcheck disable=SC2034
+  PROVER_PENDING_SIGNAL=''
+  trap 'handle_prover_signal TERM' TERM
+  trap 'handle_prover_signal INT' INT
+  # The sourced entrypoint invokes this test double indirectly.
+  # shellcheck disable=SC2317
+  upload_with_retry() {
+    kill -s TERM "$BASHPID"
+    return 0
+  }
+  # shellcheck disable=SC2034
+  OUTPUT_DIR="$durable_signal_output_dir"
+  # shellcheck disable=SC2034
+  OUTPUT_S3_BUCKET=private-output-canary
+  # shellcheck disable=SC2034
+  OUTPUT_S3_PREFIX=raw-session-canary/execution-canary
+  upload_outputs
+); then
+  echo "a signal concurrent with the final successful upload must preserve durable success"
+  exit 1
+fi
+
+failed_upload_log="${tmp_dir}/failed-upload.log"
+if (
+  # The sourced entrypoint invokes this test double indirectly.
+  # shellcheck disable=SC2317
+  aws_s3_cp() { return 1; }
+  UPLOAD_MAX_ATTEMPTS=1 upload_with_retry \
+    "${tmp_dir}/private-artifact-canary.json" \
+    's3://private-output-canary/raw-session-canary/private-artifact-canary.json'
+) >"$failed_upload_log" 2>&1; then
+  echo "upload_with_retry should fail after exhausting retries"
+  exit 1
+fi
+if grep -Eq "${tmp_dir}|private-output-canary|raw-session-canary|s3://" "$failed_upload_log"; then
+  echo "upload_with_retry failure logs must not expose local paths or S3 destinations"
+  cat "$failed_upload_log"
+  exit 1
+fi
+
+failure_marker_dir="${tmp_dir}/private-failure-marker"
+mkdir -p "$failure_marker_dir"
+mapfile -t failure_marker_categories < <(
+  python3 - "${ROOT_DIR}/infra/docker/prover-failure-marker-contract.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    contract = json.load(handle)
+
+for category in contract["categories"]:
+    print(category)
+PY
+)
+for failure_category in "${failure_marker_categories[@]}"; do
+  OUTPUT_DIR="$failure_marker_dir" write_failure_marker "$failure_category"
+  python3 - "${failure_marker_dir}/failure-marker.json" "$failure_category" <<'PY'
+import json
+import sys
+
+marker_path, expected_category = sys.argv[1:3]
+with open(marker_path, "r", encoding="utf-8") as handle:
+    marker = json.load(handle)
+
+assert marker == {"category": expected_category}
+PY
+done
+
+if OUTPUT_DIR="$failure_marker_dir" write_failure_marker 'private-arbitrary-failure'; then
+  echo "failure markers must reject categories outside the closed registry"
+  exit 1
+fi
+
+failure_marker_aws_log="${tmp_dir}/failure-marker-aws.log"
+(
+  # The sourced entrypoint invokes this test double indirectly.
+  # shellcheck disable=SC2317
+  aws() {
+    printf '%s ' "$@" >>"$failure_marker_aws_log"
+    printf '\n' >>"$failure_marker_aws_log"
+    if [[ "$*" == *s3api*put-object* ]]; then
+      printf '{"VersionId":"failure-marker-version-1"}\n'
+    fi
+  }
+  OUTPUT_DIR="$failure_marker_dir" \
+    OUTPUT_S3_BUCKET=private-output-canary \
+    OUTPUT_S3_PREFIX=raw-session-canary/execution-canary \
+    AWS_ACCOUNT_ID=123456789012 \
+    upload_failure_marker_best_effort
+)
+grep -q -- 's3api put-object' "$failure_marker_aws_log"
+grep -q -- '--key raw-session-canary/execution-canary/failure-marker.json' "$failure_marker_aws_log"
+grep -q -- '--expected-bucket-owner 123456789012' "$failure_marker_aws_log"
+grep -q -- '--cli-connect-timeout' "$failure_marker_aws_log"
+grep -q -- '--cli-read-timeout' "$failure_marker_aws_log"
+grep -q -- '--if-none-match \*' "$failure_marker_aws_log"
+
+failure_marker_retry_log="${tmp_dir}/failure-marker-retry.log"
+failure_marker_retry_count="${tmp_dir}/failure-marker-retry-count"
+printf '0\n' >"$failure_marker_retry_count"
+(
+  # The sourced entrypoint invokes this test double indirectly.
+  # shellcheck disable=SC2317
+  aws() {
+    local count
+    count="$(<"$failure_marker_retry_count")"
+    count=$(( count + 1 ))
+    printf '%s\n' "$count" >"$failure_marker_retry_count"
+    printf '%s ' "$@" >>"$failure_marker_retry_log"
+    printf '\n' >>"$failure_marker_retry_log"
+    if (( count < 3 )); then
+      printf '%s\n' 'ServiceUnavailable' >&2
+      return 1
+    fi
+    printf '{"VersionId":"failure-marker-version-after-retry"}\n'
+  }
+  OUTPUT_DIR="$failure_marker_dir" \
+    OUTPUT_S3_BUCKET=private-output-canary \
+    OUTPUT_S3_PREFIX=raw-session-canary/execution-canary \
+    FAILURE_MARKER_UPLOAD_MAX_ATTEMPTS=3 \
+    FAILURE_MARKER_UPLOAD_RETRY_DELAY_SECONDS=0 \
+    upload_failure_marker_best_effort
+)
+if [[ "$(<"$failure_marker_retry_count")" != "3" ]]; then
+  echo "failure-marker upload must retry transient publication failures within its configured bound"
+  exit 1
+fi
+
+failure_marker_existing_same="${tmp_dir}/failure-marker-existing-same.json"
+cp "${failure_marker_dir}/failure-marker.json" "$failure_marker_existing_same"
+failure_marker_idempotent_log="${tmp_dir}/failure-marker-idempotent.log"
+(
+  # The sourced entrypoint invokes this test double indirectly.
+  # shellcheck disable=SC2317
+  aws() {
+    printf '%s ' "$@" >>"$failure_marker_idempotent_log"
+    printf '\n' >>"$failure_marker_idempotent_log"
+    case "$*" in
+      *s3api*put-object*)
+        printf '%s\n' 'PreconditionFailed: object already exists' >&2
+        return 1
+        ;;
+      *s3api*head-object*)
+        printf '{"ETag":"\\"failure-marker-existing-etag\\"","VersionId":"failure-marker-existing-version"}\n'
+        ;;
+      *s3api*get-object*)
+        local candidate
+        for candidate in "$@"; do
+          if [[ "$candidate" == */existing-failure-marker.json ]]; then
+            cp "$failure_marker_existing_same" "$candidate"
+          fi
+        done
+        printf '{"ETag":"\\"failure-marker-existing-etag\\"","VersionId":"failure-marker-existing-version"}\n'
+        ;;
+    esac
+  }
+  OUTPUT_DIR="$failure_marker_dir" \
+    OUTPUT_S3_BUCKET=private-output-canary \
+    OUTPUT_S3_PREFIX=raw-session-canary/execution-canary \
+    AWS_ACCOUNT_ID=123456789012 \
+    FAILURE_MARKER_UPLOAD_MAX_ATTEMPTS=3 \
+    FAILURE_MARKER_UPLOAD_RETRY_DELAY_SECONDS=0 \
+    upload_failure_marker_best_effort
+)
+grep -q -- 's3api head-object' "$failure_marker_idempotent_log"
+grep -q -- 's3api get-object' "$failure_marker_idempotent_log"
+grep -q -- '--version-id failure-marker-existing-version' "$failure_marker_idempotent_log"
+if [[ "$(grep -c -- 's3api put-object' "$failure_marker_idempotent_log")" != "1" ]]; then
+  echo "an exact existing failure marker must be accepted without another write"
+  exit 1
+fi
+
+failure_marker_etag_mismatch_log="${tmp_dir}/failure-marker-etag-mismatch.log"
+failure_marker_etag_mismatch_output="${tmp_dir}/failure-marker-etag-mismatch-output.log"
+(
+  # The sourced entrypoint invokes this test double indirectly.
+  # shellcheck disable=SC2317
+  aws() {
+    printf '%s ' "$@" >>"$failure_marker_etag_mismatch_log"
+    printf '\n' >>"$failure_marker_etag_mismatch_log"
+    case "$*" in
+      *s3api*put-object*)
+        printf '%s\n' 'PreconditionFailed: object already exists' >&2
+        return 1
+        ;;
+      *s3api*head-object*)
+        printf '{"ETag":"\\"failure-marker-head-etag\\"","VersionId":"failure-marker-etag-version"}\n'
+        ;;
+      *s3api*get-object*)
+        local candidate
+        for candidate in "$@"; do
+          if [[ "$candidate" == */existing-failure-marker.json ]]; then
+            cp "$failure_marker_existing_same" "$candidate"
+          fi
+        done
+        printf '{"ETag":"\\"failure-marker-get-etag\\"","VersionId":"failure-marker-etag-version"}\n'
+        ;;
+    esac
+  }
+  OUTPUT_DIR="$failure_marker_dir" \
+    OUTPUT_S3_BUCKET=private-output-canary \
+    OUTPUT_S3_PREFIX=raw-session-canary/execution-canary \
+    AWS_ACCOUNT_ID=123456789012 \
+    FAILURE_MARKER_UPLOAD_MAX_ATTEMPTS=1 \
+    FAILURE_MARKER_UPLOAD_RETRY_DELAY_SECONDS=0 \
+    upload_failure_marker_best_effort
+) >"$failure_marker_etag_mismatch_output" 2>&1
+grep -q -- 'Failure marker publication could not be confirmed after bounded retries' \
+  "$failure_marker_etag_mismatch_output"
+
+failure_marker_existing_different="${tmp_dir}/failure-marker-existing-different.json"
+printf '{"category":"artifact"}\n' >"$failure_marker_existing_different"
+OUTPUT_DIR="$failure_marker_dir" write_failure_marker upload
+failure_marker_conflict_log="${tmp_dir}/failure-marker-conflict.log"
+failure_marker_conflict_output="${tmp_dir}/failure-marker-conflict-output.log"
+(
+  # The sourced entrypoint invokes this test double indirectly.
+  # shellcheck disable=SC2317
+  aws() {
+    printf '%s ' "$@" >>"$failure_marker_conflict_log"
+    printf '\n' >>"$failure_marker_conflict_log"
+    case "$*" in
+      *s3api*put-object*)
+        printf '%s\n' 'PreconditionFailed: object already exists' >&2
+        return 1
+        ;;
+      *s3api*head-object*)
+        printf '{"ETag":"\\"failure-marker-conflict-etag\\"","VersionId":"failure-marker-conflict-version"}\n'
+        ;;
+      *s3api*get-object*)
+        local candidate
+        for candidate in "$@"; do
+          if [[ "$candidate" == */existing-failure-marker.json ]]; then
+            cp "$failure_marker_existing_different" "$candidate"
+          fi
+        done
+        printf '{"ETag":"\\"failure-marker-conflict-etag\\"","VersionId":"failure-marker-conflict-version"}\n'
+        ;;
+    esac
+  }
+  OUTPUT_DIR="$failure_marker_dir" \
+    OUTPUT_S3_BUCKET=private-output-canary \
+    OUTPUT_S3_PREFIX=raw-session-canary/execution-canary \
+    AWS_ACCOUNT_ID=123456789012 \
+    FAILURE_MARKER_UPLOAD_MAX_ATTEMPTS=3 \
+    FAILURE_MARKER_UPLOAD_RETRY_DELAY_SECONDS=0 \
+    upload_failure_marker_best_effort
+) >"$failure_marker_conflict_output" 2>&1
+if [[ "$(grep -c -- 's3api put-object' "$failure_marker_conflict_log")" != "1" ]]; then
+  echo "a conflicting failure marker category must not be overwritten or retried"
+  exit 1
+fi
+grep -q -- 'Failure marker publication conflict; existing marker retained' "$failure_marker_conflict_output"
+if grep -Eq 'private-output-canary|raw-session-canary|execution-canary|artifact|upload' "$failure_marker_conflict_output"; then
+  echo "failure-marker conflict warnings must not disclose destinations or categories"
+  cat "$failure_marker_conflict_output"
+  exit 1
+fi
+
+failure_marker_exhausted_output="${tmp_dir}/failure-marker-exhausted-output.log"
+if ! (
+  # The sourced entrypoint invokes this test double indirectly.
+  # shellcheck disable=SC2317
+  aws() { return 1; }
+  OUTPUT_DIR="$failure_marker_dir" \
+    OUTPUT_S3_BUCKET=private-output-canary \
+    OUTPUT_S3_PREFIX=raw-session-canary/execution-canary \
+    FAILURE_MARKER_UPLOAD_MAX_ATTEMPTS=2 \
+    FAILURE_MARKER_UPLOAD_RETRY_DELAY_SECONDS=0 \
+    upload_failure_marker_best_effort
+) >"$failure_marker_exhausted_output" 2>&1; then
+  echo "failure-marker upload exhaustion must remain best-effort"
+  exit 1
+fi
+grep -q -- 'Failure marker publication could not be confirmed after bounded retries' "$failure_marker_exhausted_output"
+if grep -Eq 'private-output-canary|raw-session-canary|execution-canary' "$failure_marker_exhausted_output"; then
+  echo "failure-marker exhaustion warnings must not disclose destinations"
+  cat "$failure_marker_exhausted_output"
+  exit 1
+fi
+
+fatal_host="${tmp_dir}/fatal-marker-host"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$fatal_host"
+chmod +x "$fatal_host"
+fatal_output_dir="${tmp_dir}/fatal-marker-output"
+fatal_marker_main_aws_log="${tmp_dir}/fatal-marker-main-aws.log"
+fatal_marker_main_log="${tmp_dir}/fatal-marker-main.log"
+if (
+  # The sourced entrypoint invokes this test double indirectly.
+  # shellcheck disable=SC2317
+  aws() {
+    printf '%s ' "$@" >>"$fatal_marker_main_aws_log"
+    printf '\n' >>"$fatal_marker_main_aws_log"
+  }
+  TARGET_AWS_RUNTIME=0 \
+    HOST_BIN="$fatal_host" \
+    INPUT_PATH='' \
+    INPUT_S3_BUCKET='' \
+    INPUT_S3_KEY='' \
+    OUTPUT_DIR="$fatal_output_dir" \
+    OUTPUT_S3_BUCKET=private-output-canary \
+    OUTPUT_S3_PREFIX=raw-session-canary/execution-canary \
+    main
+) >"$fatal_marker_main_log" 2>&1; then
+  echo "a fatal prover path should exit nonzero"
+  exit 1
+fi
+python3 - "${fatal_output_dir}/failure-marker.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    assert json.load(handle) == {"category": "input"}
+PY
+grep -q -- 'raw-session-canary/execution-canary/failure-marker.json' "$fatal_marker_main_aws_log"
+if grep -Eq 'private-output-canary|raw-session-canary|execution-canary' "$fatal_marker_main_log"; then
+  echo "fatal prover logs must not expose the failure-marker destination"
+  cat "$fatal_marker_main_log"
+  exit 1
+fi
+
 exact_stage_dir="${tmp_dir}/exact-stage"
 exact_stage_output="${tmp_dir}/exact-stage-output"
 mkdir -p "$exact_stage_dir" "$exact_stage_output"
@@ -81,6 +566,25 @@ printf '{"schema":"stark-ballot.seen_bitmap"}\n' >"${exact_stage_dir}/seen-bitma
 WORK_INPUT="${exact_stage_dir}/input.json" OUTPUT_DIR="$exact_stage_output" stage_outputs
 test -f "${exact_stage_output}/included-bitmap.json"
 test -f "${exact_stage_output}/seen-bitmap.json"
+
+empty_stage_dir="${tmp_dir}/private-empty-stage"
+empty_stage_output="${tmp_dir}/private-empty-stage-output"
+mkdir -p "$empty_stage_dir" "$empty_stage_output"
+empty_stage_log="${tmp_dir}/empty-stage.log"
+WORK_INPUT="${empty_stage_dir}/private-input.json" OUTPUT_DIR="$empty_stage_output" stage_outputs >"$empty_stage_log" 2>&1
+if grep -Eq "${tmp_dir}|private-input|private-empty-stage" "$empty_stage_log"; then
+  echo "empty stage logs must not expose local paths"
+  cat "$empty_stage_log"
+  exit 1
+fi
+
+empty_upload_log="${tmp_dir}/empty-upload.log"
+OUTPUT_DIR="$empty_stage_output" OUTPUT_S3_BUCKET=proof-outputs OUTPUT_S3_PREFIX='' upload_outputs >"$empty_upload_log" 2>&1
+if grep -Eq "${tmp_dir}|private-empty-stage" "$empty_upload_log"; then
+  echo "empty upload logs must not expose local paths"
+  cat "$empty_upload_log"
+  exit 1
+fi
 
 output_dir="${tmp_dir}/output"
 mkdir -p "$output_dir"
@@ -291,17 +795,157 @@ with open(input_path, "w", encoding="utf-8") as handle:
     )
 PY
 
+signal_probe="${tmp_dir}/signal-probe.sh"
+# Preserve expansions for the generated probe's runtime.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'printf "%s\n" "$$" >"$PROBE_STARTED_PATH"' \
+  'trap '\''printf "TERM\n" >"$PROBE_SIGNAL_PATH"; if [[ "${PROBE_IGNORE_SIGNAL:-0}" != "1" ]]; then exit 143; fi'\'' TERM' \
+  'trap '\''printf "INT\n" >"$PROBE_SIGNAL_PATH"; exit 130'\'' INT' \
+  'while :; do sleep 0.1; done' \
+  >"$signal_probe"
+chmod +x "$signal_probe"
+
+for signal_case in TERM INT TERM_IGNORED; do
+  signal_name="${signal_case%%_*}"
+  signal_ignore=0
+  if [[ "$signal_case" == "TERM_IGNORED" ]]; then
+    signal_ignore=1
+  fi
+  signal_case_dir="${tmp_dir}/signal-${signal_case}"
+  signal_output_dir="${signal_case_dir}/output"
+  signal_started_path="${signal_case_dir}/started"
+  signal_observed_path="${signal_case_dir}/observed"
+  signal_log="${signal_case_dir}/entrypoint.log"
+  mkdir -p "$signal_output_dir"
+
+  PROBE_STARTED_PATH="$signal_started_path" \
+    PROBE_SIGNAL_PATH="$signal_observed_path" \
+    PROBE_IGNORE_SIGNAL="$signal_ignore" \
+    python3 - \
+    "$ENTRYPOINT_PATH" \
+    "$signal_probe" \
+    "$input_json" \
+    "$signal_output_dir" \
+    "$signal_name" \
+    "$signal_started_path" \
+    "$signal_observed_path" \
+    "$signal_log" <<'PY'
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+entrypoint, host, input_path, output_dir, signal_name, started_path, observed_path, log_path = sys.argv[1:]
+environment = os.environ.copy()
+environment.update(
+    {
+        "ENTRYPOINT_SKIP_MAIN": "0",
+        "HOST_BIN": host,
+        "INPUT_PATH": input_path,
+        "INPUT_S3_BUCKET": "",
+        "INPUT_S3_KEY": "",
+        "OUTPUT_DIR": output_dir,
+        "OUTPUT_S3_BUCKET": "",
+        "OUTPUT_S3_PREFIX": "",
+        "TARGET_AWS_RUNTIME": "0",
+        "ZKVM_TIMEOUT_SECONDS": "30",
+        "ZKVM_TERMINATION_GRACE_SECONDS": "1" if os.environ["PROBE_IGNORE_SIGNAL"] == "1" else "10",
+    }
+)
+
+with open(log_path, "w", encoding="utf-8") as log_handle:
+    process = subprocess.Popen(
+        ["bash", entrypoint],
+        env=environment,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 5
+    while not os.path.exists(started_path) and process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not os.path.exists(started_path):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        raise AssertionError(f"{signal_name} probe host did not start")
+
+    os.kill(process.pid, getattr(signal, f"SIG{signal_name}"))
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=5)
+        raise AssertionError(f"entrypoint did not exit after {signal_name}")
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+if process.returncode == 0:
+    raise AssertionError(f"interrupted entrypoint must fail before durable publication ({signal_name})")
+expected_return_code = {"TERM": 143, "INT": 130}[signal_name]
+if process.returncode != expected_return_code:
+    raise AssertionError(
+        f"interrupted entrypoint returned {process.returncode}; expected {expected_return_code} ({signal_name})"
+    )
+
+with open(observed_path, "r", encoding="utf-8") as handle:
+    assert handle.read().strip() == signal_name
+
+with open(os.path.join(output_dir, "failure-marker.json"), "r", encoding="utf-8") as handle:
+    marker = json.load(handle)
+assert marker == {"category": "infrastructure_interruption"}
+
+with open(log_path, "r", encoding="utf-8") as handle:
+    summaries = []
+    for line in handle:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if record.get("event") == "prover_summary" and record.get("phase") == "end":
+            summaries.append(record)
+assert summaries
+assert summaries[-1]["result"] == "error"
+assert summaries[-1]["category"] == "infrastructure_interruption"
+PY
+done
+
 # create_bundle_archive reads WORK_INPUT as a sourced-entrypoint global.
 # shellcheck disable=SC2034
 WORK_INPUT="$input_json"
 printf '{"status":"private-report-canary"}\n' >"${output_dir}/verification.json"
-create_bundle_archive "$output_dir"
+printf '{"category":"artifact"}\n' >"${output_dir}/failure-marker.json"
+bundle_log="${tmp_dir}/bundle.log"
+create_bundle_archive "$output_dir" >"$bundle_log" 2>&1
+if grep -Eq "${tmp_dir}|bundle\.zip" "$bundle_log"; then
+  echo "bundle creation logs must not expose local paths"
+  cat "$bundle_log"
+  exit 1
+fi
 
 bundle_zip="${output_dir}/bundle.zip"
 test -f "$bundle_zip"
 test -f "${output_dir}/included-bitmap.json"
 test -f "${output_dir}/seen-bitmap.json"
 test -f "${output_dir}/verification.json"
+test -f "${output_dir}/failure-marker.json"
+
+bundle_retry_log="${tmp_dir}/bundle-retry.log"
+create_bundle_archive "$output_dir" >"$bundle_retry_log" 2>&1
+if grep -Eq "${tmp_dir}|bundle\.zip" "$bundle_retry_log"; then
+  echo "idempotent bundle creation logs must not expose local paths"
+  cat "$bundle_retry_log"
+  exit 1
+fi
 
 entries="$(unzip -Z1 "$bundle_zip")"
 echo "$entries" | grep -q "^receipt.json$"
@@ -323,6 +967,10 @@ if echo "$entries" | grep -q "^included-bitmap.json$"; then
 fi
 if echo "$entries" | grep -q "^seen-bitmap.json$"; then
   echo "seen-bitmap.json should not be in the public bundle"
+  exit 1
+fi
+if echo "$entries" | grep -q "^failure-marker.json$"; then
+  echo "failure-marker.json should not be in the public bundle"
   exit 1
 fi
 
@@ -618,6 +1266,38 @@ printf '%s\n' \
   >"$timeout_probe"
 chmod +x "$timeout_probe"
 
+uncooperative_timeout_probe="${tmp_dir}/uncooperative-timeout-probe.sh"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'trap "" TERM' \
+  'while :; do sleep 0.1; done' \
+  >"$uncooperative_timeout_probe"
+chmod +x "$uncooperative_timeout_probe"
+
+killed_probe="${tmp_dir}/killed-probe.sh"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'exit 137' \
+  >"$killed_probe"
+chmod +x "$killed_probe"
+
+noisy_success_probe="${tmp_dir}/noisy-success-probe.sh"
+# Preserve expansions for the generated probe's runtime.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf "private host stdout path: %s\\n" "$1"' \
+  'printf "private host stderr path: %s\\n" "$1" >&2' \
+  >"$noisy_success_probe"
+chmod +x "$noisy_success_probe"
+
+success_output="$({ HOST_BIN="$noisy_success_probe" WORK_INPUT="$input_json" run_host_with_timeout; } 2>&1)"
+if grep -Fq "$input_json" <<<"$success_output"; then
+  echo "successful host output must not expose the private input path"
+  echo "$success_output"
+  exit 1
+fi
+
 if timeout_output="$(HOST_BIN="$timeout_probe" WORK_INPUT="$input_json" ZKVM_TIMEOUT_SECONDS=1 run_host_with_timeout 2>&1)"; then
   echo "run_host_with_timeout should fail on timeout"
   exit 1
@@ -626,5 +1306,45 @@ fi
 if ! grep -q "zkVM execution timed out after 1s" <<<"$timeout_output"; then
   echo "run_host_with_timeout should report timeout distinctly"
   echo "$timeout_output"
+  exit 1
+fi
+
+if grep -Fq "$(basename "$input_json")" <<<"$timeout_output"; then
+  echo "host execution logs must not expose the private input filename"
+  echo "$timeout_output"
+  exit 1
+fi
+
+if uncooperative_timeout_output="$({
+  HOST_BIN="$uncooperative_timeout_probe" \
+    WORK_INPUT="$input_json" \
+    ZKVM_TIMEOUT_SECONDS=1 \
+    ZKVM_TERMINATION_GRACE_SECONDS=1 \
+    run_host_with_timeout
+} 2>&1)"; then
+  echo "run_host_with_timeout should fail when timeout must force-kill the host"
+  exit 1
+fi
+
+if ! grep -q "zkVM execution timed out after 1s" <<<"$uncooperative_timeout_output"; then
+  echo "a timeout force-kill must remain classified as timeout"
+  echo "$uncooperative_timeout_output"
+  exit 1
+fi
+
+if killed_output="$(HOST_BIN="$killed_probe" WORK_INPUT="$input_json" run_host_with_timeout 2>&1)"; then
+  echo "run_host_with_timeout should fail when the host exits 137"
+  exit 1
+fi
+
+if ! grep -q "zkVM execution failed with exit code 137" <<<"$killed_output"; then
+  echo "an immediate host exit 137 must remain a prover execution failure"
+  echo "$killed_output"
+  exit 1
+fi
+
+if grep -q "timed out" <<<"$killed_output"; then
+  echo "an immediate host exit 137 must not be misclassified as a timeout"
+  echo "$killed_output"
   exit 1
 fi

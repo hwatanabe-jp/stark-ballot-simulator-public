@@ -11,15 +11,15 @@ output "foundation_state_backend_key" {
 output "target_image_authority" {
   description = "Target image authority repository names and policy summary."
   value = {
-    toolchain_repository_name = aws_ecr_repository.toolchain.name
-    toolchain_repository_url  = aws_ecr_repository.toolchain.repository_url
-    prover_repository_name    = aws_ecr_repository.prover.name
-    prover_repository_url     = aws_ecr_repository.prover.repository_url
-    tag_mutability            = "IMMUTABLE"
-    scan_on_push              = true
-    signing_status_required   = "COMPLETE"
-    signing_profile_name      = aws_signer_signing_profile.ecr.name
-    signing_profile_arn       = aws_signer_signing_profile.ecr.arn
+    toolchain_repository_name      = aws_ecr_repository.toolchain.name
+    toolchain_repository_url       = aws_ecr_repository.toolchain.repository_url
+    prover_repository_name         = aws_ecr_repository.prover.name
+    prover_repository_url          = aws_ecr_repository.prover.repository_url
+    tag_mutability                 = "IMMUTABLE"
+    scan_on_push                   = true
+    prover_signing_status_required = "COMPLETE"
+    signing_profile_name           = aws_signer_signing_profile.ecr.name
+    signing_profile_arn            = aws_signer_signing_profile.ecr.arn
     signing_repository_filters = [
       for repository_name in local.ecr_signing_repository_filters : {
         filter     = repository_name

@@ -1,15 +1,6 @@
-export type ImageIdVariant = 'default' | 'x86_64';
+import type { ImageIdVariant } from './image-id-mapping.js';
 
-export interface ImageIdMappingLike {
-  mappings: {
-    [version: string]: {
-      expectedImageID?: string;
-      expectedImageID_x86_64?: string;
-      supportedVariants?: string[];
-    };
-  };
-  current?: string;
-}
+export type { ImageIdMapping, ImageIdVariant } from './image-id-mapping.js';
 
 export declare const IMAGE_ID_VARIANTS: readonly ImageIdVariant[];
 
@@ -18,7 +9,7 @@ export declare function isImageIdVariant(value: unknown): value is ImageIdVarian
 export declare function resolveConfiguredImageIdVariant(value: unknown, fallback?: ImageIdVariant): ImageIdVariant;
 
 export declare function resolveExpectedImageIdFromMapping(
-  mapping: ImageIdMappingLike,
+  mapping: unknown,
   version?: number,
   variant?: ImageIdVariant,
 ): string;

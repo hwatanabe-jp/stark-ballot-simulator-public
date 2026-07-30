@@ -56,16 +56,10 @@ data "aws_iam_policy_document" "foundation_prover_release_toolchain_resolver_bui
     resources = [
       local.foundation_toolchain_accepted_pointer_object_arn,
       local.foundation_toolchain_artifact_records_objects_arn,
+      "${local.foundation_release_manifest_bucket_arn}/promotions/develop/toolchain/*",
     ]
   }
 
-  statement {
-    sid    = "ListToolchainArtifactAuthority"
-    effect = "Allow"
-
-    actions   = ["s3:ListBucket"]
-    resources = [local.foundation_release_manifest_bucket_arn]
-  }
 }
 
 resource "aws_iam_role_policy" "foundation_prover_release_toolchain_resolver_build" {
@@ -175,15 +169,6 @@ data "aws_iam_policy_document" "foundation_prover_release_candidate_build" {
     resources = local.foundation_ecr_signing_profile_arns
   }
 
-  statement {
-    sid    = "PublishProverReleaseCandidateMetadata"
-    effect = "Allow"
-
-    actions = [
-      "s3:PutObject",
-    ]
-    resources = [local.foundation_prover_release_candidate_metadata_objects_arn]
-  }
 }
 
 resource "aws_iam_role_policy" "foundation_prover_release_candidate_build" {
@@ -192,72 +177,6 @@ resource "aws_iam_role_policy" "foundation_prover_release_candidate_build" {
   name   = "${aws_iam_role.foundation_prover_release_candidate_build[0].name}-policy"
   role   = aws_iam_role.foundation_prover_release_candidate_build[0].id
   policy = data.aws_iam_policy_document.foundation_prover_release_candidate_build[0].json
-}
-
-data "aws_iam_policy_document" "foundation_prover_release_promotion_evidence_build" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
-
-  statement {
-    sid    = "UseProverReleasePromotionEvidencePipelineArtifacts"
-    effect = "Allow"
-
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-      "s3:ListBucket",
-      "s3:PutObject",
-    ]
-    resources = [
-      aws_s3_bucket.foundation_pipeline_artifacts[0].arn,
-      "${aws_s3_bucket.foundation_pipeline_artifacts[0].arn}/*",
-    ]
-  }
-
-  statement {
-    sid    = "UseProverReleasePromotionEvidencePipelineArtifactKey"
-    effect = "Allow"
-
-    actions = [
-      "kms:Decrypt",
-      "kms:DescribeKey",
-      "kms:Encrypt",
-      "kms:GenerateDataKey",
-      "kms:ReEncryptFrom",
-      "kms:ReEncryptTo",
-    ]
-    resources = [aws_kms_key.foundation_pipeline_artifacts[0].arn]
-  }
-
-  statement {
-    sid    = "WriteProverReleasePromotionEvidenceBuildLogs"
-    effect = "Allow"
-
-    actions = [
-      "logs:CreateLogStream",
-      "logs:PutLogEvents",
-    ]
-    resources = [
-      "arn:aws:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/codebuild/${local.prover_release_promotion_evidence_project_name}:*",
-    ]
-  }
-
-  statement {
-    sid    = "PublishProverReleasePromotionEvidence"
-    effect = "Allow"
-
-    actions = [
-      "s3:PutObject",
-    ]
-    resources = [local.foundation_prover_release_promotion_evidence_objects_arn]
-  }
-}
-
-resource "aws_iam_role_policy" "foundation_prover_release_promotion_evidence_build" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
-
-  name   = "${aws_iam_role.foundation_prover_release_promotion_evidence_build[0].name}-policy"
-  role   = aws_iam_role.foundation_prover_release_promotion_evidence_build[0].id
-  policy = data.aws_iam_policy_document.foundation_prover_release_promotion_evidence_build[0].json
 }
 
 data "aws_iam_policy_document" "foundation_prover_release_update_accepted_pointer_build" {
@@ -337,6 +256,12 @@ data "aws_iam_policy_document" "foundation_prover_release_update_accepted_pointe
 
     actions   = ["s3:ListBucket"]
     resources = [local.foundation_release_manifest_bucket_arn]
+
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "s3:prefix"
+      values   = ["channels/develop/prover/accepted.json"]
+    }
   }
 }
 

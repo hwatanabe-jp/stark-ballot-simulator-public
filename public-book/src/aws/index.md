@@ -4,10 +4,10 @@
 まず [AWS runtime boundary](runtime-boundary.md) を読み、公開仕様として扱う範囲を確認してください。
 
 AWS runtime は、Terraform 管理の静的フロントエンド、Hono/API ランタイム、DynamoDB ストア、非同期プローバー、検証 worker、private proof artifact storage で構成されます。
-この部はそれぞれの責務分担を説明します。個別環境の導入・移行の進捗は [本章で扱わないもの](#本章で扱わないもの) に含めます。
+この部はそれぞれの責務分担を説明します。
 
 ここでいう `public` は「秘密を含まず第三者検証に使える」という機密性の分類であり、無認証公開を意味しません（定義は [公開境界](../verification/public-boundary.md)）。
-`verification.json` などの protected report artifact は別物で、通常の bundle/report 取得経路は capability 保護 API です。
+`verification.json` などの protected report artifact の通常の bundle/report 取得経路は capability 保護 API です（[バンドル構造](../verification/bundle-structure.md)）。
 
 ## この部に含まれる章
 
@@ -15,7 +15,8 @@ AWS runtime は、Terraform 管理の静的フロントエンド、Hono/API ラ�
 - [現行構成とサービス一覧](design-and-services.md)：runtime 管理境界、環境分離、主要サービスの責務
 - [トポロジー](topology.md)：レイヤ別のサービス構成と通信フロー
 - [非同期プローバー](async-prover.md)：SQS → Step Functions → ECS による証明パイプライン
-- [イメージ署名](image-signing.md)：AWS Signer によるコンテナイメージ検証
+- [可観測性設計](observability.md)：verdict authority と分離した構造化ログ、検出、相関、通知境界
+- [イメージ署名](image-signing.md)：AWS Signer managed signing と deployment preflight / ECS 実行前の暗号学的検証
 - [Terraform](terraform.md)：IaC による root ownership、recovery selection、deployment / release authority、runtime wiring
 
 ## 想定読者と前提
@@ -27,9 +28,9 @@ AWS runtime は、Terraform 管理の静的フロントエンド、Hono/API ラ�
 
 - 退役済み Amplify / AppSync 構成の詳細
 - Terraform 文法・モジュール設計の一般論
-- CloudWatch アラート設計やコスト最適化ガイド
-- 個別アカウント、秘密値、アカウント固有の承認手順や詳細な証跡、移行作業記録、環境切り替えの進捗
-- 本番環境の初期構築、独自ドメインの本番 DNS 切り替え、旧 AWS アカウント削除の完了状態
+- 個別 account の alarm tuning、24 時間 on-call、詳細なコスト最適化
+- 個別アカウント、秘密値、アカウント固有の承認手順や詳細な証跡
+- 移行作業記録と、環境切り替え、本番環境の初期構築、独自ドメインの本番 DNS 切り替え、旧 AWS アカウント削除の進捗・完了状態
 
 ## 関連する章
 

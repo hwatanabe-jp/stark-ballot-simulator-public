@@ -633,6 +633,11 @@ describe('verification-bundle', () => {
         JSON.stringify(verificationPayload, null, 2),
         'utf-8',
       );
+      await fs.writeFile(
+        path.join(result.bundlePath, 'failure-marker.json'),
+        JSON.stringify({ category: 'artifact' }),
+        'utf-8',
+      );
       const expectedFiles = [
         'public-input.json',
         'election-manifest.json',
@@ -664,6 +669,7 @@ describe('verification-bundle', () => {
       expect(extractedFiles).not.toContain('included-bitmap.json');
       expect(extractedFiles).not.toContain('seen-bitmap.json');
       expect(extractedFiles).not.toContain('verification.json');
+      expect(extractedFiles).not.toContain('failure-marker.json');
     });
   });
 });

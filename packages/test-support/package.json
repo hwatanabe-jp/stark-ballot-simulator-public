@@ -13,11 +13,11 @@
     "@stark-ballot/validation": "workspace:*",
     "@stark-ballot/verification": "workspace:*",
     "@stark-ballot/zkvm-contract": "workspace:*",
-    "undici": "8.7.0"
+    "undici": "8.8.0"
   },
   "devDependencies": {
     "@types/yazl": "3.3.1",
-    "vitest": "4.1.9",
+    "vitest": "4.1.10",
     "yazl": "3.3.1"
   }
 }

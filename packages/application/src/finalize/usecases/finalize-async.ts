@@ -16,6 +16,8 @@ import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
 import type { FinalizationLifecycleStore } from '@stark-ballot/application/finalize/finalization-store';
 import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { emitCanonicalEvent } from '@stark-ballot/diagnostics/canonicalEvents';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { isCurrentArtifactBoundaryError } from '@stark-ballot/domain/contract';
 import type { FinalizeAcceptedPayload, FinalizeSessionError, Result } from './types';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
@@ -75,6 +77,18 @@ export async function finalizeAsync(
     };
   }
 
+  const correlation = {
+    session_id_hash: hashSessionIdForLogging(input.sessionId),
+    execution_id: executionId,
+  } as const;
+  emitCanonicalEvent({
+    event: 'finalize_transition_attempted',
+    to: 'pending',
+    source: 'finalize',
+    reason: 'FINALIZE_REQUESTED',
+    ...correlation,
+  });
+
   let finalizationState: FinalizationState;
   try {
     finalizationState = await deps.store.markFinalizationQueued(input.sessionId, {
@@ -82,6 +96,10 @@ export async function finalizeAsync(
       queuedAt,
       contractGeneration: input.contractGeneration,
       scenarioContext: input.scenarioContext,
+      observability: {
+        source: 'finalize',
+        reason: 'FINALIZE_REQUESTED',
+      },
     });
   } catch (error) {
     if (isCurrentArtifactBoundaryError(error)) {
@@ -128,6 +146,33 @@ export async function finalizeAsync(
   const zkvmInputCommitment = (deps.computeCommitment ?? computeInputCommitment)(input.zkvmInput);
   if (input.targetAwsRuntime ?? false) {
     if (!deps.persistAsyncProverInput) {
+      emitCanonicalEvent({
+        event: 'finalize_transition_attempted',
+        to: 'failed',
+        source: 'finalize',
+        reason: 'PROVER_INPUT_PERSISTENCE_UNAVAILABLE',
+        ...correlation,
+      });
+      if (typeof deps.store.markFinalizationFailed === 'function') {
+        try {
+          await deps.store.markFinalizationFailed(input.sessionId, {
+            executionId,
+            queuedAt,
+            contractGeneration: input.contractGeneration,
+            failedAt: (deps.now ?? Date.now)(),
+            error: {
+              code: 'PROVER_INPUT_PERSISTENCE_UNAVAILABLE',
+              message: 'Target async prover input persistence is unavailable',
+            },
+            observability: {
+              source: 'finalize',
+              reason: 'PROVER_INPUT_PERSISTENCE_UNAVAILABLE',
+            },
+          });
+        } catch (markError) {
+          logger.error('[API] Failed to mark finalization as failed after missing input persistence', markError);
+        }
+      }
       return {
         ok: false,
         error: {
@@ -149,6 +194,13 @@ export async function finalizeAsync(
       logger.error('[API] Failed to persist target async prover input', error);
 
       if (typeof deps.store.markFinalizationFailed === 'function') {
+        emitCanonicalEvent({
+          event: 'finalize_transition_attempted',
+          to: 'failed',
+          source: 'finalize',
+          reason: 'PROVER_INPUT_UPLOAD_FAILED',
+          ...correlation,
+        });
         try {
           await deps.store.markFinalizationFailed(input.sessionId, {
             executionId,
@@ -158,6 +210,10 @@ export async function finalizeAsync(
             error: {
               code: 'PROVER_INPUT_UPLOAD_FAILED',
               message: error instanceof Error ? error.message : 'Failed to persist target async prover input',
+            },
+            observability: {
+              source: 'finalize',
+              reason: 'PROVER_INPUT_UPLOAD_FAILED',
             },
           });
         } catch (markError) {
@@ -198,6 +254,13 @@ export async function finalizeAsync(
     logger.error('[API] Failed to publish finalize job', error);
 
     if (typeof deps.store.markFinalizationFailed === 'function') {
+      emitCanonicalEvent({
+        event: 'finalize_transition_attempted',
+        to: 'failed',
+        source: 'finalize',
+        reason: 'SQS_PUBLISH_FAILED',
+        ...correlation,
+      });
       try {
         await deps.store.markFinalizationFailed(input.sessionId, {
           executionId,
@@ -207,6 +270,10 @@ export async function finalizeAsync(
           error: {
             code: 'SQS_PUBLISH_FAILED',
             message: error instanceof Error ? error.message : 'Failed to enqueue finalization job',
+          },
+          observability: {
+            source: 'finalize',
+            reason: 'SQS_PUBLISH_FAILED',
           },
         });
       } catch (markError) {

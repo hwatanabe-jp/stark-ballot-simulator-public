@@ -6,6 +6,7 @@
 #[cfg(test)]
 mod tests {
     use crate::sth::compute_sth_digest;
+    use alloc::vec;
     use contract_core::{
         compute_bitmap_merkle_root, compute_commitment, compute_input_commitment_v4, VoteWithProof,
     };

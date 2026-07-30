@@ -51,6 +51,7 @@ describe('session middleware', () => {
         updateSessionCalls.push([sessionId, data]);
         return Promise.resolve(undefined);
       },
+      recordVerificationObservation: () => Promise.resolve({ status: 'recorded' }),
       getActiveSessionCount: () => Promise.resolve(0),
       getVoteById: () => Promise.resolve(null),
       getVoteByIdWithProof: () => Promise.resolve(null),

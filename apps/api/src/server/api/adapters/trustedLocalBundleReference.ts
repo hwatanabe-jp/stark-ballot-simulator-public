@@ -2,6 +2,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import type { AwsPersistedFinalizationResult } from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashKeyPrefixForLogging, hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 
 interface LocalBundleIdentity {
   bundlePath: string;
@@ -61,7 +62,9 @@ function resolveTrustedBundleIdentity(
   try {
     resolvedBundlePath = realpathSync(bundlePath);
   } catch {
-    logger.debug('[FinalizationResult] Ignoring missing local bundle path', { bundlePath });
+    logger.debug('[FinalizationResult] Ignoring missing local bundle path', {
+      path_hash: hashKeyPrefixForLogging(bundlePath),
+    });
     return undefined;
   }
 
@@ -69,9 +72,9 @@ function resolveTrustedBundleIdentity(
 
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
     logger.debug('[FinalizationResult] Ignoring local bundle path outside verifier work dir', {
-      bundlePath,
-      resolvedBundlePath,
-      resolvedBaseDir,
+      requested_path_hash: hashKeyPrefixForLogging(bundlePath),
+      resolved_path_hash: hashKeyPrefixForLogging(resolvedBundlePath),
+      base_path_hash: hashKeyPrefixForLogging(resolvedBaseDir),
     });
     return undefined;
   }
@@ -79,9 +82,9 @@ function resolveTrustedBundleIdentity(
   const segments = relative.split(path.sep).filter(Boolean);
   if (segments.length !== 2) {
     logger.debug('[FinalizationResult] Ignoring local bundle path with unexpected layout', {
-      bundlePath,
-      resolvedBundlePath,
-      relative,
+      requested_path_hash: hashKeyPrefixForLogging(bundlePath),
+      resolved_path_hash: hashKeyPrefixForLogging(resolvedBundlePath),
+      relative_path_hash: hashKeyPrefixForLogging(relative),
     });
     return undefined;
   }
@@ -92,9 +95,9 @@ function resolveTrustedBundleIdentity(
   }
   if (!isSafeBundleSegment(sessionId) || !isSafeBundleSegment(executionId)) {
     logger.debug('[FinalizationResult] Ignoring local bundle path with unsafe segments', {
-      bundlePath,
-      resolvedBundlePath,
-      sessionId,
+      requested_path_hash: hashKeyPrefixForLogging(bundlePath),
+      resolved_path_hash: hashKeyPrefixForLogging(resolvedBundlePath),
+      session_id_hash: hashSessionIdForLogging(sessionId),
       executionId,
     });
     return undefined;
@@ -102,8 +105,8 @@ function resolveTrustedBundleIdentity(
 
   if (authority.verificationExecutionId && authority.verificationExecutionId !== executionId) {
     logger.debug('[FinalizationResult] Ignoring local bundle path with mismatched execution identity', {
-      bundlePath,
-      resolvedBundlePath,
+      requested_path_hash: hashKeyPrefixForLogging(bundlePath),
+      resolved_path_hash: hashKeyPrefixForLogging(resolvedBundlePath),
       expectedExecutionId: authority.verificationExecutionId,
       actualExecutionId: executionId,
     });
@@ -116,10 +119,10 @@ function resolveTrustedBundleIdentity(
     (expectedBundleIdentity.sessionId !== sessionId || expectedBundleIdentity.executionId !== executionId)
   ) {
     logger.debug('[FinalizationResult] Ignoring local bundle path with mismatched bundle key identity', {
-      bundlePath,
-      resolvedBundlePath,
-      expectedSessionId: expectedBundleIdentity.sessionId,
-      actualSessionId: sessionId,
+      requested_path_hash: hashKeyPrefixForLogging(bundlePath),
+      resolved_path_hash: hashKeyPrefixForLogging(resolvedBundlePath),
+      expected_session_id_hash: hashSessionIdForLogging(expectedBundleIdentity.sessionId),
+      actual_session_id_hash: hashSessionIdForLogging(sessionId),
       expectedExecutionId: expectedBundleIdentity.executionId,
       actualExecutionId: executionId,
     });
@@ -128,7 +131,7 @@ function resolveTrustedBundleIdentity(
 
   if (!existsSync(path.join(resolvedBundlePath, 'public-input.json'))) {
     logger.debug('[FinalizationResult] Ignoring local bundle path without public-input.json', {
-      bundlePath: resolvedBundlePath,
+      path_hash: hashKeyPrefixForLogging(resolvedBundlePath),
     });
     return undefined;
   }
@@ -170,9 +173,9 @@ export function resolveTrustedLocalBundleReference(
 
   if (localBundleIdentity.sessionId !== sessionId) {
     logger.debug('[FinalizationResult] Ignoring local bundle path with mismatched session identity', {
-      bundlePath: localBundleIdentity.bundlePath,
-      expectedSessionId: sessionId,
-      actualSessionId: localBundleIdentity.sessionId,
+      path_hash: hashKeyPrefixForLogging(localBundleIdentity.bundlePath),
+      expected_session_id_hash: hashSessionIdForLogging(sessionId),
+      actual_session_id_hash: hashSessionIdForLogging(localBundleIdentity.sessionId),
     });
     return undefined;
   }

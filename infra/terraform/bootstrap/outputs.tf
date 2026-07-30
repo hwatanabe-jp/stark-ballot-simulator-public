@@ -74,7 +74,7 @@ output "development_foundation_pipeline_name" {
 }
 
 output "development_prover_release_pipeline_name" {
-  description = "Development prover release candidate and promotion-evidence pipeline name when enabled."
+  description = "Development prover release pipeline name when enabled."
   value       = var.enable_development_foundation_pipeline ? aws_codepipeline.development_prover_release[0].name : null
 }
 

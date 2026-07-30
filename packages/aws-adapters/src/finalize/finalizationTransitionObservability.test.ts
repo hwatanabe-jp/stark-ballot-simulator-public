@@ -1,0 +1,291 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
+import fs from 'fs-extra';
+import { logger } from '@stark-ballot/diagnostics/logger';
+import { resolveCurrentContractGeneration } from '@stark-ballot/domain/contract';
+import { MockSessionStore } from '../store/mockSessionStore';
+import {
+  recordFinalizationPersistenceOutcome,
+  recordFinalizationStorePersistenceOutcome,
+} from './finalizationTransitionObservability';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('MockSessionStore finalization transition ownership', () => {
+  it('emits exactly one authoritative event for changed, idempotent, and rejected updates', async () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const store = new MockSessionStore();
+    const session = await store.createSession();
+    info.mockClear();
+
+    const queuedPayload = {
+      executionId: 'exec-store-observation',
+      queuedAt: 1_700_000_000_000,
+      contractGeneration: resolveCurrentContractGeneration(),
+      observability: { source: 'finalize', reason: 'FINALIZE_REQUESTED' },
+    } as const;
+    await store.markFinalizationQueued(session.sessionId, queuedPayload);
+
+    expect(info.mock.calls.filter(([message]) => message === 'finalize_state_transition')).toHaveLength(1);
+    expect(info).toHaveBeenCalledWith(
+      'finalize_state_transition',
+      expect.objectContaining({ from: 'none', to: 'pending', changed: true }),
+    );
+
+    info.mockClear();
+    await store.markFinalizationQueued(session.sessionId, queuedPayload);
+    expect(info.mock.calls.filter(([message]) => message === 'finalize_state_transition')).toHaveLength(1);
+    expect(info).toHaveBeenCalledWith(
+      'finalize_state_transition',
+      expect.objectContaining({ from: 'pending', to: 'pending', changed: false, reason: 'IDEMPOTENT_RETRY' }),
+    );
+
+    info.mockClear();
+    warn.mockClear();
+    await store.markFinalizationRunning(session.sessionId, {
+      executionId: 'exec-stale-observation',
+      queuedAt: queuedPayload.queuedAt,
+      startedAt: queuedPayload.queuedAt + 1,
+      contractGeneration: queuedPayload.contractGeneration,
+      observability: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
+    });
+
+    expect(info.mock.calls.filter(([message]) => message === 'finalize_state_transition')).toHaveLength(0);
+    expect(warn.mock.calls.filter(([message]) => message === 'finalize_state_update_rejected')).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith(
+      'finalize_state_update_rejected',
+      expect.objectContaining({ to: 'running', reason: 'EXECUTION_MISMATCH' }),
+    );
+  });
+});
+
+describe('FileMockSessionStore finalization transition ownership', () => {
+  it('emits only after the file-backed state has been saved', async () => {
+    const storageDir = path.join(process.cwd(), '.tmp', `p2-finalization-observability-${Date.now()}`);
+    const originalStorageDir = process.env['FILE_MOCK_STORE_DIR'];
+    process.env['FILE_MOCK_STORE_DIR'] = storageDir;
+    try {
+      const { FileMockSessionStore } = await import('../store/fileMockSessionStore');
+      const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+      const store = new FileMockSessionStore();
+      const session = await store.createSession();
+      info.mockClear();
+
+      await store.markFinalizationQueued(session.sessionId, {
+        executionId: 'exec-file-observation',
+        queuedAt: 1_700_000_000_000,
+        contractGeneration: resolveCurrentContractGeneration(),
+        observability: { source: 'finalize', reason: 'FINALIZE_REQUESTED' },
+      });
+
+      expect(info.mock.calls.filter(([message]) => message === 'finalize_state_transition')).toHaveLength(1);
+      expect(info).toHaveBeenCalledWith(
+        'finalize_state_transition',
+        expect.objectContaining({ from: 'none', to: 'pending', changed: true }),
+      );
+      await expect(fs.pathExists(path.join(storageDir, 'sessions.json'))).resolves.toBe(true);
+    } finally {
+      if (originalStorageDir === undefined) {
+        delete process.env['FILE_MOCK_STORE_DIR'];
+      } else {
+        process.env['FILE_MOCK_STORE_DIR'] = originalStorageDir;
+      }
+      await fs.remove(storageDir);
+    }
+  });
+});
+
+describe('recordFinalizationPersistenceOutcome', () => {
+  it('records the actual before/after states only after an authoritative write', () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+
+    recordFinalizationPersistenceOutcome({
+      sessionId: 'session-transition',
+      requestedExecutionId: 'exec-transition',
+      requestedTo: 'running',
+      before: { status: 'pending', executionId: 'exec-transition' },
+      actual: { status: 'running', executionId: 'exec-transition' },
+      authoritativeWrite: true,
+      metadata: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
+    });
+
+    expect(info).toHaveBeenCalledWith(
+      'finalize_state_transition',
+      expect.objectContaining({
+        event: 'finalize_state_transition',
+        from: 'pending',
+        to: 'running',
+        source: 'writer_update',
+        reason: 'RUNTIME_UPDATE_RECEIVED',
+        changed: true,
+        execution_id: 'exec-transition',
+      }),
+    );
+    const payload = info.mock.calls[0]?.[1];
+    expect(payload && typeof payload === 'object' ? Reflect.get(payload, 'session_id_hash') : undefined).toMatch(
+      /^sid_[0-9a-f]{12}$/,
+    );
+  });
+
+  it('represents a locally admitted idempotent retry with changed false', () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+
+    recordFinalizationPersistenceOutcome({
+      sessionId: 'session-idempotent',
+      requestedExecutionId: 'exec-idempotent',
+      requestedTo: 'running',
+      before: { status: 'running', executionId: 'exec-idempotent' },
+      actual: { status: 'running', executionId: 'exec-idempotent' },
+      authoritativeWrite: true,
+      metadata: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
+    });
+
+    expect(info).toHaveBeenCalledWith(
+      'finalize_state_transition',
+      expect.objectContaining({ from: 'running', to: 'running', changed: false, reason: 'IDEMPOTENT_RETRY' }),
+    );
+  });
+
+  it('represents a competing persisted idempotent result without claiming the local write changed it', () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+
+    recordFinalizationPersistenceOutcome({
+      sessionId: 'session-concurrent-idempotent',
+      requestedExecutionId: 'exec-concurrent-idempotent',
+      requestedTo: 'running',
+      before: { status: 'pending', executionId: 'exec-concurrent-idempotent' },
+      actual: { status: 'running', executionId: 'exec-concurrent-idempotent' },
+      authoritativeWrite: false,
+      metadata: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
+    });
+
+    expect(info).toHaveBeenCalledWith(
+      'finalize_state_transition',
+      expect.objectContaining({ from: 'running', to: 'running', changed: false, reason: 'IDEMPOTENT_RETRY' }),
+    );
+  });
+
+  it('records a stale competing execution as a rejected requested update', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    recordFinalizationPersistenceOutcome({
+      sessionId: 'session-stale',
+      requestedExecutionId: 'exec-stale',
+      requestedTo: 'succeeded',
+      before: { status: 'running', executionId: 'exec-stale' },
+      actual: { status: 'running', executionId: 'exec-current' },
+      authoritativeWrite: false,
+      metadata: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
+    });
+
+    expect(warn).toHaveBeenCalledWith(
+      'finalize_state_update_rejected',
+      expect.objectContaining({ to: 'succeeded', source: 'writer_update', reason: 'EXECUTION_MISMATCH' }),
+    );
+  });
+
+  it('records sticky terminal refusal without fabricating a transition', () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    recordFinalizationPersistenceOutcome({
+      sessionId: 'session-terminal',
+      requestedExecutionId: 'exec-terminal',
+      requestedTo: 'running',
+      before: { status: 'failed', executionId: 'exec-terminal' },
+      actual: { status: 'failed', executionId: 'exec-terminal' },
+      authoritativeWrite: true,
+      metadata: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
+    });
+
+    expect(info).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      'finalize_state_update_rejected',
+      expect.objectContaining({ to: 'running', reason: 'TERMINAL_STATE_STICKY' }),
+    );
+  });
+
+  it('records both the fail-closed transition and the rejected requested state', () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    recordFinalizationPersistenceOutcome({
+      sessionId: 'session-fail-closed',
+      requestedExecutionId: 'exec-fail-closed',
+      requestedTo: 'running',
+      before: { status: 'pending', executionId: 'exec-fail-closed' },
+      actual: { status: 'failed', executionId: 'exec-fail-closed' },
+      actualReason: 'UNSUPPORTED_CURRENT_ARTIFACT',
+      authoritativeWrite: true,
+      metadata: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
+    });
+
+    expect(info).toHaveBeenCalledWith(
+      'finalize_state_transition',
+      expect.objectContaining({
+        from: 'pending',
+        to: 'failed',
+        changed: true,
+        reason: 'UNSUPPORTED_CURRENT_ARTIFACT',
+      }),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      'finalize_state_update_rejected',
+      expect.objectContaining({ to: 'running', reason: 'UNSUPPORTED_CURRENT_ARTIFACT' }),
+    );
+  });
+
+  it('preserves the corrupt-artifact guard reason on the transition and rejection', () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    recordFinalizationStorePersistenceOutcome({
+      sessionId: 'session-corrupt-artifact',
+      requestedExecutionId: 'exec-corrupt-artifact',
+      requestedTo: 'running',
+      before: { status: 'pending', executionId: 'exec-corrupt-artifact' },
+      actual: {
+        status: 'failed',
+        executionId: 'exec-corrupt-artifact',
+        queuedAt: 1_700_000_000_000,
+        failedAt: 1_700_000_001_000,
+        error: {
+          code: 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE',
+          message: 'Finalization state is corrupt or unreadable',
+        },
+      },
+      authoritativeWrite: true,
+      metadata: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
+    });
+
+    expect(info).toHaveBeenCalledWith(
+      'finalize_state_transition',
+      expect.objectContaining({ reason: 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE', changed: true }),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      'finalize_state_update_rejected',
+      expect.objectContaining({ reason: 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE' }),
+    );
+  });
+
+  it('uses none only when the authoritative store had no prior state', () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+
+    recordFinalizationPersistenceOutcome({
+      sessionId: 'session-initial',
+      requestedExecutionId: 'exec-initial',
+      requestedTo: 'pending',
+      actual: { status: 'pending', executionId: 'exec-initial' },
+      authoritativeWrite: true,
+      metadata: { source: 'finalize', reason: 'FINALIZE_REQUESTED' },
+    });
+
+    expect(info).toHaveBeenCalledWith(
+      'finalize_state_transition',
+      expect.objectContaining({ from: 'none', to: 'pending', changed: true }),
+    );
+  });
+});

@@ -232,6 +232,38 @@ describe('target API route contract', () => {
         'expected-image-id',
       ]),
     );
+    expect(getApiRouteContract('POST', '/verification/observation')).toMatchObject({
+      routeId: 'verificationObservation.post',
+      authScope: 'header-session-capability',
+      capabilityScope: 'header',
+      requestSchema: 'VerificationObservationRequestSchema',
+      responseSchema: 'VerificationObservationResponseSchema',
+      rateLimit: {
+        required: false,
+        scope: 'none',
+        sourceIpDependency: 'not-required',
+      },
+    });
+    expect(getApiRouteContract('POST', '/verification/observation').admissionControls).toEqual(
+      expect.arrayContaining([
+        'session-header-capability',
+        'api-gateway-default-throttle',
+        'body-size',
+        'malformed-json',
+        'finalized-session',
+        'current-artifact',
+        'execution-id',
+        'durable-observation-cas',
+      ]),
+    );
+    expect(getApiRouteContract('POST', '/verification/observation').publicErrors.codes).toEqual(
+      expect.arrayContaining([
+        'INVALID_REQUEST',
+        'SESSION_NOT_FINALIZED',
+        'UNSUPPORTED_CURRENT_ARTIFACT',
+        'CORRUPT_OR_UNREADABLE_FINALIZED_STATE',
+      ]),
+    );
 
     const consistencyProofRoute = getApiRouteContract('GET', '/bulletin/consistency-proof');
     expect(consistencyProofRoute.admissionControls).toEqual(
@@ -283,5 +315,6 @@ describe('target API route contract', () => {
     expect(getApiRouteContract('POST', '/verification/run').admissionControls).toEqual(
       expect.arrayContaining(['body-size', 'malformed-json', 'rate-limit']),
     );
+    expect(getApiRouteContract('POST', '/verification/observation').admissionControls).not.toContain('rate-limit');
   });
 });

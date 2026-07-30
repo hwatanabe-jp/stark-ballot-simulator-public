@@ -107,16 +107,8 @@ RISC Zero はこれを cyclic domain と呼びます。
 
 ### この PoC での保証境界
 
-`Receipt::verify(image_id)` の成功は強い保証ですが、それ単体では「全票が提示された」ことまでは保証しません。
-Verified 表示は次がすべて揃った場合にのみ成立します。
-
-1. STARK 検証成功（正しいゲスト実行）
-2. `excludedSlots == 0`（除外スロットなし）
-3. `totalExpected == treeSize`（期待数と掲示板ツリーサイズの一致）
-4. 追記専用性と締切 STH の必須チェック成功
-
-加えて、必須チェックが `not_run` / `pending` / `running` のままでは Verified にはなりません。
-第三者 STH チェックは source 設定時に限り required に昇格します。
+`Receipt::verify(image_id)` の成功は強い保証ですが、それ単体では「全票が提示された」ことまでは保証せず、Verified 表示には不十分です。
+Verified は、STARK 検証成功に加えて、`excludedSlots == 0`、`totalExpected == treeSize`、追記専用性と締切 STH を含む必須チェックがすべて成功した場合にのみ成立します。
 詳細なゲーティング規範と判定ロジックは [ゲーティングロジック](../verification/gating-logic.md) を参照してください。
 
 ### 参考資料（RISC Zero 公式）

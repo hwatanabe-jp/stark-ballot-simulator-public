@@ -106,8 +106,8 @@ guest 側も Journal を emit する前に fail-closed する。
 
 ### 2.2 Journal
 
-現行 Journal contract は `methodVersion = 14` である。`methodVersion = 13` は legacy mapping として残るが、
-current generation の proof/journal contract ではない。
+現行 Journal contract は `methodVersion = 14` である。明示的な trust rotation により
+`methodVersion = 13` 以下の Image ID mapping は削除され、current generation と検証の対象外である。
 
 | フィールド                                  | 意味                                                                                           |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------------- |
@@ -402,10 +402,11 @@ public bundle member ではない。
 ImageID は、証明が期待した zkVM guest program で生成されたことを確認するための trust anchor である。
 
 現行の対応表は `public/imageId-mapping.json` が source of truth である。current mapping は
-`methodVersion = 14` を指し、`default` / ARM64 の `expectedImageID` と local x86_64 の
-`expectedImageID_x86_64` を保持する。target app handoff helper は、複数 variant がある current mapping
-では `default` / `expectedImageID` を active deployment evidence として扱う。local x86_64 検証では
-`EXPECTED_IMAGE_ID_VARIANT=x86_64` または呼び出し側の明示 option で `expectedImageID_x86_64` を選ぶ。
+`methodVersion = 14` を指し、`variants.default` と `variants.x86_64` を持つ。各 variant は
+`state: confirmed`（`imageId` と provenance を保持）または `state: unconfirmed`
+（`requiredEvidence: accepted-prover-release` のみ）の排他的な authority である。target App は
+confirmed `default` のみを使い、unconfirmed の場合に `x86_64` へ fallback しない。local x86_64
+検証では `EXPECTED_IMAGE_ID_VARIANT=x86_64` または呼び出し側の明示 option を使う。
 runtime / CLI の実際の解決経路は
 `packages/verification/src/verification/expected-image-id.ts`,
 `packages/verification/src/verification/image-id-verifier.ts`, `scripts/tests/cli-e2e-voting-flow.ts`,

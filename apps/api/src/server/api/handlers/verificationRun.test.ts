@@ -17,6 +17,7 @@ import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpe
 import { createTestPublicInputArtifact } from '@stark-ballot/test-support/testing/public-input-artifact';
 import { readJsonRecord, requireDataRecord } from '@stark-ballot/test-support/testing/response-helpers';
 import { getStringProperty } from '@stark-ballot/domain/utils/guards';
+import { logger } from '@stark-ballot/diagnostics/logger';
 import { runVerificationHandler } from './verificationRun';
 
 const verificationWorkerMocks = vi.hoisted(() => ({
@@ -242,6 +243,7 @@ describe('runVerificationHandler', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const [key, value] of Object.entries(originalEnv)) {
       if (value === undefined) {
         delete process.env[key];
@@ -568,6 +570,44 @@ describe('runVerificationHandler', () => {
     expect(getStringProperty(payload, 'error')).toBe('INTERNAL_ERROR');
     expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, { executionId });
     expect(rollbackVerificationResult).toHaveBeenCalledWith(sessionId, { executionId });
+  });
+
+  it('does not log private worker error response content', async () => {
+    const privateArtifactText =
+      'input.json contained vote opening 7; s3://private-bucket/sessions/private-session/private-execution/input.json';
+    const privateToken = 'v1.private-capability-token-material.private-signature-material';
+    verificationWorkerMocks.invokeVerificationWorker.mockResolvedValue({
+      status: 'error',
+      message: privateArtifactText,
+      details: {
+        privateArtifactText,
+        privateToken,
+      },
+    });
+    const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const { store, markVerificationRunning, rollbackVerificationResult } = createVerificationRunStore(
+      buildFinalizationResult({}, 'not_run'),
+    );
+
+    const response = await runVerificationHandler({ request: request(), store, clientIp: '127.0.0.1' });
+    const payload = await readJsonRecord(response, 'private worker error response');
+
+    expect(response.status).toBe(500);
+    expect(getStringProperty(payload, 'error')).toBe('INTERNAL_ERROR');
+    expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, { executionId });
+    expect(rollbackVerificationResult).toHaveBeenCalledWith(sessionId, { executionId });
+    expect(loggerErrorSpy).toHaveBeenCalledWith(
+      '[VerificationRun] Verifier runner returned an error response',
+      expect.objectContaining({
+        worker_response_status: 'error',
+        worker_details_present: true,
+      }),
+    );
+    const capturedLogs = JSON.stringify(loggerErrorSpy.mock.calls);
+    expect(capturedLogs).not.toContain(privateArtifactText);
+    expect(capturedLogs).not.toContain(privateToken);
+    expect(capturedLogs).not.toContain('s3://private-bucket');
+    expect(capturedLogs).not.toContain('input.json contained vote opening');
   });
 
   it('persists local-bundle verifier state without own undefined delivery fields', async () => {

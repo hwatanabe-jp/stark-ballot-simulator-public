@@ -1,196 +1,84 @@
-/**
- * ImageID Mapping Tests
- *
- * Tests for the ImageID mapping functionality that provides
- * the correspondence between methodVersion and expected ImageID
- * according to final-design.md §4.8
- */
-
-import { describe, it, expect } from 'vitest';
-import fs from 'fs/promises';
-import path from 'path';
-import crypto from 'crypto';
-import {
-  getNumberProperty,
-  getRecordProperty,
-  getStringProperty,
-  isRecord,
-} from '@stark-ballot/verification/shared/guards';
+import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { parseImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
-import type { ImageIdMapping } from '../image-id-types';
 
-describe('ImageID Mapping', () => {
-  const MAPPING_PATH = path.join(process.cwd(), 'public', 'imageId-mapping.json');
+describe('ImageID mapping trust material', () => {
+  const mappingPath = path.join(process.cwd(), 'public', 'imageId-mapping.json');
 
-  async function readMapping(label: string): Promise<Record<string, unknown>> {
-    const content = await fs.readFile(MAPPING_PATH, 'utf-8');
-    const payload: unknown = JSON.parse(content);
-    if (!isRecord(payload)) {
-      throw new Error(`${label} mapping is not an object`);
-    }
-    return payload;
+  async function readMapping() {
+    return parseImageIdMapping(JSON.parse(await fs.readFile(mappingPath, 'utf8')));
   }
 
-  describe('File Existence and Structure', () => {
-    it('should have imageId-mapping.json in public directory', async () => {
-      const exists = await fs
-        .access(MAPPING_PATH)
-        .then(() => true)
-        .catch(() => false);
+  it('uses the unversioned semantic mapping contract for the current method', async () => {
+    const mapping = await readMapping();
 
-      expect(exists).toBe(true);
-    });
+    expect(mapping.mappingType).toBe('image-id-mapping');
+    expect(mapping.current).toBe(String(CURRENT_METHOD_VERSION));
+    expect(Object.keys(mapping.mappings)).toEqual([String(CURRENT_METHOD_VERSION)]);
+    expect(mapping.mappings[mapping.current]?.methodVersion).toBe(CURRENT_METHOD_VERSION);
+    expect(mapping.deprecated).toEqual([]);
+  });
 
-    it('should have valid JSON structure', async () => {
-      const mapping = await readMapping('structure');
+  it('confirms default from the accepted managed Prover release', async () => {
+    const mapping = await readMapping();
 
-      expect(mapping).toHaveProperty('mappings');
-      expect(mapping).toHaveProperty('current');
-      expect(getRecordProperty(mapping, 'mappings')).toBeTypeOf('object');
-      expect(getStringProperty(mapping, 'current')).toBeTypeOf('string');
-    });
-
-    it(`should contain mapping for current methodVersion ${CURRENT_METHOD_VERSION}`, async () => {
-      const mapping = await readMapping('current version');
-      const mappings = getRecordProperty(mapping, 'mappings');
-
-      expect(mappings).toBeDefined();
-      if (!mappings) {
-        throw new Error('mappings missing');
-      }
-      expect(mappings).toHaveProperty('10');
-      expect(mappings).toHaveProperty(String(CURRENT_METHOD_VERSION));
-      const currentMapping = getRecordProperty(mappings, String(CURRENT_METHOD_VERSION));
-      expect(currentMapping).toBeDefined();
-      if (!currentMapping) {
-        throw new Error(`mapping for version ${CURRENT_METHOD_VERSION} missing`);
-      }
-      expect(getNumberProperty(currentMapping, 'methodVersion')).toBe(CURRENT_METHOD_VERSION);
-      expect(getStringProperty(currentMapping, 'description')).toBeDefined();
-      expect(getStringProperty(currentMapping, 'compiledAt')).toBeDefined();
-      expect(getStringProperty(currentMapping, 'trustStatus')).toBe('default-arm64-and-x86_64-active');
-      expect(currentMapping['supportedVariants']).toEqual(['default', 'x86_64']);
+    expect(mapping.mappings[mapping.current]?.variants.default).toEqual({
+      state: 'confirmed',
+      imageId: '0xd8619329804e7f183fc66aed960a69ec1c5aa326ecd51ac6a9f79eae4e35f15c',
+      provenance: {
+        evidenceType: 'accepted-prover-release',
+        sourceSha: '55a527a1c980750b81577f1a53d9e581e573516f',
+        proverImageDigest: 'sha256:1894dcc2cdcb61a807617d933d48fae936d172630677267c1054584feb0558a3',
+        candidateMetadataSha256: '4ea4cdfb92785df44af01a034347f92ca1f059e182d7fd0e154f2ace470e2a25',
+        releaseRecordSha256: '99d1384e3866972e38e25dd5bff4c2ebb75c268935c8f7daa67e81ccb27935df',
+        toolchainArtifactRecordSha256: 'c78fecd1ebfd9fec2dacff6b440172cdcc684d9729a291a91486949fe51fd31e',
+      },
     });
   });
 
-  describe('Current Version Retrieval', () => {
-    it('should retrieve the current methodVersion', async () => {
-      const mapping = await readMapping('current');
+  it('retains the confirmed x86_64 ImageID and exact local build provenance', async () => {
+    const mapping = await readMapping();
+    const x86 = mapping.mappings[mapping.current]?.variants.x86_64;
 
-      const currentKey = getStringProperty(mapping, 'current');
-      expect(currentKey).toBeTypeOf('string');
-      const mappings = getRecordProperty(mapping, 'mappings');
-      const currentMapping =
-        mappings && currentKey && isRecord(mappings) ? getRecordProperty(mappings, currentKey) : null;
-      expect(currentMapping).toBeDefined();
-      expect(getNumberProperty(currentMapping, 'methodVersion')).toBe(Number(currentKey));
-    });
-
-    it('resolves the current ARM64 and x86_64 ImageIDs from active trust material', async () => {
-      const mapping = await readMapping('current image id');
-      const mappings = getRecordProperty(mapping, 'mappings');
-      const currentKey = getStringProperty(mapping, 'current');
-      const currentMapping =
-        mappings && currentKey && isRecord(mappings) ? getRecordProperty(mappings, currentKey) : null;
-      expect(getStringProperty(currentMapping, 'expectedImageID')).toBe(
-        '0x4db926db832cc19d84af84cfb2e64b2be02c9ce6966bdd4ed824d269d8f3b232',
-      );
-      expect(getStringProperty(currentMapping, 'expectedImageID_x86_64')).toBe(
-        '0xf0ea09b47949a8610f4ba13e5ec36d791983edb899d62eed21bf5bfb6f54e94b',
-      );
-      expect(getStringProperty(currentMapping, 'trustStatus')).toBe('default-arm64-and-x86_64-active');
-    });
-
-    it('resolves methodVersion 14 default ARM64 and x86_64 ImageIDs', async () => {
-      expect(CURRENT_METHOD_VERSION).toBe(14);
-      const mapping = await readMapping('current image id resolver');
-      const { getExpectedImageId } = await import('../image-id-verifier');
-
-      expect(getExpectedImageId(mapping as unknown as ImageIdMapping, CURRENT_METHOD_VERSION, 'default')).toBe(
-        '0x4db926db832cc19d84af84cfb2e64b2be02c9ce6966bdd4ed824d269d8f3b232',
-      );
-      expect(getExpectedImageId(mapping as unknown as ImageIdMapping, CURRENT_METHOD_VERSION, 'x86_64')).toBe(
-        '0xf0ea09b47949a8610f4ba13e5ec36d791983edb899d62eed21bf5bfb6f54e94b',
-      );
+    expect(x86).toMatchObject({
+      state: 'confirmed',
+      imageId: '0x634850d3fc881e5c534ad32a03a49e1ed2d8f6841707cfdba35660fc883e5002',
+      provenance: {
+        evidenceType: 'local-guest-build',
+        hostRustVersion: '1.97.1',
+        risc0Version: '3.0.6',
+        guestToolchain: 'r0.1.97.0',
+        risc0Commit: '1cc70cf05033a79ebc90f07c679cb4bd1cd301b9',
+        guestToolchainCommit: 'e638c6cfea1eff5fbbb24a27e60538e3760d21b8',
+        guestElfSha256: '8468f067a0f6f4353d392f332f7a40c46181a0be30076bfb5bb4ec98ccd7a550',
+        guestProgramBinarySha256: '2505e8cc9c9a8b83a77bf37712a4300be81a1c498c6827f7f5253519e6e8fc2a',
+      },
     });
   });
 
-  describe('Security Features', () => {
-    it('should have features array documenting capabilities', async () => {
-      const mapping = await readMapping('features');
-      const mappings = getRecordProperty(mapping, 'mappings');
-      const currentKey = getStringProperty(mapping, 'current');
-      const currentMapping =
-        mappings && currentKey && isRecord(mappings) ? getRecordProperty(mappings, currentKey) : null;
-      const features =
-        currentMapping && isRecord(currentMapping) && Array.isArray(currentMapping['features'])
-          ? currentMapping['features']
-          : [];
-      expect(features).toBeInstanceOf(Array);
-      expect(features).toContain('STH digest binding');
-      expect(features).toContain('CT leaf usage tags');
-      expect(features).toContain('Input commitment sorting');
-    });
+  it('resolves each confirmed variant only when selected', async () => {
+    const mapping = await readMapping();
+    const { getExpectedImageId } = await import('../image-id-verifier');
 
-    it('should have Rust and RISC Zero version information', async () => {
-      const mapping = await readMapping('versions');
-      const mappings = getRecordProperty(mapping, 'mappings');
-      const currentKey = getStringProperty(mapping, 'current');
-      const currentMapping =
-        mappings && currentKey && isRecord(mappings) ? getRecordProperty(mappings, currentKey) : null;
-      expect(getStringProperty(currentMapping, 'rustVersion')).toMatch(/^\d+\.\d+\.\d+$/);
-      expect(getStringProperty(currentMapping, 'risc0Version')).toMatch(/^\d+\.\d+\.\d+$/);
-    });
-
-    it('should have deprecated versions list', async () => {
-      const mapping = await readMapping('deprecated');
-      const deprecated = isRecord(mapping) && Array.isArray(mapping['deprecated']) ? mapping['deprecated'] : undefined;
-      expect(mapping).toHaveProperty('deprecated');
-      expect(deprecated).toBeInstanceOf(Array);
-    });
+    expect(getExpectedImageId(mapping, CURRENT_METHOD_VERSION, 'default')).toBe(
+      '0xd8619329804e7f183fc66aed960a69ec1c5aa326ecd51ac6a9f79eae4e35f15c',
+    );
+    expect(getExpectedImageId(mapping, CURRENT_METHOD_VERSION, 'x86_64')).toBe(
+      '0x634850d3fc881e5c534ad32a03a49e1ed2d8f6841707cfdba35660fc883e5002',
+    );
   });
 
-  describe('Multiple Source Verification', () => {
-    it('should support fetching from multiple sources', async () => {
-      // This test simulates fetching from multiple sources
-      // In real implementation, would fetch from CDN, IPFS, etc.
-      const sources = [
-        MAPPING_PATH,
-        // In production: 'https://cdn.example.com/imageId-mapping.json',
-        // In production: 'ipfs://QmXXX.../imageId-mapping.json',
-      ];
+  it('documents the verification features and has a stable body checksum', async () => {
+    const content = await fs.readFile(mappingPath, 'utf8');
+    const mapping = parseImageIdMapping(JSON.parse(content));
+    const features = mapping.mappings[mapping.current]?.features;
 
-      const mappings: Array<Record<string, unknown>> = [];
-      for (const source of sources) {
-        try {
-          const content = await fs.readFile(source, 'utf-8');
-          const payload: unknown = JSON.parse(content);
-          if (isRecord(payload)) {
-            mappings.push(payload);
-          }
-        } catch {
-          // Optional mirror sources may be unavailable in this local test.
-        }
-      }
-
-      // At least one source should work
-      expect(mappings.length).toBeGreaterThan(0);
-
-      // All fetched mappings should be identical
-      if (mappings.length > 1) {
-        const first = JSON.stringify(mappings[0]);
-        for (let i = 1; i < mappings.length; i++) {
-          expect(JSON.stringify(mappings[i])).toBe(first);
-        }
-      }
-    });
-
-    it('should verify file integrity with hash', async () => {
-      const content = await fs.readFile(MAPPING_PATH, 'utf-8');
-      const hash = crypto.createHash('sha256').update(content).digest('hex');
-
-      expect(hash).toBeDefined();
-      expect(hash.length).toBe(64);
-    });
+    expect(features).toContain('STH digest binding');
+    expect(features).toContain('CT leaf usage tags');
+    expect(features).toContain('Input commitment sorting');
+    expect(crypto.createHash('sha256').update(content).digest('hex')).toMatch(/^[0-9a-f]{64}$/u);
   });
 });

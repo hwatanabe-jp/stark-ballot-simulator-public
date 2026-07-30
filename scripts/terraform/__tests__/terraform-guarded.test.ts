@@ -9,6 +9,20 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const SCRIPT_PATH = path.resolve(process.cwd(), 'scripts/terraform/terraform-guarded.sh');
+const APP_SIGNATURE_PREFLIGHT_PLAN_ROLE =
+  'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-sig-preflight-plan-stark-dev-develop-app/codebuild-test';
+const APP_SIGNATURE_PREFLIGHT_APPLY_ROLE =
+  'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-sig-preflight-apply-stark-dev-develop-app/codebuild-test';
+const APP_SIGNATURE_STATE_REFRESH_APPLY_ROLE =
+  'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-sig-state-refresh-apply-stark-dev-develop-app/codebuild-test';
+const APP_SIGNATURE_PREFLIGHT_TARGET_ARGS = [
+  '-target=terraform_data.image_signature_verifier_permissions_boundary_authority',
+  '-target=aws_cloudwatch_log_group.image_signature_verifier',
+  '-target=aws_iam_role.image_signature_verifier',
+  '-target=aws_iam_role_policy.image_signature_verifier',
+  '-target=aws_lambda_function.image_signature_verifier',
+  '-target=aws_lambda_alias.image_signature_verifier_preflight',
+] as const;
 
 function withTempDir(run: (dir: string) => void): void {
   const dir = mkdtempSync(path.join(tmpdir(), 'terraform-guarded-'));
@@ -755,6 +769,59 @@ describe('terraform-guarded.sh', () => {
   });
 
   it.each([
+    ['plan', APP_SIGNATURE_PREFLIGHT_PLAN_ROLE],
+    ['apply', APP_SIGNATURE_PREFLIGHT_APPLY_ROLE],
+    ['state refresh apply', APP_SIGNATURE_STATE_REFRESH_APPLY_ROLE],
+  ])('allows current signature-preflight %s role to run guarded backend init', (_roleType, roleArn) => {
+    withTempDir((dir) => {
+      installMocks(dir);
+      writeAppBackendConfig(dir);
+
+      const result = spawnSync(
+        'bash',
+        [SCRIPT_PATH, 'stark-dev/develop/app', 'init', '-backend-config=backend.pipeline.hcl'],
+        {
+          cwd: dir,
+          encoding: 'utf8',
+          env: testEnv(dir, {
+            ...appBackendEnv(),
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_WORKING_DIR: 'infra/terraform/app',
+            MOCK_AWS_ARN: roleArn,
+            MOCK_TERRAFORM_WORKSPACE: 'default',
+          }),
+        },
+      );
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Terraform guard passed for stark-dev/develop/app.');
+      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
+      expect(log).toContain('-chdir=infra/terraform/app init -backend-config=backend.pipeline.hcl');
+    });
+  });
+
+  it('allows the current signature-preflight plan role to validate app Terraform', () => {
+    withTempDir((dir) => {
+      installMocks(dir);
+      mkdirSync(path.join(dir, 'infra/terraform/app'), { recursive: true });
+
+      const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', 'validate'], {
+        encoding: 'utf8',
+        env: testEnv(dir, {
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+          TERRAFORM_WORKING_DIR: 'infra/terraform/app',
+          MOCK_AWS_ARN: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
+          MOCK_TERRAFORM_WORKSPACE: 'default',
+        }),
+      });
+
+      expect(result.status).toBe(0);
+      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
+      expect(log).toContain('-chdir=infra/terraform/app validate');
+    });
+  });
+
+  it.each([
     ['-migrate-state'],
     ['-force-copy'],
     ['-input=false'],
@@ -907,6 +974,53 @@ describe('terraform-guarded.sh', () => {
     });
   });
 
+  it.each([
+    {
+      label: 'signature-preflight apply role planning',
+      roleArn: APP_SIGNATURE_PREFLIGHT_APPLY_ROLE,
+      args: ['plan', '-out=tfplan', '-var-file=pipeline.auto.tfvars'],
+      expected: 'Terraform app guard requires the app plan CodeBuild role for plan.',
+    },
+    {
+      label: 'signature-preflight plan role applying',
+      roleArn: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
+      args: ['apply', '-auto-approve', 'tfplan'],
+      expected: 'Terraform app guard requires the app apply CodeBuild role for apply.',
+    },
+    {
+      label: 'signature state-refresh apply role planning',
+      roleArn: APP_SIGNATURE_STATE_REFRESH_APPLY_ROLE,
+      args: [
+        'plan',
+        '-refresh-only',
+        '-out=tfplan',
+        '-var-file=pipeline.auto.tfvars',
+        ...APP_SIGNATURE_PREFLIGHT_TARGET_ARGS,
+      ],
+      expected: 'Terraform app guard requires the app plan CodeBuild role for plan.',
+    },
+  ])('rejects $label before invoking Terraform', ({ args, expected, roleArn }) => {
+    withTempDir((dir) => {
+      installMocks(dir);
+      mkdirSync(path.join(dir, 'infra/terraform/app'), { recursive: true });
+      writeAppTfvars(dir);
+
+      const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', ...args], {
+        encoding: 'utf8',
+        env: testEnv(dir, {
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+          TERRAFORM_WORKING_DIR: 'infra/terraform/app',
+          MOCK_AWS_ARN: roleArn,
+          MOCK_TERRAFORM_WORKSPACE: 'default',
+        }),
+      });
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(expected);
+      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
+    });
+  });
+
   it('allows app plan role to run only the exact reviewed pipeline plan shape', () => {
     withTempDir((dir) => {
       installMocks(dir);
@@ -932,6 +1046,119 @@ describe('terraform-guarded.sh', () => {
       expect(result.status).toBe(0);
       const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
       expect(log).toContain(`-chdir=infra/terraform/app plan -out=tfplan -var-file=${tfvars}`);
+    });
+  });
+
+  it('allows the current signature-preflight plan role to run only the exact verifier-only plan', () => {
+    withTempDir((dir) => {
+      installMocks(dir);
+      mkdirSync(path.join(dir, 'infra/terraform/app'), { recursive: true });
+      const tfvars = writeAppTfvars(dir);
+
+      const result = spawnSync(
+        'bash',
+        [
+          SCRIPT_PATH,
+          'stark-dev/develop/app',
+          'plan',
+          '-out=tfplan',
+          '-var-file=pipeline.auto.tfvars',
+          ...APP_SIGNATURE_PREFLIGHT_TARGET_ARGS,
+        ],
+        {
+          cwd: dir,
+          encoding: 'utf8',
+          env: testEnv(dir, {
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_WORKING_DIR: 'infra/terraform/app',
+            MOCK_AWS_ARN: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
+            MOCK_TERRAFORM_WORKSPACE: 'default',
+          }),
+        },
+      );
+
+      expect(result.status).toBe(0);
+      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
+      expect(log).toContain(
+        `-chdir=infra/terraform/app plan -out=tfplan -var-file=${tfvars} ${APP_SIGNATURE_PREFLIGHT_TARGET_ARGS.join(' ')}`,
+      );
+    });
+  });
+
+  it('allows the current signature-preflight plan role to run the exact verifier refresh-only plan', () => {
+    withTempDir((dir) => {
+      installMocks(dir);
+      mkdirSync(path.join(dir, 'infra/terraform/app'), { recursive: true });
+      const tfvars = writeAppTfvars(dir);
+
+      const result = spawnSync(
+        'bash',
+        [
+          SCRIPT_PATH,
+          'stark-dev/develop/app',
+          'plan',
+          '-refresh-only',
+          '-out=tfplan',
+          '-var-file=pipeline.auto.tfvars',
+          ...APP_SIGNATURE_PREFLIGHT_TARGET_ARGS,
+        ],
+        {
+          cwd: dir,
+          encoding: 'utf8',
+          env: testEnv(dir, {
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_WORKING_DIR: 'infra/terraform/app',
+            MOCK_AWS_ARN: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
+            MOCK_TERRAFORM_WORKSPACE: 'default',
+          }),
+        },
+      );
+
+      expect(result.status).toBe(0);
+      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
+      expect(log).toContain(
+        `-chdir=infra/terraform/app plan -refresh-only -out=tfplan -var-file=${tfvars} ${APP_SIGNATURE_PREFLIGHT_TARGET_ARGS.join(' ')}`,
+      );
+    });
+  });
+
+  it.each([
+    ['missing target', APP_SIGNATURE_PREFLIGHT_TARGET_ARGS.slice(0, -1)],
+    ['extra target', [...APP_SIGNATURE_PREFLIGHT_TARGET_ARGS, '-target=aws_s3_bucket.example']],
+    [
+      'different target order',
+      [
+        APP_SIGNATURE_PREFLIGHT_TARGET_ARGS[1],
+        APP_SIGNATURE_PREFLIGHT_TARGET_ARGS[0],
+        ...APP_SIGNATURE_PREFLIGHT_TARGET_ARGS.slice(2),
+      ],
+    ],
+  ])('rejects a signature-preflight plan with an inexact verifier target set: %s', (_label, targetArgs) => {
+    withTempDir((dir) => {
+      installMocks(dir);
+      mkdirSync(path.join(dir, 'infra/terraform/app'), { recursive: true });
+      writeAppTfvars(dir);
+
+      const result = spawnSync(
+        'bash',
+        [SCRIPT_PATH, 'stark-dev/develop/app', 'plan', '-out=tfplan', '-var-file=pipeline.auto.tfvars', ...targetArgs],
+        {
+          cwd: dir,
+          encoding: 'utf8',
+          env: testEnv(dir, {
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_WORKING_DIR: 'infra/terraform/app',
+            MOCK_AWS_ARN: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
+            MOCK_TERRAFORM_WORKSPACE: 'default',
+          }),
+        },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        'signature preflight plan accepts only the exact verifier-only saved-plan target set.',
+      );
+      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
     });
   });
 
@@ -1111,6 +1338,30 @@ describe('terraform-guarded.sh', () => {
           TERRAFORM_WORKING_DIR: 'infra/terraform/app',
           MOCK_AWS_ARN:
             'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test',
+          MOCK_TERRAFORM_WORKSPACE: 'default',
+        }),
+      });
+
+      expect(result.status).toBe(0);
+      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
+      expect(log).toContain('-chdir=infra/terraform/app apply -auto-approve tfplan');
+    });
+  });
+
+  it.each([
+    ['signature-preflight', APP_SIGNATURE_PREFLIGHT_APPLY_ROLE],
+    ['signature state-refresh', APP_SIGNATURE_STATE_REFRESH_APPLY_ROLE],
+  ])('allows the current %s apply role to apply only the reviewed pipeline tfplan', (_label, roleArn) => {
+    withTempDir((dir) => {
+      installMocks(dir);
+      mkdirSync(path.join(dir, 'infra/terraform/app'), { recursive: true });
+
+      const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', 'apply', '-auto-approve', 'tfplan'], {
+        encoding: 'utf8',
+        env: testEnv(dir, {
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+          TERRAFORM_WORKING_DIR: 'infra/terraform/app',
+          MOCK_AWS_ARN: roleArn,
           MOCK_TERRAFORM_WORKSPACE: 'default',
         }),
       });

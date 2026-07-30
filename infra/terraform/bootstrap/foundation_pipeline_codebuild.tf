@@ -44,7 +44,7 @@ resource "aws_codebuild_project" "foundation_validate" {
             local.foundation_tfvars_command,
             local.foundation_guard_validate_command,
             "node --version | grep -E '^v24\\.'",
-            "printf '{\"schemaVersion\":\"foundation-saved-plan-evidence-v1\",\"manifestType\":\"foundation-validate\",\"stateIdentity\":\"stark-dev/develop/foundation\",\"sourceSha\":\"%s\",\"appRuntimeResourcesCreated\":false}\\n' \"$CODEBUILD_RESOLVED_SOURCE_VERSION\" > infra/terraform/foundation/evidence/foundation-validate.json",
+            "printf '{\"evidenceType\":\"foundation-saved-plan\",\"manifestType\":\"foundation-validate\",\"stateIdentity\":\"stark-dev/develop/foundation\",\"sourceSha\":\"%s\",\"appRuntimeResourcesCreated\":false}\\n' \"$CODEBUILD_RESOLVED_SOURCE_VERSION\" > infra/terraform/foundation/evidence/foundation-validate.json",
           ]
         }
       }
@@ -112,7 +112,7 @@ resource "aws_codebuild_project" "foundation_terraform_plan" {
             "terraform -chdir=infra/terraform/foundation show -no-color tfplan > infra/terraform/foundation/tfplan.txt",
             "terraform -chdir=infra/terraform/foundation show -json tfplan > infra/terraform/foundation/tfplan.json",
             "sha256sum infra/terraform/foundation/tfplan > infra/terraform/foundation/tfplan.sha256",
-            "printf '{\"schemaVersion\":\"foundation-saved-plan-evidence-v1\",\"manifestType\":\"foundation-plan\",\"stateIdentity\":\"stark-dev/develop/foundation\",\"sourceSha\":\"%s\",\"planChecksum\":\"%s\",\"appRuntimeResourcesCreated\":false}\\n' \"$CODEBUILD_RESOLVED_SOURCE_VERSION\" \"$(cut -d ' ' -f1 infra/terraform/foundation/tfplan.sha256)\" > infra/terraform/foundation/evidence/foundation-plan.json",
+            "printf '{\"evidenceType\":\"foundation-saved-plan\",\"manifestType\":\"foundation-plan\",\"stateIdentity\":\"stark-dev/develop/foundation\",\"sourceSha\":\"%s\",\"planChecksum\":\"%s\",\"appRuntimeResourcesCreated\":false}\\n' \"$CODEBUILD_RESOLVED_SOURCE_VERSION\" \"$(cut -d ' ' -f1 infra/terraform/foundation/tfplan.sha256)\" > infra/terraform/foundation/evidence/foundation-plan.json",
           ]
         }
       }
@@ -222,6 +222,7 @@ locals {
           "test -n \"$CODEBUILD_SRC_DIR_ApplyOutput\"",
           "mkdir -p infra/terraform/foundation/evidence",
           "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/foundation/apply-outputs.json infra/terraform/foundation/apply-outputs.json",
+          "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/foundation/evidence/foundation-action-executions.json infra/terraform/foundation/evidence/foundation-action-executions.json",
           "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/foundation/evidence/foundation-apply.json infra/terraform/foundation/evidence/foundation-apply.json",
           "cp \"$CODEBUILD_SRC_DIR_ApplyOutput\"/infra/terraform/foundation/evidence/foundation-state-resources.txt infra/terraform/foundation/evidence/foundation-state-resources.txt",
           local.foundation_backend_config_command,
@@ -229,12 +230,18 @@ locals {
           local.foundation_guard_smoke_command,
           "bash infra/terraform/bootstrap/foundation-pipeline-scripts/foundation-state-ownership.sh verify",
           local.foundation_absence_smoke_command,
+          "node infra/terraform/bootstrap/foundation-pipeline-scripts/publish-foundation-image-signing-authority.mjs --outputs infra/terraform/foundation/apply-outputs.json --action-executions infra/terraform/foundation/evidence/foundation-action-executions.json --bucket ${local.foundation_release_manifest_bucket_name} --account-id ${var.aws_account_id} --region ${var.aws_region} --body-output infra/terraform/foundation/evidence/foundation-image-signing-authority.json --publication-output infra/terraform/foundation/evidence/foundation-image-signing-authority-publication.json",
+          "node infra/terraform/bootstrap/foundation-pipeline-scripts/publish-foundation-app-networking.mjs --outputs infra/terraform/foundation/apply-outputs.json --bucket ${local.foundation_release_manifest_bucket_name} --account-id ${var.aws_account_id} --region ${var.aws_region} --body-output infra/terraform/foundation/evidence/foundation-app-networking.json --publication-output infra/terraform/foundation/evidence/foundation-app-networking-publication.json",
         ]
       }
     }
     artifacts = {
       files = [
         "infra/terraform/foundation/evidence/foundation-smoke.json",
+        "infra/terraform/foundation/evidence/foundation-image-signing-authority.json",
+        "infra/terraform/foundation/evidence/foundation-image-signing-authority-publication.json",
+        "infra/terraform/foundation/evidence/foundation-app-networking.json",
+        "infra/terraform/foundation/evidence/foundation-app-networking-publication.json",
       ]
     }
   })

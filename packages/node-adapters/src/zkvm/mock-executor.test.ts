@@ -142,12 +142,12 @@ describe('MockZkVM Executor', () => {
       expect(result.imageId).toBe(expectedImageId);
     });
 
-    it('resolves methodVersion 14 when the default ARM64 variant is selected', async () => {
+    it('uses the accepted managed Prover ImageID as the default', async () => {
       delete process.env['EXPECTED_IMAGE_ID'];
       delete process.env['EXPECTED_IMAGE_ID_VARIANT'];
 
       await expect(resolveMockImageId(CURRENT_METHOD_VERSION)).resolves.toBe(
-        '0x4db926db832cc19d84af84cfb2e64b2be02c9ce6966bdd4ed824d269d8f3b232',
+        '0xd8619329804e7f183fc66aed960a69ec1c5aa326ecd51ac6a9f79eae4e35f15c',
       );
     });
 

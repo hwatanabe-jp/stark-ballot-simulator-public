@@ -1,4 +1,5 @@
 import type { SessionData } from '@stark-ballot/domain/types/server';
+import type { FinalizationTransitionMetadata } from '@stark-ballot/diagnostics/canonicalEvents';
 import type { FinalizationExecutionId, FinalizationResultAuthority, FinalizationState } from './finalization-types';
 
 export type FinalizationFailedError = Extract<FinalizationState, { status: 'failed' }>['error'];
@@ -7,6 +8,7 @@ export type FinalizationQueuedPayload = {
   executionId: FinalizationExecutionId;
   queuedAt: number;
   contractGeneration: string;
+  observability?: FinalizationTransitionMetadata;
 };
 
 export type FinalizationRunningPayload = FinalizationQueuedPayload & {

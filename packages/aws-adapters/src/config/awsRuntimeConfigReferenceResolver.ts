@@ -5,7 +5,7 @@ import {
   type RuntimeConfigReferenceName,
 } from '@stark-ballot/runtime-config/env/runtimeConfigReferences';
 
-type AwsRuntimeReferenceEnvName =
+export type AwsRuntimeReferenceEnvName =
   | 'SESSION_CAPABILITY_SECRET_REF'
   | 'VOTE_SECRET_ENCRYPTION_KEY_REF'
   | 'SESSION_CAPABILITY_TTL_SECONDS_REF'
@@ -14,7 +14,7 @@ type AwsRuntimeReferenceEnvName =
   | 'EXPECTED_ORIGIN_VERIFY_HEADER_REF';
 
 export type AwsRuntimeEntrypoint =
-  'public_api' | 'finalization_writer' | 'proof_dispatcher' | 'verification_worker' | 'image_signature_gate';
+  'public_api' | 'finalization_writer' | 'proof_dispatcher' | 'verification_worker' | 'semaphore_janitor';
 
 interface AwsRuntimeReferenceDescriptor {
   envName: AwsRuntimeReferenceEnvName;
@@ -27,10 +27,15 @@ interface AwsSendClient {
   send(command: object): Promise<unknown>;
 }
 
+export interface AwsRuntimeConfigInvalidNameCollector {
+  add(name: AwsRuntimeReferenceEnvName): void;
+}
+
 interface AwsRuntimeConfigReferenceResolverOptions {
   env?: NodeJS.ProcessEnv;
   ssmClient?: AwsSendClient;
   secretsManagerClient?: AwsSendClient;
+  invalidNameCollector?: AwsRuntimeConfigInvalidNameCollector;
 }
 
 const TARGET_RUNTIME_REFERENCES: readonly AwsRuntimeReferenceDescriptor[] = [
@@ -82,7 +87,7 @@ const TARGET_RUNTIME_REFERENCES_BY_ENTRYPOINT: Record<AwsRuntimeEntrypoint, read
     'EXPECTED_ORIGIN_VERIFY_HEADER_REF',
     'LOG_IP_HASH_SALT_REF',
   ],
-  image_signature_gate: [],
+  semaphore_janitor: ['LOG_IP_HASH_SALT_REF'],
 };
 
 let preloadPromise: Promise<void> | undefined;
@@ -200,7 +205,13 @@ export async function loadAwsRuntimeConfigReferences(
     if (!reference) {
       continue;
     }
-    const resolvedValue = await resolveAwsRuntimeReference(descriptor, reference, ssmClient, secretsManagerClient);
+    let resolvedValue: string;
+    try {
+      resolvedValue = await resolveAwsRuntimeReference(descriptor, reference, ssmClient, secretsManagerClient);
+    } catch (error) {
+      options.invalidNameCollector?.add(descriptor.envName);
+      throw error;
+    }
     values.set(reference, resolvedValue);
     if (descriptor.targetEnvName) {
       env[descriptor.targetEnvName] = resolvedValue;

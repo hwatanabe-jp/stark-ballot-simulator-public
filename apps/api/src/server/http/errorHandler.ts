@@ -14,7 +14,11 @@ export function errorResponse(error: ApiError | ErrorCode, details?: ErrorDetail
  * Handle unexpected errors and convert to a standardized JSON response.
  */
 export function handleApiError(error: unknown): Response {
-  logger.error('API Error:', error);
   const response = handleApiErrorPayload(error);
+  const boundedErrorSource = error instanceof Error ? error : new Error('Non-Error value thrown');
+  logger.error('Unhandled API error', boundedErrorSource, {
+    event: 'api_error',
+    public_code: response.error,
+  });
   return Response.json(response, { status: response.statusCode });
 }

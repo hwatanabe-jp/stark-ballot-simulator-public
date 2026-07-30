@@ -4,11 +4,14 @@ import path from 'path';
 import { createHonoApp, ORIGIN_VERIFY_HEADER } from './hono';
 import { createMockVoteStore } from '@stark-ballot/test-support/testing/mockVoteStore';
 import { readJsonRecord, requireDataRecord } from '@stark-ballot/test-support/testing/response-helpers';
-import { getStringProperty } from '@stark-ballot/domain/utils/guards';
+import { getRecordProperty, getStringProperty } from '@stark-ballot/domain/utils/guards';
 import { resolveCurrentContractGeneration } from '@stark-ballot/domain/contract';
 import { getGlobalStore } from '@stark-ballot/aws-adapters/store/storeInstance';
 import type { SessionData } from '@stark-ballot/domain/types/server';
 import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sessionCapabilityToken';
+import { getLogContext } from '@stark-ballot/diagnostics/requestLogContext';
+import { configureLogger, logger } from '@stark-ballot/diagnostics/logger';
+import { hashIpForLogging } from '@stark-ballot/diagnostics/logging';
 
 vi.mock('@stark-ballot/aws-adapters/store/storeInstance', () => ({
   getGlobalStore: vi.fn(),
@@ -84,6 +87,8 @@ async function withTargetSessionAdmissionEnv(
 describe('createHonoApp', () => {
   let consoleErrorSpy: MockInstance<typeof console.error>;
   let consoleWarnSpy: MockInstance<typeof console.warn>;
+  let loggerErrorSpy: MockInstance<typeof logger.error>;
+  let loggerWarnSpy: MockInstance<typeof logger.warn>;
   let originalCapabilitySecret: string | undefined;
 
   beforeEach(() => {
@@ -92,6 +97,8 @@ describe('createHonoApp', () => {
     process.env['SESSION_CAPABILITY_SECRET'] = capabilitySecret;
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    loggerErrorSpy = vi.spyOn(logger, 'error');
+    loggerWarnSpy = vi.spyOn(logger, 'warn');
   });
 
   afterEach(() => {
@@ -102,6 +109,8 @@ describe('createHonoApp', () => {
     }
     consoleErrorSpy.mockRestore();
     consoleWarnSpy.mockRestore();
+    loggerErrorSpy.mockRestore();
+    loggerWarnSpy.mockRestore();
   });
 
   it('does not import the Next route binding adapter', async () => {
@@ -534,6 +543,176 @@ describe('createHonoApp', () => {
     expect(exposeHeaders).toContain('content-range');
     expect(exposeHeaders).toContain('accept-ranges');
     expect(exposeHeaders).toContain('x-stark-bundle-range-chunk-size');
+    expect(exposeHeaders).toContain('x-request-id');
+  });
+
+  it('returns the trusted gateway request ID and never promotes a client header', async () => {
+    const store = createMockVoteStore();
+    vi.mocked(getGlobalStore).mockReturnValue(store);
+    const app = createHonoApp({ basePath: '/api', mode: 'lambda' });
+
+    const response = await app.fetch(
+      new Request('http://localhost/api/progress', {
+        headers: { 'x-request-id': 'client-ref_123.abc' },
+      }),
+      { requestContext: { requestId: 'trusted-gateway-request-id' } },
+    );
+
+    expect(response.headers.get('x-request-id')).toBe('trusted-gateway-request-id');
+    expect(loggerWarnSpy).toHaveBeenCalledWith(
+      'request completed',
+      expect.objectContaining({
+        event: 'http_request',
+        client_request_id: 'client-ref_123.abc',
+      }),
+    );
+  });
+
+  it('generates a trusted local request ID and omits malicious client correlators', async () => {
+    const store = createMockVoteStore();
+    vi.mocked(getGlobalStore).mockReturnValue(store);
+    const app = createHonoApp({ basePath: '/api', mode: 'lambda' });
+    const rawSessionId = '550e8400-e29b-41d4-a716-446655440000';
+
+    const response = await app.request('http://localhost/api/progress', {
+      headers: {
+        'x-request-id': `/api/verification/bundles/${rawSessionId}/execution-1`,
+      },
+    });
+
+    expect(response.headers.get('x-request-id')).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    const summaryFields = loggerWarnSpy.mock.calls.find(
+      (call) => call[0] === 'request completed' && typeof call[1] === 'object' && call[1] !== null,
+    )?.[1] as Record<string, unknown> | undefined;
+    expect(summaryFields).not.toHaveProperty('client_request_id');
+    expect(JSON.stringify(loggerWarnSpy.mock.calls)).not.toContain(rawSessionId);
+  });
+
+  it('emits a safe JSON summary with the route template and matching trusted response ID', async () => {
+    const rawSessionId = '550e8400-e29b-41d4-a716-446655440000';
+    const executionId = 'execution-1';
+    const store = createMockVoteStore();
+    vi.mocked(getGlobalStore).mockReturnValue(store);
+    configureLogger({
+      format: 'json',
+      level: 'debug',
+      serviceName: 'public-api',
+      envName: 'test',
+      includeStack: true,
+    });
+
+    try {
+      const app = createHonoApp({ basePath: '/api', mode: 'lambda' });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/verification/bundles/${rawSessionId}/${executionId}?private=${rawSessionId}`,
+          {
+            headers: {
+              'x-request-id': `/api/verification/bundles/${rawSessionId}/${executionId}`,
+            },
+          },
+        ),
+        { requestContext: { requestId: 'trusted-summary-request-id' } },
+      );
+
+      const emittedRecords = consoleWarnSpy.mock.calls
+        .map(([value]) => (typeof value === 'string' ? value : ''))
+        .filter((value) => value.startsWith('{'))
+        .map((value) => JSON.parse(value) as unknown);
+      const summary = emittedRecords.find((value) => getStringProperty(value, 'event') === 'http_request');
+      const summaryHttp = getRecordProperty(summary, 'http');
+
+      expect(response.headers.get('x-request-id')).toBe('trusted-summary-request-id');
+      expect(getStringProperty(summary, 'request_id')).toBe('trusted-summary-request-id');
+      expect(getStringProperty(summaryHttp, 'path')).toBe('/api/verification/bundles/:sessionId/:executionId');
+      expect(summary).not.toHaveProperty('client_request_id');
+      expect(JSON.stringify(emittedRecords)).not.toContain(rawSessionId);
+      expect(JSON.stringify(emittedRecords)).not.toContain('private=');
+    } finally {
+      configureLogger({
+        format: 'text',
+        level: 'warn',
+        serviceName: 'app',
+        envName: 'unknown',
+        includeStack: false,
+      });
+    }
+  });
+
+  it('uses a route template and trusted request ID while handling thrown route errors', async () => {
+    const rawSessionId = '550e8400-e29b-41d4-a716-446655440000';
+    const observedContexts: unknown[] = [];
+    const store = createMockVoteStore({
+      getSession: vi.fn(() => {
+        observedContexts.push(getLogContext());
+        return Promise.reject(new Error(`storage failed for /api/sessions/${rawSessionId}/status`));
+      }),
+    });
+    vi.mocked(getGlobalStore).mockReturnValue(store);
+    loggerErrorSpy.mockImplementation(() => {
+      observedContexts.push(getLogContext());
+    });
+    const app = createHonoApp({ basePath: '/api', mode: 'lambda' });
+
+    const response = await app.fetch(
+      new Request(`http://localhost/api/sessions/${rawSessionId}/status`, {
+        headers: createSessionAuthHeaders(rawSessionId),
+      }),
+      {
+        requestContext: {
+          requestId: 'trusted-error-request-id',
+          http: { sourceIp: '203.0.113.90' },
+        },
+      },
+    );
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get('x-request-id')).toBe('trusted-error-request-id');
+    const correlatedContext = observedContexts.find(
+      (value) => getStringProperty(value, 'requestId') === 'trusted-error-request-id',
+    );
+    expect(correlatedContext).toBeDefined();
+    expect(getStringProperty(getRecordProperty(correlatedContext, 'http'), 'path')).toBe(
+      '/api/sessions/:sessionId/status',
+    );
+    expect(getStringProperty(getRecordProperty(correlatedContext, 'http'), 'source_ip_hash')).toBe(
+      hashIpForLogging('203.0.113.90'),
+    );
+    expect(loggerErrorSpy).toHaveBeenCalledWith(
+      'Unhandled API error',
+      expect.any(Error),
+      expect.objectContaining({ event: 'api_error', public_code: 'INTERNAL_ERROR' }),
+    );
+    expect(JSON.stringify(loggerErrorSpy.mock.calls)).not.toContain(rawSessionId);
+  });
+
+  it('maps opaque thrown values to a correlated error without logging the value', async () => {
+    const rawSessionId = '550e8400-e29b-41d4-a716-446655440000';
+    const opaqueFailure = { path: `/api/sessions/${rawSessionId}/status` };
+    const store = createMockVoteStore({
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Exercise a defensive boundary for opaque third-party rejections.
+      getSession: vi.fn(() => Promise.reject(opaqueFailure)),
+    });
+    vi.mocked(getGlobalStore).mockReturnValue(store);
+    const app = createHonoApp({ basePath: '/api', mode: 'lambda' });
+
+    const response = await app.fetch(
+      new Request(`http://localhost/api/sessions/${rawSessionId}/status`, {
+        headers: createSessionAuthHeaders(rawSessionId),
+      }),
+      { requestContext: { requestId: 'trusted-opaque-error-id' } },
+    );
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get('x-request-id')).toBe('trusted-opaque-error-id');
+    expect(loggerErrorSpy).toHaveBeenCalledWith(
+      'Unhandled API error',
+      expect.any(Error),
+      expect.objectContaining({ event: 'api_error', public_code: 'INTERNAL_ERROR' }),
+    );
+    expect(loggerErrorSpy.mock.calls.flat()).not.toContain(opaqueFailure);
   });
 
   it('rejects cross-origin STH requests in lambda mode before session lookup', async () => {

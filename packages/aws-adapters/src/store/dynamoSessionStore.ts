@@ -1,5 +1,12 @@
 import crypto from 'crypto';
-import { GetCommand, PutCommand, QueryCommand, ScanCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  ScanCommand,
+  TransactWriteCommand,
+  UpdateCommand,
+} from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { getSharedDynamoDocumentClient } from '@stark-ballot/aws-adapters/aws/dynamodbConfig';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
@@ -20,6 +27,7 @@ import { VOTE_CHOICES, type VoteChoice } from '@stark-ballot/domain/shared/const
 import type { AddVoteResult, RootSnapshot, SessionData, VoteData } from '@stark-ballot/domain/types/server';
 import type {
   FinalizationFailedPayload,
+  FinalizationQueuedPayload,
   FinalizationRunningPayload,
   FinalizationSucceededPayload,
   FinalizationTimedOutPayload,
@@ -46,8 +54,15 @@ import type {
   AwsFinalizationSucceededPayload,
   AwsFinalizationTimedOutPayload,
 } from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
+import { recordFinalizationStorePersistenceOutcome } from '@stark-ballot/aws-adapters/finalize/finalizationTransitionObservability';
 import type { SessionStoreUpdate, SessionSummary } from '@stark-ballot/domain/types/voteStore';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import {
+  requireVerificationObservation,
+  resolveVerificationObservationRecord,
+  type RecordVerificationObservationResult,
+  type VerificationObservation,
+} from '@stark-ballot/domain/types/verificationObservation';
 
 type MockSessionStoreInternals = {
   sessions: Map<string, SessionData>;
@@ -157,6 +172,7 @@ interface FinalizationPersistGuard {
     executionId: string;
   };
   verificationExecutionId?: string;
+  verificationObservation?: VerificationObservation;
 }
 
 function requireTableName(value: string | undefined, name: string): string {
@@ -417,8 +433,12 @@ function toBoundedVerificationResult(
   if (!result) {
     return undefined;
   }
+  const devModeReceipt =
+    typeof result.report?.dev_mode_receipt === 'boolean' ? result.report.dev_mode_receipt : result.devModeReceipt;
   return {
     status: result.status,
+    ...(result.failureCategory ? { failureCategory: result.failureCategory } : {}),
+    ...(typeof devModeReceipt === 'boolean' ? { devModeReceipt } : {}),
     ...(result.s3BundleKey ? { s3BundleKey: result.s3BundleKey } : {}),
     ...(result.s3ReportKey ? { s3ReportKey: result.s3ReportKey } : {}),
     ...(result.s3UploadedAt ? { s3UploadedAt: result.s3UploadedAt } : {}),
@@ -546,6 +566,23 @@ function buildFinalizationPersistCondition(guard: FinalizationPersistGuard): Dyn
     values[':expectedVerificationExecutionId'] = guard.verificationExecutionId;
   } else {
     parts.push('attribute_not_exists(#session.#finalizationResult.#verificationExecutionId)');
+  }
+
+  names['#verificationObservation'] = 'verificationObservation';
+  if (guard.verificationObservation) {
+    names['#observationExecutionId'] = 'executionId';
+    names['#fingerprint'] = 'fingerprint';
+    names['#observedAt'] = 'observedAt';
+    parts.push(
+      '#session.#verificationObservation.#observationExecutionId = :expectedObservationExecutionId',
+      '#session.#verificationObservation.#fingerprint = :expectedObservationFingerprint',
+      '#session.#verificationObservation.#observedAt = :expectedObservationObservedAt',
+    );
+    values[':expectedObservationExecutionId'] = guard.verificationObservation.executionId;
+    values[':expectedObservationFingerprint'] = guard.verificationObservation.fingerprint;
+    values[':expectedObservationObservedAt'] = guard.verificationObservation.observedAt;
+  } else {
+    parts.push('attribute_not_exists(#session.#verificationObservation)');
   }
 
   return {
@@ -693,6 +730,10 @@ export class DynamoSessionStore extends MockSessionStore {
     this.client = config.documentClient ?? getSharedDynamoDocumentClient();
   }
 
+  protected override shouldDeferFinalizationPersistenceObservation(): boolean {
+    return true;
+  }
+
   private liveSessionTtlSeconds(): number {
     return readPositiveIntegerEnv('SESSION_LIVE_TTL_SECONDS', 5 * 60);
   }
@@ -751,6 +792,9 @@ export class DynamoSessionStore extends MockSessionStore {
       finalizationContractGeneration: session.finalizationContractGeneration,
       finalizationArtifactState: session.finalizationArtifactState,
       verificationExecutionId: finalizationResult?.verificationExecutionId,
+      ...(session.verificationObservation
+        ? { verificationObservation: structuredClone(session.verificationObservation) }
+        : {}),
       ...(finalizationState
         ? {
             finalizationState: {
@@ -1039,6 +1083,67 @@ export class DynamoSessionStore extends MockSessionStore {
     return result;
   }
 
+  async recordVerificationObservation(
+    sessionId: string,
+    input: VerificationObservation,
+  ): Promise<RecordVerificationObservationResult> {
+    const observation = requireVerificationObservation(input);
+    const current = await this.requireSession(sessionId);
+    const currentExecutionId = parseAwsPersistedFinalizationResult(current.finalizationResult)?.verificationExecutionId;
+    const initialResolution = resolveVerificationObservationRecord(
+      currentExecutionId,
+      current.verificationObservation,
+      observation,
+    );
+    if (initialResolution.status !== 'recorded') {
+      return initialResolution;
+    }
+
+    const observedAt = Date.now();
+    try {
+      await this.client.send(
+        new UpdateCommand({
+          TableName: this.sessionsTableName,
+          Key: { sessionId },
+          UpdateExpression:
+            'SET #session.#verificationObservation = :observation, #session.#lastActivity = :observedAt, #lastActivity = :observedAt',
+          ConditionExpression:
+            '#session.#finalizationResult.#verificationExecutionId = :executionId AND (attribute_not_exists(#session.#verificationObservation) OR #session.#verificationObservation.#executionId <> :executionId)',
+          ExpressionAttributeNames: {
+            '#session': 'session',
+            '#finalizationResult': 'finalizationResult',
+            '#verificationExecutionId': 'verificationExecutionId',
+            '#verificationObservation': 'verificationObservation',
+            '#executionId': 'executionId',
+            '#lastActivity': 'lastActivity',
+          },
+          ExpressionAttributeValues: {
+            ':executionId': observation.executionId,
+            ':observation': observation,
+            ':observedAt': observedAt,
+          },
+        }),
+      );
+      const persisted = await this.getPersistedSession(sessionId);
+      if (!persisted) {
+        throw new Error('Session not found');
+      }
+      return { status: 'recorded' };
+    } catch (error) {
+      if (!isDynamoConditionalCheckFailed(error)) {
+        throw error;
+      }
+      const persisted = await this.getPersistedSession(sessionId);
+      if (!persisted) {
+        throw new Error('Session not found');
+      }
+      const persistedExecutionId = parseAwsPersistedFinalizationResult(
+        persisted.finalizationResult,
+      )?.verificationExecutionId;
+      return resolveVerificationObservationRecord(persistedExecutionId, persisted.verificationObservation, observation);
+    }
+  }
+
   async repairFinalizationResult(sessionId: string): Promise<void> {
     const guard = this.buildFinalizationGuard(await this.requireSession(sessionId));
     await super.repairFinalizationResult(sessionId);
@@ -1104,21 +1209,13 @@ export class DynamoSessionStore extends MockSessionStore {
 
   async markFinalizationQueued(
     sessionId: string,
-    payload: {
-      executionId: string;
-      queuedAt: number;
-      contractGeneration: string;
+    payload: FinalizationQueuedPayload & {
       scenarioContext?: SessionData['finalizationScenarioContext'] | null;
     },
   ): Promise<FinalizationState> {
     const guard = this.buildFinalizationGuard(await this.requireSession(sessionId));
     const state = await super.markFinalizationQueued(sessionId, payload);
-    const current = await this.persistFinalizationTransition(sessionId, guard);
-    const persistedState = parsePersistedFinalizationState(current?.finalizationState);
-    if (persistedState) {
-      return persistedState;
-    }
-    return state;
+    return this.persistFinalizationTransitionState(sessionId, guard, state, 'pending', payload);
   }
 
   async markFinalizationRunning(
@@ -1129,7 +1226,7 @@ export class DynamoSessionStore extends MockSessionStore {
   ): Promise<FinalizationState> {
     const guard = this.buildFinalizationGuard(await this.requireSession(sessionId));
     const state = await super.markFinalizationRunning(sessionId, payload);
-    return this.persistFinalizationTransitionState(sessionId, guard, state);
+    return this.persistFinalizationTransitionState(sessionId, guard, state, 'running', payload);
   }
 
   override async markAwsFinalizationRunning(
@@ -1138,7 +1235,7 @@ export class DynamoSessionStore extends MockSessionStore {
   ): Promise<FinalizationState> {
     const guard = this.buildFinalizationGuard(await this.requireSession(sessionId));
     const state = await super.markAwsFinalizationRunning(sessionId, payload);
-    return this.persistFinalizationTransitionState(sessionId, guard, state);
+    return this.persistFinalizationTransitionState(sessionId, guard, state, 'running', payload);
   }
 
   async markFinalizationSucceeded(
@@ -1147,7 +1244,7 @@ export class DynamoSessionStore extends MockSessionStore {
   ): Promise<FinalizationState> {
     const guard = this.buildFinalizationGuard(await this.requireSession(sessionId));
     const state = await super.markFinalizationSucceeded(sessionId, payload);
-    return this.persistFinalizationTransitionState(sessionId, guard, state);
+    return this.persistFinalizationTransitionState(sessionId, guard, state, 'succeeded', payload);
   }
 
   override async markAwsFinalizationSucceeded(
@@ -1156,13 +1253,13 @@ export class DynamoSessionStore extends MockSessionStore {
   ): Promise<FinalizationState> {
     const guard = this.buildFinalizationGuard(await this.requireSession(sessionId));
     const state = await super.markAwsFinalizationSucceeded(sessionId, payload);
-    return this.persistFinalizationTransitionState(sessionId, guard, state);
+    return this.persistFinalizationTransitionState(sessionId, guard, state, 'succeeded', payload);
   }
 
   async markFinalizationFailed(sessionId: string, payload: FinalizationFailedPayload): Promise<FinalizationState> {
     const guard = this.buildFinalizationGuard(await this.requireSession(sessionId));
     const state = await super.markFinalizationFailed(sessionId, payload);
-    return this.persistFinalizationTransitionState(sessionId, guard, state);
+    return this.persistFinalizationTransitionState(sessionId, guard, state, 'failed', payload);
   }
 
   override async markAwsFinalizationFailed(
@@ -1171,13 +1268,13 @@ export class DynamoSessionStore extends MockSessionStore {
   ): Promise<FinalizationState> {
     const guard = this.buildFinalizationGuard(await this.requireSession(sessionId));
     const state = await super.markAwsFinalizationFailed(sessionId, payload);
-    return this.persistFinalizationTransitionState(sessionId, guard, state);
+    return this.persistFinalizationTransitionState(sessionId, guard, state, 'failed', payload);
   }
 
   async markFinalizationTimedOut(sessionId: string, payload: FinalizationTimedOutPayload): Promise<FinalizationState> {
     const guard = this.buildFinalizationGuard(await this.requireSession(sessionId));
     const state = await super.markFinalizationTimedOut(sessionId, payload);
-    return this.persistFinalizationTransitionState(sessionId, guard, state);
+    return this.persistFinalizationTransitionState(sessionId, guard, state, 'timeout', payload);
   }
 
   override async markAwsFinalizationTimedOut(
@@ -1186,20 +1283,29 @@ export class DynamoSessionStore extends MockSessionStore {
   ): Promise<FinalizationState> {
     const guard = this.buildFinalizationGuard(await this.requireSession(sessionId));
     const state = await super.markAwsFinalizationTimedOut(sessionId, payload);
-    return this.persistFinalizationTransitionState(sessionId, guard, state);
+    return this.persistFinalizationTransitionState(sessionId, guard, state, 'timeout', payload);
   }
 
   private async persistFinalizationTransitionState(
     sessionId: string,
     guard: FinalizationPersistGuard,
     state: FinalizationState,
+    requestedTo: FinalizationState['status'],
+    payload: Pick<FinalizationQueuedPayload, 'executionId' | 'observability'>,
   ): Promise<FinalizationState> {
     const current = await this.persistFinalizationTransition(sessionId, guard);
     const persistedState = parsePersistedFinalizationState(current?.finalizationState);
-    if (persistedState) {
-      return persistedState;
-    }
-    return state;
+    const actual = persistedState ?? state;
+    recordFinalizationStorePersistenceOutcome({
+      sessionId,
+      requestedExecutionId: payload.executionId,
+      requestedTo,
+      ...(guard.finalizationState ? { before: guard.finalizationState } : {}),
+      actual,
+      authoritativeWrite: current === null,
+      ...(payload.observability ? { metadata: payload.observability } : {}),
+    });
+    return actual;
   }
 
   async getActiveSessionCount(): Promise<number> {

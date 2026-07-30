@@ -3,6 +3,7 @@ import type { ApiResponse } from '@stark-ballot/api-contract';
 import type { ApiContext } from '../context';
 import { errorResponse, jsonResponse } from '../../http/response';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { validateSessionWithCapability } from '../middleware/session';
 import {
   buildUnsupportedFinalizedArtifactResponse,
@@ -59,7 +60,9 @@ export async function getSthHandler({ request, store }: ApiContext): Promise<Res
 
     // Check if session is finalized
     if (!session.finalized) {
-      logger.warn('[STH API] Session not finalized yet:', sessionId);
+      logger.warn('[STH API] Session not finalized yet', {
+        session_id_hash: hashSessionIdForLogging(sessionId),
+      });
       // Return 404 to distinguish "not ready" from "tampered" per reviewer feedback
       return jsonResponse<ApiResponse>(
         {
@@ -74,7 +77,9 @@ export async function getSthHandler({ request, store }: ApiContext): Promise<Res
       return buildUnsupportedFinalizedArtifactResponse(finalizedRead.artifactState);
     }
     if (!finalizedRead.finalizationResult) {
-      logger.warn('[STH API] Finalization result missing for finalized session:', sessionId);
+      logger.warn('[STH API] Finalization result missing for finalized session', {
+        session_id_hash: hashSessionIdForLogging(sessionId),
+      });
       return jsonResponse<ApiResponse>(
         {
           error: ErrorCode.SESSION_NOT_FINALIZED,
@@ -88,13 +93,19 @@ export async function getSthHandler({ request, store }: ApiContext): Promise<Res
 
     // Log warnings if critical fields are missing
     if (!journal.sthDigest) {
-      logger.warn('[STH API] sthDigest missing in journal:', sessionId);
+      logger.warn('[STH API] sthDigest missing in journal', {
+        session_id_hash: hashSessionIdForLogging(sessionId),
+      });
     }
     if (!journal.bulletinRoot) {
-      logger.warn('[STH API] bulletinRoot missing in journal:', sessionId);
+      logger.warn('[STH API] bulletinRoot missing in journal', {
+        session_id_hash: hashSessionIdForLogging(sessionId),
+      });
     }
     if (typeof journal.treeSize !== 'number') {
-      logger.warn('[STH API] treeSize missing in journal:', sessionId);
+      logger.warn('[STH API] treeSize missing in journal', {
+        session_id_hash: hashSessionIdForLogging(sessionId),
+      });
     }
 
     // Return STH data in the format expected by parseSthResponse()

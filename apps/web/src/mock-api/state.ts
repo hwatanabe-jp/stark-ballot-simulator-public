@@ -34,6 +34,10 @@ export interface MockState {
     duration_ms?: number;
     errors?: string[];
   };
+  verificationObservation?: {
+    executionId: string;
+    fingerprint: string;
+  };
 }
 
 const DEFAULT_SESSION_ID = '2b9efb8c-7fb1-41e5-9fc9-0026054eeda6';

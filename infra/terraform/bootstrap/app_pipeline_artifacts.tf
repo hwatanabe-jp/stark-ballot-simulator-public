@@ -30,6 +30,10 @@ data "aws_iam_policy_document" "app_artifact_kms_key" {
         aws_iam_role.app_static_fast_pipeline[0].arn,
         aws_iam_role.app_static_fast_gate_and_build[0].arn,
         aws_iam_role.app_static_fast_smoke_lite[0].arn,
+        aws_iam_role.app_signature_preflight_plan[0].arn,
+        aws_iam_role.app_signature_preflight_apply[0].arn,
+        aws_iam_role.app_signature_state_refresh_apply[0].arn,
+        aws_iam_role.app_signature_preflight_invoker[0].arn,
       ]
     }
 
@@ -121,6 +125,34 @@ resource "aws_s3_bucket_lifecycle_configuration" "app_pipeline_artifacts" {
 
   bucket = aws_s3_bucket.app_pipeline_artifacts[0].id
 
+  dynamic "rule" {
+    for_each = {
+      app         = "${local.app_pipeline_name}/"
+      static-fast = "${local.app_static_fast_pipeline_name}/"
+    }
+
+    content {
+      id     = "expire-${rule.key}-execution-artifacts"
+      status = "Enabled"
+
+      filter {
+        prefix = rule.value
+      }
+
+      expiration {
+        days = local.storage_retention.app_pipeline_artifact_days
+      }
+
+      noncurrent_version_expiration {
+        noncurrent_days = local.storage_retention.app_pipeline_artifact_days
+      }
+
+      abort_incomplete_multipart_upload {
+        days_after_initiation = local.storage_retention.incomplete_multipart_retention_days
+      }
+    }
+  }
+
   rule {
     id     = "expire-non-authoritative-app-artifacts"
     status = "Enabled"
@@ -130,15 +162,15 @@ resource "aws_s3_bucket_lifecycle_configuration" "app_pipeline_artifacts" {
     }
 
     expiration {
-      days = var.app_pipeline_artifact_retention_days
+      days = local.storage_retention.app_pipeline_artifact_days
     }
 
     noncurrent_version_expiration {
-      noncurrent_days = var.app_pipeline_artifact_retention_days
+      noncurrent_days = local.storage_retention.app_pipeline_artifact_days
     }
 
     abort_incomplete_multipart_upload {
-      days_after_initiation = 7
+      days_after_initiation = local.storage_retention.incomplete_multipart_retention_days
     }
   }
 
@@ -151,15 +183,15 @@ resource "aws_s3_bucket_lifecycle_configuration" "app_pipeline_artifacts" {
     }
 
     expiration {
-      days = 30
+      days = local.storage_retention.app_pipeline_cache_days
     }
 
     noncurrent_version_expiration {
-      noncurrent_days = 30
+      noncurrent_days = local.storage_retention.app_pipeline_cache_days
     }
 
     abort_incomplete_multipart_upload {
-      days_after_initiation = 7
+      days_after_initiation = local.storage_retention.incomplete_multipart_retention_days
     }
   }
 }
@@ -242,7 +274,27 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/static-frontend-artifacts/*",
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/approval-evidence/*",
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/recovery-manifests/*",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/signature-gate-preflights/*",
     ]
+  }
+
+  statement {
+    sid    = "DenySignaturePreflightWritesOutsideInvokerRole"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/signature-gate-preflights/*"]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [aws_iam_role.app_signature_preflight_invoker[0].arn]
+    }
   }
 
   statement {
@@ -261,6 +313,7 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/static-frontend-artifacts/*",
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/approval-evidence/*",
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/recovery-manifests/*",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/signature-gate-preflights/*",
     ]
 
     condition {
@@ -271,11 +324,11 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
   }
 
   statement {
-    sid    = "DenyUnconditionalAcceptedDeploymentIndexWrites"
+    sid    = "DenyUnconditionalAcceptedDeploymentCurrentAuthorityWrites"
     effect = "Deny"
 
     # IAM combines these Null conditions with AND: first-create may use
-    # If-None-Match, while later index updates must use If-Match.
+    # If-None-Match, while later current-authority updates must use If-Match.
 
     principals {
       type        = "*"
@@ -283,7 +336,7 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
     }
 
     actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.app_accepted_marker_path}/index.json"]
+    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.app_accepted_marker_path}/current.json"]
 
     condition {
       test     = "Null"
@@ -296,6 +349,44 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
       variable = "s3:if-match"
       values   = ["true"]
     }
+  }
+
+  statement {
+    sid    = "DenyRetiredAcceptedDeploymentIndexWrites"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = [
+      "s3:AbortMultipartUpload",
+      "s3:BypassGovernanceRetention",
+      "s3:DeleteObject",
+      "s3:DeleteObjectAnnotation",
+      "s3:DeleteObjectTagging",
+      "s3:DeleteObjectVersion",
+      "s3:DeleteObjectVersionAnnotation",
+      "s3:DeleteObjectVersionTagging",
+      "s3:ObjectOwnerOverrideToBucketOwner",
+      "s3:PutObject",
+      "s3:PutObjectAcl",
+      "s3:PutObjectAnnotation",
+      "s3:PutObjectLegalHold",
+      "s3:PutObjectRetention",
+      "s3:PutObjectTagging",
+      "s3:PutObjectVersionAcl",
+      "s3:PutObjectVersionAnnotation",
+      "s3:PutObjectVersionTagging",
+      "s3:ReplicateDelete",
+      "s3:ReplicateObject",
+      "s3:ReplicateObjectAnnotation",
+      "s3:ReplicateTags",
+      "s3:RestoreObject",
+      "s3:UpdateObjectEncryption",
+    ]
+    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.app_accepted_marker_path}/index.json"]
   }
 
   statement {
@@ -318,7 +409,7 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
   }
 
   statement {
-    sid    = "DenyLambdaArtifactWritesOutsidePlanRole"
+    sid    = "DenyLambdaArtifactWritesOutsidePlanRoles"
     effect = "Deny"
 
     principals {
@@ -332,7 +423,10 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
     condition {
       test     = "StringNotEquals"
       variable = "aws:PrincipalArn"
-      values   = [aws_iam_role.app_terraform_plan[0].arn]
+      values = [
+        aws_iam_role.app_terraform_plan[0].arn,
+        aws_iam_role.app_signature_preflight_plan[0].arn,
+      ]
     }
   }
 

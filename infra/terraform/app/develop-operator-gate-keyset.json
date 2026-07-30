@@ -1,7 +1,6 @@
 {
-  "schemaVersion": "develop-operator-gate-keyset-v1",
+  "keysetType": "operator-gate",
   "issuerGeneration": "20260712-01",
-  "legacyTrustedPublicKeyIds": [],
   "generations": {
     "20260712-01": {
       "status": "issuer"

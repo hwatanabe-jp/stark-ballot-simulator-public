@@ -42,7 +42,20 @@ resource "aws_s3_bucket_lifecycle_configuration" "proof_artifacts" {
     }
 
     abort_incomplete_multipart_upload {
-      days_after_initiation = 7
+      days_after_initiation = local.storage_retention.incomplete_multipart_retention_days
+    }
+  }
+
+  rule {
+    id     = "remove-expired-private-proof-delete-markers"
+    status = "Enabled"
+
+    filter {
+      prefix = local.proof_artifact_prefix
+    }
+
+    expiration {
+      expired_object_delete_marker = true
     }
   }
 }

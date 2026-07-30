@@ -46,6 +46,9 @@ import { downloadFromS3 } from '@stark-ballot/aws-adapters/aws/s3-download';
 import { invokeVerifierService } from '@stark-ballot/node-adapters/verifier-service-client';
 import { uploadFileToS3 } from '@stark-ballot/aws-adapters/aws/s3-upload';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashKeyPrefixForLogging, hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
+
+const resolverModule = await import('@stark-ballot/aws-adapters/config/awsRuntimeConfigReferenceResolver');
 
 function buildPersistedFinalizationResult(input: {
   sessionId: string;
@@ -114,9 +117,16 @@ async function buildZipBuffer(entries: Record<string, unknown>): Promise<Buffer>
   });
 }
 
+function errorWithIdentity(name: string, privateMessage: string): Error {
+  const error = new Error(privateMessage);
+  error.name = name;
+  return error;
+}
+
 describe('target verification-worker handler', () => {
   const originalEnv = { ...process.env };
   let loggerErrorSpy: MockInstance<typeof logger.error>;
+  let loggerInfoSpy: MockInstance<typeof logger.info>;
   let loggerWarnSpy: MockInstance<typeof logger.warn>;
 
   function configureTargetRuntimeEnv(): void {
@@ -133,6 +143,8 @@ describe('target verification-worker handler', () => {
     process.env['AWS_REGION'] = 'ap-northeast-1';
     process.env['S3_PROOF_BUCKET'] = 'stark-ballot-simulator-stark-dev-develop-proof-artifacts';
     process.env['S3_PROOF_PREFIX'] = 'sessions/';
+    process.env['DYNAMODB_SESSIONS_TABLE'] = 'stark-ballot-simulator-stark-dev-develop-sessions';
+    process.env['DYNAMODB_VOTES_TABLE'] = 'stark-ballot-simulator-stark-dev-develop-votes';
     process.env['VERIFIER_PUBLIC_BASE_URL'] = 'https://develop.stark-ballot-sim.hwatanabe.dev';
     process.env['EXPECTED_IMAGE_ID'] = '0x' + '1'.repeat(64);
     process.env['EXPECTED_ORIGIN_VERIFY_HEADER_REF'] =
@@ -140,6 +152,10 @@ describe('target verification-worker handler', () => {
     process.env['EXPECTED_ORIGIN_VERIFY_HEADER'] = 'resolved-origin-verify-header-0123456789abcdef';
     process.env['LOG_IP_HASH_SALT_REF'] = '/stark-ballot-simulator/stark-dev/develop/app/secrets/log-ip-hash-salt';
     process.env['LOG_IP_HASH_SALT'] = 'resolved-target-log-hash-salt';
+    process.env['LOG_FORMAT'] = 'json';
+    process.env['DEPLOYMENT_ID'] = `dep_${'1'.repeat(32)}`;
+    process.env['APP_SOURCE_SHA'] = '2'.repeat(40);
+    process.env['DEPLOY_MODE'] = 'normal';
     delete process.env['USE_MOCK_ZKVM'];
     delete process.env['RISC0_DEV_MODE'];
     delete process.env['FORCE_DEV_MODE'];
@@ -153,6 +169,7 @@ describe('target verification-worker handler', () => {
     storeMocks.recordAwsVerificationDeliveryMetadata.mockResolvedValue(undefined);
     storeMocks.completeVerificationResult.mockResolvedValue(undefined);
     loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    loggerInfoSpy = vi.spyOn(logger, 'info').mockImplementation(() => {});
     loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     configureTargetRuntimeEnv();
   });
@@ -165,6 +182,7 @@ describe('target verification-worker handler', () => {
     }
     Object.assign(process.env, originalEnv);
     loggerErrorSpy.mockRestore();
+    loggerInfoSpy.mockRestore();
     loggerWarnSpy.mockRestore();
   });
 
@@ -204,6 +222,11 @@ describe('target verification-worker handler', () => {
         bundlePath,
         reportPath,
         report,
+        diagnostics: {
+          stderrCategory: 'truncated',
+          stderrBytes: 4096,
+          stderrTruncated: true,
+        },
       };
     });
 
@@ -241,6 +264,16 @@ describe('target verification-worker handler', () => {
         reportPath: path.join(workDir, sessionId, executionId, 'verification.json'),
       }),
     );
+    expect(loggerInfoSpy).toHaveBeenCalledWith('[VerificationWorker] verifier-service diagnostics', {
+      event: 'verifier_service_diagnostic',
+      session_id_hash: hashSessionIdForLogging(sessionId),
+      execution_id: executionId,
+      stderr_category: 'truncated',
+      stderr_bytes: 4096,
+      stderr_truncated: true,
+    });
+    expect(JSON.stringify(loggerInfoSpy.mock.calls)).not.toContain('stderr output');
+    expect(JSON.stringify(response)).not.toContain('stderr');
     const uploadedFiles = vi
       .mocked(uploadFileToS3)
       .mock.calls.map((call) => path.basename(call[0].filePath))
@@ -261,11 +294,41 @@ describe('target verification-worker handler', () => {
         bundleKey: 'sessions/550e8400-e29b-41d4-a716-446655440000/exec-async/bundle.zip',
         expectedImageId: '0x' + '1'.repeat(64),
       }),
-    ).rejects.toThrow('ALLOW_INSECURE_ZKVM is not allowed when TARGET_AWS_RUNTIME=1');
+    ).rejects.toThrow('Runtime configuration validation failed');
 
     expect(downloadFromS3).not.toHaveBeenCalled();
     expect(invokeVerifierService).not.toHaveBeenCalled();
     expect(uploadFileToS3).not.toHaveBeenCalled();
+    expect(loggerErrorSpy).toHaveBeenCalledWith('Runtime configuration is invalid', {
+      event: 'config_invalid',
+      invalid_names: ['ALLOW_INSECURE_ZKVM'],
+    });
+  });
+
+  it('emits runtime reference names only when cold-start resolution fails', async () => {
+    const secretValue = 'never-log-this-resolved-secret';
+    const resolutionError = new Error(`resolution failed: ${secretValue}`);
+    vi.mocked(resolverModule.ensureAwsRuntimeConfigReferencesLoaded).mockImplementationOnce(
+      async (_entrypoint, options) => {
+        if (!options) throw new Error('Expected runtime-reference resolver options');
+        options.invalidNameCollector?.add('EXPECTED_ORIGIN_VERIFY_HEADER_REF');
+        await Promise.reject(resolutionError);
+      },
+    );
+
+    await expect(handler({ Records: [] })).rejects.toMatchObject({
+      name: 'RuntimeConfigValidationError',
+      message: 'Runtime configuration validation failed',
+      invalidNames: ['EXPECTED_ORIGIN_VERIFY_HEADER_REF'],
+    });
+
+    expect(loggerErrorSpy).toHaveBeenCalledWith('Runtime configuration is invalid', {
+      event: 'config_invalid',
+      invalid_names: ['EXPECTED_ORIGIN_VERIFY_HEADER_REF'],
+    });
+    expect(JSON.stringify(loggerErrorSpy.mock.calls)).not.toContain(secretValue);
+    expect(downloadFromS3).not.toHaveBeenCalled();
+    expect(invokeVerifierService).not.toHaveBeenCalled();
   });
 
   it('rejects caller-supplied workDir in target runtime before S3 or verifier work', async () => {
@@ -401,14 +464,75 @@ describe('target verification-worker handler', () => {
     expect(loggerErrorSpy).toHaveBeenCalledWith(
       '[VerificationWorker] Verifier service execution failed',
       expect.objectContaining({
-        sessionId,
+        session_id_hash: hashSessionIdForLogging(sessionId),
         executionId,
-        bundleKey,
+        bundle_key_prefix: hashKeyPrefixForLogging(bundleKey),
+        failure_category: 'verifier_crash',
       }),
       expect.objectContaining({
-        message: leakedError,
+        name: 'VerificationInfrastructureError',
+        message: 'Verification infrastructure stage failed',
+        failureCategory: 'verifier_crash',
       }),
     );
+    expect(JSON.stringify(loggerErrorSpy.mock.calls)).not.toContain(leakedError);
+    expect(JSON.stringify(loggerErrorSpy.mock.calls)).not.toContain(leakedPath);
+    expect(JSON.stringify(loggerErrorSpy.mock.calls)).not.toContain(bundleKey);
+    expect(loggerInfoSpy).toHaveBeenCalledWith('[VerificationWorker] verifier-service diagnostics', {
+      event: 'verifier_service_diagnostic',
+      session_id_hash: hashSessionIdForLogging(sessionId),
+      execution_id: executionId,
+      stderr_category: 'none',
+      stderr_bytes: 0,
+      stderr_truncated: false,
+    });
+  });
+
+  it('emits only closed verifier diagnostics carried by a failed invocation', async () => {
+    const sessionId = '550e8400-e29b-41d4-a716-446655440000';
+    const executionId = 'exec-bounded-verifier-failure';
+    const bundleKey = `sessions/${sessionId}/${executionId}/bundle.zip`;
+    const privateStderr = 's3://private-bucket/raw-session/input.json private receipt bytes';
+
+    vi.mocked(downloadFromS3).mockResolvedValue(
+      await buildZipBuffer({
+        'public-input.json': { schema: 'stark-ballot.public_input', version: '1.0', votes: [] },
+        'election-manifest.json': { electionId: 'election-1' },
+        'close-statement.json': { treeSize: 1 },
+        'receipt.json': { receipt: true },
+        'journal.json': { journal: true },
+      }),
+    );
+    vi.mocked(invokeVerifierService).mockRejectedValue(
+      Object.assign(new Error(privateStderr), {
+        diagnostics: {
+          stderrCategory: 'truncated',
+          stderrBytes: 4096,
+          stderrTruncated: true,
+        },
+      }),
+    );
+
+    const response = await handler({
+      mode: 's3_bundle',
+      sessionId,
+      executionId,
+      bundleKey,
+      expectedImageId: '0x' + '1'.repeat(64),
+      options: { uploadToS3: true },
+    });
+
+    expect(response.status).toBe('error');
+    expect(loggerInfoSpy).toHaveBeenCalledWith('[VerificationWorker] verifier-service diagnostics', {
+      event: 'verifier_service_diagnostic',
+      session_id_hash: hashSessionIdForLogging(sessionId),
+      execution_id: executionId,
+      stderr_category: 'truncated',
+      stderr_bytes: 4096,
+      stderr_truncated: true,
+    });
+    expect(JSON.stringify(loggerInfoSpy.mock.calls)).not.toContain(privateStderr);
+    expect(JSON.stringify(response)).not.toContain(privateStderr);
   });
 
   it('processes SQS verification work and persists completed verification state', async () => {
@@ -480,6 +604,7 @@ describe('target verification-worker handler', () => {
     ];
     expect(completedPayload.executionId).toBe(executionId);
     expect(completedPayload.verificationResult.status).toBe('success');
+    expect(completedPayload.verificationResult).toHaveProperty('failureCategory', 'none');
     expect(completedPayload.verificationResult.report?.status).toBe('success');
     expect(loggerWarnSpy).not.toHaveBeenCalledWith(expect.stringContaining('bitmap'), expect.anything());
   });
@@ -726,6 +851,7 @@ describe('target verification-worker handler', () => {
       executionId,
       verificationResult: {
         status: 'failed',
+        failureCategory: 'none',
         report: {
           status: 'failed',
         },
@@ -734,11 +860,12 @@ describe('target verification-worker handler', () => {
   });
 
   it('returns partial batch failures so SQS can retry and eventually route to the DLQ', async () => {
+    const privateUri = 's3://private-bucket/sessions/raw-session/input.json';
     const response = await handler({
       Records: [
         {
           messageId: 'message-invalid',
-          body: '{not-json',
+          body: `{not-json-${privateUri}`,
         },
       ],
     });
@@ -747,6 +874,32 @@ describe('target verification-worker handler', () => {
     expect(downloadFromS3).not.toHaveBeenCalled();
     expect(invokeVerifierService).not.toHaveBeenCalled();
     expect(storeMocks.completeVerificationResult).not.toHaveBeenCalled();
+    expect(loggerWarnSpy).toHaveBeenCalledWith('Invocation payload is invalid', {
+      event: 'invocation_invalid',
+      source_kind: 'sqs',
+      reason: 'record_body_invalid',
+    });
+    expect(JSON.stringify(loggerWarnSpy.mock.calls)).not.toContain(privateUri);
+    expect(loggerErrorSpy).not.toHaveBeenCalledWith(
+      '[VerificationWorker] SQS verification work failed',
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('rejects malformed SQS envelopes without treating them as direct invocations', async () => {
+    const privateUri = 's3://private-bucket/sessions/raw-session/input.json';
+
+    await expect(handler({ Records: privateUri })).rejects.toThrow('Invalid SQS invocation');
+
+    expect(loggerWarnSpy).toHaveBeenCalledWith('Invocation payload is invalid', {
+      event: 'invocation_invalid',
+      source_kind: 'sqs',
+      reason: 'event_shape_invalid',
+    });
+    expect(JSON.stringify(loggerWarnSpy.mock.calls)).not.toContain(privateUri);
+    expect(downloadFromS3).not.toHaveBeenCalled();
+    expect(invokeVerifierService).not.toHaveBeenCalled();
   });
 
   it('returns SQS retry for S3 download failures without persisting terminal failure', async () => {
@@ -871,7 +1024,9 @@ describe('target verification-worker handler', () => {
     const sessionId = '550e8400-e29b-41d4-a716-446655440000';
     const executionId = 'exec-sqs-final-retry-failure';
     const bundleKey = `sessions/${sessionId}/${executionId}/bundle.zip`;
-    vi.mocked(downloadFromS3).mockRejectedValueOnce(new Error('simulated final S3 timeout'));
+    vi.mocked(downloadFromS3).mockRejectedValueOnce(
+      errorWithIdentity('TimeoutError', 's3://private-bucket/sessions/raw-session/input.json timed out'),
+    );
 
     const response = await handler({
       Records: [
@@ -899,8 +1054,128 @@ describe('target verification-worker handler', () => {
       executionId,
       verificationResult: {
         status: 'failed',
+        failureCategory: 'timeout',
       },
     });
+  });
+
+  it.each([
+    ['AccessDenied', 's3_denied'],
+    ['NoSuchKey', 's3_missing'],
+    ['UnrecognizedSdkFailure', 'unknown'],
+  ] as const)('persists the closed %s download category after retry exhaustion', async (errorName, category) => {
+    const sessionId = '550e8400-e29b-41d4-a716-446655440000';
+    const executionId = `exec-sqs-${category.replaceAll('_', '-')}`;
+    const bundleKey = `sessions/${sessionId}/${executionId}/bundle.zip`;
+    const privateMessage = 's3://private-bucket/sessions/raw-session/input.json token=private-runtime-secret';
+    vi.mocked(downloadFromS3).mockRejectedValueOnce(errorWithIdentity(errorName, privateMessage));
+
+    const response = await handler({
+      Records: [
+        {
+          messageId: `message-${category}`,
+          attributes: { ApproximateReceiveCount: '3' },
+          body: JSON.stringify({
+            messageVersion: 'v1',
+            sessionId,
+            executionId,
+            queuedAt: 1_700_000_000_000,
+            bundleKey,
+            expectedImageId: '0x' + '1'.repeat(64),
+          }),
+        },
+      ],
+    });
+
+    expect(response).toEqual({ batchItemFailures: [{ itemIdentifier: `message-${category}` }] });
+    expect(storeMocks.completeVerificationResult).toHaveBeenCalledWith(sessionId, {
+      executionId,
+      verificationResult: {
+        status: 'failed',
+        failureCategory: category,
+      },
+    });
+    expect(JSON.stringify(storeMocks.completeVerificationResult.mock.calls)).not.toContain(privateMessage);
+  });
+
+  it('persists corrupt_bundle for extraction failure without storing bundle bytes or exception text', async () => {
+    const sessionId = '550e8400-e29b-41d4-a716-446655440000';
+    const executionId = 'exec-sqs-corrupt-bundle';
+    const bundleKey = `sessions/${sessionId}/${executionId}/bundle.zip`;
+    const privateBytes = 'not-a-zip private-opening=0x1234';
+    vi.mocked(downloadFromS3).mockResolvedValueOnce(Buffer.from(privateBytes));
+
+    const response = await handler({
+      Records: [
+        {
+          messageId: 'message-corrupt-bundle',
+          attributes: { ApproximateReceiveCount: '3' },
+          body: JSON.stringify({
+            messageVersion: 'v1',
+            sessionId,
+            executionId,
+            queuedAt: 1_700_000_000_000,
+            bundleKey,
+            expectedImageId: '0x' + '1'.repeat(64),
+          }),
+        },
+      ],
+    });
+
+    expect(response).toEqual({ batchItemFailures: [{ itemIdentifier: 'message-corrupt-bundle' }] });
+    expect(invokeVerifierService).not.toHaveBeenCalled();
+    expect(storeMocks.completeVerificationResult).toHaveBeenCalledWith(sessionId, {
+      executionId,
+      verificationResult: {
+        status: 'failed',
+        failureCategory: 'corrupt_bundle',
+      },
+    });
+    expect(JSON.stringify(storeMocks.completeVerificationResult.mock.calls)).not.toContain(privateBytes);
+  });
+
+  it('persists verifier_crash for a verifier process failure after retry exhaustion', async () => {
+    const sessionId = '550e8400-e29b-41d4-a716-446655440000';
+    const executionId = 'exec-sqs-verifier-crash';
+    const bundleKey = `sessions/${sessionId}/${executionId}/bundle.zip`;
+    const privateMessage = 'verifier stderr: private receipt bytes 0x1234';
+    vi.mocked(downloadFromS3).mockResolvedValueOnce(
+      await buildZipBuffer({
+        'public-input.json': { schema: 'stark-ballot.public_input', version: '1.0', votes: [] },
+        'election-manifest.json': { electionId: 'election-1' },
+        'close-statement.json': { treeSize: 1 },
+        'receipt.json': { receipt: true },
+        'journal.json': { journal: true },
+      }),
+    );
+    vi.mocked(invokeVerifierService).mockRejectedValueOnce(new Error(privateMessage));
+
+    const response = await handler({
+      Records: [
+        {
+          messageId: 'message-verifier-crash',
+          attributes: { ApproximateReceiveCount: '3' },
+          body: JSON.stringify({
+            messageVersion: 'v1',
+            sessionId,
+            executionId,
+            queuedAt: 1_700_000_000_000,
+            bundleKey,
+            expectedImageId: '0x' + '1'.repeat(64),
+          }),
+        },
+      ],
+    });
+
+    expect(response).toEqual({ batchItemFailures: [{ itemIdentifier: 'message-verifier-crash' }] });
+    expect(storeMocks.completeVerificationResult).toHaveBeenCalledWith(sessionId, {
+      executionId,
+      verificationResult: {
+        status: 'failed',
+        failureCategory: 'verifier_crash',
+      },
+    });
+    expect(JSON.stringify(storeMocks.completeVerificationResult.mock.calls)).not.toContain(privateMessage);
   });
 
   it('returns the message to SQS retry when final state persistence fails after verifier success', async () => {

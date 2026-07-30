@@ -151,7 +151,7 @@ describe('public contract baseline comparator', () => {
   it('captures route contracts, schema exports, and mounted route modes', () => {
     const snapshot = cloneSnapshot(baselineSnapshot);
 
-    expect(snapshot.comparatorVersion).toBe('public-contract-baseline-v1');
+    expect(snapshot.comparatorType).toBe('public-contract-baseline');
     expect(snapshot.routeContracts.map((route) => route.routeId)).toContain('verification.bundle.get');
     expect(snapshot.schemaExports).toContain('StandardErrorResponseSchema');
     expect(strictDefined(snapshot.schemaFingerprints['StandardErrorResponseSchema'])).toMatch(/^[a-f0-9]{64}$/);
@@ -213,6 +213,7 @@ describe('public contract baseline comparator', () => {
         'session-status-finalized-flow',
         'verify-finalized-flow',
         'verification-run-flow',
+        'verification-observation-flow',
       ]),
     );
     expect(snapshot.mountedBehaviorCoverage.find((entry) => entry.caseId === 'report-size-failure-413')).toMatchObject({

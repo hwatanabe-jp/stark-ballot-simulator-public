@@ -204,6 +204,18 @@ export interface CLITestConfig {
   skipBuild: boolean;
 }
 
+export function configureCliZkvmEnvironment(
+  config: Pick<CLITestConfig, 'useRealZkVM' | 'realMode'>,
+  environment: NodeJS.ProcessEnv = process.env,
+): void {
+  environment['USE_MOCK_ZKVM'] = config.useRealZkVM ? 'false' : 'true';
+  if (config.useRealZkVM && config.realMode === 'prod') {
+    delete environment['RISC0_DEV_MODE'];
+  } else {
+    environment['RISC0_DEV_MODE'] = '1';
+  }
+}
+
 // Test cases for different tamper scenarios
 const testCases = [
   {
@@ -317,19 +329,7 @@ export class CLIVotingTest {
     if (!process.env['USE_MOCK_STORE']) {
       process.env['USE_MOCK_STORE'] = 'true';
     }
-    if (!process.env['USE_MOCK_ZKVM']) {
-      process.env['USE_MOCK_ZKVM'] = this.config.useRealZkVM ? 'false' : 'true';
-    }
-
-    if (this.config.useRealZkVM) {
-      if (this.config.realMode === 'dev') {
-        process.env['RISC0_DEV_MODE'] = '1';
-      } else {
-        delete process.env['RISC0_DEV_MODE'];
-      }
-    } else {
-      process.env['RISC0_DEV_MODE'] = '1';
-    }
+    configureCliZkvmEnvironment(this.config);
 
     const insecureZkvmRequested =
       process.env['USE_MOCK_ZKVM'] === 'true' ||
@@ -435,20 +435,15 @@ export class CLIVotingTest {
       }
 
       // Set zkVM mode based on config
+      configureCliZkvmEnvironment(this.config);
       if (!this.config.useRealZkVM) {
         // Use Mock zkVM (JavaScript implementation)
-        process.env['USE_MOCK_ZKVM'] = 'true';
-        process.env['RISC0_DEV_MODE'] = '1';
         this.log('Using Mock zkVM (JavaScript, no STARK proofs)');
       } else {
         // Use Real zkVM (Rust binary)
-        process.env['USE_MOCK_ZKVM'] = 'false';
-
         if (this.config.realMode === 'dev') {
-          process.env['RISC0_DEV_MODE'] = '1';
           this.log('Using Real zkVM dev mode (Rust binary, Fake receipts, ~0.04s)');
         } else {
-          delete process.env['RISC0_DEV_MODE'];
           this.log('Using Real zkVM production mode (Rust binary, STARK proofs)', 'warning');
           this.log('This will take approximately 6 minutes (366 seconds) per test case', 'warning');
           console.log('─────────────────────────────────────────');

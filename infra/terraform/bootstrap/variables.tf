@@ -179,28 +179,6 @@ variable "pipeline_artifact_bucket_name" {
   }
 }
 
-variable "pipeline_artifact_retention_days" {
-  description = "Number of days to retain current and noncurrent development pipeline artifacts."
-  type        = number
-  default     = 30
-
-  validation {
-    condition     = contains([7, 14, 30, 60, 90], var.pipeline_artifact_retention_days)
-    error_message = "pipeline_artifact_retention_days must be one of 7, 14, 30, 60, or 90."
-  }
-}
-
-variable "pipeline_log_retention_days" {
-  description = "CloudWatch Logs retention for development bootstrap pipeline CodeBuild jobs."
-  type        = number
-  default     = 30
-
-  validation {
-    condition     = contains([7, 14, 30, 60, 90, 120, 150, 180, 365], var.pipeline_log_retention_days)
-    error_message = "pipeline_log_retention_days must be a supported CloudWatch Logs retention value."
-  }
-}
-
 variable "enable_development_app_pipeline" {
   description = "Whether to manage the skeletal development app saved-plan pipeline from bootstrap state."
   type        = bool
@@ -271,28 +249,6 @@ variable "development_app_cloudfront_acm_certificate_arn" {
   }
 }
 
-variable "app_pipeline_artifact_retention_days" {
-  description = "Minimum days to retain development app deployment-authority artifacts."
-  type        = number
-  default     = 180
-
-  validation {
-    condition     = contains([180, 365], var.app_pipeline_artifact_retention_days)
-    error_message = "app_pipeline_artifact_retention_days must be 180 or 365."
-  }
-}
-
-variable "app_pipeline_log_retention_days" {
-  description = "CloudWatch Logs retention for development app pipeline CodeBuild jobs."
-  type        = number
-  default     = 180
-
-  validation {
-    condition     = contains([180, 365], var.app_pipeline_log_retention_days)
-    error_message = "app_pipeline_log_retention_days must be 180 or 365."
-  }
-}
-
 variable "enable_development_foundation_pipeline" {
   description = "Whether to manage the development foundation saved-plan pipeline from bootstrap state."
   type        = bool
@@ -313,27 +269,5 @@ variable "foundation_pipeline_artifact_bucket_name" {
       )
     )
     error_message = "foundation_pipeline_artifact_bucket_name must be a valid S3 bucket name when set."
-  }
-}
-
-variable "foundation_pipeline_artifact_retention_days" {
-  description = "Minimum days to retain development foundation deployment-authority artifacts."
-  type        = number
-  default     = 365
-
-  validation {
-    condition     = contains([180, 365], var.foundation_pipeline_artifact_retention_days)
-    error_message = "foundation_pipeline_artifact_retention_days must be 180 or 365."
-  }
-}
-
-variable "foundation_pipeline_log_retention_days" {
-  description = "CloudWatch Logs retention for development foundation pipeline CodeBuild jobs."
-  type        = number
-  default     = 365
-
-  validation {
-    condition     = contains([180, 365], var.foundation_pipeline_log_retention_days)
-    error_message = "foundation_pipeline_log_retention_days must be 180 or 365."
   }
 }

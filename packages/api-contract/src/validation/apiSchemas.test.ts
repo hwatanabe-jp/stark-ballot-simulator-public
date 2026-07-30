@@ -3,6 +3,8 @@ import {
   VoteRequestSchema,
   SessionCreateRequestSchema,
   FinalizeRequestSchema,
+  VerificationObservationRequestSchema,
+  VerificationObservationResponseSchema,
   VerificationRunRequestSchema,
   VerifyQuerySchema,
   ZkVMInputHashQuerySchema,
@@ -128,6 +130,77 @@ describe('VerificationRunRequestSchema', () => {
   it('rejects non-empty payloads', () => {
     const result = VerificationRunRequestSchema.safeParse({ verificationBundleUrl: 'https://example.invalid' });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('VerificationObservationRequestSchema', () => {
+  const validPayload = {
+    verificationExecutionId: 'execution-1',
+    castChecks: {
+      cast_receipt_present: 'success',
+      cast_choice_range: 'success',
+      cast_random_format: 'not_run',
+      cast_commitment_match: 'failed',
+    },
+  };
+
+  it('accepts the exact execution ID and all four terminal browser-local cast statuses', () => {
+    expect(VerificationObservationRequestSchema.safeParse(validPayload).success).toBe(true);
+  });
+
+  it.each([
+    {
+      ...validPayload,
+      castChecks: {
+        cast_receipt_present: 'success',
+        cast_choice_range: 'success',
+        cast_random_format: 'not_run',
+      },
+    },
+    {
+      ...validPayload,
+      castChecks: {
+        ...validPayload.castChecks,
+        cast_commitment_match: 'pending',
+      },
+    },
+    {
+      ...validPayload,
+      castChecks: {
+        ...validPayload.castChecks,
+        counted_input_sanity: 'success',
+      },
+    },
+    {
+      ...validPayload,
+      presentedOutcome: 'fully_verified',
+    },
+    {
+      ...validPayload,
+      verificationExecutionId: 'x'.repeat(257),
+    },
+  ])('rejects incomplete, non-terminal, or extra client authority %#', (payload) => {
+    expect(VerificationObservationRequestSchema.safeParse(payload).success).toBe(false);
+  });
+});
+
+describe('VerificationObservationResponseSchema', () => {
+  it('accepts only the recorded and idempotent outcomes', () => {
+    expect(
+      VerificationObservationResponseSchema.safeParse({
+        data: { status: 'recorded' },
+      }).success,
+    ).toBe(true);
+    expect(
+      VerificationObservationResponseSchema.safeParse({
+        data: { status: 'idempotent' },
+      }).success,
+    ).toBe(true);
+    expect(
+      VerificationObservationResponseSchema.safeParse({
+        data: { status: 'conflict' },
+      }).success,
+    ).toBe(false);
   });
 });
 

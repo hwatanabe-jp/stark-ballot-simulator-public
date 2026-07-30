@@ -6,7 +6,7 @@ resource "aws_apigatewayv2_api" "target" {
     allow_headers  = ["Content-Type", "X-Session-ID", "X-Session-Capability", "Range"]
     allow_methods  = ["GET", "POST", "OPTIONS"]
     allow_origins  = [local.target_public_origin]
-    expose_headers = ["Content-Range", "Accept-Ranges", "X-Stark-Bundle-Range-Chunk-Size"]
+    expose_headers = ["Content-Range", "Accept-Ranges", "X-Stark-Bundle-Range-Chunk-Size", "x-request-id"]
     max_age        = 300
   }
 
@@ -18,6 +18,32 @@ resource "aws_apigatewayv2_integration" "public_api" {
   integration_type       = "AWS_PROXY"
   integration_uri        = aws_lambda_function.target["public_api"].invoke_arn
   payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "canonical" {
+  for_each = toset([
+    "GET /api/bitmap-proof",
+    "GET /api/bulletin",
+    "GET /api/bulletin/consistency-proof",
+    "GET /api/bulletin/{voteId}/proof",
+    "GET /api/progress",
+    "GET /api/sessions/{sessionId}/status",
+    "GET /api/sth",
+    "GET /api/verification/bundles/{sessionId}/{executionId}",
+    "GET /api/verification/bundles/{sessionId}/{executionId}/report",
+    "GET /api/verify",
+    "GET /api/zkvm-input-hash",
+    "POST /api/finalize",
+    "POST /api/finalize/cancel",
+    "POST /api/session",
+    "POST /api/verification/run",
+    "POST /api/verification/observation",
+    "POST /api/vote",
+  ])
+
+  api_id    = aws_apigatewayv2_api.target.id
+  route_key = each.value
+  target    = "integrations/${aws_apigatewayv2_integration.public_api.id}"
 }
 
 resource "aws_apigatewayv2_route" "api_proxy" {
@@ -40,13 +66,16 @@ resource "aws_apigatewayv2_stage" "default" {
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_access.arn
     format = jsonencode({
-      requestId      = "$context.requestId"
-      routeKey       = "$context.routeKey"
-      status         = "$context.status"
-      protocol       = "$context.protocol"
-      responseLength = "$context.responseLength"
-      integration    = "$context.integrationStatus"
-      error          = "$context.error.message"
+      requestId        = "$context.requestId"
+      requestTime      = "$context.requestTime"
+      method           = "$context.httpMethod"
+      pathTemplate     = "$context.routeKey"
+      status           = "$context.status"
+      protocol         = "$context.protocol"
+      responseLength   = "$context.responseLength"
+      responseLatency  = "$context.responseLatency"
+      integration      = "$context.integrationStatus"
+      integrationError = "$context.integrationErrorMessage"
     })
   }
 

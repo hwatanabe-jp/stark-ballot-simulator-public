@@ -5,7 +5,7 @@
 「必要な検証が未実行または失敗なら Verified を表示しない」という原則のもと、各チェックの結果がどう最終判定に集約されるかを定式化します。
 
 この章での Verified は、UI の最終表示が緑色の `Verified` になってよいかだけを指します。
-`verificationStatus='success'` や `stark_receipt_verify=success` は STARK receipt 検証の成功を示す信号であり、それだけで overall verification が成功したことを意味しません。
+`verificationStatus='success'` や `stark_receipt_verify=success` は STARK receipt 検証成功の信号にすぎず、単独で overall verification の成功を意味しません。
 
 ## 最終判定の種類
 
@@ -19,15 +19,8 @@
 | Warning             | required チェックが進行中、証拠不足がある、または optional チェックのみ劣化している場合                     | 黄色    |
 | Demo Only           | required 条件は満たしたが dev-mode receipt を含む場合（`demo_only`）                                        | 黄色    |
 
-Verified の必要条件は次の通りです。
-
-- 既知の required check がすべて存在し、すべて `success` であること。
-- required check に `failed` / `not_run` / `pending` / `running` が 1 件でもないこと。
-- 空の check set、未知チェックだけの check set、または未知チェックを含む check set を成功扱いしないこと。
-- `excludedSlots > 0` がないこと。
-  旧形式の count alias（`excludedCount` など）は fail-closed compatibility signal としてのみ扱い、公開契約上の成功条件には使わないこと。
-- dev-mode receipt を production STARK proof として扱わないこと。
-  dev-mode evidence は `demo_only` であり、緑色の Verified ではない。
+Verified の必要条件は [不変条件のまとめ](#不変条件のまとめ) に集約しています。
+要点は、既知の required check がすべて存在してすべて `success` であること、票除外（`excludedSlots > 0`）がないこと、dev-mode receipt を production STARK proof として扱っていないことです。
 
 ### ステータスの判定順序
 
@@ -53,12 +46,6 @@ Verified の必要条件は次の通りです。
 現行 `/verify` ページでは、`pending` / `running` のチェックが残っている間は最終サマリー自体を表示せず、ステップ表示が完了したあとに summary を表示します。
 UI レベルの最終表示は (1) 明示的なサーバー失敗、(2) hard-failure fallback、(3) summary、(4) pending warning の順で解決されます。
 
-## 補助判定のゲーティング（`validateVotingIntegrity`）
-
-`validateVotingIntegrity` は、現行 `/verify` の最終判定では使われない内部 helper です。
-この helper は、整合性証明、完全性、第三者 STH 合意、ユーザーインデックス範囲を順に評価し、いずれかが失敗すれば `canShowVerified = false` を返します。
-意味論は [チェック一覧](checks-catalog.md) の `recorded_consistency_proof` / `counted_missing_indices_zero` / `counted_expected_vs_tree_size` / `recorded_sth_third_party` に対応します。
-
 ## STARK 検証のゲーティング
 
 STARK 検証は整合性検証とは独立に評価されます。
@@ -72,13 +59,7 @@ STARK 検証は整合性検証とは独立に評価されます。
 | `running`        | 実行中                       | `in_progress`（Warning）扱い。Verified をブロック                                        |
 
 `stark_receipt_verify` は required check ですが、単独では十分条件ではありません。
-`stark_receipt_verify=success` でも、次のいずれかが失敗、未実行、または進行中なら fully verified にはなりません。
-
-- `stark_image_id_match`
-- `counted_my_vote_included` / `counted_input_commitment_match`
-- Recorded / Counted / Cast の required checks
-- 票除外と tally completeness の required checks
-
+`stark_receipt_verify=success` でも、他の required checks（`stark_image_id_match`、`counted_my_vote_included` / `counted_input_commitment_match`、各段階の required checks）のいずれかが失敗、未実行、または進行中なら fully verified にはなりません。
 STARK が `not_run` のまま、または整合性チェックだけで Verified に到達する経路もありません（[不変条件のまとめ](#不変条件のまとめ)を参照）。
 
 ### zkGate: STARK 結果に基づく Counted チェックの制御
@@ -133,40 +114,13 @@ UI に表示される 4 つのステップは、現行実装では 22 個のチ�
 - `/api/verify` は `castSource='client'` で `verificationSteps` / `verificationChecks` を組み立てるため、API 応答上の Cast-as-Intended はいったん `not_run` です。
   その後ブラウザ側で保存済みセッション情報から Cast チェックを再評価して上書きし、最終的な UI 表示と summary にはそのローカル結果が反映されます。
 
-## UI シーケンスとポーリング
+## 補助判定のゲーティング（`validateVotingIntegrity`）
 
-検証ページでは、4 つのステップが順次アニメーション表示されます。
+`validateVotingIntegrity` は、現行 `/verify` の最終判定では使われない内部 helper です。
+この helper は、整合性証明、完全性、第三者 STH 合意、ユーザーインデックス範囲を順に評価し、いずれかが失敗すれば `canShowVerified = false` を返します。
+意味論は [チェック一覧](checks-catalog.md) の `recorded_index_in_range` / `recorded_consistency_proof` / `counted_missing_indices_zero` / `counted_expected_vs_tree_size` / `recorded_sth_third_party` に対応します。
 
-```mermaid
-sequenceDiagram
-  participant U as ブラウザ
-  participant S as サーバー
-
-  Note over U: ページロード時
-  U->>S: GET /api/verify
-  S-->>U: 検証ペイロード
-
-  Note over U: STARK 完了まで待機
-
-  alt verificationStatus = not_run
-    U->>S: POST /api/verification/run
-    S-->>U: 実行受付
-  end
-
-  loop STARK ポーリング
-    U->>S: GET /api/verify
-    S-->>U: verificationStatus 確認
-  end
-
-  Note over U: STARK 解決後に<br/>ステップを順次表示
-
-  Note over U: Step 1: Cast-as-Intended
-  Note over U: Step 2: Recorded-as-Cast
-  Note over U: Step 3: Counted-as-Recorded
-  Note over U: Step 4: STARK Verification
-
-  Note over U: 最終判定を表示
-```
+検証実行と UI 表示の時系列（ポーリングとステップ表示の順序）は [設計と実行フロー](design-and-flow.md) を参照してください。
 
 ## 不変条件のまとめ
 

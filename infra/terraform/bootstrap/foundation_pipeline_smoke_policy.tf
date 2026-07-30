@@ -28,6 +28,41 @@ data "aws_iam_policy_document" "foundation_terraform_smoke" {
   }
 
   statement {
+    sid    = "PublishFoundationAppNetworkingHandoff"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+      "s3:PutObject",
+    ]
+    resources = [local.foundation_app_networking_object_arn]
+  }
+
+  statement {
+    sid       = "ListFoundationAppNetworkingAuthority"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [local.foundation_release_manifest_bucket_arn]
+
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "s3:prefix"
+      values   = ["channels/develop/foundation/app-networking.json"]
+    }
+  }
+
+  statement {
+    sid    = "PublishFoundationImageSigningAuthority"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+      "s3:PutObject",
+    ]
+    resources = [local.foundation_image_signing_authority_objects_arn]
+  }
+
+  statement {
     sid    = "ReadFoundationApplyRetentionBoundaryForSmoke"
     effect = "Allow"
     actions = [

@@ -56,4 +56,103 @@ describe('parseFinalizationStateUpdatePayload', () => {
       }),
     ).toBeUndefined();
   });
+
+  it.each([
+    ['PROVER_TASK_FAILED', 'Target prover task failed', 'prover_execution'],
+    ['PROVER_IMAGE_SIGNATURE_FAILED', 'Target prover image signature verification failed', 'image_signature'],
+    ['PROVER_CAPACITY_WAIT_TIMEOUT', 'Timed out waiting for target prover capacity', 'capacity'],
+    ['FINALIZATION_BUNDLE_KEY_MISSING', 'Target finalization succeeded without a durable bundle key', 'artifact'],
+    ['FINALIZATION_BUNDLE_RESTORE_FAILED', 'Target finalization bundle could not be restored', 'artifact'],
+  ])('maps %s to a fixed bounded failure tuple', (code, message, category) => {
+    expect(
+      parseFinalizationStateUpdatePayload({
+        ...basePayload,
+        status: 'FAILED',
+        failedAt: 1_700_000_002_000,
+        error: {
+          code,
+          message: 'untrusted callback message with internal data',
+          category: 'untrusted-category',
+          details: {
+            Error: 'States.TaskFailed',
+            Cause: 'private raw AWS cause',
+          },
+        },
+      }),
+    ).toEqual({
+      ...basePayload,
+      status: 'FAILED',
+      failedAt: 1_700_000_002_000,
+      error: {
+        code,
+        message,
+        category,
+      },
+    });
+  });
+
+  it('rejects unknown FAILED codes instead of silently changing their meaning', () => {
+    expect(
+      parseFinalizationStateUpdatePayload({
+        ...basePayload,
+        status: 'FAILED',
+        error: {
+          code: 'States.TaskFailed',
+          message: 'untrusted callback message with internal data',
+          details: {
+            Cause: 'private raw AWS cause',
+          },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it.each([
+    'configuration',
+    'input',
+    'prover_execution',
+    'infrastructure_interruption',
+    'artifact',
+    'upload',
+    'timeout',
+    'unknown',
+  ] as const)('surfaces the admitted prover failure marker category %s without carrying marker details', (category) => {
+    expect(
+      parseFinalizationStateUpdatePayload({
+        ...basePayload,
+        status: 'FAILED',
+        error: {
+          code: 'PROVER_TASK_FAILED',
+          message: 'Target prover task failed',
+          category,
+          details: { stderr: 'private verifier output', path: '/tmp/private-input.json' },
+        },
+      }),
+    ).toEqual({
+      ...basePayload,
+      status: 'FAILED',
+      error: {
+        code: 'PROVER_TASK_FAILED',
+        message: 'Target prover task failed',
+        category,
+      },
+    });
+  });
+
+  it('supplies the fixed generic tuple when a failed update omits error input', () => {
+    expect(
+      parseFinalizationStateUpdatePayload({
+        ...basePayload,
+        status: 'FAILED',
+      }),
+    ).toEqual({
+      ...basePayload,
+      status: 'FAILED',
+      error: {
+        code: 'FINALIZATION_FAILED',
+        message: 'Finalization failed',
+        category: 'unknown',
+      },
+    });
+  });
 });

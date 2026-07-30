@@ -2,11 +2,16 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createStaticHonoServer, STATIC_API_ROUTE_MODE } from './static-hono-server';
+import { logger } from '@stark-ballot/diagnostics/logger';
 
 let server: Server | undefined;
 let distDir: string | undefined;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 async function closeServer(): Promise<void> {
   if (!server) {
@@ -50,6 +55,32 @@ afterEach(async () => {
 });
 
 describe('static-hono-server', () => {
+  it('activates bounded JSON logging with stacks for the local API runtime', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await createTestServer();
+
+    logger.error('Static server logger probe', { event: 'static_server_probe' }, new Error('synthetic failure'));
+
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const output = String(errorSpy.mock.calls[0]?.[0]);
+    const record: unknown = JSON.parse(output);
+    expect(isRecord(record)).toBe(true);
+    if (!isRecord(record)) {
+      throw new Error('Expected a structured logger record');
+    }
+    expect(record['level']).toBe('error');
+    expect(record['service']).toBe('local-static-api');
+    expect(record['event']).toBe('static_server_probe');
+    const error = record['error'];
+    expect(isRecord(error)).toBe(true);
+    if (!isRecord(error)) {
+      throw new Error('Expected a structured logger error');
+    }
+    expect(error['message']).toBe('synthetic failure');
+    expect(typeof error['stack']).toBe('string');
+    errorSpy.mockRestore();
+  });
+
   it('uses the target lambda route set and does not expose retired debug enable', async () => {
     expect(STATIC_API_ROUTE_MODE).toBe('lambda');
     const baseUrl = await createTestServer();

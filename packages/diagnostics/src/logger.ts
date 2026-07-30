@@ -3,7 +3,16 @@
  */
 import { getLogContext, getLogContextLevel } from './requestLogContext';
 import { LOG_LEVELS, isLogLevel, type LogLevel } from './loggerTypes';
-import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import {
+  MAX_LOG_BYTES,
+  SAFE_LOG_FALLBACK_RECORD,
+  createLogSanitizer,
+  sanitizeLogString,
+  serializeBoundedLogValue,
+  type LogSanitizer,
+  type SafeLogObject,
+  type SafeLogValue,
+} from './safeLogPayload';
 
 export type { LogLevel } from './loggerTypes';
 
@@ -15,18 +24,36 @@ export interface Logger {
 }
 
 type LogFormat = 'json' | 'text';
+type JsonOutputMode = 'lambda-native' | 'serialized';
 
 export interface LoggerRuntimeConfig {
   level?: LogLevel;
   format?: LogFormat;
+  jsonOutputMode?: JsonOutputMode;
   serviceName?: string;
   envName?: string;
   includeStack?: boolean;
+  deploymentId?: string;
+  appSourceSha?: string;
+  deployMode?: 'normal' | 'rollback';
 }
 
-let runtimeConfig: Required<LoggerRuntimeConfig> = {
+interface ResolvedLoggerRuntimeConfig {
+  level: LogLevel;
+  format: LogFormat;
+  jsonOutputMode: JsonOutputMode;
+  serviceName: string;
+  envName: string;
+  includeStack: boolean;
+  deploymentId?: string;
+  appSourceSha?: string;
+  deployMode?: 'normal' | 'rollback';
+}
+
+let runtimeConfig: ResolvedLoggerRuntimeConfig = {
   level: 'debug',
   format: 'text',
+  jsonOutputMode: 'serialized',
   serviceName: 'app',
   envName: 'unknown',
   includeStack: false,
@@ -61,130 +88,225 @@ const resolveEnvName = (): string => {
   return runtimeConfig.envName;
 };
 
-const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+const createSafeLogObject = (): SafeLogObject => Object.create(null) as SafeLogObject;
+const RESERVED_ENVELOPE_FIELDS = new Set([
+  'app_source_sha',
+  'deploy_mode',
+  'deployment_id',
+  'env',
+  'error',
+  'event',
+  'http',
+  'level',
+  'message',
+  'requestId',
+  'request_id',
+  'service',
+  'ts',
+]);
+const MAX_ARGUMENTS_TO_CLASSIFY = 64;
+
+const isPlainObject = (value: unknown): value is object => {
   if (!value || typeof value !== 'object') {
     return false;
   }
   if (value instanceof Error) {
     return false;
   }
-  return Object.prototype.toString.call(value) === '[object Object]';
+  const prototype = Reflect.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 };
 
-const sanitizeError = (error: Error): { name: string; message: string; stack?: string } => {
-  const payload: { name: string; message: string; stack?: string } = {
-    name: error.name,
-    ...omitUndefinedProperties({ message: error.message }),
-  };
-  if (runtimeConfig.includeStack) {
-    if (error.stack !== undefined) {
-      payload.stack = error.stack;
-    }
-  }
-  return payload;
+const asSafeObject = (value: SafeLogValue | undefined): SafeLogObject | undefined => {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
 };
 
-const extractLogArgs = (args: unknown[]): { message?: string; fields: Record<string, unknown>; error?: Error } => {
-  const fields: Record<string, unknown> = {};
+const extractLogArgs = (
+  args: unknown[],
+  sanitizer: LogSanitizer,
+): { message?: string; fields: SafeLogObject; error?: SafeLogObject } => {
+  const fields = createSafeLogObject();
   let message: string | undefined;
-  let error: Error | undefined;
-  const extra: unknown[] = [];
+  let error: SafeLogObject | undefined;
+  const extra: SafeLogValue[] = [];
 
-  for (const arg of args) {
-    if (typeof arg === 'string' && !message) {
-      message = arg;
+  const prioritizedArgs = args.slice(0, MAX_ARGUMENTS_TO_CLASSIFY).map((arg, index) => {
+    let priority = 3;
+    if (typeof arg === 'string') {
+      priority = 0;
+    } else if (arg instanceof Error) {
+      priority = 1;
+    } else if (isPlainObject(arg)) {
+      const hasCanonicalField = ['event', 'error', 'message'].some(
+        (key) => Object.getOwnPropertyDescriptor(arg, key) !== undefined,
+      );
+      priority = hasCanonicalField ? 2 : 3;
+    }
+    return { arg, index, priority };
+  });
+  prioritizedArgs.sort((left, right) => left.priority - right.priority || left.index - right.index);
+
+  for (const { arg } of prioritizedArgs) {
+    if (!sanitizer.hasCapacity()) {
+      break;
+    }
+    const sanitized = sanitizer.sanitize(arg, { includeErrorStack: runtimeConfig.includeStack });
+    if (sanitized === undefined) {
+      continue;
+    }
+    if (typeof arg === 'string' && !message && typeof sanitized === 'string') {
+      message = sanitized;
       continue;
     }
     if (arg instanceof Error && !error) {
-      error = arg;
+      error = asSafeObject(sanitized);
       continue;
     }
     if (isPlainObject(arg)) {
-      Object.assign(fields, arg);
+      const object = asSafeObject(sanitized);
+      if (object) {
+        Object.assign(fields, object);
+      }
       continue;
     }
-    extra.push(arg);
+    extra.push(sanitized);
   }
 
   if (extra.length > 0) {
     fields['extra'] = extra;
   }
 
-  return {
-    ...omitUndefinedProperties({ message, error }),
-    fields,
-  };
+  return { ...(message !== undefined ? { message } : {}), ...(error ? { error } : {}), fields };
 };
 
-const compact = <T extends Record<string, unknown>>(value: T): T => {
-  for (const key of Object.keys(value)) {
-    if (value[key] === undefined) {
-      delete value[key];
+const compact = (value: Record<string, SafeLogValue | undefined>): SafeLogObject => {
+  const output = createSafeLogObject();
+  for (const [key, field] of Object.entries(value)) {
+    if (field !== undefined) {
+      output[key] = field;
     }
   }
-  return value;
+  return output;
 };
 
-const buildJsonPayload = (level: LogLevel, args: unknown[]): string => {
-  const context = getLogContext();
-  const { message, fields, error } = extractLogArgs(args);
-  const {
-    message: fieldMessage,
-    event,
-    request_id: fieldRequestId,
-    requestId: fieldRequestIdAlias,
-    service: fieldService,
-    env: fieldEnv,
-    http: fieldHttp,
-    ...restFields
-  } = fields;
+const getStringField = (value: SafeLogObject | undefined, key: string): string | undefined => {
+  const field = value?.[key];
+  return typeof field === 'string' ? field : undefined;
+};
 
-  const resolvedMessage =
-    message ??
-    (typeof fieldMessage === 'string' ? fieldMessage : undefined) ??
-    (typeof event === 'string' ? event : 'log');
-  const resolvedRequestId =
-    (fieldRequestId as string | undefined) ?? (fieldRequestIdAlias as string | undefined) ?? context?.requestId;
-  const resolvedService = (fieldService as string | undefined) ?? context?.service ?? resolveServiceName();
-  const resolvedEnv = (fieldEnv as string | undefined) ?? context?.env ?? resolveEnvName();
+const buildJsonPayload = (level: LogLevel, args: unknown[], includeContext: boolean): string => {
+  const sanitizer = createLogSanitizer();
+  const rawContext = includeContext ? getLogContext() : undefined;
+  const context = rawContext === undefined ? undefined : asSafeObject(sanitizer.sanitize(rawContext));
+  const { message, fields, error } = extractLogArgs(args, sanitizer);
+  const fieldMessage = getStringField(fields, 'message');
+  const event = getStringField(fields, 'event');
+  const fieldHttp = asSafeObject(fields['http']);
+  const fieldError = fields['error'];
+  const contextHttp = asSafeObject(context?.['http']);
+  const restFields = createSafeLogObject();
+  for (const [key, field] of Object.entries(fields)) {
+    if (!RESERVED_ENVELOPE_FIELDS.has(key)) {
+      restFields[key] = field;
+    }
+  }
+
+  const resolvedMessage = message ?? fieldMessage ?? event ?? 'log';
+  const resolvedRequestId = getStringField(context, 'requestId');
+  const resolvedService = sanitizeLogString(resolveServiceName());
+  const resolvedEnv = sanitizeLogString(resolveEnvName());
   const mergedHttp = compact({
-    ...(context?.http ?? {}),
-    ...(isPlainObject(fieldHttp) ? fieldHttp : {}),
+    ...(contextHttp ?? {}),
+    ...(fieldHttp ?? {}),
   });
 
-  const payload = compact({
+  const payload: SafeLogObject = compact({
     ts: new Date().toISOString(),
     level,
     message: resolvedMessage,
-    event: typeof event === 'string' ? event : undefined,
+    event,
     env: resolvedEnv,
     service: resolvedService,
+    deployment_id: runtimeConfig.deploymentId ? sanitizeLogString(runtimeConfig.deploymentId) : undefined,
+    app_source_sha: runtimeConfig.appSourceSha ? sanitizeLogString(runtimeConfig.appSourceSha) : undefined,
+    deploy_mode: runtimeConfig.deployMode ? sanitizeLogString(runtimeConfig.deployMode) : undefined,
     request_id: resolvedRequestId,
     http: Object.keys(mergedHttp).length > 0 ? mergedHttp : undefined,
-    ...(error ? { error: sanitizeError(error) } : {}),
+    ...((error ?? fieldError) ? { error: error ?? fieldError } : {}),
     ...restFields,
   });
 
-  return JSON.stringify(payload);
+  return serializeBoundedLogValue(payload);
+};
+
+type LogOutput = string | SafeLogObject;
+
+const toLambdaNativeJsonObject = (serialized: string): SafeLogObject => {
+  const parsed = JSON.parse(serialized) as unknown;
+  if (!isPlainObject(parsed)) {
+    throw new Error('Bounded JSON log payload must be an object.');
+  }
+  return parsed as SafeLogObject;
+};
+
+const buildFallbackOutput = (format: LogFormat, jsonOutputMode: JsonOutputMode): LogOutput =>
+  format === 'json' && jsonOutputMode === 'lambda-native'
+    ? toLambdaNativeJsonObject(SAFE_LOG_FALLBACK_RECORD)
+    : SAFE_LOG_FALLBACK_RECORD;
+
+const buildLogOutput = (
+  level: LogLevel,
+  args: unknown[],
+  format: LogFormat,
+  jsonOutputMode: JsonOutputMode,
+): LogOutput => {
+  try {
+    if (format === 'text' && args.length === 1 && typeof args[0] === 'string') {
+      return sanitizeLogString(args[0]);
+    }
+    const json = buildJsonPayload(level, args, format === 'json');
+    if (format === 'json') {
+      return jsonOutputMode === 'lambda-native' ? toLambdaNativeJsonObject(json) : json;
+    }
+    if (json === SAFE_LOG_FALLBACK_RECORD) {
+      return json;
+    }
+    const text = `[${level}] ${json}`;
+    return Buffer.byteLength(text, 'utf8') <= MAX_LOG_BYTES ? text : SAFE_LOG_FALLBACK_RECORD;
+  } catch {
+    return buildFallbackOutput(format, jsonOutputMode);
+  }
+};
+
+const emitLog = (level: LogLevel, message: LogOutput): void => {
+  if (level === 'debug') {
+    console.debug(message);
+    return;
+  }
+  if (level === 'info') {
+    console.log(message);
+    return;
+  }
+  if (level === 'warn') {
+    console.warn(message);
+    return;
+  }
+  console.error(message);
 };
 
 const writeLog = (level: LogLevel, args: unknown[]): void => {
-  if (!shouldLog(level)) {
-    return;
+  try {
+    if (!shouldLog(level)) {
+      return;
+    }
+    emitLog(level, buildLogOutput(level, args, runtimeConfig.format, runtimeConfig.jsonOutputMode));
+  } catch {
+    try {
+      emitLog(level, buildFallbackOutput(runtimeConfig.format, runtimeConfig.jsonOutputMode));
+    } catch {
+      // Logging is observational and must never interrupt the application path.
+    }
   }
-  const format = runtimeConfig.format;
-  const message = format === 'json' ? buildJsonPayload(level, args) : undefined;
-
-  if (level === 'debug') {
-    return message ? console.debug(message) : console.debug(...args);
-  }
-  if (level === 'info') {
-    return message ? console.log(message) : console.log(...args);
-  }
-  if (level === 'warn') {
-    return message ? console.warn(message) : console.warn(...args);
-  }
-  return message ? console.error(message) : console.error(...args);
 };
 
 export const logger: Logger = {

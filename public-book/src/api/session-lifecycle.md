@@ -2,13 +2,13 @@
 
 このページでは、セッション管理の実装をクライアント側とサーバー側に分けて説明します。
 
-## 1. 管理責務の分離
+## 管理責務の分離
 
 | 管理面               | 主な保存先                                                               | 主な責務                                                                  |
 | -------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
 | クライアント共有     | `localStorage` (`starkBallotSession`, `starkBallotSessionSchemaVersion`) | 画面遷移フェーズ、クライアント TTL、検証継続状態、UI 復元、スキーマ無効化 |
 | クライアントタブ単位 | `sessionStorage` (`starkBallotSessionLock`)                              | タブごとの session identity lock、stale tab の fail-closed                |
-| サーバー             | `VoteStore` 実装（Mock/File/DynamoDB）                                   | 投票データ、掲示板、集計結果、検証結果                                    |
+| サーバー             | `VoteStore` 実装（Mock/File/DynamoDB）                                   | 投票データ、掲示板、集計結果、検証結果、検証観測メタデータ                |
 
 クライアントとサーバーのセッション対応付けには `sessionId` と `X-Session-Capability`（署名トークン）が使われます。
 ヘッダー、path、query の使い分けは[エンドポイント一覧](endpoints.md#active-browser-と-cli-api-一覧)を参照してください。
@@ -18,7 +18,7 @@
 `ensureClientStorageSchema()` は `starkBallotSessionSchemaVersion` を確認します。
 値が一致しない場合は、`starkBallotSession`、`stark-ballot-knowledge`、`starkBallotSessionLock` をまとめてクリアします。
 
-## 2. クライアント側フェーズ
+## クライアント側フェーズ
 
 クライアントセッション（`apps/web/src/session/client.ts`）のフェーズは以下の 3 つです。
 
@@ -38,8 +38,11 @@
   1. `verificationRequestedAt` と canonical な `finalizeResult` の両方がそろっていれば継続扱い（`hasContinuationAuthority`）
   2. 上記がなくても、サーバー返却の STARK 状態が `not_run` 以外なら進行できる
   3. `hasContinuationAuthority` 不成立かつ STARK が `not_run` の場合はブロックする
+- `/verify` の検証シーケンスが完了し、pending check がなく、サーバー検証済みの STARK 状態が terminal
+  (`success`、`failed`、`dev_mode`) になると、クライアントは `POST /api/verification/observation` を
+  best-effort で送信します。
 
-## 3. クライアント TTL 実装
+## クライアント TTL 実装
 
 `SESSION_PHASE_TIMEOUTS_MS`:
 
@@ -64,13 +67,14 @@ verify 画面では、クライアントが 60 秒間隔で `updateLastActivityF
 `sanitizeSessionData()` は非 canonical な `finalizeResult` を保存しません。
 `phase: 'verifying'` なのに有効な `finalizeResult` がない場合は、`verificationRequestedAt` を削除し、`phase` を `voting` に巻き戻します。
 
-## 4. サーバー側セッション状態
+## サーバー側セッション状態
 
 サーバーは `SessionData` に以下を保持します。
 
 - 投票（`votes`, `userVoteIndex`, `botCount`）
 - 集計状態（`finalizationState`）
 - 集計結果（`finalizationResult`）
+- 検証観測の冪等性マーカー（`verificationObservation`）
 - 最終活動時刻（`lastActivity`）
 
 `finalizationState.status` は以下を取り得ます。
@@ -81,7 +85,17 @@ verify 画面では、クライアントが 60 秒間隔で `updateLastActivityF
 - `failed`
 - `timeout`
 
-## 5. サーバー側 TTL と失効の実装差分
+### 検証観測メタデータ
+
+`verificationObservation` は、現在の `verificationExecutionId` に対応する最初のブラウザ観測を
+`executionId`、`fingerprint`、`observedAt` で記録します。同じ execution と fingerprint の再送は
+冪等に受理し、execution または fingerprint が競合する送信は拒否します。
+
+この記録は、ブラウザで表示された verdict の観測、observability event の重複送信防止、および
+送信された限定的な cast check 状態からの observability 用 summary 導出に使う冪等マーカーであり、
+その送信の成否や保存によって proof、集計結果、検証結果、ユーザー向け verdict は変わりません。
+
+## サーバー側 TTL と失効の実装差分
 
 サーバー側の失効挙動はストア実装で異なります。
 
@@ -102,13 +116,13 @@ finalized 前の queue/running 更新は通常 TTL で保存されます。
 `/api/session` は `MAX_SESSIONS` を参照します。
 上限到達時は `SESSION_LIMIT_EXCEEDED` を返します。
 
-## 6. セッションヘッダーのスコープ
+## セッションヘッダーのスコープ
 
 エンドポイントごとの `X-Session-ID` / `X-Session-Capability` の要否は[エンドポイント一覧](endpoints.md#active-browser-と-cli-api-一覧)を参照してください。
 
 `POST /api/session` のみヘッダー不要で、それ以外の active browser / CLI API は少なくとも一方が必須です。
 
-## 7. マルチタブ時の分離
+## マルチタブ時の分離
 
 `localStorage` は同一オリジンで共有されます。
 現行実装は `sessionStorage` の tab lock を併用し、別タブがセッションを差し替えたら stale tab を fail-closed にします。
@@ -121,4 +135,4 @@ finalized 前の queue/running 更新は通常 TTL で保存されます。
 - セッション作成を並行すると `starkBallotSession` 自体は共有更新されます。
 - 先に開いていたタブは `starkBallotSessionLock` と不一致になり、継続利用できません。
 
-<!-- source: apps/web/src/session/client.ts, apps/web/src/session/types.ts, apps/web/src/session/storageSchema.ts, apps/web/src/routes/HomePage.tsx, apps/web/src/routes/aggregate/page.tsx, apps/web/src/routes/result/page.tsx, apps/web/src/routes/verify/page.tsx, packages/domain/src/types/server.ts, packages/domain/src/types/voteStore.ts, packages/aws-adapters/src/store/mockSessionStore.ts, packages/aws-adapters/src/store/fileMockSessionStore.ts, packages/aws-adapters/src/store/dynamoSessionStore.ts -->
+<!-- source: apps/web/src/session/client.ts, apps/web/src/session/types.ts, apps/web/src/session/storageSchema.ts, apps/web/src/routes/HomePage.tsx, apps/web/src/routes/aggregate/page.tsx, apps/web/src/routes/result/page.tsx, apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/hooks/useVerificationObservation.ts, apps/api/src/server/api/handlers/verificationObservation.ts, packages/domain/src/types/server.ts, packages/domain/src/types/voteStore.ts, packages/domain/src/types/verificationObservation.ts, packages/aws-adapters/src/store/mockSessionStore.ts, packages/aws-adapters/src/store/fileMockSessionStore.ts, packages/aws-adapters/src/store/dynamoSessionStore.ts -->

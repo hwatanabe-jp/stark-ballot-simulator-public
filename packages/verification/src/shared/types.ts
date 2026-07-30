@@ -25,6 +25,16 @@ export interface BulletinBoard {
 
 export type BitmapProofSource = 'mock' | 'real';
 export type VerificationStatus = 'success' | 'failed' | 'dev_mode' | 'not_run' | 'running';
+export const VERIFICATION_FAILURE_CATEGORY_VALUES = [
+  'none',
+  'verifier_crash',
+  'corrupt_bundle',
+  's3_denied',
+  's3_missing',
+  'timeout',
+  'unknown',
+] as const;
+export type VerificationFailureCategory = (typeof VERIFICATION_FAILURE_CATEGORY_VALUES)[number];
 export type PublicVerificationErrorMessage =
   | 'ImageID mismatch'
   | 'Receipt does not contain ImageID'
@@ -46,6 +56,8 @@ export interface VerificationReport {
 export interface VerificationResult {
   status: VerificationStatus;
   report?: VerificationReport;
+  /** Internal-only worker infrastructure classification. Never expose through public projections. */
+  failureCategory?: VerificationFailureCategory;
 }
 
 export interface PublicVerificationReport {

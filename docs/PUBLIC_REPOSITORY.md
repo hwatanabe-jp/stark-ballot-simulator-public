@@ -3,9 +3,9 @@
 This repository is a generated public portfolio snapshot of STARK Ballot Simulator.
 
 - Public repository: https://github.com/hwatanabe-jp/stark-ballot-simulator-public
-- Source commit: `5bd8b65e9a15194dc26bb35cd0f6d4402428e7fa`
-- Generated at: `2026-07-13T06:32:30.986Z`
-- Copied source files: `1047`
+- Source commit: `836677879ea327e933e98797f38f80694e88715c`
+- Generated at: `2026-07-29T10:46:33.447Z`
+- Copied source files: `1097`
 
 The private repository remains the source of truth. Public-repository changes
 should normally be made in the private repository and released again as a new
@@ -29,30 +29,42 @@ The private source repository intentionally keeps broader working notes than the
 public portfolio snapshot needs. This export preserves that signal while
 publishing only the documentation that is safe and useful for readers.
 
-- Private source docs tracked: `176`
-- Public source docs copied: `58`
+- Private source files under `docs/` tracked: `185`
+- Public source files under `docs/` copied: `58`
 - Generated public docs: `1`
-- Source docs stripped: `118`
+- Source files under `docs/` stripped: `127`
 
 Stripped documentation categories:
 
 - Archived history and progress notes: `52` files from `docs/archive/`
-- Internal implementation notes: `66` files from `docs/internal/`
+- Internal implementation notes: `75` files from `docs/internal/`
 
 ## What Is Stripped
 
+- `.agents/`
+- `.claude/`
+- `AGENTS.md`
+- `CLAUDE.md`
 - `.env* except .env.local.example and scripts/tests/.env.test.defaults`
 - `.github/workflows/* from the private repository`
 - `docs/archive/`
 - `docs/internal/`
+- `infra/terraform/** except .tf source and explicitly allowlisted public records`
 - `scripts/monitoring/`
 - `scripts/public/`
+- `scripts/aws/`
+- `scripts/skills/`
 - `infra/terraform/legacy/main.tfvars`
 - `infra/terraform/legacy/develop.tfvars`
 - `input.json`
 - `verification.json`
 - `included-bitmap.json`
 - `seen-bitmap.json`
+- `infra/image-signature-verifier/bin/`
+- `infra/image-signature-verifier/libexec/`
+- `infra/image-signature-verifier/trust/`
+- `infra/image-signature-verifier/installation.json`
+- `infra/image-signature-verifier/trustpolicy.json`
 
 The public tree intentionally does not include the private release generator,
 private GitHub Actions workflows, AWS credential setup workflows, monitoring

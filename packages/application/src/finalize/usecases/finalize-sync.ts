@@ -20,6 +20,7 @@ import { toPublicZkvmJournal } from '@stark-ballot/zkvm-contract/zkvm/public-jou
 import { getStringProperty } from '@stark-ballot/domain/utils/guards';
 import { normalizeHexString } from '@stark-ballot/domain/utils/hex';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { resolveFinalizationTamperDetected } from '@stark-ballot/domain/finalize/finalization-tamper';
 import { isCurrentArtifactBoundaryError } from '@stark-ballot/domain/contract';
 import { buildUserVoteArtifacts, UserVoteArtifactsUnavailableError } from './user-vote-artifacts';
@@ -368,7 +369,7 @@ export async function finalizeSync(
     const debugEnabled = input.debugFileStore ?? false;
     if (debugEnabled || input.debugFinalize) {
       logger.debug('[API][finalize][DEBUG] Attempting to save finalizationResult', {
-        sessionId: input.sessionId,
+        session_id_hash: hashSessionIdForLogging(input.sessionId),
         hasFinalizationResult: !!finalizationResult,
         verifiedTally: finalizationResult.journal.verifiedTally,
         timestamp: new Date().toISOString(),
@@ -402,7 +403,7 @@ export async function finalizeSync(
 
     if (debugEnabled || input.debugFinalize) {
       logger.debug('[API][finalize][DEBUG] finalizeSession() completed', {
-        sessionId: input.sessionId,
+        session_id_hash: hashSessionIdForLogging(input.sessionId),
         timestamp: new Date().toISOString(),
       });
     }
@@ -431,7 +432,9 @@ export async function finalizeSync(
         throw error;
       }
 
-      logger.info('[API] Saved bitmap data for session:', input.sessionId);
+      logger.info('[API] Saved bitmap data for session', {
+        session_id_hash: hashSessionIdForLogging(input.sessionId),
+      });
     }
     const { bulletinRoot, inputCommitment, voteReceipt, userVoteProof } = userVoteArtifacts;
 

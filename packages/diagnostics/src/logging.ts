@@ -1,45 +1,50 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { isPublicDefaultLogSalt, PUBLIC_DEFAULT_LOG_SALT } from '@stark-ballot/validation/log-hash-salt';
 
-const DEFAULT_LOG_SALT = 'stark-ballot-log-salt';
 const HASH_LENGTH = 12;
 
-export function resolveLogSalt(configuredSalt?: string): string {
-  const explicit = configuredSalt?.trim() ?? process.env['LOG_IP_HASH_SALT']?.trim();
-  if (explicit) {
-    return explicit;
-  }
-  return DEFAULT_LOG_SALT;
+type LogHashDomain = 'ip' | 'key' | 'sid';
+
+function readNonEmpty(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
-function hashValueForLogging(prefix: string, value: string, configuredSalt?: string): string {
-  const normalized = value.trim().toLowerCase();
+export function resolveLogSalt(configuredSalt?: string): string {
+  return readNonEmpty(configuredSalt) ?? readNonEmpty(process.env['LOG_IP_HASH_SALT']) ?? PUBLIC_DEFAULT_LOG_SALT;
+}
+
+export { isPublicDefaultLogSalt };
+
+function normalizeHashValue(domain: LogHashDomain, value: string): string {
+  const trimmed = value.trim();
+  return domain === 'key' ? trimmed : trimmed.toLowerCase();
+}
+
+function hashValueForLogging(domain: LogHashDomain, prefix: string, value: string, configuredSalt?: string): string {
+  const normalized = normalizeHashValue(domain, value);
   if (!normalized) {
     return `${prefix}_unknown`;
   }
   const salt = resolveLogSalt(configuredSalt);
-  const digest = createHash('sha256').update(salt).update('|').update(normalized).digest('hex');
+  const digest = createHash('sha256')
+    .update(salt)
+    .update('|')
+    .update(domain)
+    .update('|')
+    .update(normalized)
+    .digest('hex');
   return `${prefix}_${digest.slice(0, HASH_LENGTH)}`;
 }
 
 export function hashIpForLogging(ip: string, configuredSalt?: string): string {
-  return hashValueForLogging('ip', ip, configuredSalt);
+  return hashValueForLogging('ip', 'ip', ip, configuredSalt);
 }
 
 export function hashKeyPrefixForLogging(prefix: string, configuredSalt?: string): string {
-  return hashValueForLogging('key', prefix, configuredSalt);
+  return hashValueForLogging('key', 'key', prefix, configuredSalt);
 }
 
-export function resolveRequestId(headers: Headers): string {
-  const direct = headers.get('x-request-id') ?? headers.get('x-amzn-requestid');
-  if (direct && direct.trim().length > 0) {
-    return direct.trim();
-  }
-  const traceId = headers.get('x-amzn-trace-id');
-  if (traceId) {
-    const match = traceId.match(/Root=([^;]+)/i);
-    if (match?.[1]) {
-      return match[1];
-    }
-  }
-  return randomUUID();
+export function hashSessionIdForLogging(sessionId: string, configuredSalt?: string): string {
+  return hashValueForLogging('sid', 'sid', sessionId, configuredSalt);
 }

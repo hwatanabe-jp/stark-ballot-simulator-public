@@ -27,6 +27,7 @@ export interface SerializableSessionData {
   finalizationArtifactState?: SessionData['finalizationArtifactState'];
   userVoteIndex?: number;
   bulletinRootHistory?: SessionData['bulletinRootHistory'];
+  verificationObservation?: SessionData['verificationObservation'];
 }
 
 export interface ReceiptEntry {

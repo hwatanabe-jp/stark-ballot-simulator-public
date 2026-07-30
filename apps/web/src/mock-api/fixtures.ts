@@ -572,6 +572,8 @@ function buildFinalizationStatusResult(state: MockState, now: number): Record<st
   };
 }
 
+export const MOCK_VERIFICATION_EXECUTION_ID = 'mock-verification-001';
+
 export const buildVerifyResponse = (
   state: MockState,
   now: number,
@@ -696,7 +698,7 @@ export const buildVerifyResponse = (
   userVote['proof'] = proof;
   data['userVote'] = userVote;
 
-  data['verificationExecutionId'] = data['verificationExecutionId'] ?? 'mock-verification-001';
+  data['verificationExecutionId'] = data['verificationExecutionId'] ?? MOCK_VERIFICATION_EXECUTION_ID;
   data['tamperSummary'] = getTamperSummary(state.scenarioId);
   data['missingSlots'] = scenarioMetrics.missingSlots;
   data['invalidPresentedSlots'] = scenarioMetrics.invalidPresentedSlots;

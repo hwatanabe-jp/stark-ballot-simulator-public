@@ -13,6 +13,7 @@ import type { ZkVMInputHashResponse, ZkVMInputHashError } from '@stark-ballot/ap
 import type { ApiContext } from '../context';
 import { jsonResponse } from '../../http/response';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { ZkVMInputHashResponseSchema } from '@stark-ballot/api-contract/validation/apiSchemas';
 import { respondWithSchema } from '../utils/responseSchema';
 import { validateSessionCapabilityForSession } from '../middleware/session';
@@ -128,7 +129,10 @@ export async function getZkvmInputHashHandler({ request, store }: ApiContext): P
     };
 
     // Log the request
-    logger.info(`[API] zkvm-input-hash requested for session ${sessionId}, includeData=${includeData}`);
+    logger.info('[API] zkvm-input-hash requested', {
+      session_id_hash: hashSessionIdForLogging(sessionId),
+      includeData,
+    });
 
     return respondWithSchema(ZkVMInputHashResponseSchema, response, { status: 200 });
   } catch (error) {

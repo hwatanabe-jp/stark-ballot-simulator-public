@@ -56,6 +56,7 @@ describe('projectFinalizationResultForPublicResponse', () => {
     });
     const verificationResult = {
       status: 'success' as const,
+      failureCategory: 'none' as const,
       executionId: 'exec-1',
       report: {
         status: 'success' as const,
@@ -81,6 +82,7 @@ describe('projectFinalizationResultForPublicResponse', () => {
     expect(projectedVerificationResult).not.toHaveProperty('bundlePath');
     expect(projectedVerificationResult).not.toHaveProperty('reportPath');
     expect(projectedVerificationResult).not.toHaveProperty('bundleArchivePath');
+    expect(projectedVerificationResult).not.toHaveProperty('failureCategory');
     expect(projectedVerificationResult?.report).toMatchObject({
       status: 'success',
       verifier_version: '1.0.0',

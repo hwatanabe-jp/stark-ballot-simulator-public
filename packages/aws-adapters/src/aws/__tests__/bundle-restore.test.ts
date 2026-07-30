@@ -12,6 +12,7 @@ vi.mock('../s3-download', () => ({
 
 describe('restoreReceiptFromS3', () => {
   let restoreReceiptFromS3: (key: string) => Promise<RestoredReceipt>;
+  let isTransientBundleRestoreError: (error: unknown) => boolean;
   let mockDownload: ReturnType<typeof vi.fn>;
 
   async function buildZipBuffer(entries: Record<string, string>): Promise<Buffer> {
@@ -54,7 +55,7 @@ describe('restoreReceiptFromS3', () => {
     vi.resetModules();
     vi.clearAllMocks();
     mockDownload = vi.mocked((await import('../s3-download')).downloadFromS3);
-    ({ restoreReceiptFromS3 } = await import('../bundle-restore'));
+    ({ restoreReceiptFromS3, isTransientBundleRestoreError } = await import('../bundle-restore'));
   });
 
   afterEach(() => {
@@ -287,11 +288,100 @@ describe('restoreReceiptFromS3', () => {
     );
   });
 
-  it('propagates download errors', async () => {
-    mockDownload.mockRejectedValueOnce(new Error('S3 unavailable'));
+  it.each([
+    ['throttling', { name: 'SlowDown', $metadata: { httpStatusCode: 503 } }],
+    ['server failure', { name: 'ServiceUnavailable', $metadata: { httpStatusCode: 503 } }],
+    ['request timeout', { name: 'RequestTimeout', $metadata: { httpStatusCode: 400 } }],
+    ['socket timeout', { code: 'ETIMEDOUT' }],
+  ])('surfaces exhausted transient S3 %s without exposing the raw error', async (_label, properties) => {
+    const privateDetail = 's3://private-bucket/sessions/private-session/bundle.zip';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockDownload.mockRejectedValueOnce(Object.assign(new Error(privateDetail), properties));
 
-    await expect(restoreReceiptFromS3('sessions/error/bundle.zip')).rejects.toThrow(
-      'Receipt restoration failed: S3 unavailable',
+    const restorePromise = restoreReceiptFromS3('sessions/error/bundle.zip');
+
+    await expect(restorePromise).rejects.toMatchObject({
+      name: 'TransientBundleRestoreError',
+      message: 'Receipt restoration temporarily unavailable',
+    });
+    await restorePromise.catch((error: unknown) => {
+      expect(isTransientBundleRestoreError(error)).toBe(true);
+    });
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateDetail);
+  });
+
+  it('keeps a definitive missing bundle on the terminal restore-failure path', async () => {
+    const privateDetail = 's3://private-bucket/sessions/private-session/bundle.zip';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockDownload.mockRejectedValueOnce(
+      Object.assign(new Error(privateDetail), {
+        name: 'NoSuchKey',
+        $metadata: { httpStatusCode: 404 },
+      }),
     );
+
+    const restorePromise = restoreReceiptFromS3('sessions/missing/bundle.zip');
+
+    await expect(restorePromise).rejects.toMatchObject({
+      name: 'Error',
+      message: 'Receipt restoration failed',
+    });
+    await restorePromise.catch((error: unknown) => {
+      expect(isTransientBundleRestoreError(error)).toBe(false);
+    });
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateDetail);
+  });
+
+  it('keeps an invalid zip on the terminal restore-failure path without logging its bytes', async () => {
+    const privateDetail = 'private-invalid-zip-content';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockDownload.mockResolvedValueOnce(Buffer.from(privateDetail, 'utf8'));
+
+    await expect(restoreReceiptFromS3('sessions/invalid-zip/bundle.zip')).rejects.toMatchObject({
+      name: 'Error',
+      message: 'Receipt restoration failed',
+    });
+
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateDetail);
+  });
+
+  it('keeps invalid receipt JSON on the terminal restore-failure path without logging its contents', async () => {
+    const privateDetail = 'private-invalid-receipt-content';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const zipBuffer = await buildZipBuffer({
+      'receipt.json': `{"private":"${privateDetail}"`,
+    });
+    mockDownload.mockResolvedValueOnce(zipBuffer);
+
+    await expect(restoreReceiptFromS3('sessions/invalid-receipt/bundle.zip')).rejects.toMatchObject({
+      name: 'Error',
+      message: 'Receipt restoration failed',
+    });
+
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateDetail);
+  });
+
+  it('surfaces exhausted transient S3 failures while reading a sibling artifact', async () => {
+    const privateDetail = 's3://private-bucket/sessions/private-session/included-bitmap.json';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const zipBuffer = await buildZipBuffer({
+      'receipt.json': JSON.stringify({ receipt: { seal: 'base64seal' } }),
+    });
+    mockDownload.mockResolvedValueOnce(zipBuffer).mockRejectedValueOnce(
+      Object.assign(new Error(privateDetail), {
+        name: 'ServiceUnavailable',
+        $metadata: { httpStatusCode: 503 },
+      }),
+    );
+
+    await expect(restoreReceiptFromS3('sessions/transient-sibling/bundle.zip')).rejects.toMatchObject({
+      name: 'TransientBundleRestoreError',
+      message: 'Receipt restoration temporarily unavailable',
+    });
+
+    expect(mockDownload).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateDetail);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(privateDetail);
   });
 });

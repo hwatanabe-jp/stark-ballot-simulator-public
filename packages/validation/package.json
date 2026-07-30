@@ -7,11 +7,14 @@
     "./definedProperties": "./src/definedProperties.ts",
     "./duplicate-detector": "./src/duplicate-detector.ts",
     "./duplicate-detector-cache": "./src/duplicate-detector-cache.ts",
+    "./image-id-mapping": "./src/image-id-mapping.js",
+    "./image-id-mapping-types": "./src/image-id-mapping.d.ts",
     "./image-id-policy": "./src/image-id-policy.ts",
+    "./log-hash-salt": "./src/log-hash-salt.ts",
     "./safe-verifier-segment": "./src/safe-verifier-segment.ts",
     "./schema": "./src/schema.ts"
   },
   "devDependencies": {
-    "vitest": "4.1.9"
+    "vitest": "4.1.10"
   }
 }

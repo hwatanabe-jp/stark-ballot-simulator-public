@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionData } from '@stark-ballot/domain/types/server';
 import { resolveCurrentContractGeneration } from '@stark-ballot/domain/contract';
 import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sessionCapabilityToken';
@@ -8,6 +8,14 @@ import { readJsonRecord } from '@stark-ballot/test-support/testing/response-help
 import { getNumberProperty, getStringProperty } from '@stark-ballot/domain/utils/guards';
 import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/validation/apiSchemas';
 import { admitAwsPersistedFinalizationStateBranch } from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
+
+const emitCanonicalEventMock = vi.hoisted(() => vi.fn());
+
+vi.mock('@stark-ballot/diagnostics/canonicalEvents', () => ({
+  emitCanonicalEvent: emitCanonicalEventMock,
+}));
+
 import { cancelFinalizationHandler } from './finalizeCancel';
 
 const capabilitySecret = 'test-session-capability-secret-0123456789abcdef';
@@ -47,6 +55,10 @@ async function expectStandardErrorResponse(
 }
 
 describe('cancelFinalizationHandler', () => {
+  beforeEach(() => {
+    emitCanonicalEventMock.mockClear();
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -93,5 +105,82 @@ describe('cancelFinalizationHandler', () => {
       status: 409,
       error: 'FINALIZATION_NOT_CANCELLABLE',
     });
+    expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+      event: 'finalize_transition_attempted',
+      to: 'failed',
+      source: 'cancel',
+      reason: 'FINALIZATION_NOT_CANCELLABLE',
+      session_id_hash: hashSessionIdForLogging(sessionId),
+      execution_id: 'exec-123456',
+    });
+  });
+
+  it('records a privacy-safe cancellation transition attempt at the caller boundary', async () => {
+    vi.stubEnv('FINALIZE_ASYNC_MODE', 'true');
+    vi.stubEnv('SESSION_CAPABILITY_SECRET', capabilitySecret);
+    vi.stubEnv('PROVER_STEP_FUNCTIONS_ENABLED', 'false');
+    const sessionId = 'session-cancel-attempt';
+    const executionId = 'exec-cancel-attempt';
+    const now = Date.now();
+    const token = createSessionCapabilityToken({ sessionId }, capabilitySecret);
+    const pendingState = admitAwsPersistedFinalizationStateBranch({
+      status: 'pending',
+      executionId,
+      queuedAt: now - 2000,
+    });
+    const session = {
+      ...buildSession(sessionId),
+      finalizationState: pendingState,
+    };
+    const failedState = {
+      status: 'failed' as const,
+      executionId,
+      queuedAt: now - 2000,
+      failedAt: now,
+      error: {
+        code: 'USER_CANCELLED',
+        message: 'Cancelled by user request',
+      },
+    };
+    const markAwsFinalizationFailed = vi.fn().mockResolvedValue(failedState);
+    const store = createMockVoteStore({
+      getSession: () => Promise.resolve(session),
+      markAwsFinalizationFailed,
+    });
+
+    const response = await cancelFinalizationHandler({
+      request: new Request('http://localhost/api/finalize/cancel', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [SESSION_ID_HEADER]: sessionId,
+          [SESSION_CAPABILITY_HEADER]: token,
+        },
+        body: JSON.stringify({ executionId }),
+      }),
+      store,
+      clientIp: '127.0.0.1',
+    });
+
+    expect(response.status).toBe(200);
+    expect(markAwsFinalizationFailed).toHaveBeenCalledWith(
+      sessionId,
+      expect.objectContaining({
+        observability: {
+          source: 'cancel',
+          reason: 'USER_CANCELLED',
+        },
+      }),
+    );
+    expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+      event: 'finalize_transition_attempted',
+      to: 'failed',
+      source: 'cancel',
+      reason: 'USER_CANCELLED',
+      session_id_hash: hashSessionIdForLogging(sessionId),
+      execution_id: executionId,
+    });
+    expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(sessionId);
+    expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(capabilitySecret);
   });
 });

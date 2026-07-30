@@ -1,8 +1,8 @@
 {
-  "version": 1,
-  "sourceSha": "5bd8b65e9a15194dc26bb35cd0f6d4402428e7fa",
-  "generatedAt": "2026-07-13T06:32:30.986Z",
-  "copiedFileCount": 1047,
+  "version": 2,
+  "sourceSha": "836677879ea327e933e98797f38f80694e88715c",
+  "generatedAt": "2026-07-29T10:46:33.447Z",
+  "copiedFileCount": 1097,
   "generatedFiles": [
     ".github/workflows/public-cli-tests.yml",
     ".github/workflows/public-core-checks.yml",
@@ -17,18 +17,54 @@
     ".public-repository",
     "docs/PUBLIC_REPOSITORY.md"
   ],
+  "transformedFiles": [
+    "infra/terraform/legacy/terraform.tfvars.example",
+    "package.json",
+    "scripts/README.md",
+    "scripts/security/README.md",
+    "tests/e2e/README.md"
+  ],
+  "removedPackageScripts": [
+    "aws:app-deployment-record:generate:develop",
+    "aws:app-pipeline:develop",
+    "aws:describe-session:develop",
+    "aws:dynamodb-recovery:develop",
+    "aws:foundation-pipeline:develop",
+    "aws:observability-queries:smoke:develop",
+    "aws:operator-gate:develop",
+    "aws:prover-release-pipeline:develop",
+    "aws:release-artifacts:generate:develop",
+    "aws:runtime-references:validate:develop",
+    "aws:toolchain-release-pipeline:develop",
+    "aws:zkvm-contract-hash:generate:develop",
+    "hooks:install",
+    "public-repo:export",
+    "target-public:scan"
+  ],
   "strippedPaths": [
+    ".agents/",
+    ".claude/",
+    "AGENTS.md",
+    "CLAUDE.md",
     ".env* except .env.local.example and scripts/tests/.env.test.defaults",
     ".github/workflows/* from the private repository",
     "docs/archive/",
     "docs/internal/",
+    "infra/terraform/** except .tf source and explicitly allowlisted public records",
     "scripts/monitoring/",
     "scripts/public/",
+    "scripts/aws/",
+    "scripts/skills/",
     "infra/terraform/legacy/main.tfvars",
     "infra/terraform/legacy/develop.tfvars",
     "input.json",
     "verification.json",
     "included-bitmap.json",
-    "seen-bitmap.json"
+    "seen-bitmap.json",
+    "infra/image-signature-verifier/bin/",
+    "infra/image-signature-verifier/libexec/",
+    "infra/image-signature-verifier/trust/",
+    "infra/image-signature-verifier/installation.json",
+    "infra/image-signature-verifier/trustpolicy.json"
   ]
 }

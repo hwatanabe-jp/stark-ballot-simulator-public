@@ -3,6 +3,7 @@ import { verifyCTMerkleInclusion } from './merkle';
 import type { VoteChoice } from '@stark-ballot/verification/shared/constants';
 import { VOTE_CHOICES } from '@stark-ballot/verification/shared/constants';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import { logger } from '@stark-ballot/verification/shared/logger';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -74,8 +75,8 @@ async function checkUserVoteInclusion(userVote: VoteData, bulletinRoot: string):
     );
 
     return ctIncluded;
-  } catch (error) {
-    console.warn('[TamperDetection] CT inclusion verification failed:', error);
+  } catch {
+    logger.warn('ct_inclusion_failed');
     return false;
   }
 }

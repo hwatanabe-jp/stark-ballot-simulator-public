@@ -24,6 +24,7 @@ import {
   SessionStatusResponseSchema,
   VerifyResponseSchema,
   VerifyFailClosedResponseSchema,
+  VerificationObservationResponseSchema,
   VerificationRunResponseSchema,
   BulletinResponseSchema,
   BulletinProofResponseSchema,
@@ -36,12 +37,14 @@ import {
   type BulletinProofResponse,
   type BulletinResponse,
   type ConsistencyProofResponse,
+  type FinalizeCallbackResponse,
   type FinalizeSyncResponse,
   type ProgressResponse,
   type SessionResponse,
   type SessionStatusResponse,
   type SthResponse,
   type VerificationRunResponse,
+  type VerificationObservationResponse,
   type VerifyResponse,
   type VoteResponse,
   type ZkVMInputHashResponse,
@@ -131,6 +134,7 @@ type ConcreteResponseTypeChecks = [
   HasStringIndex<VerifyResponse>,
   HasStringIndex<VerifyResponse['data']>,
   HasStringIndex<VerificationRunResponse>,
+  HasStringIndex<VerificationObservationResponse>,
   HasStringIndex<BulletinResponse>,
   HasStringIndex<BulletinProofResponse>,
   HasStringIndex<ConsistencyProofResponse>,
@@ -139,6 +143,7 @@ type ConcreteResponseTypeChecks = [
   HasStringIndex<ZkVMInputHashResponse>,
 ];
 const concreteResponseTypeChecks: ConcreteResponseTypeChecks = [
+  false,
   false,
   false,
   false,
@@ -250,6 +255,16 @@ const CONTRACT_FIXTURES: ContractFixture[] = [
     fixture: verifyFailClosedFixture,
   },
   {
+    name: 'verification-observation',
+    schemaName: 'VerificationObservationResponseSchema',
+    schema: VerificationObservationResponseSchema,
+    fixture: {
+      data: {
+        status: 'recorded',
+      },
+    },
+  },
+  {
     name: 'verification-run',
     schemaName: 'VerificationRunResponseSchema',
     schema: VerificationRunResponseSchema,
@@ -358,6 +373,11 @@ const SCHEMA_CASES: SchemaCase[] = [
     fixtures: [verifyS0Fixture, verifyS1Fixture, verifyS2Fixture, verifyS3Fixture, verifyS4Fixture, verifyS5Fixture],
   },
   { name: 'VerifyFailClosedResponse', schema: VerifyFailClosedResponseSchema, fixtures: [verifyFailClosedFixture] },
+  {
+    name: 'VerificationObservationResponse',
+    schema: VerificationObservationResponseSchema,
+    fixtures: [{ data: { status: 'recorded' } }, { data: { status: 'idempotent' } }],
+  },
   { name: 'VerificationRunResponse', schema: VerificationRunResponseSchema, fixtures: [verificationRunFixture] },
 ];
 
@@ -1014,6 +1034,35 @@ describe('api response schemas', () => {
     ).toBe(false);
   });
 
+  it('rejects internal finalization failure categories in public state responses', () => {
+    const failedState = {
+      status: 'failed' as const,
+      executionId: 'exec-123',
+      queuedAt: 1730000000000,
+      failedAt: 1730000005000,
+      error: {
+        code: 'PROVER_TASK_FAILED',
+        message: 'Target prover task failed',
+        category: 'prover_execution',
+      },
+    };
+
+    expect(
+      FinalizeAcceptedResponseSchema.safeParse({
+        executionId: 'exec-123',
+        statusUrl: '/api/sessions/session-123/status',
+        state: failedState,
+      }).success,
+    ).toBe(false);
+    expect(FinalizeCancelResponseSchema.safeParse({ state: failedState }).success).toBe(false);
+    expect(
+      SessionStatusResponseSchema.safeParse({
+        ...statusRunningFixture,
+        finalizationState: failedState,
+      }).success,
+    ).toBe(false);
+  });
+
   it('allows internal callback state fields only in the callback response schema', () => {
     const internalFailedState = {
       status: 'failed' as const,
@@ -1024,6 +1073,7 @@ describe('api response schemas', () => {
       error: {
         code: 'FINALIZATION_FAILED',
         message: 'Finalization failed',
+        category: 'unknown',
         details: {
           bundleKey: 'private/proofs/input.json',
         },
@@ -1043,6 +1093,56 @@ describe('api response schemas', () => {
         finalizationState: internalFailedState,
       }).success,
     ).toBe(false);
+  });
+
+  it('types infrastructure interruptions as valid internal callback failures', () => {
+    const response: FinalizeCallbackResponse = {
+      sessionId: '550e8400-e29b-41d4-a716-446655440000',
+      state: {
+        status: 'failed',
+        executionId: 'exec-interrupted',
+        queuedAt: 1730000000000,
+        failedAt: 1730000005000,
+        error: {
+          code: 'PROVER_INTERRUPTED',
+          message: 'The prover task was interrupted by the infrastructure',
+          category: 'infrastructure_interruption',
+        },
+      },
+    };
+
+    expect(FinalizeCallbackResponseSchema.safeParse(response).success).toBe(true);
+  });
+
+  it.each([
+    'configuration',
+    'input',
+    'prover_execution',
+    'infrastructure_interruption',
+    'artifact',
+    'upload',
+    'timeout',
+    'unknown',
+  ])('admits the closed prover failure marker category %s only in the internal callback response', (category) => {
+    const internalFailedState = {
+      status: 'failed' as const,
+      executionId: 'exec-123456',
+      queuedAt: 1730000000000,
+      failedAt: 1730000005000,
+      error: {
+        code: 'PROVER_TASK_FAILED',
+        message: 'Target prover task failed',
+        category,
+      },
+    };
+
+    expect(
+      FinalizeCallbackResponseSchema.safeParse({
+        sessionId: '550e8400-e29b-41d4-a716-446655440000',
+        state: internalFailedState,
+      }).success,
+    ).toBe(true);
+    expect(FinalizeCancelResponseSchema.safeParse({ state: internalFailedState }).success).toBe(false);
   });
 
   it('rejects unexpected internal callback state fields', () => {
@@ -1326,6 +1426,7 @@ describe('api response schemas', () => {
 
   it('keeps exported schema-derived response types concrete', () => {
     expect(concreteResponseTypeChecks).toEqual([
+      false,
       false,
       false,
       false,

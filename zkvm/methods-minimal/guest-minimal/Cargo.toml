@@ -9,5 +9,5 @@ name = "guest-minimal"
 path = "src/main.rs"
 
 [dependencies]
-risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std"] }
-serde = { version = "1.0", features = ["derive"] }
+risc0-zkvm = { workspace = true, features = ["heap-embedded-alloc"] }
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }

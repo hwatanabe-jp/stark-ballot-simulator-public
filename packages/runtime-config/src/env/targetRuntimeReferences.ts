@@ -1,3 +1,8 @@
+import {
+  RuntimeConfigValidationError,
+  type RuntimeConfigName,
+} from '@stark-ballot/runtime-config/env/configValidationError';
+
 const TARGET_PROJECT_NAME = 'stark-ballot-simulator';
 const TARGET_NAME_PREFIXES = [
   `${TARGET_PROJECT_NAME}-stark-dev-develop`,
@@ -21,13 +26,17 @@ export interface TargetRuntimeReferenceValues extends TargetS3ProofReferenceValu
   verificationWorkerFunctionName: string;
 }
 
-function assertPresent(name: string, value: string): void {
+function targetReferenceError(name: RuntimeConfigName, message: string): RuntimeConfigValidationError {
+  return new RuntimeConfigValidationError([name], undefined, message);
+}
+
+function assertPresent(name: RuntimeConfigName, value: string): void {
   if (value.trim().length === 0) {
-    throw new Error(`${name} must be set when TARGET_AWS_RUNTIME=1.`);
+    throw targetReferenceError(name, `${name} must be set when TARGET_AWS_RUNTIME=1.`);
   }
 }
 
-function assertNoLegacyMarker(name: string, value: string): void {
+function assertNoLegacyMarker(name: RuntimeConfigName, value: string): void {
   const lowered = value.toLowerCase();
   if (
     lowered.includes('amplify') ||
@@ -36,26 +45,31 @@ function assertNoLegacyMarker(name: string, value: string): void {
     lowered.includes('proof-bundles-develop') ||
     lowered.startsWith('change-me')
   ) {
-    throw new Error(`${name} must reference Terraform-managed target runtime resources.`);
+    throw targetReferenceError(name, `${name} must reference Terraform-managed target runtime resources.`);
   }
 }
 
-function assertRegion(name: string, actualRegion: string, expectedRegion: string | undefined): void {
+function assertRegion(name: RuntimeConfigName, actualRegion: string, expectedRegion: string | undefined): void {
   if (expectedRegion && actualRegion !== expectedRegion) {
-    throw new Error(`${name} region must match AWS_REGION/AWS_DEFAULT_REGION.`);
+    throw targetReferenceError(name, `${name} region must match AWS_REGION/AWS_DEFAULT_REGION.`);
   }
 }
 
-function assertAccount(name: string, actualAccountId: string, expectedAccountId: string | undefined): void {
+function assertAccount(name: RuntimeConfigName, actualAccountId: string, expectedAccountId: string | undefined): void {
   if (expectedAccountId && actualAccountId !== expectedAccountId) {
-    throw new Error(`${name} account must match AWS_ACCOUNT_ID.`);
+    throw targetReferenceError(name, `${name} account must match AWS_ACCOUNT_ID.`);
   }
 }
 
-function requiredMatchGroup(match: RegExpExecArray, index: number, errorMessage: string): string {
+function requiredMatchGroup(
+  name: RuntimeConfigName,
+  match: RegExpExecArray,
+  index: number,
+  errorMessage: string,
+): string {
   const value = match[index];
   if (!value) {
-    throw new Error(errorMessage);
+    throw targetReferenceError(name, errorMessage);
   }
   return value;
 }
@@ -71,31 +85,45 @@ function validateQueueUrl(value: string, options: TargetReferenceValidationOptio
   let parsed: URL;
   try {
     parsed = new URL(value);
-  } catch {
-    throw new Error('PROVER_WORK_QUEUE_URL must be a valid SQS queue URL.');
+  } catch (cause) {
+    throw new RuntimeConfigValidationError(
+      ['PROVER_WORK_QUEUE_URL'],
+      cause,
+      'PROVER_WORK_QUEUE_URL must be a valid SQS queue URL.',
+    );
   }
 
   if (parsed.protocol !== 'https:' || parsed.search || parsed.hash) {
-    throw new Error('PROVER_WORK_QUEUE_URL must be a valid SQS queue URL.');
+    throw targetReferenceError('PROVER_WORK_QUEUE_URL', 'PROVER_WORK_QUEUE_URL must be a valid SQS queue URL.');
   }
 
   const sqsMatch = /^sqs\.([a-z]{2}-[a-z]+-[0-9])\.amazonaws\.com$/.exec(parsed.hostname);
   if (!sqsMatch) {
-    throw new Error('PROVER_WORK_QUEUE_URL must reference an AWS SQS endpoint.');
+    throw targetReferenceError('PROVER_WORK_QUEUE_URL', 'PROVER_WORK_QUEUE_URL must reference an AWS SQS endpoint.');
   }
-  const region = requiredMatchGroup(sqsMatch, 1, 'PROVER_WORK_QUEUE_URL must reference an AWS SQS endpoint.');
+  const region = requiredMatchGroup(
+    'PROVER_WORK_QUEUE_URL',
+    sqsMatch,
+    1,
+    'PROVER_WORK_QUEUE_URL must reference an AWS SQS endpoint.',
+  );
   assertRegion('PROVER_WORK_QUEUE_URL', region, options.expectedRegion);
 
   const pathMatch = /^\/([0-9]{12})\/([A-Za-z0-9_-]{1,80})$/.exec(parsed.pathname);
   if (!pathMatch) {
-    throw new Error('PROVER_WORK_QUEUE_URL must include a 12-digit account ID and queue name.');
+    throw targetReferenceError(
+      'PROVER_WORK_QUEUE_URL',
+      'PROVER_WORK_QUEUE_URL must include a 12-digit account ID and queue name.',
+    );
   }
   const accountId = requiredMatchGroup(
+    'PROVER_WORK_QUEUE_URL',
     pathMatch,
     1,
     'PROVER_WORK_QUEUE_URL must include a 12-digit account ID and queue name.',
   );
   const queueName = requiredMatchGroup(
+    'PROVER_WORK_QUEUE_URL',
     pathMatch,
     2,
     'PROVER_WORK_QUEUE_URL must include a 12-digit account ID and queue name.',
@@ -103,7 +131,10 @@ function validateQueueUrl(value: string, options: TargetReferenceValidationOptio
   assertAccount('PROVER_WORK_QUEUE_URL', accountId, options.expectedAccountId);
 
   if (!isTargetResourceName(queueName, 'prover-work')) {
-    throw new Error('PROVER_WORK_QUEUE_URL must reference the Terraform-managed target prover work queue.');
+    throw targetReferenceError(
+      'PROVER_WORK_QUEUE_URL',
+      'PROVER_WORK_QUEUE_URL must reference the Terraform-managed target prover work queue.',
+    );
   }
 }
 
@@ -113,20 +144,26 @@ function validateStateMachineArn(value: string, options: TargetReferenceValidati
 
   const arnMatch = /^arn:aws:states:([^:]+):([0-9]{12}):stateMachine:([A-Za-z0-9-_]+)$/.exec(value);
   if (!arnMatch) {
-    throw new Error('PROVER_STATE_MACHINE_ARN must be a valid Step Functions state machine ARN.');
+    throw targetReferenceError(
+      'PROVER_STATE_MACHINE_ARN',
+      'PROVER_STATE_MACHINE_ARN must be a valid Step Functions state machine ARN.',
+    );
   }
 
   const region = requiredMatchGroup(
+    'PROVER_STATE_MACHINE_ARN',
     arnMatch,
     1,
     'PROVER_STATE_MACHINE_ARN must be a valid Step Functions state machine ARN.',
   );
   const accountId = requiredMatchGroup(
+    'PROVER_STATE_MACHINE_ARN',
     arnMatch,
     2,
     'PROVER_STATE_MACHINE_ARN must be a valid Step Functions state machine ARN.',
   );
   const stateMachineName = requiredMatchGroup(
+    'PROVER_STATE_MACHINE_ARN',
     arnMatch,
     3,
     'PROVER_STATE_MACHINE_ARN must be a valid Step Functions state machine ARN.',
@@ -135,7 +172,10 @@ function validateStateMachineArn(value: string, options: TargetReferenceValidati
   assertAccount('PROVER_STATE_MACHINE_ARN', accountId, options.expectedAccountId);
 
   if (!isTargetResourceName(stateMachineName, 'finalization')) {
-    throw new Error('PROVER_STATE_MACHINE_ARN must reference the Terraform-managed target state machine.');
+    throw targetReferenceError(
+      'PROVER_STATE_MACHINE_ARN',
+      'PROVER_STATE_MACHINE_ARN must reference the Terraform-managed target state machine.',
+    );
   }
 }
 
@@ -146,16 +186,19 @@ function validateVerifierFunctionName(value: string, options: TargetReferenceVal
   const arnMatch = /^arn:aws:lambda:([^:]+):([0-9]{12}):function:([A-Za-z0-9-_]+)$/.exec(value);
   if (arnMatch) {
     const region = requiredMatchGroup(
+      'VERIFICATION_WORKER_FUNCTION_NAME',
       arnMatch,
       1,
       'VERIFICATION_WORKER_FUNCTION_NAME must be a Lambda function name or ARN.',
     );
     const accountId = requiredMatchGroup(
+      'VERIFICATION_WORKER_FUNCTION_NAME',
       arnMatch,
       2,
       'VERIFICATION_WORKER_FUNCTION_NAME must be a Lambda function name or ARN.',
     );
     const functionName = requiredMatchGroup(
+      'VERIFICATION_WORKER_FUNCTION_NAME',
       arnMatch,
       3,
       'VERIFICATION_WORKER_FUNCTION_NAME must be a Lambda function name or ARN.',
@@ -163,16 +206,25 @@ function validateVerifierFunctionName(value: string, options: TargetReferenceVal
     assertRegion('VERIFICATION_WORKER_FUNCTION_NAME', region, options.expectedRegion);
     assertAccount('VERIFICATION_WORKER_FUNCTION_NAME', accountId, options.expectedAccountId);
     if (!isTargetResourceName(functionName, 'verification-worker')) {
-      throw new Error('VERIFICATION_WORKER_FUNCTION_NAME must reference the Terraform-managed verification worker.');
+      throw targetReferenceError(
+        'VERIFICATION_WORKER_FUNCTION_NAME',
+        'VERIFICATION_WORKER_FUNCTION_NAME must reference the Terraform-managed verification worker.',
+      );
     }
     return;
   }
 
   if (!/^[A-Za-z0-9-_]{1,64}$/.test(value)) {
-    throw new Error('VERIFICATION_WORKER_FUNCTION_NAME must be a Lambda function name or ARN.');
+    throw targetReferenceError(
+      'VERIFICATION_WORKER_FUNCTION_NAME',
+      'VERIFICATION_WORKER_FUNCTION_NAME must be a Lambda function name or ARN.',
+    );
   }
   if (!isTargetResourceName(value, 'verification-worker')) {
-    throw new Error('VERIFICATION_WORKER_FUNCTION_NAME must reference the Terraform-managed verification worker.');
+    throw targetReferenceError(
+      'VERIFICATION_WORKER_FUNCTION_NAME',
+      'VERIFICATION_WORKER_FUNCTION_NAME must reference the Terraform-managed verification worker.',
+    );
   }
 }
 
@@ -183,13 +235,19 @@ export function validateTargetS3ProofReferences(values: TargetS3ProofReferenceVa
   assertNoLegacyMarker('S3_PROOF_PREFIX', values.s3ProofPrefix);
 
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(values.s3ProofBucket)) {
-    throw new Error('S3_PROOF_BUCKET must be a valid S3 bucket name.');
+    throw targetReferenceError('S3_PROOF_BUCKET', 'S3_PROOF_BUCKET must be a valid S3 bucket name.');
   }
   if (!isTargetResourceName(values.s3ProofBucket, 'proof-artifacts')) {
-    throw new Error('S3_PROOF_BUCKET must reference the Terraform-managed target proof/artifact bucket.');
+    throw targetReferenceError(
+      'S3_PROOF_BUCKET',
+      'S3_PROOF_BUCKET must reference the Terraform-managed target proof/artifact bucket.',
+    );
   }
   if (values.s3ProofPrefix !== TARGET_PROOF_ARTIFACT_PREFIX) {
-    throw new Error('S3_PROOF_PREFIX must match the Terraform-managed target proof/artifact prefix.');
+    throw targetReferenceError(
+      'S3_PROOF_PREFIX',
+      'S3_PROOF_PREFIX must match the Terraform-managed target proof/artifact prefix.',
+    );
   }
 }
 

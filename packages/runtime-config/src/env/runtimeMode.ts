@@ -23,7 +23,7 @@ function classifyLambdaFunctionName(value: string | undefined): 'production' | '
   }
 
   const targetLambdaMatch =
-    /^stark-ballot-simulator-(stark-dev-develop|stark-prod-main)-(public-api|finalization-writer|proof-dispatcher|verification-worker|image-signature-gate)$/.exec(
+    /^stark-ballot-simulator-(stark-dev-develop|stark-prod-main)-(public-api|finalization-writer|proof-dispatcher|verification-worker|semaphore-janitor)$/.exec(
       normalized,
     );
   if (!targetLambdaMatch) {

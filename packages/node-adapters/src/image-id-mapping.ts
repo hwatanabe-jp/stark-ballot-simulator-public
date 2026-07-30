@@ -1,28 +1,9 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { parseImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
+import type { ImageIdMapping as PublicImageIdMapping } from '@stark-ballot/validation/image-id-mapping-types';
 
-export interface PublicImageIdMappingEntry {
-  methodVersion: number;
-  expectedImageID?: string;
-  expectedImageID_x86_64?: string;
-  description: string;
-  compiledAt: string;
-  rustVersion: string;
-  risc0Version: string;
-  features: string[];
-}
-
-export interface PublicImageIdMapping {
-  mappings: Record<string, PublicImageIdMappingEntry>;
-  current: string;
-  deprecated: string[];
-  metadata?: {
-    lastUpdated: string;
-    format: string;
-    purpose: string;
-    notes: string;
-  };
-}
+export type { ImageIdMapping as PublicImageIdMapping } from '@stark-ballot/validation/image-id-mapping-types';
 
 let cachedMapping: PublicImageIdMapping | null = null;
 
@@ -68,7 +49,7 @@ export async function loadPublicImageIdMapping(source = 'imageId-mapping.json'):
   try {
     const filePath = resolvePublicImageIdMappingPath(source);
     const content = await fs.readFile(filePath, 'utf-8');
-    const mapping = JSON.parse(content) as PublicImageIdMapping;
+    const mapping = parseImageIdMapping(JSON.parse(content));
 
     if (source === 'imageId-mapping.json') {
       cachedMapping = mapping;

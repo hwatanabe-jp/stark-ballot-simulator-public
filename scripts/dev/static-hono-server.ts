@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { createHonoApp, type ApiRouteMode } from '@stark-ballot/api/server';
+import { configureLogger, logger, parseLogFormat, parseLogLevel } from '@stark-ballot/diagnostics/logger';
 
 const DEFAULT_PORT = 3000;
 const DIST_DIR = resolve(process.cwd(), 'dist');
@@ -113,7 +114,18 @@ export function isApiRequestPath(pathname: string): boolean {
   return pathname === '/api' || pathname.startsWith('/api/');
 }
 
+function configureStaticServerLogger(): void {
+  configureLogger({
+    format: parseLogFormat(process.env['LOG_FORMAT'], 'json'),
+    level: parseLogLevel(process.env['LOG_LEVEL'], 'info'),
+    serviceName: 'local-static-api',
+    envName: process.env['RUNTIME_DEPLOYMENT_ENV']?.trim() || process.env['NODE_ENV']?.trim() || 'local',
+    includeStack: true,
+  });
+}
+
 export function createStaticHonoServer(distDir = DIST_DIR): Server {
+  configureStaticServerLogger();
   const honoApp = createHonoApp({ basePath: '/api', mode: STATIC_API_ROUTE_MODE });
   return createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -137,6 +149,9 @@ export function createStaticHonoServer(distDir = DIST_DIR): Server {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = getPort();
   createStaticHonoServer().listen(port, () => {
-    console.log(`[static-hono] serving ${DIST_DIR} with Hono API on http://localhost:${port}`);
+    logger.info('Static Hono server started', {
+      event: 'static_server_started',
+      port,
+    });
   });
 }

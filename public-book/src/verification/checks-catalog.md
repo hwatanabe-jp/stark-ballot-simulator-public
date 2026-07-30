@@ -47,6 +47,35 @@
 
 ---
 
+## 全チェック早見表
+
+| #   | チェック ID                            | カテゴリ | 証拠     | 重要度   | 派生元                       |
+| --- | -------------------------------------- | -------- | -------- | -------- | ---------------------------- |
+| 1   | `cast_receipt_present`                 | Cast     | `local`  | required | —                            |
+| 2   | `cast_choice_range`                    | Cast     | `local`  | required | —                            |
+| 3   | `cast_random_format`                   | Cast     | `local`  | required | —                            |
+| 4   | `cast_commitment_match`                | Cast     | `local`  | required | —                            |
+| 5   | `recorded_commitment_in_bulletin`      | Recorded | `public` | optional | `recorded_inclusion_proof`   |
+| 6   | `recorded_index_in_range`              | Recorded | `public` | required | —                            |
+| 7   | `recorded_root_at_cast_consistent`     | Recorded | `public` | optional | `recorded_consistency_proof` |
+| 8   | `recorded_inclusion_proof`             | Recorded | `public` | required | —                            |
+| 9   | `recorded_consistency_proof`           | Recorded | `public` | required | —                            |
+| 10  | `recorded_sth_third_party`             | Recorded | `public` | optional | —                            |
+| 11  | `counted_input_sanity`                 | Counted  | `public` | required | —                            |
+| 12  | `counted_unique_indices`               | Counted  | `public` | required | —                            |
+| 13  | `counted_unique_commitments`           | Counted  | `public` | required | —                            |
+| 14  | `counted_tally_consistent`             | Counted  | `zk`     | required | —                            |
+| 15  | `counted_missing_indices_zero`         | Counted  | `zk`     | required | —                            |
+| 16  | `counted_expected_vs_tree_size`        | Counted  | `zk`     | required | —                            |
+| 17  | `counted_election_manifest_consistent` | Counted  | `public` | required | —                            |
+| 18  | `counted_close_statement_consistent`   | Counted  | `public` | required | —                            |
+| 19  | `counted_my_vote_included`             | Counted  | `zk`     | required | —                            |
+| 20  | `counted_input_commitment_match`       | Counted  | `public` | required | —                            |
+| 21  | `stark_image_id_match`                 | STARK    | `zk`     | required | —                            |
+| 22  | `stark_receipt_verify`                 | STARK    | `zk`     | required | —                            |
+
+---
+
 ## Cast-as-Intended（4 チェック）
 
 投票者の意図通りにコミットメントが生成されたかを検証するチェック群です。
@@ -136,8 +165,7 @@ bulletin provider から取得した old/new 両時点の root が期待値と�
 照合対象は STH ダイジェストが必須で、`bulletinRoot` / `treeSize` は各ソースが返した場合に追加で照合されます。
 STH ソースが未設定の場合は `not_run` になります。
 
-早見表では `optional` ですが、STH ソース設定時は required 相当に昇格します。
-詳細は [ゲーティングロジック](gating-logic.md#ステップとチェックの対応関係) を参照してください。
+早見表では `optional` ですが、STH ソース設定時は required 相当に昇格します（昇格ルールはゲーティングロジックが定めます）。
 
 ---
 
@@ -155,7 +183,7 @@ STH ソースが未設定の場合は `not_run` になります。
 | `counted_expected_vs_tree_size`        | `totalExpected` がツリーサイズと一致                                          | `zk`     | `required` |
 | `counted_election_manifest_consistent` | `election-manifest.json` が自己整合し、選挙 ID / electionConfigHash と一致    | `public` | `required` |
 | `counted_close_statement_consistent`   | `close-statement.json` が自己整合し、log/tree/timestamp/root/sthDigest と一致 | `public` | `required` |
-| `counted_my_vote_included`             | bitmap 証明により自分のインデックスが counted 側に含まれたことを確認          | `zk`     | `required` |
+| `counted_my_vote_included`             | ビットマップ証明により自分のインデックスが counted 側に含まれたことを確認     | `zk`     | `required` |
 | `counted_input_commitment_match`       | 公開入力から計算した入力コミットメントがジャーナルの値と一致                  | `public` | `required` |
 
 ### 判定ロジックの詳細
@@ -240,10 +268,8 @@ STARK 証明の暗号学的正当性を検証するチェック群です。
 #### `stark_image_id_match`
 
 STARK status が `success` に解決された後で、期待 Image ID、verifier-confirmed Image ID、ホスト主張値が相互に矛盾しないことを確認します。
-整合条件（report に Image ID フィールドが揃わない場合の挙動を含む）と fail-closed の取り扱いは [Image ID](../zkvm/image-id.md) を参照してください。
-
-期待 Image ID は `EXPECTED_IMAGE_ID` 環境変数を優先し、次に `public/imageId-mapping.json` の current mapping から解決します。
-variant の明示指定規則を含め、解決できない場合は暗黙にフォールバックせず fail-closed で失敗します（解決順と variant の詳細は上記の [Image ID](../zkvm/image-id.md) を参照）。
+期待 Image ID を解決できない場合は、暗黙にフォールバックせず fail-closed で失敗します。
+解決順と variant の指定規則、整合条件（report に Image ID フィールドが揃わない場合の挙動を含む）は [Image ID](../zkvm/image-id.md) を参照してください。
 
 #### `stark_receipt_verify`
 
@@ -274,34 +300,5 @@ stateDiagram-v2
 | `failed`   | 検証失敗                             | ブロック                |
 
 全体判定（集約結果）の決まり方は [ゲーティングロジック](gating-logic.md#ステータスの判定順序) を参照してください。
-
----
-
-## 全チェック早見表
-
-| #   | チェック ID                            | カテゴリ | 証拠     | 重要度   | 派生元                       |
-| --- | -------------------------------------- | -------- | -------- | -------- | ---------------------------- |
-| 1   | `cast_receipt_present`                 | Cast     | `local`  | required | —                            |
-| 2   | `cast_choice_range`                    | Cast     | `local`  | required | —                            |
-| 3   | `cast_random_format`                   | Cast     | `local`  | required | —                            |
-| 4   | `cast_commitment_match`                | Cast     | `local`  | required | —                            |
-| 5   | `recorded_commitment_in_bulletin`      | Recorded | `public` | optional | `recorded_inclusion_proof`   |
-| 6   | `recorded_index_in_range`              | Recorded | `public` | required | —                            |
-| 7   | `recorded_root_at_cast_consistent`     | Recorded | `public` | optional | `recorded_consistency_proof` |
-| 8   | `recorded_inclusion_proof`             | Recorded | `public` | required | —                            |
-| 9   | `recorded_consistency_proof`           | Recorded | `public` | required | —                            |
-| 10  | `recorded_sth_third_party`             | Recorded | `public` | optional | —                            |
-| 11  | `counted_input_sanity`                 | Counted  | `public` | required | —                            |
-| 12  | `counted_unique_indices`               | Counted  | `public` | required | —                            |
-| 13  | `counted_unique_commitments`           | Counted  | `public` | required | —                            |
-| 14  | `counted_tally_consistent`             | Counted  | `zk`     | required | —                            |
-| 15  | `counted_missing_indices_zero`         | Counted  | `zk`     | required | —                            |
-| 16  | `counted_expected_vs_tree_size`        | Counted  | `zk`     | required | —                            |
-| 17  | `counted_election_manifest_consistent` | Counted  | `public` | required | —                            |
-| 18  | `counted_close_statement_consistent`   | Counted  | `public` | required | —                            |
-| 19  | `counted_my_vote_included`             | Counted  | `zk`     | required | —                            |
-| 20  | `counted_input_commitment_match`       | Counted  | `public` | required | —                            |
-| 21  | `stark_image_id_match`                 | STARK    | `zk`     | required | —                            |
-| 22  | `stark_receipt_verify`                 | STARK    | `zk`     | required | —                            |
 
 <!-- source: packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/build-verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/verification-summary.ts, packages/verification/src/verification/excluded-count.ts, packages/verification/src/verification/fail-closed-status.ts -->

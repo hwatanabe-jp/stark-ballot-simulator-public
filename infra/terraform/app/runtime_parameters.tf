@@ -1,11 +1,16 @@
 resource "aws_ssm_parameter" "runtime_config_names" {
   for_each = merge({
-    DYNAMODB_SESSIONS_TABLE             = local.active_sessions_table_arn
-    DYNAMODB_VOTES_TABLE                = local.active_votes_table_arn
-    RATE_LIMIT_EVENTS_TABLE             = aws_dynamodb_table.rate_limit_events.arn
-    RATE_LIMIT_COUNTERS_TABLE           = aws_dynamodb_table.rate_limit_counters.arn
-    APP_DATA_KMS_KEY_ARN                = aws_kms_key.app_data.arn
-    TARGET_LAMBDA_ROLE_ARNS             = jsonencode({ for key, role in aws_iam_role.target_lambda : key => role.arn })
+    DYNAMODB_SESSIONS_TABLE   = local.active_sessions_table_arn
+    DYNAMODB_VOTES_TABLE      = local.active_votes_table_arn
+    RATE_LIMIT_EVENTS_TABLE   = aws_dynamodb_table.rate_limit_events.arn
+    RATE_LIMIT_COUNTERS_TABLE = aws_dynamodb_table.rate_limit_counters.arn
+    APP_DATA_KMS_KEY_ARN      = aws_kms_key.app_data.arn
+    TARGET_LAMBDA_ROLE_ARNS = jsonencode(merge(
+      { for key, role in aws_iam_role.target_lambda : key => role.arn },
+      {
+        image_signature_verifier = aws_iam_role.image_signature_verifier.arn
+      },
+    ))
     RATE_LIMIT_STORE                    = "dynamo"
     SESSION_LIVE_TTL_SECONDS            = tostring(var.session_live_ttl_seconds)
     VERIFICATION_ARTIFACT_TTL_SECONDS   = tostring(var.verification_artifact_ttl_seconds)

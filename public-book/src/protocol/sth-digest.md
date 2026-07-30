@@ -142,8 +142,7 @@ STH ダイジェストは 2 つの段階で利用されます。
 | Recorded-as-Cast    | `recorded_sth_third_party`           | 独立ソースから取得した STH ダイジェストがジャーナルの値と一致するか              |
 | Counted-as-Recorded | `counted_close_statement_consistent` | `close-statement.json` の `sthDigest` が公開入力およびジャーナルの値と整合するか |
 
-`recorded_sth_third_party` は既定では任意チェック（optional）ですが、STH ソースが設定されている場合は必須扱いへ昇格します。
-昇格後は成功以外の状態にある限り「Verified」になりません（昇格と最終判定の規則は [ゲーティングロジック](../verification/gating-logic.md) を参照）。
+`recorded_sth_third_party` は既定では任意チェック（optional）ですが、STH ソースが設定されている場合は required に昇格します（昇格と最終判定の規則は [ゲーティングロジック](../verification/gating-logic.md) を参照）。
 
 `counted_close_statement_consistent` は常に必須チェック（required）です。
 `close-statement.json` がジャーナルと整合しない場合、検証は失敗します。

@@ -7,10 +7,12 @@ import {
   SessionCreateRequestSchema,
   VoteRequestSchema,
   VerificationRunRequestSchema,
+  VerificationObservationRequestSchema,
   type FinalizeCancelRequest,
   type FinalizeRequest,
   type SessionCreateRequest,
   type VerificationRunRequest,
+  type VerificationObservationRequest,
   type VoteRequest,
 } from '@stark-ballot/api-contract/validation/apiSchemas';
 
@@ -199,6 +201,23 @@ export async function parseVerificationRunRequest(
   request: Request,
 ): Promise<ParsedBody<VerificationRunRequest> | Response> {
   const result = await parseJsonBody(request, VerificationRunRequestSchema);
+  if (result instanceof Response) {
+    return result;
+  }
+
+  return {
+    data: result.data,
+    raw: result.raw,
+  };
+}
+
+/**
+ * Parse and validate the /api/verification/observation payload.
+ */
+export async function parseVerificationObservationRequest(
+  request: Request,
+): Promise<ParsedBody<VerificationObservationRequest> | Response> {
+  const result = await parseJsonBody(request, VerificationObservationRequestSchema);
   if (result instanceof Response) {
     return result;
   }

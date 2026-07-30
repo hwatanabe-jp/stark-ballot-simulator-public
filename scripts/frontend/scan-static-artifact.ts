@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { parseImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
 
 const DEFAULT_DIST_DIR = 'dist';
 const REQUIRED_STABLE_ARTIFACTS = new Set([
@@ -162,11 +163,6 @@ type Finding = {
   reason: string;
 };
 
-type ImageIdMappingRecord = {
-  current?: unknown;
-  mappings?: unknown;
-};
-
 export type StaticArtifactFinding = {
   file: string;
   reason: string;
@@ -218,44 +214,27 @@ function validateImageIdMapping(relative: string, content: string): Finding[] {
     return [];
   }
 
-  let parsed: ImageIdMappingRecord;
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(content) as ImageIdMappingRecord;
+    parsed = JSON.parse(content) as unknown;
   } catch {
     return [{ file: relative, reason: 'ImageID mapping must be valid JSON' }];
   }
 
-  if (typeof parsed.current !== 'string' || !parsed.current.trim()) {
-    return [{ file: relative, reason: 'ImageID mapping is missing current method version' }];
+  let mapping;
+  try {
+    mapping = parseImageIdMapping(parsed);
+  } catch (error) {
+    return [
+      {
+        file: relative,
+        reason: `ImageID mapping semantic contract is invalid: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    ];
   }
-
-  const mappings = parsed.mappings;
-  if (!mappings || typeof mappings !== 'object') {
-    return [{ file: relative, reason: 'ImageID mapping is missing mappings object' }];
-  }
-
-  const currentMapping = (mappings as Record<string, unknown>)[parsed.current];
-  if (!currentMapping || typeof currentMapping !== 'object') {
-    return [{ file: relative, reason: 'ImageID mapping is missing current mapping entry' }];
-  }
-
-  const fields = currentMapping as Record<string, unknown>;
-  if (fields['methodVersion'] !== Number(parsed.current)) {
-    return [{ file: relative, reason: 'ImageID mapping current entry methodVersion mismatch' }];
-  }
-
-  const defaultImageId = fields['expectedImageID'];
-  const x86ImageId = fields['expectedImageID_x86_64'];
-  const hasDefaultImageId = typeof defaultImageId === 'string' && /^0x[0-9a-f]{64}$/i.test(defaultImageId);
-  const hasX86ImageId = typeof x86ImageId === 'string' && /^0x[0-9a-f]{64}$/i.test(x86ImageId);
-  if (defaultImageId !== undefined && !hasDefaultImageId) {
-    return [{ file: relative, reason: 'ImageID mapping current entry has invalid default ImageID' }];
-  }
-  if (x86ImageId !== undefined && !hasX86ImageId) {
-    return [{ file: relative, reason: 'ImageID mapping current entry has invalid x86_64 ImageID' }];
-  }
-  if (!hasDefaultImageId && !hasX86ImageId) {
-    return [{ file: relative, reason: 'ImageID mapping current entry has no trusted ImageID variant' }];
+  const currentMapping = mapping.mappings[mapping.current];
+  if (!currentMapping || Object.values(currentMapping.variants).every((variant) => variant.state !== 'confirmed')) {
+    return [{ file: relative, reason: 'ImageID mapping current entry has no confirmed ImageID variant' }];
   }
 
   return [];

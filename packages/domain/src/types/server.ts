@@ -3,6 +3,7 @@ import type { FailClosedCurrentArtifactState } from '@stark-ballot/domain/contra
 import type { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import type { ScenarioTamperMode } from '@stark-ballot/domain/types/scenario';
 import type { FinalizationResultPersistence, FinalizationStatePersistence } from './finalization';
+import type { VerificationObservation } from './verificationObservation';
 
 export interface ElectionConfig {
   totalExpected: number;
@@ -92,6 +93,12 @@ export interface SessionData {
    * Scenario context persisted during async finalization (claimed tally, summary, mode).
    */
   finalizationScenarioContext?: FinalizationScenarioContext;
+
+  /**
+   * Durable idempotency marker for the browser-presented verification verdict.
+   * This metadata is deliberately outside the proof/finalization authority.
+   */
+  verificationObservation?: VerificationObservation;
 }
 
 export interface AddVoteResult {

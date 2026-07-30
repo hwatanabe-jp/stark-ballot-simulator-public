@@ -165,6 +165,41 @@ resource "aws_s3_bucket_versioning" "state" {
   }
 }
 
+resource "aws_s3_bucket_lifecycle_configuration" "state" {
+  depends_on = [
+    aws_iam_policy.terraform_apply_artifact_management,
+    aws_s3_bucket_versioning.state,
+  ]
+
+  bucket = aws_s3_bucket.state.id
+
+  rule {
+    id     = "expire-noncurrent-terraform-state"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = local.storage_retention.state_noncurrent_days
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = local.storage_retention.incomplete_multipart_retention_days
+    }
+  }
+
+  rule {
+    id     = "remove-expired-terraform-state-delete-markers"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+  }
+}
+
 resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
   bucket = aws_s3_bucket.state.id
 

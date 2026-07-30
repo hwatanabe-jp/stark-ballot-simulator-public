@@ -128,6 +128,18 @@ const CAST_CHECK_IDS: readonly VerificationCheckId[] = [
   'cast_random_format',
   'cast_commitment_match',
 ];
+type VerificationObservationCastStatus = Extract<VerificationStepStatus, 'success' | 'failed' | 'not_run'>;
+
+export interface VerificationObservationPayload {
+  verificationExecutionId: string;
+  castChecks: {
+    cast_receipt_present: VerificationObservationCastStatus;
+    cast_choice_range: VerificationObservationCastStatus;
+    cast_random_format: VerificationObservationCastStatus;
+    cast_commitment_match: VerificationObservationCastStatus;
+  };
+}
+
 const CAST_STEP_INPUTS: string[] = getVerificationStepInputs('cast_as_intended');
 
 const CHECK_DEFINITION_BY_ID = new Map(VERIFICATION_CHECK_DEFINITIONS.map((definition) => [definition.id, definition]));
@@ -498,6 +510,51 @@ export function applyLocalCastAsIntended(
     verificationChecks: applyLocalCastCheckOverrides(payload.verificationChecks, castChecks),
     verificationSteps: applyLocalCastStepOverride(payload.verificationSteps, castStep),
   });
+}
+
+function isVerificationObservationCastStatus(
+  status: VerificationStepStatus,
+): status is VerificationObservationCastStatus {
+  return status === 'success' || status === 'failed' || status === 'not_run';
+}
+
+export function buildVerificationObservationPayload(
+  payload: VerificationPayload,
+): VerificationObservationPayload | null {
+  const executionId = payload.verificationExecutionId;
+  const checks = payload.verificationChecks;
+  if (!executionId || !isSafeVerifierSegment(executionId) || !checks) {
+    return null;
+  }
+
+  const statuses = new Map<VerificationCheckId, VerificationObservationCastStatus>();
+  for (const check of checks) {
+    if (!CAST_CHECK_IDS.includes(check.id)) {
+      continue;
+    }
+    if (statuses.has(check.id) || !isVerificationObservationCastStatus(check.status)) {
+      return null;
+    }
+    statuses.set(check.id, check.status);
+  }
+
+  const castReceiptPresent = statuses.get('cast_receipt_present');
+  const castChoiceRange = statuses.get('cast_choice_range');
+  const castRandomFormat = statuses.get('cast_random_format');
+  const castCommitmentMatch = statuses.get('cast_commitment_match');
+  if (!castReceiptPresent || !castChoiceRange || !castRandomFormat || !castCommitmentMatch) {
+    return null;
+  }
+
+  return {
+    verificationExecutionId: executionId,
+    castChecks: {
+      cast_receipt_present: castReceiptPresent,
+      cast_choice_range: castChoiceRange,
+      cast_random_format: castRandomFormat,
+      cast_commitment_match: castCommitmentMatch,
+    },
+  };
 }
 
 function coerceStringArray(value: unknown): string[] | undefined {

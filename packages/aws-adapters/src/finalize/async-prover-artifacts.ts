@@ -1,4 +1,5 @@
 import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { downloadRangeFromS3, headS3Object } from '@stark-ballot/aws-adapters/aws/s3-download';
 import { restoreReceiptFromS3 } from '@stark-ballot/aws-adapters/aws/bundle-restore';
 import { getS3Client, getS3Config } from '@stark-ballot/aws-adapters/aws/s3-client';
 import type { ElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
@@ -7,7 +8,11 @@ import type { ZkVMInput, ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/ty
 import { isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import type { ReceiptWithImageId } from '@stark-ballot/verification/image-id-types';
 import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
-import type { FinalizationBitmapData } from '@stark-ballot/application/finalize/finalization-types';
+import {
+  PROVER_FAILURE_CATEGORY_VALUES,
+  type FinalizationBitmapData,
+  type ProverFailureCategory,
+} from '@stark-ballot/application/finalize/finalization-types';
 import type { AwsPersistedFinalizationResult } from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
 import { getRecordProperty, getStringProperty, isRecord } from '@stark-ballot/domain/utils/guards';
 import { buildFinalizationArtifactS3Keys } from '@stark-ballot/aws-adapters/finalize/artifact-key-layout';
@@ -18,6 +23,10 @@ export interface AsyncProverArtifactKeys {
   outputS3Prefix: string;
   bundleS3Key: string;
 }
+
+export const PROVER_FAILURE_MARKER_FILENAME = 'failure-marker.json';
+export const MAX_PROVER_FAILURE_MARKER_BYTES = 256;
+const PROVER_FAILURE_CATEGORIES = new Set<string>(PROVER_FAILURE_CATEGORY_VALUES);
 
 export interface PersistAsyncProverInputOptions {
   sessionId: string;
@@ -43,6 +52,64 @@ export function buildAsyncProverArtifactKeys(sessionId: string, executionId: str
     outputS3Prefix: keys.outputS3Prefix,
     bundleS3Key: keys.bundleS3Key,
   };
+}
+
+export function buildAsyncProverFailureMarkerKey(sessionId: string, executionId: string): string {
+  const { outputS3Prefix } = buildAsyncProverArtifactKeys(sessionId, executionId);
+  return `${outputS3Prefix}/${PROVER_FAILURE_MARKER_FILENAME}`;
+}
+
+export function parseProverFailureMarker(input: Buffer): ProverFailureCategory | undefined {
+  if (input.byteLength === 0 || input.byteLength > MAX_PROVER_FAILURE_MARKER_BYTES) {
+    return undefined;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(input.toString('utf8'));
+    if (!isRecord(parsed) || Object.keys(parsed).join(',') !== 'category') {
+      return undefined;
+    }
+    const category = getStringProperty(parsed, 'category');
+    return category && PROVER_FAILURE_CATEGORIES.has(category) ? (category as ProverFailureCategory) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isMissingS3Object(error: unknown): boolean {
+  if (!isRecord(error)) {
+    return false;
+  }
+  const name = getStringProperty(error, 'name');
+  const code = getStringProperty(error, 'code');
+  const metadata = getRecordProperty(error, '$metadata');
+  return (
+    name === 'NoSuchKey' ||
+    name === 'NotFound' ||
+    code === 'NoSuchKey' ||
+    code === 'NotFound' ||
+    metadata?.['httpStatusCode'] === 404
+  );
+}
+
+export async function readAsyncProverFailureCategory(
+  sessionId: string,
+  executionId: string,
+): Promise<ProverFailureCategory | undefined> {
+  try {
+    const markerKey = buildAsyncProverFailureMarkerKey(sessionId, executionId);
+    const { contentLength } = await headS3Object(markerKey);
+    if (contentLength <= 0 || contentLength > MAX_PROVER_FAILURE_MARKER_BYTES) {
+      return undefined;
+    }
+    const { body } = await downloadRangeFromS3(markerKey, { start: 0, end: contentLength - 1 });
+    return parseProverFailureMarker(body);
+  } catch (error) {
+    if (isMissingS3Object(error)) {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 export function validateAsyncProverArtifactKeys(

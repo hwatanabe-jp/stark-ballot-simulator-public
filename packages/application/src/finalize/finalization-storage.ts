@@ -1,19 +1,22 @@
 import { VOTE_CHOICES, type VoteChoice } from '@stark-ballot/domain/shared/constants';
 import type { ScenarioTamperMode } from '@stark-ballot/domain/types/scenario';
-import type {
-  BitmapProofSource,
-  FinalizationBitmapData,
-  FinalizationResultAuthority,
-  FinalizationScenarioContext,
-  FinalizationState,
-  FinalizationTally,
-  FinalizationTamperSummary,
+import {
+  FinalizationFailureCategory,
+  type BitmapProofSource,
+  type FinalizationBitmapData,
+  type FinalizationResultAuthority,
+  type FinalizationScenarioContext,
+  type FinalizationState,
+  type FinalizationTally,
+  type FinalizationTamperSummary,
 } from '@stark-ballot/application/finalize/finalization-types';
 import type {
+  VerificationFailureCategory,
   VerificationReport,
   VerificationResult,
   VerificationStatus,
 } from '@stark-ballot/verification/shared/types';
+import { VERIFICATION_FAILURE_CATEGORY_VALUES } from '@stark-ballot/verification/shared/types';
 import type { ReceiptJournal, ReceiptWithImageId } from '@stark-ballot/verification/image-id-types';
 import { parseStoredPublicInputArtifact } from '@stark-ballot/verification/public-input';
 import { isCloseStatement, isElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
@@ -30,8 +33,12 @@ import { isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal
 import { toPublicZkvmJournal } from '@stark-ballot/zkvm-contract/zkvm/public-journal';
 
 const VERIFICATION_STATUSES = new Set<VerificationStatus>(['success', 'failed', 'dev_mode', 'not_run', 'running']);
+const VERIFICATION_FAILURE_CATEGORIES = new Set<VerificationFailureCategory>(VERIFICATION_FAILURE_CATEGORY_VALUES);
 const BITMAP_PROOF_SOURCES = new Set<BitmapProofSource>(['mock', 'real']);
 const SCENARIO_TAMPER_MODES = new Set<ScenarioTamperMode>(['none', 'input', 'claim']);
+const FINALIZATION_FAILURE_CATEGORIES = new Set<FinalizationFailureCategory>(
+  Object.values(FinalizationFailureCategory),
+);
 
 const FINALIZATION_RESULT_AUTHORITY_KEYS = new Set<string>([
   'tally',
@@ -269,9 +276,19 @@ export function parseVerificationResult(value: unknown): VerificationResult | un
     return undefined;
   }
 
+  const failureCategory = getStringProperty(value, 'failureCategory');
+  if (
+    hasOwn(value, 'failureCategory') &&
+    (typeof failureCategory !== 'string' ||
+      !VERIFICATION_FAILURE_CATEGORIES.has(failureCategory as VerificationFailureCategory))
+  ) {
+    return undefined;
+  }
+
   return {
     status,
     ...(parsedReport ? { report: parsedReport } : {}),
+    ...(failureCategory ? { failureCategory: failureCategory as VerificationFailureCategory } : {}),
   };
 }
 
@@ -404,13 +421,21 @@ function parseFinalizationError(value: unknown): Extract<FinalizationState, { st
 
   const code = getStringProperty(value, 'code');
   const message = getStringProperty(value, 'message');
+  const category = getStringProperty(value, 'category');
   if (typeof code !== 'string' || typeof message !== 'string') {
+    return undefined;
+  }
+  if (
+    hasOwn(value, 'category') &&
+    (typeof category !== 'string' || !FINALIZATION_FAILURE_CATEGORIES.has(category as FinalizationFailureCategory))
+  ) {
     return undefined;
   }
 
   return {
     code,
     message,
+    ...(category ? { category: category as FinalizationFailureCategory } : {}),
     ...(hasOwn(value, 'details') ? { details: value['details'] } : {}),
   };
 }

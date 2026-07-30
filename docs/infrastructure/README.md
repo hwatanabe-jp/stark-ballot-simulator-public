@@ -21,6 +21,9 @@ authority.
 
 ## Current Target Model
 
+This diagram summarizes the repository target. Dated live status and any
+repository-to-deployment drift remain in the private current AWS inventory.
+
 ```text
 Browser
   -> CloudFront
@@ -30,10 +33,12 @@ Browser
            -> DynamoDB
            -> SQS prover work
               -> dispatcher Lambda
-                 -> Step Functions semaphore
-                    -> image-signature gate
+                 -> Step Functions finalization
+                    -> cryptographic image-signature verifier
+                    -> acquire DynamoDB prover semaphore slot
+                    -> finalization writer persists running state
                     -> ECS/Fargate ARM64 prover
-                    -> finalization writer
+                    -> release semaphore slot and persist terminal state
            -> SQS verification work
               -> verification-worker Lambda
            -> private proof/report S3 bucket
@@ -48,11 +53,20 @@ target runtime.
 ## Selection Rules
 
 - Static presentation-only changes may use the develop static fast lane.
-- API, package, Lambda, verifier-service, and app Terraform changes use the
-  app lane.
-- Prover or guest changes require a prover release followed by an app
-  deployment.
-- Toolchain changes require toolchain, prover, and app lanes in that order.
+- Every new source SHA used by a normal full App deployment first requires the
+  same-SHA Foundation lane, then the App lane.
+- The App lane may reuse an accepted Prover from another source only when its
+  immutable release record has a `zkvmContractHash` exactly matching the hash
+  recomputed from the App source. The Prover record must exact-link its
+  selected immutable Toolchain artifact, whose source SHA may also differ.
+- Run the Prover lane only when the Prover image contents, ImageID or method
+  version, selected Toolchain, or zkVM interface hash changes. Prover and guest
+  changes therefore require a Prover release followed by the App lane.
+- Run the Toolchain lane only when its contents or accepted selection changes.
+  `build` creates a new image; `existing` validates one exact retained
+  artifact without rebuilding it, then promotes a current semantic record that
+  preserves the original build provenance. A Toolchain change is followed by
+  the Prover and App lanes.
 - ImageID mapping changes are never static-only.
 - Secret and CloudFront-key rotation requires a dedicated compatibility
   analysis.

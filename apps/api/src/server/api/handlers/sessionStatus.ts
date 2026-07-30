@@ -9,6 +9,8 @@ import { errorResponse, jsonResponse } from '../../http/response';
 import { buildFinalizationQueueInfo } from '../utils/finalizationQueueInfo';
 import { deriveFinalizationProgress } from '../utils/finalizationProgress';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
+import { emitCanonicalEvent, type FinalizationEventReason } from '@stark-ballot/diagnostics/canonicalEvents';
 import { validateSessionCapabilityForSession } from '../middleware/session';
 import {
   parseAwsFinalizationRuntimeState,
@@ -146,7 +148,7 @@ function isTerminalExecutionStatus(status: string | null | undefined): status is
   return typeof status === 'string' && TERMINAL_EXECUTION_STATUSES.has(status);
 }
 
-function resolveFailureCodeForExecutionStatus(status: string): string {
+function resolveFailureCodeForExecutionStatus(status: string): FinalizationEventReason {
   if (status === 'FAILED') {
     return 'PROVER_EXECUTION_FAILED';
   }
@@ -200,8 +202,9 @@ async function persistFailedState(params: {
   contractGeneration: string | undefined;
   failedAt: number;
   error: FinalizationFailedPayload['error'];
+  reason: FinalizationEventReason;
 }): Promise<AwsFinalizationRuntimeState | null> {
-  const { store, sessionId, state, contractGeneration, failedAt, error } = params;
+  const { store, sessionId, state, contractGeneration, failedAt, error, reason } = params;
   if (!isAwsFinalizationRuntimeTransitionStore(store) || !contractGeneration) {
     return null;
   }
@@ -213,7 +216,19 @@ async function persistFailedState(params: {
       ...omitUndefinedProperties({ startedAt: state.status === 'running' ? state.startedAt : undefined }),
       failedAt,
       error,
+      observability: {
+        source: 'reconcile',
+        reason,
+      },
     };
+    emitCanonicalEvent({
+      event: 'finalize_transition_attempted',
+      to: 'failed',
+      source: 'reconcile',
+      reason,
+      session_id_hash: hashSessionIdForLogging(sessionId),
+      execution_id: state.executionId,
+    });
     return await store.markAwsFinalizationFailed(sessionId, {
       ...failedPayload,
       ...omitUndefinedProperties({ stepFunctionsArn: state.stepFunctionsArn }),
@@ -245,7 +260,19 @@ async function persistTimedOutState(params: {
       contractGeneration,
       startedAt: state.startedAt,
       timeoutAt,
+      observability: {
+        source: 'reconcile',
+        reason: 'EXECUTION_TIMED_OUT',
+      },
     };
+    emitCanonicalEvent({
+      event: 'finalize_transition_attempted',
+      to: 'timeout',
+      source: 'reconcile',
+      reason: 'EXECUTION_TIMED_OUT',
+      session_id_hash: hashSessionIdForLogging(sessionId),
+      execution_id: state.executionId,
+    });
     return await store.markAwsFinalizationTimedOut(sessionId, {
       ...timeoutPayload,
       ...omitUndefinedProperties({ stepFunctionsArn: state.stepFunctionsArn }),
@@ -277,7 +304,7 @@ async function reconcilePendingFinalizationState(params: {
   const executionArn = buildExecutionArn(process.env['PROVER_STATE_MACHINE_ARN'], state.executionId);
   if (!executionArn) {
     logger.warn('[Status API] Cannot reconcile pending finalization without a valid Step Functions ARN', {
-      sessionId,
+      session_id_hash: hashSessionIdForLogging(sessionId),
       executionId: state.executionId,
       configuredStateMachineArn: process.env['PROVER_STATE_MACHINE_ARN'] ?? null,
     });
@@ -313,6 +340,7 @@ async function reconcilePendingFinalizationState(params: {
       contractGeneration,
       failedAt,
       error,
+      reason: 'FINALIZATION_OUTCOME_UNRECORDED',
     });
     return {
       state: persistedState ?? buildFailedRuntimeState({ ...state, stepFunctionsArn: executionArn }, failedAt, error),
@@ -345,6 +373,7 @@ async function reconcilePendingFinalizationState(params: {
       contractGeneration,
       failedAt,
       error: failedError,
+      reason: 'FINALIZATION_DISPATCH_TIMEOUT',
     });
     return {
       state: persistedState ?? buildFailedRuntimeState(state, failedAt, failedError),
@@ -401,6 +430,7 @@ async function reconcileRunningFinalizationState(params: {
       contractGeneration,
       failedAt: terminalAt,
       error,
+      reason: resolveFailureCodeForExecutionStatus(executionStatus),
     });
     return {
       state: persistedState ?? state,

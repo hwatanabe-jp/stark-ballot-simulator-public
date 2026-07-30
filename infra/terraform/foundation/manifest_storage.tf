@@ -71,9 +71,13 @@ data "aws_iam_policy_document" "release_manifests" {
     ]
     resources = [
       "${aws_s3_bucket.release_manifests.arn}/artifacts/*",
+      "${aws_s3_bucket.release_manifests.arn}/candidates/*",
       "${aws_s3_bucket.release_manifests.arn}/promotions/*",
       "${aws_s3_bucket.release_manifests.arn}/deployments/*",
       "${aws_s3_bucket.release_manifests.arn}/rollbacks/*",
+      "${aws_s3_bucket.release_manifests.arn}/reissue/*",
+      "${aws_s3_bucket.release_manifests.arn}/channels/develop/toolchain/accepted.json",
+      "${aws_s3_bucket.release_manifests.arn}/channels/develop/prover/accepted.json",
     ]
   }
 
@@ -92,6 +96,7 @@ data "aws_iam_policy_document" "release_manifests" {
     actions = ["s3:PutObject"]
     resources = [
       "${aws_s3_bucket.release_manifests.arn}/artifacts/*",
+      "${aws_s3_bucket.release_manifests.arn}/candidates/*",
       "${aws_s3_bucket.release_manifests.arn}/promotions/*",
       "${aws_s3_bucket.release_manifests.arn}/deployments/*",
       "${aws_s3_bucket.release_manifests.arn}/rollbacks/*",
@@ -102,6 +107,19 @@ data "aws_iam_policy_document" "release_manifests" {
       variable = "s3:if-none-match"
       values   = ["true"]
     }
+  }
+
+  statement {
+    sid    = "DenyFutureReleaseAuthorityReissueWrites"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.release_manifests.arn}/reissue/*"]
   }
 
   statement {
@@ -132,6 +150,85 @@ data "aws_iam_policy_document" "release_manifests" {
       test     = "Null"
       variable = "s3:if-match"
       values   = ["true"]
+    }
+  }
+
+  statement {
+    sid    = "DenyFoundationImageSigningAuthorityWritesOutsidePublisher"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = [local.foundation_image_signing_authority_objects_arn]
+
+    condition {
+      test     = "ArnNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [local.foundation_image_signing_authority_publisher_role_arn]
+    }
+  }
+
+  statement {
+    sid    = "DenyFoundationAppNetworkingDeletion"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = [
+      "s3:DeleteObject",
+      "s3:DeleteObjectVersion",
+    ]
+    resources = [local.foundation_app_networking_object_arn]
+  }
+
+  statement {
+    sid    = "DenyUnconditionalFoundationAppNetworkingWrites"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = [local.foundation_app_networking_object_arn]
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-none-match"
+      values   = ["true"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-match"
+      values   = ["true"]
+    }
+  }
+
+  statement {
+    sid    = "DenyFoundationAppNetworkingWritesOutsidePublisher"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = [local.foundation_app_networking_object_arn]
+
+    condition {
+      test     = "ArnNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [local.foundation_app_networking_publisher_role_arn]
     }
   }
 }

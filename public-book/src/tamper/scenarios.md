@@ -171,7 +171,7 @@ zkVM 入力は元の 64 票のままです。
 - `ignoredCount` / `recountedCount` → `tamperSummary` や `tamperedCount` に反映
 - `claimedCounts` → S2/S4 の表示用 tally
 
-`tamperMode=claim`（S2/S4）でも同様に、journal 統計は zkVM の値のままです。
+`tamperMode=claim`（S2/S4）でも同様に、ジャーナル統計は zkVM の値のままです。
 
 ## 集計フローへの挿入点
 

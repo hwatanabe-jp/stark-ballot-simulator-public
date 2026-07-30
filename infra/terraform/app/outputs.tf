@@ -13,6 +13,26 @@ output "app_lane_scope" {
   value       = terraform_data.skeletal_app_lane.output
 }
 
+output "deployment_identity" {
+  description = "Accepted deployment generation stamped into target server runtimes."
+  value = {
+    deployment_id  = var.deployment_id
+    app_source_sha = var.app_source_sha
+    deploy_mode    = var.deploy_mode
+  }
+}
+
+output "ops_ledger" {
+  description = "Normalized, long-retention target operations ledger acceptance coordinates."
+  value = {
+    log_group_name        = aws_cloudwatch_log_group.ops_ledger.name
+    query_definition_name = aws_cloudwatch_query_definition.ops_ledger_window.name
+    event_rule_names = {
+      for key, rule in aws_cloudwatch_event_rule.ops_ledger : key => rule.name
+    }
+  }
+}
+
 output "dynamodb_runtime_config" {
   description = "Non-secret DynamoDB and rate-limit runtime config names for target runtime."
   value = {
@@ -170,11 +190,67 @@ output "runtime_non_secret_parameter_names" {
   }
 }
 
+output "observability_detection_inventory" {
+  description = "Safe-name inventory for passive detectors, the compact dashboard, and the invariant-only notification surface."
+  value = {
+    metric_namespace              = local.observability_metric_namespace
+    dashboard_name                = aws_cloudwatch_dashboard.observability.dashboard_name
+    invariant_alarm_name          = aws_cloudwatch_metric_alarm.verification_invariant_contradiction.alarm_name
+    notification_topic_name       = aws_sns_topic.verification_invariant_alerts.name
+    email_parameter_name          = local.invariant_email_parameter_name
+    email_subscription_configured = local.invariant_email_parameter_present
+    metric_filter_names = {
+      dispatch_dropped                = aws_cloudwatch_log_metric_filter.dispatch_dropped.name
+      finalization_terminal_outcomes  = sort(values(aws_cloudwatch_log_metric_filter.finalization_terminal_outcomes)[*].name)
+      verification_failure_categories = aws_cloudwatch_log_metric_filter.verification_failure_categories.name
+      invariant_contradiction         = aws_cloudwatch_log_metric_filter.verification_invariant_contradiction.name
+    }
+    passive_alarm_names = {
+      additional_lambda_errors = sort(values(aws_cloudwatch_metric_alarm.target_lambda_errors_additional)[*].alarm_name)
+      lambda_throttles         = sort(values(aws_cloudwatch_metric_alarm.target_lambda_throttles)[*].alarm_name)
+      api_gateway_5xx          = aws_cloudwatch_metric_alarm.target_api_gateway_5xx.alarm_name
+      work_queue_age           = sort(values(aws_cloudwatch_metric_alarm.work_queue_oldest_message_age)[*].alarm_name)
+    }
+  }
+}
+
 output "target_lambda_role_arns" {
   description = "IAM role ARNs for each Terraform-managed target Lambda runtime surface."
+  value = merge(
+    {
+      for key, role in aws_iam_role.target_lambda :
+      key => role.arn
+    },
+    {
+      image_signature_verifier = aws_iam_role.image_signature_verifier.arn
+    },
+  )
+}
+
+output "image_signature_verifier" {
+  description = "Non-secret immutable cryptographic image-signature verifier deployment coordinates."
+  value       = local.image_signature_verifier_deployment_authority
+}
+
+output "image_signature_preflight" {
+  description = "Non-secret verifier coordinates available immediately after the isolated preflight apply."
   value = {
-    for key, role in aws_iam_role.target_lambda :
-    key => role.arn
+    function_arn       = aws_lambda_function.image_signature_verifier.arn
+    function_version   = aws_lambda_function.image_signature_verifier.version
+    architecture       = one(aws_lambda_function.image_signature_verifier.architectures)
+    runtime            = aws_lambda_function.image_signature_verifier.runtime
+    timeout_seconds    = aws_lambda_function.image_signature_verifier.timeout
+    environment_sha256 = sha256(jsonencode(local.image_signature_verifier_environment))
+    function_configuration_sha256 = sha256(
+      jsonencode(local.image_signature_verifier_configuration_authority)
+    )
+    execution_role_arn                                = aws_iam_role.image_signature_verifier.arn
+    execution_role_assume_policy_sha256               = local.image_signature_verifier_execution_role_assume_policy_sha256
+    execution_role_policy_sha256                      = local.image_signature_verifier_execution_role_policy_sha256
+    execution_role_permissions_boundary_arn           = data.aws_iam_policy.image_signature_verifier_permissions_boundary.arn
+    execution_role_permissions_boundary_policy_sha256 = local.image_signature_verifier_permissions_boundary_policy_sha256
+    preflight_alias_arn                               = aws_lambda_alias.image_signature_verifier_preflight.arn
+    package                                           = var.lambda_artifacts["image_signature_verifier"]
   }
 }
 
@@ -202,7 +278,7 @@ output "target_runtime" {
     callback = {
       lambda_arn     = aws_lambda_function.target["finalization_writer"].arn
       role_arn       = aws_iam_role.target_lambda["finalization_writer"].arn
-      event_contract = "direct-step-functions-finalization-writer-v1"
+      contract_type  = "step-functions-finalization-writer"
       lambda_package = var.lambda_artifacts["finalization_writer"]
     }
     async = {
@@ -212,9 +288,11 @@ output "target_runtime" {
       prover_work_event_source_mapping_enabled   = !local.dynamodb_recovery_quiesced
       dispatch_lambda_arn                        = aws_lambda_function.target["proof_dispatcher"].arn
       dispatch_role_arn                          = aws_iam_role.target_lambda["proof_dispatcher"].arn
-      image_signature_lambda_arn                 = aws_lambda_function.target["image_signature_gate"].arn
-      image_signature_role_arn                   = aws_iam_role.target_lambda["image_signature_gate"].arn
-      image_signature_package                    = var.lambda_artifacts["image_signature_gate"]
+      image_signature_lambda_arn                 = aws_lambda_function.image_signature_verifier.arn
+      image_signature_role_arn                   = aws_iam_role.image_signature_verifier.arn
+      image_signature_verifier_package           = local.image_signature_verifier_deployment_authority.package
+      image_signature_version                    = local.image_signature_verifier_deployment_authority.function_version
+      image_signature_runtime_alias_arn          = aws_lambda_alias.image_signature_verifier_runtime.arn
       semaphore_janitor_arn                      = aws_lambda_function.target["semaphore_janitor"].arn
       semaphore_janitor_role_arn                 = aws_iam_role.target_lambda["semaphore_janitor"].arn
       semaphore_janitor_package                  = var.lambda_artifacts["semaphore_janitor"]
@@ -270,15 +348,14 @@ output "target_runtime" {
 output "develop_operator_gate_keyset" {
   description = "Nonsecret KMS and CloudFront coordinates for the tracked develop operator-gate keyset."
   value = {
-    enabled                       = local.target_develop_operator_gate_enabled
-    schema_version                = local.operator_gate_keyset.schemaVersion
-    issuer_generation             = local.operator_gate_keyset.issuerGeneration
-    signing_algorithm             = "RSASSA_PKCS1_V1_5_SHA_256"
-    cookie_hash_algorithm         = "SHA256"
-    key_group_id                  = local.operator_gate_keyset_configured ? aws_cloudfront_key_group.develop_operator_gate[0].id : null
-    key_group_name                = local.operator_gate_name
-    legacy_trusted_public_key_ids = local.operator_gate_active_legacy_trusted_public_key_ids
-    trusted_public_key_ids        = local.operator_gate_trusted_public_key_ids
+    enabled                = local.target_develop_operator_gate_enabled
+    keyset_type            = local.operator_gate_keyset.keysetType
+    issuer_generation      = local.operator_gate_keyset.issuerGeneration
+    signing_algorithm      = "RSASSA_PKCS1_V1_5_SHA_256"
+    cookie_hash_algorithm  = "SHA256"
+    key_group_id           = local.operator_gate_keyset_configured ? aws_cloudfront_key_group.develop_operator_gate[0].id : null
+    key_group_name         = local.operator_gate_name
+    trusted_public_key_ids = local.operator_gate_trusted_public_key_ids
     generations = {
       for generation, key in local.operator_gate_managed_generations : generation => {
         status                   = key.status

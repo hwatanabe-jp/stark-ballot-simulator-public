@@ -258,6 +258,23 @@ describe('scan-public-safety.sh', () => {
     });
   });
 
+  it('allows only the pinned public ECR credential-helper distribution objects', () => {
+    const releaseHost = ['amazon-ecr-credential-helper-releases', 's3', 'us-east-2', 'amazonaws', 'com'];
+    const pinnedUrl = s3ObjectUrl(releaseHost, '0.12.0/linux-amd64/docker-credential-ecr-login');
+    const unpinnedUrl = s3ObjectUrl(releaseHost, 'latest/linux-amd64/docker-credential-ecr-login');
+
+    withTempFile(`asset_url = "${pinnedUrl}"`, (filePath) => {
+      const result = runScan(filePath);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Public safety scan passed');
+    });
+    withTempFile(`asset_url = "${unpinnedUrl}"`, (filePath) => {
+      const result = runScan(filePath);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('raw_s3_object_url');
+    });
+  });
+
   it('allows bare presigned URL marker strings that are not serialized URL values', () => {
     withTempFile(['marker = "X-Amz-Signature"', 'pattern = "X-Amz-Signature=[0-9a-f]{16,}"'].join('\n'), (filePath) => {
       const result = runScan(filePath);

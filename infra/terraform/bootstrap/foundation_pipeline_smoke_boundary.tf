@@ -25,6 +25,28 @@ data "aws_iam_policy_document" "foundation_smoke_deploy_permissions_boundary" {
   }
 
   statement {
+    sid    = "FoundationAppNetworkingHandoffGuardrail"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+      "s3:PutObject",
+    ]
+    resources = [local.foundation_app_networking_object_arn]
+  }
+
+  statement {
+    sid    = "FoundationImageSigningAuthorityGuardrail"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+      "s3:PutObject",
+    ]
+    resources = [local.foundation_image_signing_authority_objects_arn]
+  }
+
+  statement {
     sid    = "FoundationSmokeApplyRetentionBoundaryReadGuardrail"
     effect = "Allow"
     actions = [

@@ -1,13 +1,8 @@
 # エンドポイント一覧
 
 この文書は、外部クライアント向け API のレスポンス形状と要件を現行実装ベースで記載します。
-session-scoped API と capability 保護 API も含むため、無認証公開 API ではありません。
-
-## 対象外の retired route と内部向け route
-
-`GET /api/debug/enable`、`GET /api/botdata/:id`、`POST /api/finalize/callback`、`GET /api/zkvm-input-hash?includeData=<truthy>` は通常のブラウザと CLI の契約ではありません。
-この文書では active API として扱わず、詳細な request/response contract も定義しません。
-各 route の位置づけは [Retired route と internal surface の扱い](#retired-route-と-internal-surface-の扱い) を参照してください。
+session-scoped API と capability 保護 API も含みます。
+retired route と内部向け route は active API として扱いません（一覧と位置づけは [Retired route と internal surface の扱い](#retired-route-と-internal-surface-の扱い) を参照）。
 
 ## API runtime 構成
 
@@ -25,22 +20,23 @@ API ハンドラはフレームワーク非依存の共通実装で、ローカ�
 session-scoped API と bundle/report API は capability 保護が必須です。
 「セッションヘッダー」列の「両方必須」は `X-Session-ID` と `X-Session-Capability` の両方、「capability のみ」は `X-Session-Capability` だけを要求します。
 
-| メソッド | パス                                                                                                                | 主用途                             | セッションヘッダー |
-| -------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ------------------ |
-| `POST`   | [`/api/session`](#post-apisession)                                                                                  | セッション作成                     | 不要               |
-| `POST`   | [`/api/vote`](#post-apivote)                                                                                        | 投票送信                           | 両方必須           |
-| `GET`    | [`/api/progress`](#get-apiprogress)                                                                                 | ボット投票進捗                     | 両方必須           |
-| `POST`   | [`/api/finalize`](#post-apifinalize)                                                                                | 集計/証明生成                      | 両方必須           |
-| `POST`   | [`/api/finalize/cancel`](#post-apifinalizecancel)                                                                   | 非同期集計キャンセル               | 両方必須           |
-| `GET`    | [`/api/sessions/:sessionId/status`](#get-apisessionssessionidstatus)                                                | 非同期集計ステータス               | capability のみ    |
-| `GET`    | [`/api/verify`](#get-apiverify)                                                                                     | 検証ペイロード取得                 | 両方必須           |
-| `POST`   | [`/api/verification/run`](#post-apiverificationrun)                                                                 | STARK 検証実行                     | 両方必須           |
-| `GET`    | [`/api/verification/bundles/:sessionId/:executionId`](#get-apiverificationbundlessessionidexecutionid)              | バンドル ZIP 取得                  | capability のみ    |
-| `GET`    | [`/api/verification/bundles/:sessionId/:executionId/report`](#get-apiverificationbundlessessionidexecutionidreport) | 検証レポート取得                   | capability のみ    |
-| `GET`    | [`/api/bulletin/:voteId/proof`](#get-apibulletinvoteidproof)                                                        | 最小包含証明                       | 両方必須           |
-| `GET`    | [`/api/bitmap-proof`](#get-apibitmap-proof)                                                                         | ビットマップ証明材料               | 両方必須           |
-| `GET`    | [`/api/sth`](#get-apisth)                                                                                           | STH スナップショット               | 両方必須           |
-| `GET`    | [`/api/zkvm-input-hash`](#get-apizkvm-input-hash)                                                                   | zkVM input commitment（hash-only） | capability のみ    |
+| メソッド | パス                                                                                                                | 主用途                        | セッションヘッダー |
+| -------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------- | ------------------ |
+| `POST`   | [`/api/session`](#post-apisession)                                                                                  | セッション作成                | 不要               |
+| `POST`   | [`/api/vote`](#post-apivote)                                                                                        | 投票送信                      | 両方必須           |
+| `GET`    | [`/api/progress`](#get-apiprogress)                                                                                 | ボット投票進捗                | 両方必須           |
+| `POST`   | [`/api/finalize`](#post-apifinalize)                                                                                | 集計/証明生成                 | 両方必須           |
+| `POST`   | [`/api/finalize/cancel`](#post-apifinalizecancel)                                                                   | 非同期集計キャンセル          | 両方必須           |
+| `GET`    | [`/api/sessions/:sessionId/status`](#get-apisessionssessionidstatus)                                                | 非同期集計ステータス          | capability のみ    |
+| `GET`    | [`/api/verify`](#get-apiverify)                                                                                     | 検証ペイロード取得            | 両方必須           |
+| `POST`   | [`/api/verification/run`](#post-apiverificationrun)                                                                 | STARK 検証実行                | 両方必須           |
+| `POST`   | [`/api/verification/observation`](#post-apiverificationobservation)                                                 | browser-local cast 観測の記録 | 両方必須           |
+| `GET`    | [`/api/verification/bundles/:sessionId/:executionId`](#get-apiverificationbundlessessionidexecutionid)              | バンドル ZIP 取得             | capability のみ    |
+| `GET`    | [`/api/verification/bundles/:sessionId/:executionId/report`](#get-apiverificationbundlessessionidexecutionidreport) | 検証レポート取得              | capability のみ    |
+| `GET`    | [`/api/bulletin/:voteId/proof`](#get-apibulletinvoteidproof)                                                        | 最小包含証明                  | 両方必須           |
+| `GET`    | [`/api/bitmap-proof`](#get-apibitmap-proof)                                                                         | ビットマップ証明材料          | 両方必須           |
+| `GET`    | [`/api/sth`](#get-apisth)                                                                                           | STH スナップショット          | 両方必須           |
+| `GET`    | [`/api/zkvm-input-hash`](#get-apizkvm-input-hash)                                                                   | zkVM input commitment         | capability のみ    |
 
 ## Active owner-scoped inspection と tooling API
 
@@ -66,6 +62,7 @@ private inspection route や debug 系 route とは分離して扱います。
 | 集計                                     | `POST /api/finalize`                                                                                                | あり                                                  | zkVM 用          |
 | 非同期集計キャンセル                     | `POST /api/finalize/cancel`                                                                                         | なし                                                  | キャンセル専用   |
 | 検証実行                                 | `POST /api/verification/run`                                                                                        | なし                                                  | zkVM 用          |
+| 検証観測                                 | `POST /api/verification/observation`                                                                                | なし                                                  | 専用制限なし     |
 | 読み取り（セッションスコープ）           | `GET /api/progress`, `GET /api/bulletin*`, `GET /api/bitmap-proof`, `GET /api/sth`, `GET /api/verify`               | なし                                                  | なし             |
 | 読み取り（path/query で session を指す） | `GET /api/sessions/:sessionId/status`, `GET /api/verification/bundles/...`, `GET /api/zkvm-input-hash`（hash-only） | なし                                                  | なし             |
 
@@ -100,27 +97,17 @@ private inspection route や debug 系 route とは分離して扱います。
 以下のエンドポイントは、session/capability 失敗時は標準形式、handler 内部の個別検証では `{ error: "..." }` 系の独自形式を返す場合があります。
 
 - `GET /api/sessions/:sessionId/status`
-- `GET /api/bulletin/consistency-proof`
-- `GET /api/bitmap-proof`
 - `GET /api/zkvm-input-hash`
-
-### 現行 response で返さない legacy フィールド
-
-以下は過去の public response に存在したものの、現行の `POST /api/finalize`（同期）および `GET /api/verify` のレスポンスには含まれません。
-旧クライアントや旧ドキュメントが参照している場合は更新してください。
-
-- バンドルとレポート URL 系: `verificationBundleUrl`, `verificationReportUrl`
-- S3 メタデータ系: `s3BundleUrl`, `s3BundleKey`, `s3UploadedAt`, `s3BundleExpiresAt`
-- カウント互換エイリアス: `missingIndices`, `invalidIndices`, `countedIndices`, `excludedCount`
-
-バンドルとレポートの取得は `verificationExecutionId` を識別子に `/api/verification/bundles/:sessionId/:executionId` および同 `/report` を組み立てます。
 
 ## 基本フロー API
 
 ### `POST /api/session`
 
 新規セッションを作成します。
-`X-Session-ID` は不要です。
+
+要件:
+
+- ヘッダー: `X-Session-ID` 不要
 
 レスポンス（`200`）:
 
@@ -131,7 +118,7 @@ private inspection route や debug 系 route とは分離して扱います。
 - `data.contractGeneration`
 - `data.capabilityToken`
 
-備考:
+挙動・補足:
 
 - local/mock では設定により `turnstileToken` を省略できます。
 - これは開発用 bypass であり、production 契約ではありません。
@@ -195,38 +182,35 @@ private inspection route や debug 系 route とは分離して扱います。
 - Turnstile 検証あり
 - zkVM レート制限あり
 
-レスポンス（`200`, 同期）:
+レスポンス（`200`, 同期）。「条件・説明」は条件付きフィールドについてのみ記載します:
 
-- `data.sessionId`
-- `data.tally`
-- `data.bulletinRoot`
-- `data.verifiedTally`
-- `data.voteReceipt`
-- `data.receipt`
-- `data.receiptPublication`（保存時）
-- `data.imageId`
-- `data.userVote`
-- `data.missingSlots`
-- `data.invalidPresentedSlots`
-- `data.rejectedRecords`
-- `data.totalExpected`
-- `data.treeSize`
-- `data.excludedSlots`
-- `data.sthDigest`
-- `data.seenBitmapRoot`（条件付き）
-- `data.includedBitmapRoot`
-- `data.inputCommitment`
-- `data.seenIndicesCount`
-- `data.journal`
-- `data.verificationStatus`
-- `data.verificationReport`（条件付き）
-- `data.verificationExecutionId`（条件付き）
-- `data.tamperSummary`（条件付き）
-
-補足:
-
-- バンドルとレポート取得の識別子は `verificationExecutionId` です。
-- クライアントは自身の `sessionId` と `verificationExecutionId` から `/api/verification/bundles/:sessionId/:executionId` および同 `/report` を構築します。
+| フィールド                     | 条件・説明                                  |
+| ------------------------------ | ------------------------------------------- |
+| `data.sessionId`               |                                             |
+| `data.tally`                   |                                             |
+| `data.bulletinRoot`            |                                             |
+| `data.verifiedTally`           |                                             |
+| `data.voteReceipt`             |                                             |
+| `data.receipt`                 |                                             |
+| `data.receiptPublication`      | receipt publication が保存されたとき        |
+| `data.imageId`                 |                                             |
+| `data.userVote`                |                                             |
+| `data.missingSlots`            |                                             |
+| `data.invalidPresentedSlots`   |                                             |
+| `data.rejectedRecords`         |                                             |
+| `data.totalExpected`           |                                             |
+| `data.treeSize`                |                                             |
+| `data.excludedSlots`           |                                             |
+| `data.sthDigest`               |                                             |
+| `data.seenBitmapRoot`          | 集計結果に seen bitmap root があるとき      |
+| `data.includedBitmapRoot`      |                                             |
+| `data.inputCommitment`         |                                             |
+| `data.seenIndicesCount`        |                                             |
+| `data.journal`                 |                                             |
+| `data.verificationStatus`      |                                             |
+| `data.verificationReport`      | 保存済み検証結果に report があるとき        |
+| `data.verificationExecutionId` | 検証実行 ID が保存されているとき            |
+| `data.tamperSummary`           | シナリオで ignored/recounted が発生したとき |
 
 レスポンス（`202`, 非同期）:
 
@@ -234,6 +218,11 @@ private inspection route や debug 系 route とは分離して扱います。
 - `statusUrl`
 - `state`
 - `queue`（`null` の場合あり）
+
+挙動・補足:
+
+- バンドルとレポート取得の識別子は `verificationExecutionId` です。
+- クライアントは自身の `sessionId` と `verificationExecutionId` から `/api/verification/bundles/:sessionId/:executionId` および同 `/report` を構築します。
 
 主なエラー:
 
@@ -246,7 +235,7 @@ private inspection route や debug 系 route とは分離して扱います。
 - `ZKVM_RATE_LIMIT_EXCEEDED` (`429`)
 - `GLOBAL_LIMIT_EXCEEDED` (`503`)
 - `PAYLOAD_TOO_LARGE` (`413`)
-- `Invalid ImageID` (`400`; 独自形式 `{ error: "Invalid ImageID", details: { expected, actual } }`)
+- `INVALID_IMAGE_ID` (`400`; 標準形式、`details` は公開用にサニタイズされた文字列)
 
 ### `POST /api/finalize/cancel`
 
@@ -314,47 +303,45 @@ handler 固有エラー（独自形式）:
 
 - クエリ: `includeJournal=1`（任意）
 
-レスポンス（`200`）:
+レスポンス（`200`）。「条件・説明」は条件付きフィールドについてのみ記載します:
 
-- `data.electionId`
-- `data.electionConfigHash`
-- `data.logId`
-- `data.tally`
-- `data.bulletinRoot`
-- `data.scenarioId`
-- `data.verificationStatus`
-- `data.verificationReport`（条件付き）
-- `data.verificationSteps` / `data.verificationChecks`
-- `data.imageId`
-- `data.tamperDetected`
-- `data.verifiedTally`
-- `data.missingSlots`
-- `data.invalidPresentedSlots`
-- `data.rejectedRecords`
-- `data.totalExpected`
-- `data.treeSize`
-- `data.excludedSlots`
-- `data.sthDigest`
-- `data.seenBitmapRoot`（条件付き）
-- `data.includedBitmapRoot`
-- `data.inputCommitment`
-- `data.seenIndicesCount`（条件付き）
-- `data.journalStatus`
-- `data.journal`（`includeJournal=1` のとき）
-- `data.voteReceipt`（条件付き）
-- `data.userVote`
-- `data.botVotesSummary`（条件付き）
-- `data.verificationExecutionId`（条件付き）
-- `data.tamperSummary`（条件付き）
+| フィールド                                           | 条件・説明                                                 |
+| ---------------------------------------------------- | ---------------------------------------------------------- |
+| `data.electionId`                                    |                                                            |
+| `data.electionConfigHash`                            |                                                            |
+| `data.logId`                                         |                                                            |
+| `data.tally`                                         |                                                            |
+| `data.bulletinRoot`                                  |                                                            |
+| `data.scenarioId`                                    |                                                            |
+| `data.verificationStatus`                            |                                                            |
+| `data.verificationReport`                            | 保存済み検証結果に report があるとき                       |
+| `data.verificationSteps` / `data.verificationChecks` |                                                            |
+| `data.imageId`                                       |                                                            |
+| `data.tamperDetected`                                |                                                            |
+| `data.verifiedTally`                                 |                                                            |
+| `data.missingSlots`                                  |                                                            |
+| `data.invalidPresentedSlots`                         |                                                            |
+| `data.rejectedRecords`                               |                                                            |
+| `data.totalExpected`                                 |                                                            |
+| `data.treeSize`                                      |                                                            |
+| `data.excludedSlots`                                 |                                                            |
+| `data.sthDigest`                                     |                                                            |
+| `data.seenBitmapRoot`                                | 集計結果に seen bitmap root があるとき                     |
+| `data.includedBitmapRoot`                            |                                                            |
+| `data.inputCommitment`                               |                                                            |
+| `data.seenIndicesCount`                              |                                                            |
+| `data.journalStatus`                                 |                                                            |
+| `data.journal`                                       | `includeJournal=1` のとき                                  |
+| `data.voteReceipt`                                   | 保存済みの exact な vote receipt を解決できたとき          |
+| `data.userVote`                                      |                                                            |
+| `data.botVotesSummary`                               | シナリオ `S3`/`S4` で affected bot ID が記録されているとき |
+| `data.verificationExecutionId`                       | 検証実行 ID が保存されているとき                           |
+| `data.tamperSummary`                                 | 集計結果に tamper summary があるとき                       |
 
-[fail-closed](../appendix/glossary.md#fail-closed) 応答:
+挙動・補足:
 
-- `verificationStatus` が許容セット外の場合、取得可能な current-generation finalized session では `200` の通常 `data` payload を返し、`data.verificationStatus` を `failed` に正規化します。
+- [fail-closed](../appendix/glossary.md#fail-closed) 応答: 対象は、取得可能な current-generation finalized session で `verificationStatus` が許容セット外になる場合です。この場合は `200` の通常 `data` payload を返し、`data.verificationStatus` を `failed` に正規化します。
 - unsupported/corrupt finalized artifact の場合は `200` で `{ error, message, artifactState }` を返し、`data` payload は含みません。
-
-補足:
-
-- 署名付き URL の再発行はこのエンドポイントでは扱わず、capability 保護された `/api/verification/bundles/...` 系ルートの責務です。
 
 主なエラー:
 
@@ -367,7 +354,7 @@ handler 固有エラー（独自形式）:
 
 要件:
 
-- ボディ: JSON オブジェクト（通常は空オブジェクト `{}`）
+- ボディ: 空の JSON オブジェクト `{}` のみ（追加フィールドは不受理）
 - zkVM レート制限あり
 
 レスポンス（`200`）:
@@ -377,7 +364,7 @@ handler 固有エラー（独自形式）:
 - `data.estimatedDurationMs`
 - `data.idempotent`
 
-挙動:
+挙動・補足:
 
 - 既存結果がある場合や実行中の場合は、再実行せず `idempotent: true` を返します。
 
@@ -390,10 +377,53 @@ handler 固有エラー（独自形式）:
 - `PAYLOAD_TOO_LARGE` (`413`)
 - `INTERNAL_ERROR` (`500`)
 
+### `POST /api/verification/observation`
+
+現在の検証実行に対する browser-local の cast チェック結果を、限定された観測データとして記録します。
+この API は telemetry/observability 用であり、クライアントが最終判定や server-side check を指定する API ではありません。
+client-supplied の overall verdict、server-side check、追加フィールド（`castChecks` の追加キーを含む）は受理しません。
+サーバーは保存済みの検証結果と `GET /api/verify` の現行チェック authority を再構築し、クライアント入力は以下の 4 個の cast check status にだけ適用します。
+
+要件:
+
+- ヘッダー: `X-Session-ID` 必須、`X-Session-Capability` 必須
+- セッションは finalized かつ current artifact であること
+- 保存済み検証結果は terminal status（`success` / `failed` / `dev_mode`）であること
+- ボディ:
+  - `verificationExecutionId`: 現在の保存済み検証実行 ID と完全一致
+  - `castChecks`: 次の 4 キーをすべて含むオブジェクト
+    - `cast_receipt_present`
+    - `cast_choice_range`
+    - `cast_random_format`
+    - `cast_commitment_match`
+  - 各 status は `success` / `failed` / `not_run` のいずれか
+- 専用の application rate limit は設けず、API Gateway の既定 throttle と共通ボディサイズ制限を使用
+
+レスポンス（`200`）:
+
+- `data.status`: `recorded`（初回記録）または `idempotent`（同一観測の再送）
+- `Cache-Control: no-store`
+
+挙動・補足:
+
+- 最初に受理した exact execution の観測だけを durable に記録します。
+- 同じ execution ID と同じ 4 status の再送は副作用を繰り返さず `idempotent` を返します。
+- 同じ execution に対する異なる観測は fail-closed で拒否します。
+
+主なエラー:
+
+- `INVALID_REQUEST` (`400`; JSON、必須フィールド、status、または追加フィールドが不正)
+- `SESSION_NOT_FINALIZED` (`400`)
+- `VERIFICATION_OBSERVATION_CONFLICT` (`409`)
+- `UNSUPPORTED_CURRENT_ARTIFACT` (`500`)
+- `CORRUPT_OR_UNREADABLE_FINALIZED_STATE` (`500`)
+- `PAYLOAD_TOO_LARGE` (`413`)
+- `INTERNAL_ERROR` (`500`)
+
 ## バンドル取得 API
 
 両エンドポイントとも `X-Session-Capability` ヘッダーによる capability 保護が必須です。
-通常のブラウザと CLI の契約は、capability 保護された API からの配信です。
+通常のブラウザと CLI の契約は capability 保護された API からの配信であり、raw S3 URL や presigned URL は通常契約として公開されません。
 対象 artifact が S3 にある場合も、API がセッション権限、実行 ID、S3 key を検証したうえで S3 から読み出し、API レスポンスとして返します。
 
 ### `GET /api/verification/bundles/:sessionId/:executionId`
@@ -422,7 +452,7 @@ S3-backed bundle が大きい場合は `Range` リクエストが必要になり
 検証レポート `verification.json` を返します。
 protected report artifact であり、配布対象アーカイブ `bundle.zip` には含まれません。
 S3-backed report も API が保護された本文として返します。
-現在のインライン上限を超える report は fail-closed で拒否され、raw S3 URL や presigned URL は通常契約として公開されません。
+現在のインライン上限を超える report は fail-closed で拒否されます。
 
 レスポンス:
 
@@ -443,11 +473,7 @@ S3-backed report も API が保護された本文として返します。
 ### `GET /api/bulletin`
 
 掲示板一覧を返します。
-
-補足:
-
-- 現行 retained owner-scoped inspection route です。
-- 通常の public browser と CLI の主導線ではなく、owner-scoped inspection や tooling surface として扱います。
+route の位置づけは [Active owner-scoped inspection と tooling API](#active-owner-scoped-inspection-と-tooling-api) を参照してください。
 
 要件:
 
@@ -476,11 +502,7 @@ S3-backed report も API が保護された本文として返します。
 
 - セッションは finalized 必須
 - パス: `voteId`（UUID v4 形式）
-
-アクセス制御:
-
-- 原則は「そのセッションのユーザー投票」のみ
-- 例外としてシナリオ `S3`/`S4` では対象ボット票を許可
+- アクセス制御: 原則は「そのセッションのユーザー投票」のみ。例外としてシナリオ `S3`/`S4` では対象ボット票を許可
 
 レスポンス（`200`）:
 
@@ -490,10 +512,9 @@ S3-backed report も API が保護された本文として返します。
 - `proof.treeSize`
 - `proof.bulletinRootAtCast`
 
-キャッシュ:
+挙動・補足:
 
-- `Cache-Control: private, no-store`
-- `Vary: X-Session-ID, X-Session-Capability`
+- キャッシュ: `Cache-Control: private, no-store`、`Vary: X-Session-ID, X-Session-Capability`
 
 主なエラー:
 
@@ -505,10 +526,6 @@ S3-backed report も API が保護された本文として返します。
 ### `GET /api/bulletin/consistency-proof`
 
 RFC6962 整合性証明を返します。
-
-補足:
-
-- `/verify` の最終判定は内部チェックパイプライン（`recorded_consistency_proof` を含む）で行うため、この HTTP エンドポイントは検証 tooling と点検用途として扱います。
 
 要件:
 
@@ -524,10 +541,16 @@ RFC6962 整合性証明を返します。
 - `oldSubtreeHashes` / `appendSubtreeHashes`（条件付き）
 - `timestamp`
 
-主なエラー（handler 固有、独自形式）:
+挙動・補足:
 
-- `400`: `oldSize` / `newSize` 欠落、不正、範囲外、掲示板未初期化、proof 生成失敗
-- `500`: consistency proof 生成中の内部エラー
+- `/verify` の最終判定は内部チェックパイプライン（`recorded_consistency_proof` を含む）で行うため、この HTTP エンドポイントは検証 tooling と点検用途として扱います。
+
+主なエラー（標準形式）:
+
+- `INVALID_SIZE` (`400`; `oldSize` / `newSize` 欠落、不正、範囲外、掲示板未初期化、proof 生成失敗)
+- `UNSUPPORTED_CURRENT_ARTIFACT` (`500`)
+- `CORRUPT_OR_UNREADABLE_FINALIZED_STATE` (`500`)
+- `INTERNAL_ERROR` (`500`; consistency proof 生成中の内部エラー)
 
 ## 補助 API
 
@@ -537,31 +560,26 @@ RFC6962 整合性証明を返します。
 
 要件:
 
-- クエリ: `i`（0 以上整数）必須
+- クエリ: `i` 必須。0 以上整数かつ、そのセッションのユーザー投票 index と一致すること
 - クエリ: `kind` 任意（`included` / `seen`、省略時は `included`）
-
-備考:
-
-- 全ストア実装で sessionId をキーに保存済み bitmap を参照します。
-- `included` は counted された index、`seen` は prover に提示された index を対象にします。
 
 レスポンス（`200`）:
 
 - `leafChunk`
 - `auditPath`
 
-キャッシュ:
+挙動・補足:
 
-- `ETag` 対応
-- `If-None-Match` 一致時 `304`
-- `Cache-Control: private, max-age=86400, stale-while-revalidate=3600, immutable`
-- `Vary: X-Session-ID, X-Session-Capability`
+- 全ストア実装で sessionId をキーに保存済み bitmap を参照します。
+- `included` は counted された index、`seen` は prover に提示された index を対象にします。
+- キャッシュ: `ETag` 対応、`If-None-Match` 一致時 `304`、`Cache-Control: private, max-age=86400, stale-while-revalidate=3600, immutable`、`Vary: X-Session-ID, X-Session-Capability`
 
-主なエラー（handler 固有、独自形式）:
+主なエラー（標準形式）:
 
-- `INVALID_INDEX` (`400`)
-- `INVALID_BITMAP_KIND` (`400`)
-- `BITMAP_NOT_FOUND` (`404`)
+- `INVALID_BITMAP_PROOF_REQUEST` (`400`; index/kind 不正、ユーザー投票以外の index、bitmap 未検出、root 不整合など)
+- `USER_NOT_VOTED` (`400`)
+- `UNSUPPORTED_CURRENT_ARTIFACT` (`500`)
+- `CORRUPT_OR_UNREADABLE_FINALIZED_STATE` (`500`)
 - `INTERNAL_ERROR` (`500`)
 
 ### `GET /api/sth`
@@ -571,6 +589,11 @@ STH スナップショットを返します。
 要件:
 
 - finalized セッションのみ
+- ブラウザ由来リクエストでは同一オリジン必須:
+  - `Origin` がある場合は request URL の origin と一致すること
+  - `Sec-Fetch-Site` がある場合は `same-origin` または `none` であること
+  - origin 情報を送らない CLI/server-to-server request でも session capability は必須
+- クエリ: `auditor` 任意。1-64 文字の英数字、`.`、`_`、`-` のみ。このラベルは capability 検証を代替しません
 
 レスポンス（`200`）:
 
@@ -580,29 +603,29 @@ STH スナップショットを返します。
 - `sth.timestamp`
 - `sth.logId`
 
-備考:
+挙動・補足:
 
 - 現行実装の `sth.timestamp` はジャーナル内時刻ではなく、`session.lastActivity` を返します。
 
 主なエラー:
 
+- `SAME_ORIGIN_REQUIRED` (`403`)
 - `SESSION_NOT_FINALIZED` (`404`; このエンドポイント固有の扱い)
-- `INTERNAL_ERROR` (`500`; 例: finalized 済みだが journal が欠落している場合)
+- `UNSUPPORTED_CURRENT_ARTIFACT` (`500`)
+- `CORRUPT_OR_UNREADABLE_FINALIZED_STATE` (`500`)
+- `INTERNAL_ERROR` (`500`; 予期しない内部エラー)
 
 ### `GET /api/zkvm-input-hash`
 
 セッション由来の zkVM 入力コミットメントを返します。
-active public contract は hash-only です。
-
-`sessionId` と `X-Session-Capability` で capability 検証し、finalized/current artifact 状態を確認したうえで `inputCommitment` だけを返します。
+active public contract は hash-only で、`sessionId` と `X-Session-Capability` で capability 検証し、finalized/current artifact 状態を確認したうえで `inputCommitment` だけを返します。
 private input data、raw witness values、vote opening は返しません。
-`includeData=true`, `1`, `yes` などの truthy variant は retired private-data variant であり、通常のブラウザと CLI の契約ではありません。
+`includeData` クエリは active schema では受理せず、truthy variant は retired です（[Retired route と internal surface の扱い](#retired-route-と-internal-surface-の扱い) を参照）。
 
 要件:
 
 - クエリ: `sessionId` 必須
 - ヘッダー: `X-Session-Capability` 必須
-- クエリ: `includeData` は active schema では受理しません
 
 レスポンス（`200`）:
 
@@ -626,6 +649,7 @@ handler 固有エラー（独自形式）:
 ## Retired route と internal surface の扱い
 
 以下は active browser と CLI contract ではありません。
+この文書では active API として扱わず、詳細な request/response contract も定義しません。
 
 - `GET /api/debug/enable`: retired debug route。
   現行 Hono route inventory には登録されず、公開 API として説明しません。
@@ -634,8 +658,18 @@ handler 固有エラー（独自形式）:
   現行 route definitions には登録されず、API contract metadata では `410 ROUTE_RETIRED` 扱いです。
 - `POST /api/finalize/callback`: async finalize worker callback 用の internal/operator-only route。
   通常のブラウザと CLI から呼び出す API ではありません。
-- `GET /api/zkvm-input-hash?includeData=<truthy>`: retired private-data variant。
-  active `GET /api/zkvm-input-hash` は `inputCommitment` のみを返します。
+- `GET /api/zkvm-input-hash?includeData=<truthy>`: retired private-data variant（active contract は hash-only）。
+
+## 現行 response で返さない legacy フィールド
+
+以下は過去の public response に存在したものの、現行の `POST /api/finalize`（同期）および `GET /api/verify` のレスポンスには含まれません。
+旧クライアントや旧ドキュメントが参照している場合は更新してください。
+
+- バンドルとレポート URL 系: `verificationBundleUrl`, `verificationReportUrl`
+- S3 メタデータ系: `s3BundleUrl`, `s3BundleKey`, `s3UploadedAt`, `s3BundleExpiresAt`
+- カウント互換エイリアス: `missingIndices`, `invalidIndices`, `countedIndices`, `excludedCount`
+
+現行のバンドルとレポート取得経路は [`POST /api/finalize`](#post-apifinalize) の挙動・補足を参照してください。
 
 ## 関連する章
 

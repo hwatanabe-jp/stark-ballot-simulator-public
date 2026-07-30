@@ -15,8 +15,26 @@ resource "terraform_data" "skeletal_app_lane" {
 
   lifecycle {
     precondition {
-      condition     = !local.target_develop_operator_gate_requested || local.operator_gate_keyset_configured
-      error_message = "operator-gated develop requires a valid tracked KMS-backed operator-gate keyset."
+      condition     = data.aws_caller_identity.current.account_id == var.aws_account_id
+      error_message = "AWS caller account must match aws_account_id."
+    }
+
+    precondition {
+      condition     = data.aws_region.current.region == var.aws_region
+      error_message = "AWS provider region must match aws_region."
+    }
+
+    precondition {
+      condition     = local.api_origin_verify_header_configured
+      error_message = "The CloudFront API origin requires a non-empty AWSCURRENT value at EXPECTED_ORIGIN_VERIFY_HEADER_REF."
+    }
+
+    precondition {
+      condition = (
+        !local.target_develop_operator_gate_requested
+        || (local.operator_gate_keyset_configured && local.api_origin_verify_header_configured)
+      )
+      error_message = "operator-gated develop requires a valid tracked KMS-backed operator-gate keyset and non-empty AWSCURRENT origin-verify secret."
     }
 
     precondition {
@@ -42,19 +60,7 @@ resource "terraform_data" "skeletal_app_lane" {
 
 data "aws_caller_identity" "current" {}
 
-check "account_identity" {
-  assert {
-    condition     = data.aws_caller_identity.current.account_id == var.aws_account_id
-    error_message = "AWS caller account must match aws_account_id."
-  }
-}
-
-check "prover_image_uri_authority" {
-  assert {
-    condition     = can(regex(local.prover_image_uri_pattern, var.prover_image_uri))
-    error_message = "prover_image_uri must reference the expected target account and region."
-  }
-}
+data "aws_region" "current" {}
 
 check "target_public_session_turnstile_gate" {
   assert {
@@ -74,5 +80,12 @@ check "develop_operator_gate_configured" {
       || (local.operator_gate_keyset_configured && local.api_origin_verify_header_configured)
     )
     error_message = "operator-gated develop requires a valid tracked KMS-backed keyset and AWSCURRENT at EXPECTED_ORIGIN_VERIFY_HEADER_REF."
+  }
+}
+
+check "image_signature_verifier_timeout_budget" {
+  assert {
+    condition     = local.image_signature_verifier_timeout_budget_valid
+    error_message = "The verifier process, signing-status retry, cleanup, handler, Step Functions, and Lambda timeout budgets must remain strictly bounded."
   }
 }

@@ -14,6 +14,7 @@ describe('projectFinalizationStateForPublicResponse', () => {
       error: {
         code: 'FINALIZATION_FAILED',
         message: 'Finalization failed',
+        category: 'unknown',
         details: {
           bundleKey: 'private/proofs/input.json',
           reportKey: 'private/reports/verification.json',

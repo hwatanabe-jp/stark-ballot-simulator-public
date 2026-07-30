@@ -1,5 +1,9 @@
 import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
 import type { AddVoteResult, SessionData } from '@stark-ballot/domain/types/server';
+import {
+  resolveVerificationObservationRecord,
+  type VerificationObservation,
+} from '@stark-ballot/domain/types/verificationObservation';
 import type { TestFinalizationState as FinalizationState } from '@stark-ballot/test-support/testing/finalization-state';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
@@ -207,6 +211,7 @@ type MockFinalizationStore = {
 export type MockVoteStore = VoteStore & MockFinalizationStore;
 
 export function createMockVoteStore(overrides: Partial<MockVoteStore> = {}): MockVoteStore {
+  const observations = new Map<string, VerificationObservation>();
   const baseStore: MockVoteStore = {
     createSession: () => Promise.reject(new Error('createSession not implemented in mock')),
     getSession: () => Promise.resolve(null),
@@ -224,6 +229,25 @@ export function createMockVoteStore(overrides: Partial<MockVoteStore> = {}): Moc
       void sessionId;
       void data;
       return Promise.resolve(undefined);
+    },
+    recordVerificationObservation: async (sessionId, observation) => {
+      const session = await store.getSession(sessionId);
+      const finalizationResult = session?.finalizationResult as unknown;
+      const currentExecutionId =
+        finalizationResult &&
+        typeof finalizationResult === 'object' &&
+        typeof (finalizationResult as { verificationExecutionId?: unknown }).verificationExecutionId === 'string'
+          ? (finalizationResult as { verificationExecutionId: string }).verificationExecutionId
+          : undefined;
+      const resolution = resolveVerificationObservationRecord(
+        currentExecutionId,
+        observations.get(sessionId),
+        observation,
+      );
+      if (resolution.status === 'recorded') {
+        observations.set(sessionId, structuredClone(observation));
+      }
+      return resolution;
     },
     repairFinalizationResult: (sessionId) => {
       void sessionId;
@@ -356,7 +380,7 @@ export function createMockVoteStore(overrides: Partial<MockVoteStore> = {}): Moc
     getVoteProof: () => Promise.resolve(null),
   };
 
-  return {
+  const store: MockVoteStore = {
     ...baseStore,
     ...overrides,
     createSession: async () =>
@@ -368,4 +392,5 @@ export function createMockVoteStore(overrides: Partial<MockVoteStore> = {}): Moc
         await (overrides.getSession ? overrides.getSession(sessionId) : baseStore.getSession(sessionId)),
       ),
   };
+  return store;
 }

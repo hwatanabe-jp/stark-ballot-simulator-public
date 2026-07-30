@@ -13,15 +13,21 @@ import { createMockVoteStore } from '@stark-ballot/test-support/testing/mockVote
 import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sessionCapabilityToken';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { resolveCurrentContractGeneration } from '@stark-ballot/domain/contract';
 import { getSessionStatusHandler } from './sessionStatus';
 
 const stepFunctionsMocks = vi.hoisted(() => ({
   describeFinalizationExecution: vi.fn(),
 }));
+const emitCanonicalEventMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../adapters/finalizationStepFunctions', () => ({
   describeFinalizationExecution: stepFunctionsMocks.describeFinalizationExecution,
+}));
+
+vi.mock('@stark-ballot/diagnostics/canonicalEvents', () => ({
+  emitCanonicalEvent: emitCanonicalEventMock,
 }));
 
 const capabilitySecret = 'session-status-handler-secret-0123456789abcdef';
@@ -159,6 +165,19 @@ async function requestStatus(store: MockVoteStore): Promise<SessionStatusRespons
   return readStatusResponse(response);
 }
 
+function expectReconcileAttempt(to: 'failed' | 'timeout', reason: string): void {
+  expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+    event: 'finalize_transition_attempted',
+    to,
+    source: 'reconcile',
+    reason,
+    session_id_hash: hashSessionIdForLogging(sessionId),
+    execution_id: executionId,
+  });
+  expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(sessionId);
+  expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(stateMachineArn);
+}
+
 describe('getSessionStatusHandler finalization reconciliation', () => {
   let loggerWarnSpy: MockInstance<typeof logger.warn>;
 
@@ -171,6 +190,7 @@ describe('getSessionStatusHandler finalization reconciliation', () => {
     vi.stubEnv('PROVER_STATE_MACHINE_ARN', stateMachineArn);
     vi.stubEnv('PROVER_WORK_QUEUE_URL', 'https://sqs.ap-northeast-1.amazonaws.com/123456789012/prover-work');
     stepFunctionsMocks.describeFinalizationExecution.mockReset();
+    emitCanonicalEventMock.mockClear();
     loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
   });
 
@@ -209,6 +229,10 @@ describe('getSessionStatusHandler finalization reconciliation', () => {
       error: {
         code: 'FINALIZATION_DISPATCH_TIMEOUT',
       },
+      observability: {
+        source: 'reconcile',
+        reason: 'FINALIZATION_DISPATCH_TIMEOUT',
+      },
     });
     expect(failedCall[1].error.message).toContain('900');
     expect(failedCall[1].error.details).toEqual(expect.objectContaining({ ageSeconds: 1000 }));
@@ -218,6 +242,7 @@ describe('getSessionStatusHandler finalization reconciliation', () => {
     expect(payload.finalizationState?.status === 'failed' ? payload.finalizationState.error.code : null).toBe(
       'FINALIZATION_DISPATCH_TIMEOUT',
     );
+    expectReconcileAttempt('failed', 'FINALIZATION_DISPATCH_TIMEOUT');
   });
 
   it('keeps a not-found pending execution pending at the dispatch deadline and fails just past it', async () => {
@@ -358,11 +383,16 @@ describe('getSessionStatusHandler finalization reconciliation', () => {
             executionStatus,
           },
         },
+        observability: {
+          source: 'reconcile',
+          reason: 'FINALIZATION_OUTCOME_UNRECORDED',
+        },
       });
       expect(payload.finalizationState?.status).toBe('failed');
       expect(payload.finalizationState?.status === 'failed' ? payload.finalizationState.error.code : null).toBe(
         'FINALIZATION_OUTCOME_UNRECORDED',
       );
+      expectReconcileAttempt('failed', 'FINALIZATION_OUTCOME_UNRECORDED');
     },
   );
 
@@ -404,7 +434,7 @@ describe('getSessionStatusHandler finalization reconciliation', () => {
     expect(loggerWarnSpy).toHaveBeenCalledWith(
       '[Status API] Cannot reconcile pending finalization without a valid Step Functions ARN',
       expect.objectContaining({
-        sessionId,
+        session_id_hash: hashSessionIdForLogging(sessionId),
         executionId,
         configuredStateMachineArn: 'not-a-state-machine-arn',
       }),
@@ -497,12 +527,17 @@ describe('getSessionStatusHandler finalization reconciliation', () => {
       error: {
         code: 'PROVER_EXECUTION_FAILED',
       },
+      observability: {
+        source: 'reconcile',
+        reason: 'PROVER_EXECUTION_FAILED',
+      },
       stepFunctionsArn: executionArn,
     });
     expect(payload.finalizationState?.status).toBe('failed');
     expect(payload.finalizationState?.status === 'failed' ? payload.finalizationState.error.code : null).toBe(
       'PROVER_EXECUTION_FAILED',
     );
+    expectReconcileAttempt('failed', 'PROVER_EXECUTION_FAILED');
   });
 
   it('persists timeout when a running execution closed as TIMED_OUT', async () => {
@@ -533,8 +568,13 @@ describe('getSessionStatusHandler finalization reconciliation', () => {
       contractGeneration,
       timeoutAt: fixedNow - 5000,
       stepFunctionsArn: executionArn,
+      observability: {
+        source: 'reconcile',
+        reason: 'EXECUTION_TIMED_OUT',
+      },
     });
     expect(payload.finalizationState?.status).toBe('timeout');
+    expectReconcileAttempt('timeout', 'EXECUTION_TIMED_OUT');
   });
 
   it('persists PROVER_EXECUTION_ABORTED when a running execution closed as ABORTED', async () => {
@@ -569,12 +609,17 @@ describe('getSessionStatusHandler finalization reconciliation', () => {
       error: {
         code: 'PROVER_EXECUTION_ABORTED',
       },
+      observability: {
+        source: 'reconcile',
+        reason: 'PROVER_EXECUTION_ABORTED',
+      },
       stepFunctionsArn: executionArn,
     });
     expect(payload.finalizationState?.status).toBe('failed');
     expect(payload.finalizationState?.status === 'failed' ? payload.finalizationState.error.code : null).toBe(
       'PROVER_EXECUTION_ABORTED',
     );
+    expectReconcileAttempt('failed', 'PROVER_EXECUTION_ABORTED');
   });
 
   it('persists FINALIZATION_OUTCOME_UNRECORDED when a running execution closed as SUCCEEDED', async () => {
@@ -612,11 +657,16 @@ describe('getSessionStatusHandler finalization reconciliation', () => {
           executionStatus: 'SUCCEEDED',
         },
       },
+      observability: {
+        source: 'reconcile',
+        reason: 'FINALIZATION_OUTCOME_UNRECORDED',
+      },
       stepFunctionsArn: executionArn,
     });
     expect(payload.finalizationState?.status).toBe('failed');
     expect(payload.finalizationState?.status === 'failed' ? payload.finalizationState.error.code : null).toBe(
       'FINALIZATION_OUTCOME_UNRECORDED',
     );
+    expectReconcileAttempt('failed', 'FINALIZATION_OUTCOME_UNRECORDED');
   });
 });

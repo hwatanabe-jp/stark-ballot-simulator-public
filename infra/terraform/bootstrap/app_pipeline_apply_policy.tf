@@ -54,6 +54,59 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
   }
 
   statement {
+    sid    = "ManageTargetObservabilityDashboard"
+    effect = "Allow"
+
+    actions = [
+      "cloudwatch:DeleteDashboards",
+      "cloudwatch:GetDashboard",
+      "cloudwatch:PutDashboard",
+    ]
+    resources = [local.app_observability_dashboard_arn]
+  }
+
+  statement {
+    sid       = "ListTargetObservabilityDashboards"
+    effect    = "Allow"
+    actions   = ["cloudwatch:ListDashboards"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ManageTargetInvariantNotificationTopic"
+    effect = "Allow"
+
+    actions = [
+      "sns:CreateTopic",
+      "sns:DeleteTopic",
+      "sns:GetTopicAttributes",
+      "sns:ListSubscriptionsByTopic",
+      "sns:ListTagsForResource",
+      "sns:SetTopicAttributes",
+      "sns:Subscribe",
+      "sns:TagResource",
+      "sns:UntagResource",
+    ]
+    resources = [local.app_invariant_sns_topic_arn]
+  }
+
+  statement {
+    sid    = "ManageTargetInvariantEmailSubscription"
+    effect = "Allow"
+
+    actions = [
+      "sns:GetSubscriptionAttributes",
+      "sns:SetSubscriptionAttributes",
+      "sns:Unsubscribe",
+    ]
+    # SNS subscription APIs do not support resource-level ARNs. This dedicated
+    # app apply role receives only the three lifecycle actions Terraform needs.
+    resources = ["*"]
+  }
+
+  statement {
+    # The verifier role is owned by the isolated reviewed preflight apply.
+    sid       = "ManageTargetApplicationRuntimeRoles"
     effect    = "Allow"
     actions   = ["iam:*"]
     resources = [local.app_target_runtime_role_arn_pattern]
@@ -62,7 +115,7 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
   statement {
     effect    = "Allow"
     actions   = ["logs:*"]
-    resources = local.app_target_all_log_group_resource_arns
+    resources = local.app_target_application_log_group_resource_arns
   }
 
   statement {
@@ -82,14 +135,50 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
       "logs:ListLogDeliveries",
       "logs:PutResourcePolicy",
       "logs:UpdateLogDelivery",
+      "logs:DeleteQueryDefinition",
+      "logs:DescribeQueryDefinitions",
+      "logs:PutQueryDefinition",
     ]
     resources = ["*"]
   }
 
   statement {
+    # Keep verifier function code/configuration outside the full App apply role.
+    sid     = "ManageTargetApplicationLambdas"
+    effect  = "Allow"
+    actions = ["lambda:*"]
+    resources = [
+      local.app_target_lambda_arn_pattern,
+      local.app_target_lambda_event_source_mapping_arn_pattern,
+    ]
+  }
+
+  statement {
+    # Lambda does not support resource ARNs for CreateEventSourceMapping, so
+    # constrain its required "*" resource with the exact non-verifier functions.
+    sid       = "CreateTargetApplicationEventSourceMappings"
     effect    = "Allow"
-    actions   = ["lambda:*"]
+    actions   = ["lambda:CreateEventSourceMapping"]
     resources = ["*"]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "lambda:FunctionArn"
+      values   = local.app_target_application_lambda_arns
+    }
+  }
+
+  statement {
+    # Full normal/rollback plans may only move the two reviewed qualified aliases.
+    sid    = "ManageReviewedVerifierAliases"
+    effect = "Allow"
+    actions = [
+      "lambda:CreateAlias",
+      "lambda:DeleteAlias",
+      "lambda:GetAlias",
+      "lambda:UpdateAlias",
+    ]
+    resources = local.app_signature_verifier_alias_arns
   }
 
   statement {
@@ -105,14 +194,14 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
       "sqs:*",
       "states:*",
     ]
-    resources = concat(local.app_target_async_queue_arns, [local.app_target_state_machine_arn])
+    resources = [local.app_target_async_queue_arn_pattern, local.app_target_state_machine_arn]
   }
 
   statement {
     sid       = "ManageTargetSemaphoreJanitorEvents"
     effect    = "Allow"
     actions   = ["events:*"]
-    resources = local.app_target_event_rule_arns
+    resources = [local.app_target_event_rule_arn_pattern]
   }
 
   statement {
@@ -169,6 +258,16 @@ resource "aws_iam_policy" "app_terraform_apply_runtime" {
   name   = local.app_terraform_apply_runtime_policy_name
   policy = data.aws_iam_policy_document.app_terraform_apply_runtime[0].json
   tags   = local.common_tags
+}
+
+check "app_terraform_apply_runtime_policy_size" {
+  assert {
+    condition = (
+      !local.app_pipeline_enabled
+      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.app_terraform_apply_runtime[0].json))) <= 6144, false)
+    )
+    error_message = "The app Terraform apply runtime managed policy must remain within the IAM 6,144-character quota."
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "app_terraform_apply_runtime" {
@@ -392,6 +491,13 @@ resource "aws_iam_role_policy" "app_terraform_apply" {
   name   = "${local.app_terraform_apply_role_name}-policy"
   role   = aws_iam_role.app_terraform_apply[0].id
   policy = data.aws_iam_policy_document.app_terraform_apply[0].json
+
+  lifecycle {
+    precondition {
+      condition     = length(jsonencode(jsondecode(data.aws_iam_policy_document.app_terraform_apply[0].json))) <= 10240
+      error_message = "The app Terraform apply inline policy must remain within the IAM 10,240-character role-policy quota."
+    }
+  }
 }
 
 resource "aws_iam_policy" "app_terraform_apply_state_backend" {

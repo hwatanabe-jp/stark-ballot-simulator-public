@@ -22,9 +22,23 @@ resource "aws_codepipeline" "development_prover_release" {
   }
 
   variable {
-    name          = "RequestedSourceSha"
-    default_value = "__MISSING_REQUESTED_SOURCE_SHA__"
-    description   = "Operator-requested prover source Git SHA that candidate and promotion evidence must match when set; leave the default to build the resolved branch head (recorded as sourceShaMode branch-head)."
+    name        = "RequestedSourceSha"
+    description = "Required full lowercase prover source Git SHA; the Source override and every release stage must match it exactly."
+  }
+
+  variable {
+    name        = "FoundationSigningAuthorityKey"
+    description = "Required immutable Foundation image-signing authority S3 key emitted by the reviewed Foundation PostApplySmoke execution."
+  }
+
+  variable {
+    name        = "FoundationSigningAuthorityVersionId"
+    description = "Required exact S3 VersionId for the reviewed Foundation image-signing authority."
+  }
+
+  variable {
+    name        = "FoundationSigningAuthoritySha256"
+    description = "Required SHA-256 of the exact reviewed Foundation image-signing authority body."
   }
 
   variable {
@@ -68,6 +82,52 @@ resource "aws_codepipeline" "development_prover_release" {
   }
 
   stage {
+    name = "ResolveFoundationSigningAuthority"
+
+    action {
+      name             = "ResolveFoundationSigningAuthority"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      input_artifacts  = ["SourceOutput"]
+      output_artifacts = ["FoundationSigningAuthorityOutput"]
+
+      configuration = {
+        EnvironmentVariables = jsonencode([
+          {
+            name  = "REQUESTED_SOURCE_SHA"
+            value = "#{variables.RequestedSourceSha}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "PIPELINE_SOURCE_SHA"
+            value = "#{ProverReleaseSource.CommitId}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "FOUNDATION_SIGNING_AUTHORITY_KEY"
+            value = "#{variables.FoundationSigningAuthorityKey}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "FOUNDATION_SIGNING_AUTHORITY_VERSION_ID"
+            value = "#{variables.FoundationSigningAuthorityVersionId}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "FOUNDATION_SIGNING_AUTHORITY_SHA256"
+            value = "#{variables.FoundationSigningAuthoritySha256}"
+            type  = "PLAINTEXT"
+          },
+        ])
+        PrimarySource = "SourceOutput"
+        ProjectName   = aws_codebuild_project.foundation_image_signing_authority_resolver[0].name
+      }
+    }
+  }
+
+  stage {
     name = "ResolveToolchainAuthority"
 
     action {
@@ -101,8 +161,19 @@ resource "aws_codepipeline" "development_prover_release" {
             value = "#{variables.PinnedToolchainArtifactSha256}"
             type  = "PLAINTEXT"
           },
+          {
+            name  = "REQUESTED_SOURCE_SHA"
+            value = "#{variables.RequestedSourceSha}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "PIPELINE_SOURCE_SHA"
+            value = "#{ProverReleaseSource.CommitId}"
+            type  = "PLAINTEXT"
+          },
         ])
-        ProjectName = aws_codebuild_project.prover_release_toolchain_resolver[0].name
+        PrimarySource = "SourceOutput"
+        ProjectName   = aws_codebuild_project.prover_release_toolchain_resolver[0].name
       }
     }
   }
@@ -132,24 +203,29 @@ resource "aws_codepipeline" "development_prover_release" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "ToolchainAuthorityOutput"]
+      input_artifacts  = ["SourceOutput", "FoundationSigningAuthorityOutput", "ToolchainAuthorityOutput"]
       output_artifacts = ["CandidateOutput"]
 
       configuration = {
         EnvironmentVariables = jsonencode([
-          {
-            name  = "PROVER_IMAGE_METADATA_PREFIX"
-            value = "artifacts/prover/candidates/#{codepipeline.PipelineExecutionId}"
-            type  = "PLAINTEXT"
-          },
           {
             name  = "REQUESTED_SOURCE_SHA"
             value = "#{variables.RequestedSourceSha}"
             type  = "PLAINTEXT"
           },
           {
+            name  = "PIPELINE_SOURCE_SHA"
+            value = "#{ProverReleaseSource.CommitId}"
+            type  = "PLAINTEXT"
+          },
+          {
             name  = "IMAGE_TAG"
             value = "candidate-#{codepipeline.PipelineExecutionId}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "RELEASE_PIPELINE_EXECUTION_ID"
+            value = "#{codepipeline.PipelineExecutionId}"
             type  = "PLAINTEXT"
           },
         ])
@@ -170,42 +246,7 @@ resource "aws_codepipeline" "development_prover_release" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve only after reviewing CandidateOutput/image-metadata.json, confirming the selected digest-pinned toolchain image, prover scan result, ImageID/methodVersion, and ECR signing status COMPLETE. This approval promotes the prover candidate only; it is not app Terraform approval."
-      }
-    }
-  }
-
-  stage {
-    name = "PublishPromotionEvidence"
-
-    action {
-      name             = "PublishPromotionEvidence"
-      category         = "Build"
-      owner            = "AWS"
-      provider         = "CodeBuild"
-      version          = "1"
-      input_artifacts  = ["CandidateOutput"]
-      output_artifacts = ["PromotionEvidenceOutput"]
-
-      configuration = {
-        EnvironmentVariables = jsonencode([
-          {
-            name  = "PROVER_RELEASE_PIPELINE_EXECUTION_ID"
-            value = "#{codepipeline.PipelineExecutionId}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "PROVER_RELEASE_EVIDENCE_KEY"
-            value = "promotions/develop/prover/#{codepipeline.PipelineExecutionId}/prover-promotion-evidence.json"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "REQUESTED_SOURCE_SHA"
-            value = "#{variables.RequestedSourceSha}"
-            type  = "PLAINTEXT"
-          },
-        ])
-        ProjectName = aws_codebuild_project.prover_release_promotion_evidence[0].name
+        CustomData = "Approve only after reviewing CandidateOutput/image-metadata.json and confirming the exact source, selected digest-pinned toolchain image, prover scan result, ECR managed-signing readiness, ImageID/methodVersion, the canonical failureMarkerContractSha256, and failureMarkerSmokeStatus=PASS. Cryptographic verification occurs in the App preflight/runtime verifier Lambda, not this release lane. This approval promotes the prover candidate only; it is not app Terraform approval."
       }
     }
   }
@@ -219,7 +260,7 @@ resource "aws_codepipeline" "development_prover_release" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "PromotionEvidenceOutput"]
+      input_artifacts  = ["SourceOutput", "FoundationSigningAuthorityOutput", "CandidateOutput"]
       output_artifacts = ["AcceptedPointerOutput"]
 
       configuration = {
@@ -230,8 +271,18 @@ resource "aws_codepipeline" "development_prover_release" {
             type  = "PLAINTEXT"
           },
           {
-            name  = "PROVER_RELEASE_EVIDENCE_KEY"
-            value = "promotions/develop/prover/#{codepipeline.PipelineExecutionId}/prover-promotion-evidence.json"
+            name  = "REQUESTED_SOURCE_SHA"
+            value = "#{variables.RequestedSourceSha}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "PIPELINE_SOURCE_SHA"
+            value = "#{ProverReleaseSource.CommitId}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "RELEASE_PIPELINE_EXECUTION_ID"
+            value = "#{codepipeline.PipelineExecutionId}"
             type  = "PLAINTEXT"
           },
         ])

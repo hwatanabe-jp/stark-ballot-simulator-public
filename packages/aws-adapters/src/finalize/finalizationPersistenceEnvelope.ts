@@ -25,7 +25,13 @@ export interface AwsVerificationDeliveryMetadata {
   verificationWorkQueuedAt?: string | undefined;
 }
 
-export type AwsPersistedVerificationResult = VerificationResult & AwsVerificationDeliveryMetadata;
+export interface AwsVerificationEvidenceMetadata {
+  devModeReceipt?: boolean | undefined;
+}
+
+export type AwsPersistedVerificationResult = VerificationResult &
+  AwsVerificationDeliveryMetadata &
+  AwsVerificationEvidenceMetadata;
 
 export interface AwsFinalizationDeliveryMetadata {
   verificationExecutionId?: string | undefined;
@@ -83,11 +89,13 @@ const FINALIZATION_RESULT_DELIVERY_ENVELOPE_KEYS = new Set<string>([
 const VERIFICATION_RESULT_ENVELOPE_KEYS = new Set<string>([
   'status',
   'report',
+  'failureCategory',
   's3BundleKey',
   's3ReportKey',
   's3UploadedAt',
   'executionId',
   'verificationWorkQueuedAt',
+  'devModeReceipt',
 ]);
 const PROOF_BUNDLE_DELIVERY_METADATA_KEYS = new Set<string>([
   'executionId',
@@ -101,6 +109,7 @@ const VERIFICATION_DELIVERY_KEYS = [
   's3UploadedAt',
   'executionId',
   'verificationWorkQueuedAt',
+  'devModeReceipt',
 ] as const;
 const FINALIZATION_DELIVERY_KEYS = ['s3BundleKey', 's3UploadedAt', 'verificationExecutionId'] as const;
 const FINALIZATION_STATE_RUNTIME_KEYS = new Set<string>(['stepFunctionsArn', 'bundleMetadata']);
@@ -174,12 +183,14 @@ export function parseAwsPersistedVerificationResult(value: unknown): AwsPersiste
   const s3UploadedAt = getStringProperty(value, 's3UploadedAt');
   const executionId = getStringProperty(value, 'executionId');
   const verificationWorkQueuedAt = getStringProperty(value, 'verificationWorkQueuedAt');
+  const devModeReceipt = value['devModeReceipt'];
   if (
     (hasOwn(value, 's3BundleKey') && typeof s3BundleKey !== 'string') ||
     (hasOwn(value, 's3ReportKey') && typeof s3ReportKey !== 'string') ||
     (hasOwn(value, 's3UploadedAt') && typeof s3UploadedAt !== 'string') ||
     (hasOwn(value, 'executionId') && typeof executionId !== 'string') ||
-    (hasOwn(value, 'verificationWorkQueuedAt') && typeof verificationWorkQueuedAt !== 'string')
+    (hasOwn(value, 'verificationWorkQueuedAt') && typeof verificationWorkQueuedAt !== 'string') ||
+    (hasOwn(value, 'devModeReceipt') && typeof devModeReceipt !== 'boolean')
   ) {
     return undefined;
   }
@@ -191,6 +202,7 @@ export function parseAwsPersistedVerificationResult(value: unknown): AwsPersiste
     ...(s3UploadedAt !== undefined ? { s3UploadedAt } : {}),
     ...(executionId !== undefined ? { executionId } : {}),
     ...(verificationWorkQueuedAt !== undefined ? { verificationWorkQueuedAt } : {}),
+    ...(typeof devModeReceipt === 'boolean' ? { devModeReceipt } : {}),
   };
 }
 

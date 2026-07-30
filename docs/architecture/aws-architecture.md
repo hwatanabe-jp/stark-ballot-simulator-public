@@ -1,277 +1,169 @@
-# AWS Architecture (Current Target)
+# AWS Architecture (Current Repository Target)
 
-本ドキュメントは、STARK Ballot Simulator の target AWS 構成を俯瞰するための概要です。
-上の図は実行時の一般的な構成だけを示し、下の図は同じ実行時構成に GitHub OIDC、AWS-native deployment pipeline、Terraform state 分離を足したものです。
-上の図は下の図の runtime 部分集合です。
-
-最終確認: 2026-07-11
-
-This page records the repository-defined architecture. Dated account-specific
-resource status and drift are recorded separately in the private current-AWS
-inventory.
+This document summarizes the AWS architecture defined by the repository. It
+describes the target design, not a claim that every checked-in resource is
+currently deployed. Dated account-specific deployment evidence and observed
+drift belong in the private operator inventory.
 
 ## Runtime Architecture
 
-デプロイフローを除いた、ユーザー操作とアプリ実行時の構成です。
+The target runtime has two durable asynchronous paths: finalization/proving and
+verification. Both begin at the Hono API, but each uses its own SQS queue and
+worker.
 
 ```text
-┌──────────────────────────────────────────────┐
-│ Users / Browsers                             │
-└───────────────────────┬──────────────────────┘
-                        │ HTTPS
-                        ▼
-┌──────────────────────────────────────────────┐
-│ CloudFront                                   │
-│ - static frontend origin                     │
-│ - /api and /api/* origin                     │
-└──────────────┬───────────────────┬───────────┘
-               │ static assets     │ /api and /api/*
-               ▼                   ▼
-┌──────────────────────────────┐   ┌──────────────────────────────┐
-│ S3 private static frontend   │   │ API Gateway HTTP API         │
-│ Vite + React Router bundle   │   │ ANY /api, ANY /api/{proxy+}  │
-└──────────────────────────────┘   └──────────────┬───────────────┘
-                                                   │
-                                                   ▼
-                                      ┌──────────────────────────────┐
-                                      │ Lambda: Hono API             │
-                                      │ session-scoped API authority │
-                                      └──────────────┬───────────────┘
-                                                     │
-            ┌────────────────────────────────────────┼────────────────────────────────────────┐
-            │                                        │                                        │
-            ▼                                        ▼                                        ▼
-┌──────────────────────────────┐        ┌──────────────────────────────┐        ┌──────────────────────────────┐
-│ DynamoDB                     │        │ Lambda: verification-worker      │        │ SQS prover-work queue        │
-│ sessions                     │        │ verification run / reports   │        │ async finalization work      │
-│ votes                        │        └──────────────┬───────────────┘        └──────────────┬───────────────┘
-│ rate-limit-events            │                       │                                       │
-│ rate-limit-counters          │                       ▼                                       ▼
-└──────────────────────────────┘        ┌──────────────────────────────┐        ┌──────────────────────────────┐
-                                        │ S3 private proof/report      │        │ Lambda: proof-dispatcher      │
-                                        │ artifacts                    │        │ starts Step Functions        │
-                                        │ - public bundle allowlist    │        └──────────────┬───────────────┘
-                                        │ - owner-scoped report        │                       │
-                                        └──────────────────────────────┘                       ▼
-                                                                               ┌──────────────────────────────┐
-                                                                               │ Step Functions finalization  │
-                                                                               │ async prover orchestration   │
-                                                                               └──────────────┬───────────────┘
-                                                                                              │
-                                                    ┌─────────────────────────────────────────┼─────────────────────────────────────────┐
-                                                    │                                         │                                         │
-                                                    ▼                                         ▼                                         ▼
-                                      ┌──────────────────────────────┐        ┌──────────────────────────────┐        ┌──────────────────────────────┐
-                                      │ Lambda: image-signature-gate│        │ ECS Fargate zkVM prover      │        │ Lambda: finalization-writer    │
-                                      │ digest-pinned image trust    │        │ proof generation task        │        │ completion state update      │
-                                      └──────────────────────────────┘        └──────────────┬───────────────┘        └──────────────┬───────────────┘
-                                                                                              │                                       │
-                                                                                              ▼                                       ▼
-                                                                               ┌──────────────────────────────┐        ┌──────────────────────────────┐
-                                                                               │ S3 private proof artifacts   │        │ DynamoDB session/finalization│
-                                                                               │ prover input/output objects  │        │ update                       │
-                                                                               └──────────────────────────────┘        └──────────────────────────────┘
+Users / browsers
+  -> CloudFront
+       |- conditional develop operator/tester signed-cookie gate
+       |- static assets -> private S3 frontend through OAC
+       `- /api and /api/*
+            + X-Stark-Ballot-Origin-Verify
+            -> API Gateway HTTP API
+            -> Lambda: Hono public API
+                 |- session, vote, and rate-limit operations
+                 |    <-> DynamoDB application-state tables
+                 |
+                 |- capability-checked bundle/report delivery
+                 |    <- private S3 proof/report artifacts
+                 |
+                 |- POST /api/verification/run
+                 |    -> SQS verification-work queue (+ DLQ)
+                 |    -> Lambda: verification-worker
+                 |         |- read session/evidence state from DynamoDB
+                 |         |- write terminal verification state to DynamoDB
+                 |         `- write public bundle + protected report to private S3
+                 |
+                 `- POST /api/finalize
+                      -> SQS prover-work queue (+ DLQ)
+                      -> Lambda: proof-dispatcher
+                      -> Step Functions finalization
+                           1. Lambda signature-verifier runtime alias
+                              verifies the accepted, digest-pinned Prover
+                           2. acquire slot in DynamoDB prover-semaphore table
+                           3. finalization-writer persists RUNNING to DynamoDB
+                           4. ECS Fargate Prover reads/writes private S3 objects
+                           5. release the DynamoDB semaphore slot
+                           6. finalization-writer persists terminal state
+
+Step Functions terminal events + 30-minute schedule
+  -> EventBridge
+  -> Lambda: semaphore-janitor
+  -> release terminal or stale owners in the DynamoDB semaphore table
+
+Runtime logs and metrics
+  -> CloudWatch Logs, metric filters, alarms, and dashboard
+  -> invariant-only SNS notification
+
+CloudWatch alarm, ECS stop, pipeline, and accepted-deployment events
+  -> EventBridge normalization
+  -> retained CloudWatch operations ledger
 ```
 
-## Runtime + Deployment Architecture
+The diagram shows the successful proving sequence. Signature rejection,
+capacity exhaustion, ECS failure, timeout, and callback failure follow explicit
+fail-closed paths; none may be presented as a successful finalization.
 
-同じ runtime 構成に、GitHub から AWS への deployment control plane と Terraform state 分離を足した構成です。
+## Deployment Control Plane
+
+Bootstrap owns the AWS-native deployment control plane. GitHub Actions may
+start and observe selected pipelines through a branch-scoped OIDC trigger role,
+but it does not apply Terraform, read Terraform state, mutate runtime resources
+directly, or read runtime secrets.
 
 ```text
-┌──────────────────────────────────────────────┐
-│ AWS Organizations                            │
-└───────────────────────┬──────────────────────┘
-                        │
-      ┌─────────────────┼─────────────────┐
-      │                 │                 │
-      ▼                 ▼                 ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│ management   │  │ stark-dev    │  │ stark-prod   │
-│ account      │  │ account      │  │ account      │
-├──────────────┤  ├──────────────┤  ├──────────────┤
-│ Organizations│  │ develop env  │  │ main env     │
-│ Billing      │  │ branch:      │  │ branch:      │
-│ IAM Identity │  │ develop      │  │ main         │
-│ Center       │  │              │  │ protected    │
-│ Guardrails   │  │ bootstrap    │  │ production   │
-│ No workloads │  │ foundation   │  │ path         │
-│              │  │ app state    │  │              │
-└──────────────┘  └──────┬───────┘  └──────┬───────┘
-                         │                 │
-                         └────────┬────────┘
-                                  │ selected member account
-                                  ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ Target AWS member account                                             │
-│ state identity: <account-alias>/<environment>/<state-scope>           │
-└──────────────────────────────────┬───────────────────────────────────┘
-                                   │
-                                   │
-┌──────────────────────────────────▼───────────────────────────────────┐
-│ GitHub repository                                                     │
-├──────────────────────────────────────────────────────────────────────┤
-│ CI evidence                                                           │
-│ lint / type-check / tests / e2e / Rust / formal / public safety       │
-├──────────────────────────────────────────────────────────────────────┤
-│ GitHub Actions deploy trigger                                         │
-│ OIDC: token.actions.githubusercontent.com                             │
-│ aud: sts.amazonaws.com                                                │
-│ sub: repo:<owner>/<repo>:ref:refs/heads/<branch>                      │
-└──────────────────────────────────┬───────────────────────────────────┘
-                                   │ AssumeRoleWithWebIdentity
-                                   ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ AWS IAM role: GitHub trigger                                          │
-│ allowed only to start and observe selected CodePipeline execution     │
-└──────────────────────────────────┬───────────────────────────────────┘
-                                   │
-                                   ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ AWS CodePipeline                                                      │
-├──────────────────────────────────────────────────────────────────────┤
-│ 1. Source                                                             │
-│    CodeConnections GitHub source                                      │
-│    exact branch / source SHA evidence                                 │
-│                                                                      │
-│ 2. Validate                                                           │
-│    CodeBuild validate role                                            │
-│    source preflight / CI evidence / config checks                     │
-│                                                                      │
-│ 3. Terraform Plan                                                     │
-│    CodeBuild plan role                                                │
-│    saved tfplan / human summary / checksum                            │
-│                                                                      │
-│ 4. Manual Approval                                                    │
-│    AWS-native approval record                                         │
-│    required for protected production path                             │
-│                                                                      │
-│ 5. Terraform Apply                                                    │
-│    CodeBuild apply role                                               │
-│    applies reviewed saved plan only                                   │
-│                                                                      │
-│ 6. Static Frontend Deploy                                             │
-│    CodeBuild static deploy role                                       │
-│    pnpm build:ci / dist scan / S3 sync / CloudFront invalidation      │
-│                                                                      │
-│ 7. Post-Deploy Smoke                                                  │
-│    CodeBuild smoke role                                               │
-│    CloudFront/API/security/boundary/data-plane evidence               │
-└──────────────────────────────────┬───────────────────────────────────┘
-                                   │
-                                   ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ Terraform state and deployment ownership                              │
-└──────────────────────────────────┬───────────────────────────────────┘
-                                   │
-             ┌─────────────────────┼─────────────────────┐
-             │                     │                     │
-             ▼                     ▼                     ▼
-┌──────────────────────────┐ ┌──────────────────────────┐ ┌──────────────────────────┐
-│ bootstrap state          │ │ foundation state         │ │ app state                │
-├──────────────────────────┤ ├──────────────────────────┤ ├──────────────────────────┤
-│ key:                     │ │ key:                     │ │ key:                     │
-│ stark-ballot-simulator/  │ │ stark-ballot-simulator/  │ │ stark-ballot-simulator/  │
-│ <account>/<env>/         │ │ <account>/<env>/         │ │ <account>/<env>/         │
-│ bootstrap/               │ │ foundation/              │ │ app/                     │
-│ terraform.tfstate        │ │ terraform.tfstate        │ │ terraform.tfstate        │
-│                          │ │                          │ │                          │
-│ lock:                    │ │ lock:                    │ │ lock:                    │
-│ terraform.tfstate.tflock │ │ terraform.tfstate.tflock │ │ terraform.tfstate.tflock │
-├──────────────────────────┤ ├──────────────────────────┤ ├──────────────────────────┤
-│ owns deployment control  │ │ owns Plan 02             │ │ owns runtime resources   │
-│ plane and backend grants │ │ prerequisites only:      │ │ below and consumes       │
-│ - remote-state bucket    │ │ - ECR repositories       │ │ foundation handoff       │
-│ - state KMS/policies     │ │ - signing/provenance     │ │                          │
-│ - CodeConnections/OIDC   │ │   policy                 │ │                          │
-│ - CodePipeline/Build     │ │ - release-manifest store │ │                          │
-│ - deploy roles           │ │ - prover networking      │ │                          │
-│ - artifact buckets       │ │ - secret containers      │ │                          │
-│ - backend grants         │ │ - non-secret config      │ │                          │
-│                          │ │ - DNS/ACM prerequisites  │ │                          │
-└──────────────────────────┘ └──────────────────────────┘ └────────────┬─────────────┘
-                                                                        │
-                                                                        │ owns / deploys
-                                                                        ▼
-┌──────────────────────────────────────────────┐
-│ Users / Browsers                             │
-└───────────────────────┬──────────────────────┘
-                        │ HTTPS
-                        ▼
-┌──────────────────────────────────────────────┐
-│ CloudFront                                   │
-│ - static frontend origin                     │
-│ - /api and /api/* origin                     │
-└──────────────┬───────────────────┬───────────┘
-               │ static assets     │ /api and /api/*
-               ▼                   ▼
-┌──────────────────────────────┐   ┌──────────────────────────────┐
-│ S3 private static frontend   │   │ API Gateway HTTP API         │
-│ Vite + React Router bundle   │   │ ANY /api, ANY /api/{proxy+}  │
-└──────────────────────────────┘   └──────────────┬───────────────┘
-                                                   │
-                                                   ▼
-                                      ┌──────────────────────────────┐
-                                      │ Lambda: Hono API             │
-                                      │ session-scoped API authority │
-                                      └──────────────┬───────────────┘
-                                                     │
-            ┌────────────────────────────────────────┼────────────────────────────────────────┐
-            │                                        │                                        │
-            ▼                                        ▼                                        ▼
-┌──────────────────────────────┐        ┌──────────────────────────────┐        ┌──────────────────────────────┐
-│ DynamoDB                     │        │ Lambda: verification-worker      │        │ SQS prover-work queue        │
-│ sessions                     │        │ verification run / reports   │        │ async finalization work      │
-│ votes                        │        └──────────────┬───────────────┘        └──────────────┬───────────────┘
-│ rate-limit-events            │                       │                                       │
-│ rate-limit-counters          │                       ▼                                       ▼
-└──────────────────────────────┘        ┌──────────────────────────────┐        ┌──────────────────────────────┐
-                                        │ S3 private proof/report      │        │ Lambda: proof-dispatcher      │
-                                        │ artifacts                    │        │ starts Step Functions        │
-                                        │ - public bundle allowlist    │        └──────────────┬───────────────┘
-                                        │ - owner-scoped report        │                       │
-                                        └──────────────────────────────┘                       ▼
-                                                                               ┌──────────────────────────────┐
-                                                                               │ Step Functions finalization  │
-                                                                               │ async prover orchestration   │
-                                                                               └──────────────┬───────────────┘
-                                                                                              │
-                                                    ┌─────────────────────────────────────────┼─────────────────────────────────────────┐
-                                                    │                                         │                                         │
-                                                    ▼                                         ▼                                         ▼
-                                      ┌──────────────────────────────┐        ┌──────────────────────────────┐        ┌──────────────────────────────┐
-                                      │ Lambda: image-signature-gate│        │ ECS Fargate zkVM prover      │        │ Lambda: finalization-writer    │
-                                      │ digest-pinned image trust    │        │ proof generation task        │        │ completion state update      │
-                                      └──────────────────────────────┘        └──────────────┬───────────────┘        └──────────────┬───────────────┘
-                                                                                              │                                       │
-                                                                                              ▼                                       ▼
-                                                                               ┌──────────────────────────────┐        ┌──────────────────────────────┐
-                                                                               │ S3 private proof artifacts   │        │ DynamoDB session/finalization│
-                                                                               │ prover input/output objects  │        │ update                       │
-                                                                               └──────────────────────────────┘        └──────────────────────────────┘
+GitHub repository (CI evidence + branch-pinned trigger)
+  -> AssumeRoleWithWebIdentity
+  -> narrow GitHub trigger role (start/observe selected pipelines only)
+  -> Bootstrap-managed AWS CodePipeline lane families
+       |
+       |- Bootstrap saved-plan lane
+       |    -> bootstrap Terraform state
+       |       stark-ballot-simulator/<account-alias>/<environment>/
+       |         bootstrap/terraform.tfstate
+       |    -> control plane, backend grants, and pipeline artifacts
+       |
+       |- Foundation saved-plan lane
+       |    -> foundation Terraform state
+       |       stark-ballot-simulator/<account-alias>/<environment>/
+       |         foundation/terraform.tfstate
+       |    -> ECR, Prover signing authority, release storage, networking,
+       |       secret/config containers, and DNS/ACM prerequisites
+       |    -> immutable Foundation handoff
+       |
+       |- Toolchain release lane
+       |    -> build or select an exact retained Toolchain artifact
+       |    -> publish accepted Toolchain release authority
+       |                         |
+       |- Prover release lane <--'
+       |    -> build against the exact Toolchain
+       |    -> sign and promote a digest-pinned Prover artifact
+       |                         |
+       |- App full lane <--------+---- immutable Foundation handoff
+       |    -> verifier state refresh when required
+       |    -> cryptographic verifier preflight
+       |    -> app saved plan/apply, static deploy, and post-apply smoke
+       |    -> app Terraform state
+       |       stark-ballot-simulator/<account-alias>/<environment>/
+       |         app/terraform.tfstate
+       |    -> accepted App deployment
+       |                         |
+       `- App static-fast lane <-'
+            -> validate the current accepted App deployment
+            -> frontend diff gate/build, static deploy, lightweight smoke
+            -> no Terraform state mutation
 ```
 
-## Notes
+The current develop approval boundaries are:
 
-- **Current target status**: `infra/terraform/app` defines the target runtime,
-  and the managed develop app lane has completed apply, static deployment, and
-  post-apply smoke. Production bootstrap, DNS cutover, normal public admission,
-  and legacy AWS retirement remain separately authorized follow-up work.
-- **Account boundary**: `management` is only for AWS Organizations, IAM Identity Center, billing, and guardrails. Application workloads, Terraform backends, pipeline artifacts, and runtime resources live in member accounts.
-- **Branch mapping**: `develop` maps to `stark-dev/develop`; `main` maps to `stark-prod/main`.
-- **State separation**: `bootstrap` owns deployment infrastructure and backend grants. `foundation` owns only Plan 02 prerequisites consumed by the app lane: ECR repositories plus signing/provenance policy, release-manifest storage, prover networking, secret containers and non-secret config records, and DNS/ACM prerequisites. `app` owns CloudFront/S3, API Gateway/Hono Lambda, DynamoDB, private proof artifacts, SQS, Step Functions, ECS/Fargate, callback, verifier, and observability resources. It consumes the immutable foundation handoff and must not repair missing foundation authority during Plan 03.
-- **GitHub boundary**: GitHub Actions may trigger or observe CodePipeline through the narrow OIDC trigger role. It must not run Terraform apply, read Terraform state, mutate application resources directly, or read production secrets.
-- **Frontend boundary**: CloudFront serves Vite / React Router static assets from a private S3 bucket through OAC and routes `/api/*` to API Gateway. Browser-public `VITE_*` configuration must remain safe for public download.
-- **API boundary**: Hono API runs behind API Gateway and remains the only browser/CLI authority for session-scoped state, bundle downloads, reports, verification runs, and mutations.
-- **Data boundary**: session, vote, finalization, and rate-limit state use target DynamoDB tables. Non-mock target runtime does not depend on Amplify Data/AppSync.
-- **Artifact boundary**: the proof/report S3 bucket is private. Public bundles are allowlisted evidence only; `input.json`, `verification.json`, `included-bitmap.json`, `seen-bitmap.json`, raw bitmap sidecars, vote openings, and private locators must not be public bundle members or static frontend artifacts.
-- **Proof pipeline**: `/api/finalize` dispatches async work through SQS, `proof-dispatcher`, Step Functions, image-signature checking, ECS Fargate zkVM proving, private S3 artifacts, and `finalization-writer`.
-- **Retired surfaces**: Amplify Hosting, Amplify Data/AppSync, and Next.js route wrappers are historical surfaces, not current target runtime or deployment authority.
+| Lane                        | Develop approval behavior                                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Bootstrap saved plan        | Human approval of the reviewed saved plan                                                                                       |
+| Foundation saved plan       | Human approval of the reviewed saved plan                                                                                       |
+| Toolchain release           | Candidate-execution approval in both build and retained-artifact modes, followed by separate promotion approval                 |
+| Prover release              | Candidate-build approval, followed by separate promotion approval                                                               |
+| App full, normal deployment | Verifier state-refresh approval only when reconciliation is needed; verifier-preflight approval; main approval if plan nonempty |
+| App full, rollback          | Retained verifier authority is revalidated without preflight mutation; the main saved plan always requires approval             |
+| App static fast             | No Terraform plan/apply and no human approval                                                                                   |
 
-## Related Source-of-Truth Documents
+The `stark-prod/main` Terraform and pipeline shapes are repository contract
+evidence only. There is no authorized live production deployment path.
+
+## Cross-Cutting Boundaries
+
+- **Account boundary:** the management account is limited to Organizations,
+  IAM Identity Center, billing, and guardrails. Workloads, state, artifacts,
+  pipelines, and runtime resources belong in member accounts.
+- **State boundary:** Bootstrap owns the control plane and backend grants;
+  Foundation owns prerequisites and immutable handoffs; App owns frontend,
+  API, data, asynchronous runtime, artifact, and observability resources.
+- **Admission boundary:** the current develop target is operator-gated.
+  CloudFront protects both the static site and `/api/*`, and injects the
+  origin-verification header expected by the API. This does not authorize
+  normal public admission.
+- **API boundary:** the Hono API is the browser/CLI authority for session state,
+  mutations, verification runs, and capability-checked bundle/report delivery.
+  Direct API Gateway or origin access is diagnostic evidence, not a public
+  bypass.
+- **Artifact boundary:** the proof/report bucket is private. Public bundles are
+  allowlisted evidence only. `input.json`, `verification.json`,
+  `included-bitmap.json`, `seen-bitmap.json`, raw bitmap sidecars, vote
+  openings, and private locators must not become public bundle members or
+  static frontend artifacts.
+- **Image boundary:** Foundation owns the Prover signing authority; release
+  lanes establish the accepted Toolchain and Prover artifacts; App verifies the
+  exact accepted Prover signature before deployment and again before each
+  proving run.
+- **Observability boundary:** logs, metrics, alarms, the operations ledger, and
+  notifications are diagnostic evidence only. Telemetry must never alter the
+  verification verdict.
+- **Retired surfaces:** Amplify Hosting, Amplify Data/AppSync, and Next.js route
+  wrappers are historical and are not target runtime or deployment authority.
+
+## Related Authorities
 
 - [Infrastructure documentation](../infrastructure/README.md)
+- [Terraform ownership](../infrastructure/terraform.md)
 - [Verification pipeline](../verification/README.md)
-- Per-root Terraform operator `README.md` files (`infra/terraform/bootstrap/`, `infra/terraform/foundation/`, `infra/terraform/app/`; private operator documentation)
 
-Account-specific migration sequencing, approval records, and live handoff
-evidence remain in private operator documentation.
+The private source repository additionally retains the operator index, release
+model, and current live inventory; public snapshots intentionally omit them.

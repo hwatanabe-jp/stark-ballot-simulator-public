@@ -1,6 +1,6 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { toApiContext } from './hono';
+import { resolveAwsRequestId, toApiContext } from './hono';
 import { createMockVoteStore } from '@stark-ballot/test-support/testing/mockVoteStore';
 import { readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
 import { getStringProperty } from '@stark-ballot/domain/utils/guards';
@@ -118,5 +118,48 @@ describe('toApiContext (Hono)', () => {
     expect(response.status).toBe(200);
     const payload = await readJsonRecord(response, 'hono adapter ALB fallback response');
     expect(getStringProperty(payload, 'clientIp')).toBe('203.0.113.200');
+  });
+
+  it('resolves the trusted request ID only from API Gateway requestContext', async () => {
+    const app = new Hono();
+    app.get('/api/test', (context) =>
+      context.json({
+        requestId: resolveAwsRequestId(context),
+      }),
+    );
+
+    const request = new Request('http://localhost/api/test', {
+      headers: {
+        'x-request-id': 'forged-client-id',
+        'x-amzn-requestid': 'also-forged',
+      },
+    });
+    const response = await app.fetch(request, {
+      requestContext: {
+        requestId: 'trusted-gateway-id',
+      },
+    });
+
+    const payload = await readJsonRecord(response, 'trusted request-id response');
+    expect(getStringProperty(payload, 'requestId')).toBe('trusted-gateway-id');
+  });
+
+  it('does not resolve a request ID from headers or malformed gateway context', async () => {
+    const app = new Hono();
+    app.get('/api/test', (context) =>
+      context.json({
+        requestId: resolveAwsRequestId(context),
+      }),
+    );
+
+    const response = await app.fetch(
+      new Request('http://localhost/api/test', {
+        headers: { 'x-request-id': 'forged-client-id' },
+      }),
+      { requestContext: { requestId: '   ' } },
+    );
+
+    const payload = await readJsonRecord(response, 'missing trusted request-id response');
+    expect(payload['requestId']).toBeNull();
   });
 });

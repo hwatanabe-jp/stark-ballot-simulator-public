@@ -22,13 +22,11 @@ data "aws_iam_policy_document" "foundation_artifact_kms_key" {
       type = "AWS"
       identifiers = [
         aws_iam_role.foundation_pipeline[0].arn,
-        aws_iam_role.foundation_release_candidate_build[0].arn,
+        aws_iam_role.foundation_image_signing_authority_resolver_build[0].arn,
         aws_iam_role.foundation_prover_release_toolchain_resolver_build[0].arn,
         aws_iam_role.foundation_prover_release_candidate_build[0].arn,
-        aws_iam_role.foundation_prover_release_promotion_evidence_build[0].arn,
         aws_iam_role.foundation_prover_release_update_accepted_pointer_build[0].arn,
         aws_iam_role.foundation_toolchain_release_candidate_build[0].arn,
-        aws_iam_role.foundation_toolchain_release_promotion_evidence_build[0].arn,
         aws_iam_role.foundation_toolchain_release_update_accepted_pointer_build[0].arn,
         aws_iam_role.foundation_terraform_plan[0].arn,
         aws_iam_role.foundation_terraform_apply[0].arn,
@@ -124,6 +122,35 @@ resource "aws_s3_bucket_lifecycle_configuration" "foundation_pipeline_artifacts"
 
   bucket = aws_s3_bucket.foundation_pipeline_artifacts[0].id
 
+  dynamic "rule" {
+    for_each = {
+      foundation        = "${local.foundation_pipeline_name}/"
+      prover-release    = "${local.prover_release_pipeline_name}/"
+      toolchain-release = "${local.toolchain_release_pipeline_name}/"
+    }
+
+    content {
+      id     = "expire-${rule.key}-execution-artifacts"
+      status = "Enabled"
+
+      filter {
+        prefix = rule.value
+      }
+
+      expiration {
+        days = local.storage_retention.foundation_pipeline_artifact_days
+      }
+
+      noncurrent_version_expiration {
+        noncurrent_days = local.storage_retention.foundation_pipeline_artifact_days
+      }
+
+      abort_incomplete_multipart_upload {
+        days_after_initiation = local.storage_retention.incomplete_multipart_retention_days
+      }
+    }
+  }
+
   rule {
     id     = "expire-non-authoritative-foundation-artifacts"
     status = "Enabled"
@@ -133,15 +160,15 @@ resource "aws_s3_bucket_lifecycle_configuration" "foundation_pipeline_artifacts"
     }
 
     expiration {
-      days = var.foundation_pipeline_artifact_retention_days
+      days = local.storage_retention.foundation_pipeline_artifact_days
     }
 
     noncurrent_version_expiration {
-      noncurrent_days = var.foundation_pipeline_artifact_retention_days
+      noncurrent_days = local.storage_retention.foundation_pipeline_artifact_days
     }
 
     abort_incomplete_multipart_upload {
-      days_after_initiation = 7
+      days_after_initiation = local.storage_retention.incomplete_multipart_retention_days
     }
   }
 }

@@ -17,6 +17,8 @@ import { readJsonRecord } from '@stark-ballot/test-support/testing/response-help
 import { getRecordProperty, getStringProperty } from '@stark-ballot/domain/utils/guards';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
+import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 
 const s3DownloadMocks = vi.hoisted(() => ({
   downloadFromS3: vi.fn(),
@@ -306,7 +308,7 @@ describe('mounted Hono public contract behavior', () => {
     expect(getStringProperty(payload, 'artifactState')).toBe('corrupt_or_unreadable');
   });
 
-  it('evaluates mounted verify STH and bitmap checks without CloudFront self-fetch', async () => {
+  it('emits the mounted final verification summary only after the bounded browser observation', async () => {
     process.env['VITE_STH_SOURCES'] = '/api/sth';
     process.env['VITE_STH_MIN_MATCHES'] = '1';
     vi.stubGlobal(
@@ -315,6 +317,22 @@ describe('mounted Hono public contract behavior', () => {
     );
 
     const finalizationResult = buildFinalizationResult();
+    finalizationResult.journal.verifiedTally = [0, 1, 0, 0, 0];
+    finalizationResult.scenarios = ['S2'];
+    finalizationResult.verificationResult = {
+      ...finalizationResult.verificationResult,
+      status: 'success',
+      report: {
+        status: 'success',
+        verifier_version: '0.1.0',
+        verified_at: '2026-07-13T00:00:00.000Z',
+        duration_ms: 42,
+        expected_image_id: finalizationResult.imageId,
+        receipt_image_id: finalizationResult.imageId,
+        dev_mode_receipt: false,
+        errors: [],
+      },
+    };
     const vote = {
       voteId: 'vote-mounted-user',
       vote: 'A' as const,
@@ -355,6 +373,7 @@ describe('mounted Hono public contract behavior', () => {
       }),
     );
 
+    const loggerInfo = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
     const app = createHonoApp({ basePath: '/api', mode: 'lambda' });
     const verify = await app.request('http://localhost/api/verify', {
       headers: sessionAuthHeaders(),
@@ -381,6 +400,93 @@ describe('mounted Hono public contract behavior', () => {
     expect(statusById.get('recorded_sth_third_party')).toBe('success');
     expect(statusById.get('counted_my_vote_included')).toBe('success');
     expect(fetch).not.toHaveBeenCalled();
+    expect(loggerInfo).not.toHaveBeenCalledWith('verification_run_summary', expect.anything());
+
+    const observation = await app.request('http://localhost/api/verification/observation', {
+      method: 'POST',
+      headers: {
+        ...sessionAuthHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        verificationExecutionId: executionId,
+        castChecks: {
+          cast_receipt_present: 'success',
+          cast_choice_range: 'success',
+          cast_random_format: 'success',
+          cast_commitment_match: 'success',
+        },
+      }),
+    });
+    expect(observation.status).toBe(200);
+    expect(observation.headers.get('Cache-Control')).toBe('no-store');
+    expect(getStringProperty(getRecordProperty(await readJsonRecord(observation), 'data') ?? {}, 'status')).toBe(
+      'recorded',
+    );
+    expect(loggerInfo).toHaveBeenCalledWith('verification_run_summary', {
+      event: 'verification_run_summary',
+      outcome: 'recorded_integrity_failed',
+      failure_category: 'none',
+      scenario_id: 'S2',
+      failed_required_count: 5,
+      dev_mode_receipt: false,
+      session_id_hash: hashSessionIdForLogging(sessionId),
+      execution_id: executionId,
+    });
+
+    const duplicateObservation = await app.request('http://localhost/api/verification/observation', {
+      method: 'POST',
+      headers: {
+        ...sessionAuthHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        verificationExecutionId: executionId,
+        castChecks: {
+          cast_receipt_present: 'success',
+          cast_choice_range: 'success',
+          cast_random_format: 'success',
+          cast_commitment_match: 'success',
+        },
+      }),
+    });
+    expect(duplicateObservation.status).toBe(200);
+    expect(
+      getStringProperty(getRecordProperty(await readJsonRecord(duplicateObservation), 'data') ?? {}, 'status'),
+    ).toBe('idempotent');
+    expect(loggerInfo.mock.calls.filter(([message]) => message === 'verification_run_summary')).toHaveLength(1);
+    loggerInfo.mockRestore();
+  });
+
+  it('authenticates the mounted verification observation before parsing its body', async () => {
+    const app = createHonoApp({ basePath: '/api', mode: 'lambda' });
+    vi.mocked(getGlobalStore).mockReturnValue(
+      createMockVoteStore({
+        getSession: () => Promise.resolve(buildFinalizedSession()),
+      }),
+    );
+
+    const unauthorized = await app.request('http://localhost/api/verification/observation', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        [SESSION_ID_HEADER]: sessionId,
+      },
+      body: '{',
+    });
+    expect(unauthorized.status).toBe(401);
+    expect(getStringProperty(await readJsonRecord(unauthorized), 'error')).toBe('SESSION_CAPABILITY_REQUIRED');
+
+    const malformed = await app.request('http://localhost/api/verification/observation', {
+      method: 'POST',
+      headers: {
+        ...sessionAuthHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: '{',
+    });
+    expect(malformed.status).toBe(400);
+    expect(getStringProperty(await readJsonRecord(malformed), 'error')).toBe('INVALID_REQUEST');
   });
 
   it('preserves mounted bitmap-proof auth, cache, ETag, and conditional response behavior', async () => {

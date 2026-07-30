@@ -6,10 +6,11 @@ import {
   CLITestHelpers,
   type FinalizeScenarioData,
   type FinalizeWithScenariosResult,
+  type VoteResult,
 } from '@stark-ballot/test-support/testing/cli-test-helpers';
 import { SESSION_CAPABILITY_HEADER, SESSION_ID_HEADER } from '@stark-ballot/domain/session/capability';
-import { isRecord, getRecordProperty, getStringProperty } from '@stark-ballot/domain/utils/guards';
-import { listZipEntryNamesFromBuffer } from '@stark-ballot/node-adapters/zip';
+import { isRecord, getNumberProperty, getRecordProperty, getStringProperty } from '@stark-ballot/domain/utils/guards';
+import { listZipEntryNamesFromBuffer, readZipEntriesFromBuffer } from '@stark-ballot/node-adapters/zip';
 import { resolveExpectedImageIdFromMapping } from '@stark-ballot/verification/image-id-policy';
 import type { ImageIdMapping } from '@stark-ballot/verification/image-id-types';
 import {
@@ -19,9 +20,12 @@ import {
   type VerificationCheckId,
 } from '@stark-ballot/verification/checks';
 import { deriveVerificationSummary, type VerificationSummaryContext } from '@stark-ballot/verification/summary';
+import { evaluateChecks } from '@stark-ballot/verification/check-evaluator';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
 import imageIdMappingJson from '../../public/imageId-mapping.json';
 import { CLIVotingTest, type CLITestConfig } from './cli-e2e-voting-flow';
+
+const imageIdMapping = imageIdMappingJson as ImageIdMapping;
 
 const OPERATOR_AUTH_HEADER_NAME_ENV = 'STARK_BALLOT_OPERATOR_AUTH_HEADER';
 const OPERATOR_AUTH_HEADER_VALUE_ENV = 'STARK_BALLOT_OPERATOR_AUTH_VALUE';
@@ -38,6 +42,7 @@ const PRIVATE_BUNDLE_FILENAMES = [
 const BUNDLE_RANGE_CHUNK_BYTES = 4 * 1024 * 1024;
 const BUNDLE_RANGE_CHUNK_HEADER = 'x-stark-bundle-range-chunk-size';
 const DEFAULT_MAX_BUNDLE_DOWNLOAD_BYTES = 256 * 1024 * 1024;
+const MAX_PUBLIC_RECEIPT_BYTES = 16 * 1024 * 1024;
 const VERIFICATION_POLL_ATTEMPTS = 120;
 const VERIFICATION_POLL_DELAY_MS = 1000;
 
@@ -89,6 +94,7 @@ interface FinalizedVerificationAcceptanceOptions {
   expectedOverallVerdict: ExpectedOverallVerdict;
   scenario: GatedSmokeScenario;
   authHeaders: Record<string, string>;
+  localVote: VoteResult;
 }
 
 type VerificationAcceptanceRunner = (options: VerificationAcceptanceOptions) => Promise<Record<string, unknown>>;
@@ -99,6 +105,10 @@ const VERIFICATION_CHECK_DEFINITION_BY_ID = new Map<string, VerificationCheckDef
     definition,
   ]),
 );
+
+const CAST_CHECK_IDS = VERIFICATION_CHECK_DEFINITIONS.filter(
+  (definition) => definition.category === 'cast_as_intended',
+).map((definition) => definition.id);
 
 const EXPECTED_FAILED_CHECKS_BY_SCENARIO: Record<GatedSmokeScenario, readonly VerificationCheckId[]> = {
   S0: [],
@@ -154,6 +164,59 @@ function requireFreshVerificationChecks(data: Record<string, unknown>): Verifica
     throw new Error(`Fresh verificationChecks are missing checks: ${missing.join(', ')}.`);
   }
   return checks;
+}
+
+async function mergeLocallyVerifiedCastChecks(
+  data: Record<string, unknown>,
+  serverChecks: VerificationCheck[],
+  localVote: VoteResult,
+): Promise<VerificationCheck[]> {
+  for (const check of serverChecks) {
+    const definition = VERIFICATION_CHECK_DEFINITION_BY_ID.get(check.id);
+    if (definition?.category === 'cast_as_intended' && check.status !== 'not_run') {
+      throw new Error(`Server-projected ${check.id} must remain not_run, received ${check.status}.`);
+    }
+  }
+
+  const electionId = getStringProperty(data, 'electionId');
+  const receipt = getRecordProperty(data, 'voteReceipt');
+  const voteId = getStringProperty(receipt, 'voteId');
+  const commitment = getStringProperty(receipt, 'commitment');
+  const bulletinIndex = getNumberProperty(receipt, 'bulletinIndex');
+  const bulletinRootAtCast = getStringProperty(receipt, 'bulletinRootAtCast');
+  const timestamp = getNumberProperty(receipt, 'timestamp');
+  if (
+    !electionId ||
+    !voteId ||
+    !commitment ||
+    bulletinIndex === undefined ||
+    !bulletinRootAtCast ||
+    timestamp === undefined
+  ) {
+    throw new Error('Fresh verifier result is missing the receipt fields required for local cast verification.');
+  }
+
+  const results = await evaluateChecks(
+    {
+      electionId,
+      voteReceipt: { voteId, commitment, bulletinIndex, bulletinRootAtCast, timestamp },
+      userVote: {
+        vote: localVote.choice,
+        random: localVote.random,
+        commitment: localVote.commitment,
+      },
+    },
+    CAST_CHECK_IDS,
+    { applyZkGate: false },
+  );
+
+  return serverChecks.map((check) => {
+    const definition = VERIFICATION_CHECK_DEFINITION_BY_ID.get(check.id);
+    if (definition?.category !== 'cast_as_intended') {
+      return check;
+    }
+    return { ...check, status: results.get(check.id)?.status ?? 'not_run' };
+  });
 }
 
 function requireScenarioCount(
@@ -224,7 +287,7 @@ function isGatedSmokeScenario(value: string): value is GatedSmokeScenario {
   return GATED_SMOKE_SCENARIOS.some((scenario) => scenario === value);
 }
 
-export function resolveGatedSmokeExpectedImageId(mapping: ImageIdMapping = imageIdMappingJson): string {
+export function resolveGatedSmokeExpectedImageId(mapping: ImageIdMapping = imageIdMapping): string {
   return resolveExpectedImageIdFromMapping(mapping, Number(mapping.current), 'default');
 }
 
@@ -728,6 +791,20 @@ export async function runVerificationAcceptance(
   if (privateEntries.length > 0) {
     throw new Error(`Public verification bundle contains private artifacts: ${privateEntries.join(', ')}.`);
   }
+  const receiptEntry = (
+    await readZipEntriesFromBuffer(bundle, ['receipt.json'], { maxEntryBytes: MAX_PUBLIC_RECEIPT_BYTES })
+  ).get('receipt.json');
+  let publicReceipt: unknown;
+  if (receiptEntry) {
+    try {
+      publicReceipt = JSON.parse(receiptEntry.toString('utf8')) as unknown;
+    } catch {
+      throw new Error('Public verification bundle receipt.json is not valid JSON.');
+    }
+    if (publicReceipt === null) {
+      throw new Error('Public verification bundle receipt.json must not be null.');
+    }
+  }
 
   const reportResponse = await fetchAuthenticatedArtifact('verification report', reportUrl, options.authHeaders);
   const report = await readJsonRecord(reportResponse, 'verification report');
@@ -737,7 +814,10 @@ export async function runVerificationAcceptance(
     expectedStatus: options.expectedTerminalVerificationStatus,
   });
 
-  return verifiedData;
+  return {
+    ...verifiedData,
+    ...(publicReceipt === undefined ? {} : { receipt: publicReceipt }),
+  };
 }
 
 export async function completeFinalizedVerificationAcceptance(
@@ -760,7 +840,8 @@ export async function completeFinalizedVerificationAcceptance(
       `Fresh verifier result status mismatch: expected ${options.expectedTerminalVerificationStatus}, received ${freshStatus ?? '<none>'}.`,
     );
   }
-  const verificationChecks = requireFreshVerificationChecks(verifiedData);
+  const serverChecks = requireFreshVerificationChecks(verifiedData);
+  const verificationChecks = await mergeLocallyVerifiedCastChecks(verifiedData, serverChecks, options.localVote);
   const completedResult = {
     ...result,
     data: {
@@ -894,6 +975,8 @@ export function createPositiveOwnerFlowConfigs(configuredScenarios?: string): CL
 }
 
 class GatedSmokeCLITestHelpers extends CLITestHelpers {
+  private readonly localVotes = new Map<string, VoteResult>();
+
   constructor(
     baseUrl: string,
     operatorAuthHeaders: Record<string, string>,
@@ -902,10 +985,21 @@ class GatedSmokeCLITestHelpers extends CLITestHelpers {
     super(baseUrl, operatorAuthHeaders);
   }
 
+  override async submitVote(sessionId: string, choice: VoteResult['choice']): Promise<VoteResult> {
+    const vote = await super.submitVote(sessionId, choice);
+    this.localVotes.set(sessionId, vote);
+    return vote;
+  }
+
   override async finalizeWithScenarios(sessionId: string, scenarioId: string): Promise<FinalizeWithScenariosResult> {
     if (!isGatedSmokeScenario(scenarioId)) {
       throw new Error(`Unsupported gated smoke scenario ${scenarioId}.`);
     }
+    const localVote = this.localVotes.get(sessionId);
+    if (!localVote) {
+      throw new Error('Local vote evidence is unavailable for cast verification.');
+    }
+    this.localVotes.delete(sessionId);
     const expectation = resolveGatedSmokeScenarioExpectation(scenarioId);
     const result = await super.finalizeWithScenarios(sessionId, scenarioId);
     return await completeFinalizedVerificationAcceptance(result, {
@@ -916,6 +1010,7 @@ class GatedSmokeCLITestHelpers extends CLITestHelpers {
       expectedOverallVerdict: expectation.overallVerdict,
       scenario: scenarioId,
       authHeaders: this.getSensitiveAuthHeaders(sessionId),
+      localVote,
     });
   }
 }

@@ -127,7 +127,7 @@ flowchart TB
 - `published_tally_mismatch`: claimed と verified の不一致（S2/S4）
 - `counted_integrity_failed`: Counted 系必須チェック失敗の一般ケース
 
-これらの検出経路は、[テスト章](../quality/unit-integration-e2e.md) の CLI と E2E フローで補強しています。
+これらの検出経路は、[単体、結合、E2E テスト](../quality/unit-integration-e2e.md) の CLI と E2E フローで補強しています。
 Merkle と journal の不変条件は、[Property-based Testing](../quality/property-based-testing.md) でも補強しています。
 
 <!-- source: apps/api/src/server/api/handlers/verify.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/verification-summary.ts, packages/application/src/finalize/usecases/finalize-session.ts, packages/application/src/finalize/usecases/finalize-sync.ts, packages/application/src/finalize/finalization-result.ts, infra/lambdas/finalization-writer/handler.ts, apps/web/src/mock-api/fetcher.ts -->

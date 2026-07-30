@@ -1,5 +1,9 @@
-import type { FinalizationState } from '@stark-ballot/application/finalize/finalization-types';
 import type { FinalizationStateUpdatePayload } from '@stark-ballot/application/finalize/finalization-state-update';
+import {
+  PROVER_FAILURE_CATEGORY_VALUES,
+  type FinalizationFailureCategory,
+  type ProverFailureCategory,
+} from '@stark-ballot/application/finalize/finalization-types';
 import {
   parseAwsPersistedFinalizationResult,
   type AwsFinalizationLifecycleMetadata,
@@ -8,7 +12,48 @@ import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-se
 import { getStringProperty, isRecord } from '@stark-ballot/domain/utils/guards';
 
 const BUNDLE_METADATA_KEYS = new Set(['s3BundleKey', 's3UploadedAt']);
-const FINALIZATION_ERROR_KEYS = new Set(['code', 'message', 'details']);
+const FINALIZATION_ERROR_KEYS = new Set(['code', 'message', 'category', 'details']);
+const FINALIZATION_FAILURES = {
+  PROVER_TASK_FAILED: {
+    code: 'PROVER_TASK_FAILED',
+    message: 'Target prover task failed',
+    category: 'prover_execution',
+  },
+  PROVER_IMAGE_SIGNATURE_FAILED: {
+    code: 'PROVER_IMAGE_SIGNATURE_FAILED',
+    message: 'Target prover image signature verification failed',
+    category: 'image_signature',
+  },
+  PROVER_CAPACITY_WAIT_TIMEOUT: {
+    code: 'PROVER_CAPACITY_WAIT_TIMEOUT',
+    message: 'Timed out waiting for target prover capacity',
+    category: 'capacity',
+  },
+  FINALIZATION_BUNDLE_KEY_MISSING: {
+    code: 'FINALIZATION_BUNDLE_KEY_MISSING',
+    message: 'Target finalization succeeded without a durable bundle key',
+    category: 'artifact',
+  },
+  FINALIZATION_BUNDLE_RESTORE_FAILED: {
+    code: 'FINALIZATION_BUNDLE_RESTORE_FAILED',
+    message: 'Target finalization bundle could not be restored',
+    category: 'artifact',
+  },
+  FINALIZATION_FAILED: {
+    code: 'FINALIZATION_FAILED',
+    message: 'Finalization failed',
+    category: 'unknown',
+  },
+} as const satisfies Record<
+  string,
+  { readonly code: string; readonly message: string; readonly category: FinalizationFailureCategory }
+>;
+type AwsFinalizationFailure = {
+  readonly code: keyof typeof FINALIZATION_FAILURES;
+  readonly message: string;
+  readonly category: FinalizationFailureCategory;
+};
+const PROVER_FAILURE_CATEGORIES = new Set<string>(PROVER_FAILURE_CATEGORY_VALUES);
 const STATE_UPDATE_REQUEST_KEYS = new Set([
   'sessionId',
   'executionId',
@@ -30,7 +75,8 @@ export interface AwsFinalizationStateUpdateRuntimeMetadata {
   bundleMetadata?: AwsFinalizationLifecycleMetadata;
 }
 
-export type AwsFinalizationStateUpdatePayload = FinalizationStateUpdatePayload & {
+export type AwsFinalizationStateUpdatePayload = Omit<FinalizationStateUpdatePayload, 'error'> & {
+  error?: AwsFinalizationFailure;
   runtimeMetadata?: AwsFinalizationStateUpdateRuntimeMetadata;
 };
 
@@ -69,7 +115,15 @@ function parseBundleMetadata(value: unknown): AwsFinalizationLifecycleMetadata |
   };
 }
 
-function parseFinalizationError(value: unknown): Extract<FinalizationState, { status: 'failed' }>['error'] | undefined {
+function isFinalizationFailureCode(value: string): value is keyof typeof FINALIZATION_FAILURES {
+  return hasOwn(FINALIZATION_FAILURES, value);
+}
+
+function genericFinalizationFailure(): AwsFinalizationFailure {
+  return { ...FINALIZATION_FAILURES.FINALIZATION_FAILED };
+}
+
+function parseFinalizationError(value: unknown): AwsFinalizationFailure | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
@@ -83,11 +137,16 @@ function parseFinalizationError(value: unknown): Extract<FinalizationState, { st
     return undefined;
   }
 
-  return {
-    code,
-    message,
-    ...(hasOwn(value, 'details') ? { details: value['details'] } : {}),
-  };
+  if (!isFinalizationFailureCode(code)) {
+    return undefined;
+  }
+
+  const failure = { ...FINALIZATION_FAILURES[code] };
+  const category = getStringProperty(value, 'category');
+  if (code === 'PROVER_TASK_FAILED' && category && PROVER_FAILURE_CATEGORIES.has(category)) {
+    return { ...failure, category: category as ProverFailureCategory };
+  }
+  return failure;
 }
 
 export function toApplicationFinalizationStateUpdatePayload(
@@ -143,7 +202,7 @@ export function parseFinalizationStateUpdatePayload(value: unknown): AwsFinaliza
     return undefined;
   }
 
-  const parsed: FinalizationStateUpdatePayload = {
+  const parsed: AwsFinalizationStateUpdatePayload = {
     sessionId,
     executionId,
     contractGeneration,
@@ -174,6 +233,8 @@ export function parseFinalizationStateUpdatePayload(value: unknown): AwsFinaliza
       return undefined;
     }
     parsed.error = error;
+  } else if (status === 'FAILED') {
+    parsed.error = genericFinalizationFailure();
   }
 
   if (status === 'SUCCEEDED' || hasOwn(value, 'finalizationResult')) {

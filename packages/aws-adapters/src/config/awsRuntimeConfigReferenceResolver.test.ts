@@ -287,23 +287,30 @@ describe('awsRuntimeConfigReferenceResolver', () => {
     },
   );
 
-  it('configures the image-signature gate with no runtime references', async () => {
+  it('loads only the observability salt for semaphore_janitor', async () => {
     const env: NodeJS.ProcessEnv = {
       ...targetEnv(),
       TARGET_AWS_RUNTIME: '1',
       TURNSTILE_SECRET_KEY_REF: '/stark-ballot-simulator/stark-dev/develop/app/secrets/missing-turnstile-secret',
     };
-    const send = vi.fn();
+    const send = vi.fn(async (command: { input?: { SecretId?: string } }) => {
+      await Promise.resolve();
+      if (command.input?.SecretId === LOG_IP_HASH_SALT_REF) {
+        return { SecretString: LOG_IP_HASH_SALT };
+      }
+      throw Object.assign(new Error('not found'), { name: 'ResourceNotFoundException' });
+    });
 
     await expect(
-      loadAwsRuntimeConfigReferencesForEntrypoint('image_signature_gate', {
+      loadAwsRuntimeConfigReferencesForEntrypoint('semaphore_janitor', {
         env,
         ssmClient: { send },
         secretsManagerClient: { send },
       }),
     ).resolves.toBeUndefined();
-    expect(send).not.toHaveBeenCalled();
-    expect(env['LOG_IP_HASH_SALT']).toBeUndefined();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ input: { SecretId: LOG_IP_HASH_SALT_REF } }));
+    expect(env['LOG_IP_HASH_SALT']).toBe(LOG_IP_HASH_SALT);
   });
 
   it('still fails closed when public API Turnstile config is configured but missing', async () => {
@@ -333,12 +340,21 @@ describe('awsRuntimeConfigReferenceResolver', () => {
       }
     });
 
-    await expect(
-      ensureAwsRuntimeConfigReferencesLoaded('public_api', {
-        env,
-        ssmClient: { send },
-        secretsManagerClient: { send },
-      }),
-    ).rejects.toThrow('/stark-ballot-simulator/stark-dev/develop/app/secrets/missing-turnstile-secret was not found');
+    const invalidNameCollector = {
+      add: vi.fn(),
+    };
+    const resolutionError = await ensureAwsRuntimeConfigReferencesLoaded('public_api', {
+      env,
+      ssmClient: { send },
+      secretsManagerClient: { send },
+      invalidNameCollector,
+    }).catch((error: unknown) => error);
+
+    expect(resolutionError).toBeInstanceOf(Error);
+    expect((resolutionError as Error).message).toContain(
+      '/stark-ballot-simulator/stark-dev/develop/app/secrets/missing-turnstile-secret was not found',
+    );
+    expect(invalidNameCollector.add).toHaveBeenCalledTimes(1);
+    expect(invalidNameCollector.add).toHaveBeenCalledWith('TURNSTILE_SECRET_KEY_REF');
   });
 });

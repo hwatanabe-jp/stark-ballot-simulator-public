@@ -215,15 +215,15 @@ verifier-service verify --bundle <zip> --image-id <expected>
 
 ## Verification Coverage
 
-The CLI does not assert the full UI verification matrix. It treats this current CLI subset as a
-hard-failure boundary on every finalized result:
+The CLI does not assert the full UI verification matrix. It enforces this current CLI subset:
 
 - Required step IDs: `counted_as_recorded`, `stark_verification`.
 - Required check IDs: `counted_expected_vs_tree_size`, `counted_election_manifest_consistent`,
   `counted_close_statement_consistent`, `stark_receipt_verify`.
 - The run fails if any required step or check is missing.
-- The run fails if any required check is not `success`.
-- The run fails if a green step disagrees with one of those required checks.
+- S0 and other non-tamper cases fail if any required check is not `success`.
+- Expected-tamper cases S1-S5 may have required checks with non-success statuses.
+- Every case fails if a successful stage disagrees with one of its required checks.
 - The run fails if `journal.methodVersion` diverges from the current contract.
 - The run fails if present public/debug count mirrors for `missingSlots`, `invalidPresentedSlots`,
   `validVotes`, or `excludedSlots` disagree with `journal.*`.

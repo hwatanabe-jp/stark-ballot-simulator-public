@@ -44,11 +44,24 @@ resource "aws_s3_bucket_lifecycle_configuration" "frontend_static" {
     }
 
     noncurrent_version_expiration {
-      noncurrent_days = 30
+      noncurrent_days = local.storage_retention.frontend_noncurrent_days
     }
 
     abort_incomplete_multipart_upload {
-      days_after_initiation = 7
+      days_after_initiation = local.storage_retention.incomplete_multipart_retention_days
+    }
+  }
+
+  rule {
+    id     = "remove-expired-static-frontend-delete-markers"
+    status = "Enabled"
+
+    filter {
+      prefix = ""
+    }
+
+    expiration {
+      expired_object_delete_marker = true
     }
   }
 }

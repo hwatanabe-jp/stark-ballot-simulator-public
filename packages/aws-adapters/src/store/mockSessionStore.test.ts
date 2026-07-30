@@ -92,6 +92,63 @@ describe('MockSessionStore', () => {
   });
 
   describe('finalization state transitions', () => {
+    it('records one verification observation per current execution idempotently', async () => {
+      const executionId = 'exec-verification-observation';
+      await store.finalizeSession(
+        sessionId,
+        createStoredFinalizationResult(executionId),
+        resolveCurrentContractGeneration(),
+        executionId,
+      );
+
+      await expect(
+        store.recordVerificationObservation(sessionId, {
+          executionId,
+          fingerprint: 'a'.repeat(64),
+          observedAt: 1_750_000_000_000,
+        }),
+      ).resolves.toEqual({ status: 'recorded' });
+      await expect(
+        store.recordVerificationObservation(sessionId, {
+          executionId,
+          fingerprint: 'a'.repeat(64),
+          observedAt: 1_750_000_000_100,
+        }),
+      ).resolves.toEqual({ status: 'idempotent' });
+      await expect(
+        store.recordVerificationObservation(sessionId, {
+          executionId,
+          fingerprint: 'b'.repeat(64),
+          observedAt: 1_750_000_000_200,
+        }),
+      ).resolves.toEqual({ status: 'conflict', reason: 'fingerprint_mismatch' });
+
+      expect((await store.getSession(sessionId))?.verificationObservation).toEqual({
+        executionId,
+        fingerprint: 'a'.repeat(64),
+        observedAt: 1_750_000_000_000,
+      });
+    });
+
+    it('rejects a verification observation for a stale execution', async () => {
+      const executionId = 'exec-verification-observation-current';
+      await store.finalizeSession(
+        sessionId,
+        createStoredFinalizationResult(executionId),
+        resolveCurrentContractGeneration(),
+        executionId,
+      );
+
+      await expect(
+        store.recordVerificationObservation(sessionId, {
+          executionId: 'exec-verification-observation-stale',
+          fingerprint: 'c'.repeat(64),
+          observedAt: 1_750_000_000_000,
+        }),
+      ).resolves.toEqual({ status: 'conflict', reason: 'execution_mismatch' });
+      expect((await store.getSession(sessionId))?.verificationObservation).toBeUndefined();
+    });
+
     it('persists proof-bundle delivery metadata without requiring locators on pure authority', async () => {
       const authority = buildFinalizationResultFromJournal({
         journal: createTestJournal(),

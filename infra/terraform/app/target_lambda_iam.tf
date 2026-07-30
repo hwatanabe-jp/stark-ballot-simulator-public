@@ -26,6 +26,15 @@ data "aws_iam_policy_document" "target_lambda_runtime_references" {
   }
 }
 
+data "aws_iam_policy_document" "target_lambda_observability_runtime" {
+  statement {
+    sid       = "ReadLogHashSalt"
+    effect    = "Allow"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [local.log_ip_hash_salt_secret_arn]
+  }
+}
+
 data "aws_iam_policy_document" "target_lambda_session_store_runtime" {
   source_policy_documents = [data.aws_iam_policy_document.target_lambda_runtime_references.json]
 
@@ -128,7 +137,7 @@ data "aws_iam_policy_document" "target_lambda_store_runtime" {
 }
 
 data "aws_iam_policy_document" "target_lambda_logs" {
-  for_each = local.target_lambda_names
+  for_each = local.target_application_lambda_names
 
   statement {
     sid    = "WriteLambdaLogs"
@@ -275,19 +284,71 @@ data "aws_iam_policy_document" "target_lambda_verification_worker" {
   }
 }
 
-data "aws_iam_policy_document" "target_lambda_image_signature_gate" {
-  source_policy_documents = [data.aws_iam_policy_document.target_lambda_logs["image_signature_gate"].json]
+data "aws_iam_policy_document" "image_signature_verifier" {
+  statement {
+    sid    = "WriteImageSignatureVerifierLogs"
+    effect = "Allow"
+
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+    ]
+    resources = ["${aws_cloudwatch_log_group.image_signature_verifier.arn}:*"]
+  }
 
   statement {
-    sid       = "CheckProverImageSigningStatus"
+    sid    = "ReadExactProverImage"
+    effect = "Allow"
+
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:DescribeImageSigningStatus",
+      "ecr:GetDownloadUrlForLayer",
+    ]
+    resources = [local.prover_image_repository_arn]
+  }
+
+  statement {
+    sid       = "GetEcrAuthorizationToken"
     effect    = "Allow"
-    actions   = ["ecr:DescribeImageSigningStatus"]
+    actions   = ["ecr:GetAuthorizationToken"]
     resources = ["*"]
+  }
+
+  statement {
+    sid     = "CheckSignerRevocation"
+    effect  = "Allow"
+    actions = ["signer:GetRevocationStatus"]
+    resources = [
+      local.image_signature_signing_profile_arn,
+      local.image_signature_signing_job_arn_pattern,
+    ]
   }
 }
 
+resource "aws_iam_role_policy" "image_signature_verifier" {
+  name   = "${local.image_signature_name_prefix}-image-signature-verifier"
+  role   = aws_iam_role.image_signature_verifier.id
+  policy = data.aws_iam_policy_document.image_signature_verifier.json
+}
+
 data "aws_iam_policy_document" "target_lambda_semaphore_janitor" {
-  source_policy_documents = [data.aws_iam_policy_document.target_lambda_logs["semaphore_janitor"].json]
+  source_policy_documents = [
+    data.aws_iam_policy_document.target_lambda_logs["semaphore_janitor"].json,
+    data.aws_iam_policy_document.target_lambda_observability_runtime.json,
+  ]
+
+  statement {
+    sid    = "WriteNormalizedOpsLedger"
+    effect = "Allow"
+
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+    ]
+    resources = ["${aws_cloudwatch_log_group.ops_ledger.arn}:*"]
+  }
 
   statement {
     sid    = "UseProverSemaphore"
@@ -363,12 +424,6 @@ resource "aws_iam_role_policy" "target_lambda_verification_worker" {
   name   = "${local.name_prefix}-verification-worker"
   role   = aws_iam_role.target_lambda["verification_worker"].id
   policy = data.aws_iam_policy_document.target_lambda_verification_worker.json
-}
-
-resource "aws_iam_role_policy" "target_lambda_image_signature_gate" {
-  name   = "${local.name_prefix}-image-signature-gate"
-  role   = aws_iam_role.target_lambda["image_signature_gate"].id
-  policy = data.aws_iam_policy_document.target_lambda_image_signature_gate.json
 }
 
 resource "aws_iam_role_policy" "target_lambda_semaphore_janitor" {

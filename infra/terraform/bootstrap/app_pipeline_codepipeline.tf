@@ -46,6 +46,24 @@ resource "aws_codepipeline" "development_app" {
   }
 
   variable {
+    name          = "FoundationAppNetworkingKey"
+    default_value = "__REQUIRED_FOR_NORMAL__"
+    description   = "Fixed Foundation app-networking handoff key selected for a normal deployment."
+  }
+
+  variable {
+    name          = "FoundationAppNetworkingVersionId"
+    default_value = "__REQUIRED_FOR_NORMAL__"
+    description   = "Exact S3 VersionId for the selected Foundation app-networking handoff."
+  }
+
+  variable {
+    name          = "FoundationAppNetworkingSha256"
+    default_value = "__REQUIRED_FOR_NORMAL__"
+    description   = "Exact body SHA-256 for the selected Foundation app-networking handoff."
+  }
+
+  variable {
     name          = "DynamoDbRecoveryManifestKey"
     default_value = "__DISABLED__"
     description   = "Validated DynamoDB recovery activation manifest key, or __DISABLED__."
@@ -86,6 +104,212 @@ resource "aws_codepipeline" "development_app" {
   }
 
   stage {
+    name = "VerifierStateRefreshPlan"
+
+    action {
+      name             = "PlanVerifierStateRefresh"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      namespace        = "VerifierStateRefreshPlan"
+      input_artifacts  = ["SourceOutput"]
+      output_artifacts = ["VerifierStateRefreshPlanOutput"]
+
+      configuration = {
+        EnvironmentVariables = local.app_signature_state_refresh_plan_env_variables
+        PrimarySource        = "SourceOutput"
+        ProjectName          = aws_codebuild_project.app_signature_state_refresh_plan[0].name
+      }
+    }
+  }
+
+  stage {
+    name = "VerifierStateRefreshApproval"
+
+    before_entry {
+      condition {
+        result = "SKIP"
+
+        rule {
+          name = "SkipWhenVerifierStateIsAlreadyCurrent"
+
+          rule_type_id {
+            category = "Rule"
+            owner    = "AWS"
+            provider = "VariableCheck"
+            version  = "1"
+          }
+
+          configuration = {
+            Variable = "#{VerifierStateRefreshPlan.VerifierStateRefreshRequired}"
+            Value    = "false"
+            Operator = "NE"
+          }
+        }
+      }
+    }
+
+    action {
+      name     = "ApproveVerifierStateRefresh"
+      category = "Approval"
+      owner    = "AWS"
+      provider = "Manual"
+      version  = "1"
+
+      configuration = {
+        CustomData = "Approve only after reviewing VerifierStateRefreshPlanOutput/infra/terraform/app/tfplan.txt, tfplan.sha256, and image-signature-state-refresh-plan.json. This saved refresh-only plan may update Terraform state only for the exact reviewed interrupted verifier publish/alias metadata and provider projections; it may not perform remote resource actions. Approval summary must be exact JSON: {\"sourceSha\":\"#{AppSource.CommitId}\",\"accountId\":\"${var.aws_account_id}\",\"deploymentEnvironment\":\"develop\",\"reviewedPlanChecksum\":\"<tfplan sha256>\",\"stateRefreshDisposition\":\"reviewed-state-refresh\"}."
+      }
+    }
+  }
+
+  stage {
+    name = "VerifierStateRefreshApply"
+
+    before_entry {
+      condition {
+        result = "SKIP"
+
+        rule {
+          name = "SkipWhenVerifierStateApplyIsUnnecessary"
+
+          rule_type_id {
+            category = "Rule"
+            owner    = "AWS"
+            provider = "VariableCheck"
+            version  = "1"
+          }
+
+          configuration = {
+            Variable = "#{VerifierStateRefreshPlan.VerifierStateRefreshRequired}"
+            Value    = "false"
+            Operator = "NE"
+          }
+        }
+      }
+    }
+
+    action {
+      name             = "ApplyReviewedVerifierStateRefresh"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      input_artifacts  = ["SourceOutput", "VerifierStateRefreshPlanOutput"]
+      output_artifacts = ["VerifierStateRefreshApplyOutput"]
+
+      configuration = {
+        EnvironmentVariables = local.app_signature_state_refresh_apply_env_variables
+        PrimarySource        = "SourceOutput"
+        ProjectName          = aws_codebuild_project.app_signature_state_refresh_apply[0].name
+      }
+    }
+  }
+
+  stage {
+    name = "VerifierPreflightPlan"
+
+    action {
+      name             = "PlanVerifierPreflight"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      namespace        = "VerifierPreflightPlan"
+      input_artifacts  = ["SourceOutput"]
+      output_artifacts = ["VerifierPreflightPlanOutput"]
+
+      configuration = {
+        EnvironmentVariables = local.app_signature_preflight_plan_env_variables
+        PrimarySource        = "SourceOutput"
+        ProjectName          = aws_codebuild_project.app_signature_preflight_plan[0].name
+      }
+    }
+  }
+
+  stage {
+    name = "VerifierPreflightApproval"
+
+    before_entry {
+      # CodePipeline applies SKIP when the rule fails. A rollback reuses the
+      # retained cryptographic authority and must not mutate the current verifier.
+      condition {
+        result = "SKIP"
+
+        rule {
+          name = "SkipVerifierPreflightApprovalForRollback"
+
+          rule_type_id {
+            category = "Rule"
+            owner    = "AWS"
+            provider = "VariableCheck"
+            version  = "1"
+          }
+
+          configuration = {
+            Variable = "#{variables.DeploymentMode}"
+            Value    = "rollback"
+            Operator = "NE"
+          }
+        }
+      }
+    }
+
+    action {
+      name     = "ApproveVerifierPreflightApply"
+      category = "Approval"
+      owner    = "AWS"
+      provider = "Manual"
+      version  = "1"
+
+      configuration = {
+        CustomData = "Approve only after reviewing VerifierPreflightPlanOutput/infra/terraform/app/tfplan.txt, tfplan.sha256, image-signature-preflight-plan.json, and image-signature-verifier-package.json. Confirm that the plan binds this execution's exact source SHA to the accepted digest-pinned Prover image. The allowlist permits only the cryptographic verifier log group, execution role and policy, immutable Lambda version, and preflight alias. After apply, the preflight alias must cryptographically verify that Prover image before the App lane can continue. Approval summary must be exact JSON: {\"sourceSha\":\"#{AppSource.CommitId}\",\"accountId\":\"${var.aws_account_id}\",\"deploymentEnvironment\":\"develop\",\"reviewedPlanChecksum\":\"<tfplan sha256>\"}."
+      }
+    }
+  }
+
+  stage {
+    name = "VerifierPreflightApply"
+
+    action {
+      name             = "ApplyReviewedVerifierPreflightPlan"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      namespace        = "VerifierPreflightApply"
+      input_artifacts  = ["SourceOutput", "VerifierPreflightPlanOutput"]
+      output_artifacts = ["SigApply"]
+
+      configuration = {
+        EnvironmentVariables = local.app_signature_preflight_apply_env_variables
+        PrimarySource        = "SourceOutput"
+        ProjectName          = aws_codebuild_project.app_signature_preflight_apply[0].name
+      }
+    }
+  }
+
+  stage {
+    name = "VerifierPreflightVerify"
+
+    action {
+      name             = "VerifyCryptographicImageSignature"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      input_artifacts  = ["SourceOutput", "SigApply"]
+      output_artifacts = ["VerifierPreflightVerifyOutput"]
+
+      configuration = {
+        EnvironmentVariables = local.app_signature_preflight_invoke_env_variables
+        PrimarySource        = "SourceOutput"
+        ProjectName          = aws_codebuild_project.app_signature_preflight_invoke[0].name
+      }
+    }
+  }
+
+  stage {
     name = "GenerateAppDeploymentRecord"
 
     action {
@@ -95,7 +319,7 @@ resource "aws_codepipeline" "development_app" {
       provider         = "CodeBuild"
       version          = "1"
       namespace        = "AppDeploymentRecord"
-      input_artifacts  = ["SourceOutput"]
+      input_artifacts  = ["SourceOutput", "VerifierPreflightVerifyOutput"]
       output_artifacts = ["AppDeploymentRecordOutput"]
 
       configuration = {
@@ -183,7 +407,7 @@ resource "aws_codepipeline" "development_app" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/app/tfplan.txt, infra/terraform/app/tfplan.sha256, and infra/terraform/app/evidence/target-lambda-artifacts.json for stark-dev/develop/app. Rollback always requires approval even when Terraform is empty because retained static deployables may change. Approval summary must be JSON: {\"deploymentMode\":\"normal|rollback\",\"controlSourceSha\":\"<current pipeline source sha>\",\"selectedSourceSha\":\"<selected deployment sha>\",\"accountId\":\"${var.aws_account_id}\",\"deploymentEnvironment\":\"develop\",\"reviewedPlanChecksum\":\"<tfplan sha256>\"}."
+        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/app/tfplan.txt, infra/terraform/app/tfplan.sha256, and infra/terraform/app/evidence/target-lambda-artifacts.json for stark-dev/develop/app. Rollback always requires approval even when Terraform is empty. Approval summary must be JSON: {\"deploymentMode\":\"normal|rollback\",\"controlSourceSha\":\"<current pipeline source sha>\",\"selectedSourceSha\":\"<selected deployment sha>\",\"accountId\":\"${var.aws_account_id}\",\"deploymentEnvironment\":\"develop\",\"reviewedPlanChecksum\":\"<tfplan sha256>\"}."
       }
     }
   }
@@ -244,6 +468,22 @@ resource "aws_codepipeline" "development_app" {
         PrimarySource        = "SourceOutput"
         ProjectName          = aws_codebuild_project.app_smoke[0].name
       }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition = alltrue([
+        length(local.app_signature_preflight_plan_env_variables) <= 1000,
+        length(local.app_signature_state_refresh_plan_env_variables) <= 1000,
+        length(local.app_signature_state_refresh_apply_env_variables) <= 1000,
+        length(local.app_signature_preflight_apply_env_variables) <= 1000,
+        length(local.app_signature_preflight_invoke_env_variables) <= 1000,
+        length(local.app_codebuild_source_env_variables) <= 1000,
+        length(local.app_codebuild_deployment_env_variables) <= 1000,
+        length(local.app_codebuild_plan_env_variables) <= 1000,
+      ])
+      error_message = "CodePipeline action configuration values must remain within the 1,000-character quota."
     }
   }
 

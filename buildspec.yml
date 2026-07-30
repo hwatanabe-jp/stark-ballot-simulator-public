@@ -5,7 +5,7 @@ version: 0.2
 #
 # Build Strategy:
 # - Uses a pre-built RISC Zero toolchain base image when one is supplied
-# - Base image contains: Rust 1.91.1, pinned RISC Zero toolchain, build dependencies
+# - Base image contains: host Rust 1.97.1, guest Rust r0.1.97.0, pinned RISC Zero 3.0.6, build dependencies
 # - Build time: 5-10 minutes (vs 70-90 minutes without base image)
 # - See: docs/infrastructure/risc0-base-image.md
 
@@ -17,91 +17,74 @@ env:
 phases:
   pre_build:
     commands:
-      - echo "Logging in to Amazon ECR..."
-      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
-
-      - echo "Validating requested source revision..."
+      - echo "Validating the exact requested source revision..."
       - |
-        if [ -z "${CODEBUILD_RESOLVED_SOURCE_VERSION:-}" ]; then
-          echo "CODEBUILD_RESOLVED_SOURCE_VERSION is required for prover release builds." >&2
-          exit 1
-        fi
-        if ! printf '%s' "$CODEBUILD_RESOLVED_SOURCE_VERSION" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
-          echo "CODEBUILD_RESOLVED_SOURCE_VERSION must be a 40- or 64-character lowercase Git SHA." >&2
-          exit 1
-        fi
-        if [ -z "${REQUESTED_SOURCE_SHA:-}" ] || [ "$REQUESTED_SOURCE_SHA" = "__MISSING_REQUESTED_SOURCE_SHA__" ]; then
-          SOURCE_SHA_MODE="branch-head"
-          REQUESTED_SOURCE_SHA="$CODEBUILD_RESOLVED_SOURCE_VERSION"
-          echo "REQUESTED_SOURCE_SHA not pinned - recording resolved branch head $CODEBUILD_RESOLVED_SOURCE_VERSION."
-        else
-          SOURCE_SHA_MODE="pinned"
-          if ! printf '%s' "$REQUESTED_SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
-            echo "REQUESTED_SOURCE_SHA must be a 40- or 64-character lowercase Git SHA." >&2
+        (
+          set -euo pipefail
+          if ! printf '%s' "${REQUESTED_SOURCE_SHA:-}" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "REQUESTED_SOURCE_SHA must be a full 40-character lowercase Git SHA." >&2
+            exit 1
+          fi
+          if ! printf '%s' "${PIPELINE_SOURCE_SHA:-}" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "PIPELINE_SOURCE_SHA must be a full 40-character lowercase Git SHA." >&2
+            exit 1
+          fi
+          if ! printf '%s' "${CODEBUILD_RESOLVED_SOURCE_VERSION:-}" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "CODEBUILD_RESOLVED_SOURCE_VERSION must be a full 40-character lowercase Git SHA." >&2
+            exit 1
+          fi
+          if [ "$REQUESTED_SOURCE_SHA" != "$PIPELINE_SOURCE_SHA" ]; then
+            echo "REQUESTED_SOURCE_SHA must match PIPELINE_SOURCE_SHA for prover release builds." >&2
             exit 1
           fi
           if [ "$REQUESTED_SOURCE_SHA" != "$CODEBUILD_RESOLVED_SOURCE_VERSION" ]; then
             echo "REQUESTED_SOURCE_SHA must match CODEBUILD_RESOLVED_SOURCE_VERSION for prover release builds." >&2
             exit 1
           fi
+          printf '%s' "$CODEBUILD_RESOLVED_SOURCE_VERSION" > /tmp/source-sha
+        )
+      - echo "Computing the source zkVM interface hash..."
+      - |
+        node scripts/aws/compute-zkvm-interface-hash.mjs > /tmp/zkvm-contract-hash
+        if ! grep -Eq '^[0-9a-f]{64}$' /tmp/zkvm-contract-hash; then
+          echo "Invalid source zkVM interface hash." >&2
+          exit 1
         fi
-        printf '%s' "$REQUESTED_SOURCE_SHA" > /tmp/requested-source-sha
-        printf '%s' "$CODEBUILD_RESOLVED_SOURCE_VERSION" > /tmp/resolved-source-sha
-        printf '%s' "$SOURCE_SHA_MODE" > /tmp/source-sha-mode
+      - echo "Loading the exact Foundation image-signing authority..."
+      - |
+        FOUNDATION_AUTHORITY_FILE="$CODEBUILD_SRC_DIR_FoundationSigningAuthorityOutput/foundation-signing-authority.json"
+        test -f "$FOUNDATION_AUTHORITY_FILE"
+        node infra/terraform/bootstrap/foundation-pipeline-scripts/validate-foundation-image-signing-authority.mjs \
+          --input "$FOUNDATION_AUTHORITY_FILE" \
+          --expected-account-id "$AWS_ACCOUNT_ID" \
+          --region "$AWS_DEFAULT_REGION" \
+          --source-sha "$REQUESTED_SOURCE_SHA" \
+          --image-kind prover \
+          --repository-output /tmp/foundation-prover-repository \
+          --signing-profile-output /tmp/foundation-signing-profile
+      - export IMAGE_REPO_NAME="$(cat /tmp/foundation-prover-repository)"
+      - export IMAGE_SIGNING_PROFILE_ARN="$(cat /tmp/foundation-signing-profile)"
+      - echo "Logging in to Amazon ECR..."
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
 
       - echo "Resolving RISC Zero toolchain base image..."
       - |
-        if [ -z "${RISC0_TOOLCHAIN_REPO_NAME:-}" ]; then
-          echo "RISC0_TOOLCHAIN_REPO_NAME is required; the CodeBuild lane must supply the target toolchain repository name." >&2
-          exit 1
-        fi
-        echo "Using RISC0_TOOLCHAIN_REPO_NAME from environment: $RISC0_TOOLCHAIN_REPO_NAME"
-      - |
-        TOOLCHAIN_AUTHORITY_FILE="${RESOLVED_TOOLCHAIN_AUTHORITY_FILE:-}"
-        if [ -z "$TOOLCHAIN_AUTHORITY_FILE" ] && [ -n "${CODEBUILD_SRC_DIR_ToolchainAuthorityOutput:-}" ]; then
-          TOOLCHAIN_AUTHORITY_FILE="$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/toolchain-authority.json"
-        fi
-        if [ -n "$TOOLCHAIN_AUTHORITY_FILE" ] && [ -f "$TOOLCHAIN_AUTHORITY_FILE" ]; then
-          echo "Using resolved toolchain authority from $TOOLCHAIN_AUTHORITY_FILE"
-          RISC0_TOOLCHAIN_IMAGE="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["imageUri"])' "$TOOLCHAIN_AUTHORITY_FILE")"
-          TOOLCHAIN_AUTHORITY_SCHEMA_VERSION="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["schemaVersion"])' "$TOOLCHAIN_AUTHORITY_FILE")"
-          TOOLCHAIN_SELECTION="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selection"])' "$TOOLCHAIN_AUTHORITY_FILE")"
-          SELECTED_TOOLCHAIN_ARTIFACT_RECORD_KEY="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["artifactRecordKey"])' "$TOOLCHAIN_AUTHORITY_FILE")"
-          SELECTED_TOOLCHAIN_ARTIFACT_RECORD_VERSION_ID="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["artifactRecordVersionId"])' "$TOOLCHAIN_AUTHORITY_FILE")"
-          SELECTED_TOOLCHAIN_ARTIFACT_RECORD_SHA256="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["artifactRecordSha256"])' "$TOOLCHAIN_AUTHORITY_FILE")"
-          ACCEPTED_TOOLCHAIN_POINTER_KEY="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); pointer=data.get("acceptedPointer") or {}; print(pointer.get("key", ""))' "$TOOLCHAIN_AUTHORITY_FILE")"
-          ACCEPTED_TOOLCHAIN_POINTER_VERSION_ID="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); pointer=data.get("acceptedPointer") or {}; print(pointer.get("versionId", ""))' "$TOOLCHAIN_AUTHORITY_FILE")"
-          ACCEPTED_TOOLCHAIN_POINTER_SHA256="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); pointer=data.get("acceptedPointer") or {}; print(pointer.get("sha256", ""))' "$TOOLCHAIN_AUTHORITY_FILE")"
-          export RISC0_TOOLCHAIN_IMAGE TOOLCHAIN_AUTHORITY_SCHEMA_VERSION TOOLCHAIN_SELECTION SELECTED_TOOLCHAIN_ARTIFACT_RECORD_KEY SELECTED_TOOLCHAIN_ARTIFACT_RECORD_VERSION_ID SELECTED_TOOLCHAIN_ARTIFACT_RECORD_SHA256 ACCEPTED_TOOLCHAIN_POINTER_KEY ACCEPTED_TOOLCHAIN_POINTER_VERSION_ID ACCEPTED_TOOLCHAIN_POINTER_SHA256
-        elif [ "${REQUIRE_TOOLCHAIN_AUTHORITY_FILE:-0}" = "true" ]; then
+        TOOLCHAIN_AUTHORITY_FILE="$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/toolchain-authority.json"
+        if [ ! -f "$TOOLCHAIN_AUTHORITY_FILE" ]; then
           echo "Resolved toolchain authority file is required for this prover release build." >&2
           exit 1
         fi
-      - |
-        if [ -z "${RISC0_TOOLCHAIN_IMAGE:-}" ]; then
-          RISC0_TOOLCHAIN_IMAGE_TAG="${RISC0_TOOLCHAIN_IMAGE_TAG:-${RISC0_VERSION:-3.0.5}-arm64}"
-          echo "RISC0_TOOLCHAIN_IMAGE not set - resolving $RISC0_TOOLCHAIN_REPO_NAME:$RISC0_TOOLCHAIN_IMAGE_TAG"
-          RISC0_TOOLCHAIN_DIGEST=$(aws ecr describe-images \
-            --repository-name "$RISC0_TOOLCHAIN_REPO_NAME" \
-            --image-ids imageTag="$RISC0_TOOLCHAIN_IMAGE_TAG" \
-            --region "$AWS_DEFAULT_REGION" \
-            --query 'imageDetails[0].imageDigest' \
-            --output text)
-          if [ -z "$RISC0_TOOLCHAIN_DIGEST" ] || [ "$RISC0_TOOLCHAIN_DIGEST" = "None" ]; then
-            echo "RISC Zero toolchain image not found: $RISC0_TOOLCHAIN_REPO_NAME:$RISC0_TOOLCHAIN_IMAGE_TAG" >&2
-            exit 1
-          fi
-          export RISC0_TOOLCHAIN_IMAGE="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$RISC0_TOOLCHAIN_REPO_NAME@$RISC0_TOOLCHAIN_DIGEST"
-        else
-          echo "Using RISC0_TOOLCHAIN_IMAGE from environment."
-        fi
+        echo "Using resolved toolchain authority from $TOOLCHAIN_AUTHORITY_FILE"
+        RISC0_TOOLCHAIN_IMAGE="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["imageUri"])' "$TOOLCHAIN_AUTHORITY_FILE")"
+        SELECTED_TOOLCHAIN_ARTIFACT_RECORD_KEY="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["artifactRecordKey"])' "$TOOLCHAIN_AUTHORITY_FILE")"
+        SELECTED_TOOLCHAIN_ARTIFACT_RECORD_VERSION_ID="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["artifactRecordVersionId"])' "$TOOLCHAIN_AUTHORITY_FILE")"
+        SELECTED_TOOLCHAIN_ARTIFACT_RECORD_SHA256="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["artifactRecordSha256"])' "$TOOLCHAIN_AUTHORITY_FILE")"
         if ! printf '%s' "$RISC0_TOOLCHAIN_IMAGE" | grep -Eq '@sha256:[0-9a-f]{64}$'; then
           echo "RISC0_TOOLCHAIN_IMAGE must be digest-pinned with @sha256:<64 lowercase hex chars>." >&2
           exit 1
         fi
-        RISC0_TOOLCHAIN_IMAGE_TAG="${RISC0_TOOLCHAIN_IMAGE_TAG:-${RISC0_VERSION:-3.0.5}-arm64}"
+        export RISC0_TOOLCHAIN_IMAGE SELECTED_TOOLCHAIN_ARTIFACT_RECORD_KEY SELECTED_TOOLCHAIN_ARTIFACT_RECORD_VERSION_ID SELECTED_TOOLCHAIN_ARTIFACT_RECORD_SHA256
         printf '%s' "$RISC0_TOOLCHAIN_IMAGE" > /tmp/risc0-toolchain-image
-        printf '%s' "$RISC0_TOOLCHAIN_IMAGE_TAG" > /tmp/risc0-toolchain-image-tag
 
       - echo "Determining image tags..."
       - |
@@ -112,7 +95,7 @@ phases:
         echo "Using IMAGE_REPO_NAME from environment: $IMAGE_REPO_NAME"
       # Image Tag Strategy:
       # - Prover release CodePipeline passes IMAGE_TAG=candidate-<pipeline-execution-id>
-      # - Manual/legacy primitive builds may override IMAGE_TAG explicitly
+      # - Explicit primitive builds may override IMAGE_TAG
       # - Automatic fallback uses commit SHA only when IMAGE_TAG is not set
       # - Latest tag: Only updated for main branch builds
       # - See: docs/infrastructure/terraform.md (運用フロー)
@@ -143,6 +126,17 @@ phases:
       - echo "Build started on $(date)"
       - RISC0_TOOLCHAIN_IMAGE="$(cat /tmp/risc0-toolchain-image)"
       - docker build --build-arg RISC0_TOOLCHAIN_IMAGE="$RISC0_TOOLCHAIN_IMAGE" -t $IMAGE_URI -f infra/docker/Dockerfile.fargate-prover .
+
+      - echo "Smoke-testing the non-root, read-only prover container posture..."
+      - |
+        FAILURE_MARKER_CONTRACT_SHA256="$(sha256sum infra/docker/prover-failure-marker-contract.json | awk '{print $1}')"
+        if ! printf '%s' "$FAILURE_MARKER_CONTRACT_SHA256" | grep -Eq '^[0-9a-f]{64}$'; then
+          echo "Unable to compute the prover failure-marker contract SHA-256." >&2
+          exit 1
+        fi
+        printf '%s' "$FAILURE_MARKER_CONTRACT_SHA256" > /tmp/prover-failure-marker-contract-sha256
+      - scripts/tests/fargate-prover-container-smoke.sh "$IMAGE_URI"
+      - printf 'PASS' > /tmp/prover-failure-marker-smoke-status
 
       - |
         if [ -n "$LATEST_TAG" ]; then
@@ -201,7 +195,6 @@ phases:
       - echo "Writing image metadata..."
       - |
         RISC0_TOOLCHAIN_IMAGE="$(cat /tmp/risc0-toolchain-image)"
-        RISC0_TOOLCHAIN_IMAGE_TAG="$(cat /tmp/risc0-toolchain-image-tag)"
         ARM64_RISC0_IMAGE_ID="$(cat /tmp/arm64-risc0-image-id)"
         METHOD_VERSION="$(cat /tmp/method-version)"
         IMAGE_DIGEST=$(aws ecr describe-images \
@@ -237,67 +230,66 @@ phases:
         IMAGE_DIGEST="$(cat /tmp/prover-image-digest)"
         SIGNING_STATUS=""
         SIGNING_STATUS_JSON="/tmp/prover-signing-status.json"
+        test -n "${IMAGE_SIGNING_PROFILE_ARN:-}"
         for attempt in $(seq 1 30); do
           aws ecr describe-image-signing-status \
             --repository-name "$IMAGE_REPO_NAME" \
             --image-id imageDigest="$IMAGE_DIGEST" \
             --region "$AWS_DEFAULT_REGION" \
             --output json > "$SIGNING_STATUS_JSON"
-          SIGNING_STATUS=$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); statuses=data.get("signingStatuses") or []; print(statuses[0].get("status", "") if statuses else "")' "$SIGNING_STATUS_JSON")
-          if [ "$SIGNING_STATUS" = "COMPLETE" ]; then
-            break
-          fi
-          echo "ECR signing status is '${SIGNING_STATUS:-empty}' (attempt $attempt/30); waiting..."
-          sleep 20
+          SIGNING_DECISION_JSON="$(node infra/terraform/bootstrap/foundation-pipeline-scripts/inspect-managed-signing-readiness.mjs --input "$SIGNING_STATUS_JSON" --expected-profile "$IMAGE_SIGNING_PROFILE_ARN")"
+          SIGNING_DECISION="$(printf '%s' "$SIGNING_DECISION_JSON" | node -e 'let value=""; process.stdin.on("data", chunk => value += chunk); process.stdin.on("end", () => { const parsed=JSON.parse(value); process.stdout.write(String(parsed.decision || "")); });')"
+          SIGNING_REASON="$(printf '%s' "$SIGNING_DECISION_JSON" | node -e 'let value=""; process.stdin.on("data", chunk => value += chunk); process.stdin.on("end", () => { const parsed=JSON.parse(value); process.stdout.write(String(parsed.reasonCode || "")); });')"
+          case "$SIGNING_DECISION" in
+            READY)
+              SIGNING_STATUS="COMPLETE"
+              break
+              ;;
+            RETRY)
+              if [ "$attempt" -eq 30 ]; then
+                echo "ECR managed signing readiness budget exhausted: ${SIGNING_REASON:-VERIFIER_ERROR}." >&2
+                exit 1
+              fi
+              echo "ECR managed signing is not ready (attempt $attempt/30): ${SIGNING_REASON:-VERIFIER_ERROR}."
+              sleep 20
+              ;;
+            REJECT)
+              echo "ECR managed signing readiness rejected: ${SIGNING_REASON:-VERIFIER_ERROR}." >&2
+              exit 1
+              ;;
+            *)
+              echo "ECR managed signing readiness returned an invalid decision." >&2
+              exit 1
+              ;;
+          esac
         done
         if [ "$SIGNING_STATUS" != "COMPLETE" ]; then
-          echo "ECR signing status must be COMPLETE for prover release records; got '${SIGNING_STATUS:-empty}'." >&2
-          cat "$SIGNING_STATUS_JSON" >&2
+          echo "ECR signing status must be COMPLETE for prover candidate readiness." >&2
           exit 1
         fi
-        printf '%s' "$SIGNING_STATUS" > /tmp/prover-signing-status
       - |
+        set -euo pipefail
         IMAGE_DIGEST="$(cat /tmp/prover-image-digest)"
         DIGEST_PINNED_IMAGE_URI="$(cat /tmp/digest-pinned-image-uri)"
         RISC0_TOOLCHAIN_IMAGE="$(cat /tmp/risc0-toolchain-image)"
-        RISC0_TOOLCHAIN_IMAGE_TAG="$(cat /tmp/risc0-toolchain-image-tag)"
         ARM64_RISC0_IMAGE_ID="$(cat /tmp/arm64-risc0-image-id)"
         METHOD_VERSION="$(cat /tmp/method-version)"
         POST_PUSH_RISC0_IMAGE_ID="$(cat /tmp/post-push-risc0-image-id)"
         POST_PUSH_METHOD_VERSION="$(cat /tmp/post-push-method-version)"
-        SIGNING_STATUS="$(cat /tmp/prover-signing-status)"
-        REQUESTED_SOURCE_SHA="$(cat /tmp/requested-source-sha)"
-        RESOLVED_SOURCE_SHA="$(cat /tmp/resolved-source-sha)"
-        printf '{"image":"%s","imageUri":"%s","tag":"%s","digest":"%s","sha":"%s","requestedSourceSha":"%s","resolvedSourceSha":"%s","sourceShaMode":"%s","architecture":"arm64","methodVersion":%s,"postPushMethodVersion":%s,"risc0ImageId":"%s","postPushRisc0ImageId":"%s","risc0ToolchainImage":"%s","risc0ToolchainTag":"%s","toolchainAuthoritySchemaVersion":"%s","toolchainSelection":"%s","selectedToolchainArtifactRecordKey":"%s","selectedToolchainArtifactRecordVersionId":"%s","selectedToolchainArtifactRecordSha256":"%s","acceptedToolchainPointerKey":"%s","acceptedToolchainPointerVersionId":"%s","acceptedToolchainPointerSha256":"%s","signingStatus":"%s","scanStatus":"PASS","buildId":"%s","timestamp":"%s"}' \
-          "$IMAGE_URI" "$DIGEST_PINNED_IMAGE_URI" "$IMAGE_TAG" "$IMAGE_DIGEST" "$RESOLVED_SOURCE_SHA" "$REQUESTED_SOURCE_SHA" "$RESOLVED_SOURCE_SHA" "$(cat /tmp/source-sha-mode)" "$METHOD_VERSION" "$POST_PUSH_METHOD_VERSION" "$ARM64_RISC0_IMAGE_ID" "$POST_PUSH_RISC0_IMAGE_ID" "$RISC0_TOOLCHAIN_IMAGE" "$RISC0_TOOLCHAIN_IMAGE_TAG" "${TOOLCHAIN_AUTHORITY_SCHEMA_VERSION:-}" "${TOOLCHAIN_SELECTION:-}" "${SELECTED_TOOLCHAIN_ARTIFACT_RECORD_KEY:-}" "${SELECTED_TOOLCHAIN_ARTIFACT_RECORD_VERSION_ID:-}" "${SELECTED_TOOLCHAIN_ARTIFACT_RECORD_SHA256:-}" "${ACCEPTED_TOOLCHAIN_POINTER_KEY:-}" "${ACCEPTED_TOOLCHAIN_POINTER_VERSION_ID:-}" "${ACCEPTED_TOOLCHAIN_POINTER_SHA256:-}" "$SIGNING_STATUS" "$CODEBUILD_BUILD_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        SOURCE_SHA="$(cat /tmp/source-sha)"
+        ZKVM_CONTRACT_HASH="$(cat /tmp/zkvm-contract-hash)"
+        FAILURE_MARKER_CONTRACT_SHA256="$(cat /tmp/prover-failure-marker-contract-sha256)"
+        FAILURE_MARKER_SMOKE_STATUS="$(cat /tmp/prover-failure-marker-smoke-status)"
+        RELEASE_PIPELINE_EXECUTION_ID="${RELEASE_PIPELINE_EXECUTION_ID:?RELEASE_PIPELINE_EXECUTION_ID is required}"
+        if ! printf '%s' "$RELEASE_PIPELINE_EXECUTION_ID" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+          echo "RELEASE_PIPELINE_EXECUTION_ID must be a lowercase UUID." >&2
+          exit 1
+        fi
+        CANDIDATE_EXECUTION_ID="prover-candidate/$RELEASE_PIPELINE_EXECUTION_ID"
+        printf '{"imageUri":"%s","digest":"%s","failureMarkerContractSha256":"%s","failureMarkerSmokeStatus":"%s","sourceSha":"%s","zkvmContractHash":"%s","methodVersion":%s,"postPushMethodVersion":%s,"risc0ImageId":"%s","postPushRisc0ImageId":"%s","risc0ToolchainImage":"%s","selectedToolchainArtifactRecordKey":"%s","selectedToolchainArtifactRecordVersionId":"%s","selectedToolchainArtifactRecordSha256":"%s","scanStatus":"PASS","buildId":"%s"}' \
+          "$DIGEST_PINNED_IMAGE_URI" "$IMAGE_DIGEST" "$FAILURE_MARKER_CONTRACT_SHA256" "$FAILURE_MARKER_SMOKE_STATUS" "$SOURCE_SHA" "$ZKVM_CONTRACT_HASH" "$METHOD_VERSION" "$POST_PUSH_METHOD_VERSION" "$ARM64_RISC0_IMAGE_ID" "$POST_PUSH_RISC0_IMAGE_ID" "$RISC0_TOOLCHAIN_IMAGE" "${SELECTED_TOOLCHAIN_ARTIFACT_RECORD_KEY:-}" "${SELECTED_TOOLCHAIN_ARTIFACT_RECORD_VERSION_ID:-}" "${SELECTED_TOOLCHAIN_ARTIFACT_RECORD_SHA256:-}" "$CANDIDATE_EXECUTION_ID" \
           > image-metadata.json
       - cat image-metadata.json
-      - echo "Publishing prover image metadata..."
-      - |
-        IMAGE_DIGEST="$(cat /tmp/prover-image-digest)"
-        if [ -n "${PROVER_IMAGE_METADATA_BUCKET:-}" ]; then
-          METADATA_PREFIX="${PROVER_IMAGE_METADATA_PREFIX:-prover-images/$IMAGE_REPO_NAME}"
-          METADATA_PREFIX="${METADATA_PREFIX%/}"
-          DIGEST_KEY="${IMAGE_DIGEST#sha256:}"
-          DIGEST_METADATA_KEY="${METADATA_PREFIX}/by-digest/sha256-${DIGEST_KEY}.json"
-          for key in "$DIGEST_METADATA_KEY" "${METADATA_PREFIX}/by-git-sha/$REQUESTED_SOURCE_SHA.json" "${METADATA_PREFIX}/latest.json"; do
-            PROVER_IMAGE_METADATA_KEY="$key" \
-              PROVER_IMAGE_METADATA_EXPECTED_BUCKET_OWNER="$AWS_ACCOUNT_ID" \
-              infra/terraform/bootstrap/app-pipeline-scripts/prover-candidate-metadata-put.sh
-          done
-          METADATA_S3_URI="s3://${PROVER_IMAGE_METADATA_BUCKET}/${DIGEST_METADATA_KEY}"
-          printf '%s' "$METADATA_S3_URI" > /tmp/prover-metadata-s3-uri
-        else
-          echo "PROVER_IMAGE_METADATA_BUCKET not set; skipping S3 metadata publish."
-          printf '' > /tmp/prover-metadata-s3-uri
-        fi
-      - |
-        METADATA_S3_URI="$(cat /tmp/prover-metadata-s3-uri)"
-        python3 -c 'import json,sys; metadata_uri=sys.argv[1]; data=json.load(open("image-metadata.json", encoding="utf-8")); data["metadataS3Uri"] = metadata_uri; json.dump(data, open("/tmp/current-prover-image-metadata.json", "w", encoding="utf-8"), separators=(",", ":"))' "$METADATA_S3_URI"
-        if [ -n "${PROVER_CURRENT_IMAGE_METADATA_PARAMETER:-}" ]; then
-          CURRENT_METADATA_JSON="$(cat /tmp/current-prover-image-metadata.json)"
-          aws ssm put-parameter --name "$PROVER_CURRENT_IMAGE_METADATA_PARAMETER" --type String --value "$CURRENT_METADATA_JSON" --overwrite
-        fi
 
 artifacts:
   files:

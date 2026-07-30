@@ -1,163 +1,248 @@
-# 検証ページ (/verify) 方針
+# 検証ページ (`/verify`) 契約
 
-> この文書は、リデザイン意図を残しつつ、現行実装との整合を取った `/verify` 契約メモ。
-> チェック ID と required/optional 判定の単一ソースは
-> `packages/verification/src/verification/verification-checks.ts`。
+この文書は、現行 `/verify` 画面のデータ取得、表示順序、判定、観測、証拠配布の契約をまとめます。
+画面と文書が異なる場合は、次の実装を優先します。
 
-## 前提
+- check ID、category、evidence、base required/optional:
+  `packages/verification/src/verification/verification-checks.ts`
+- summary status と runtime requirement:
+  `packages/verification/src/verification/verification-summary.ts`
+- 画面制御: `apps/web/src/routes/verify/page.tsx`
+- 4 category と22項目の表示: `apps/web/src/components/verification/UnifiedVerificationCard.tsx`
+- request/response schema: `packages/api-contract/src/validation/apiSchemas.ts`
 
-- 検証への導線ボタンは **/result 側** に配置（「検証」ボタン）。
-- `/verify` 到達時は、**通常は自動で検証シーケンスを開始**する（開始ボタンは不要）。
-  - ただし、`/result` 経由の検証トリガーが無く、かつ STARK 状態も `not_run` のままな直接アクセスはブロックし、`/result` へ戻す導線を出す。
-- サーバで成功した検証結果は **成功扱い** とする（実行主体はUIで明示しない）。
-- **`/api/verify` が `verificationSteps` / `verificationChecks` を返す前提で UI はその結果を表示**する。
-  - クライアント側で同等の重い検証は行わない。ローカル処理は主に Cast-as-Intended の補完と知識パネル反映に使う。
-- `verificationChecks` は **22項目** が現行契約。
-- `journal` 本体は `GET /api/verify?includeJournal=1` のときだけ返る。
-  - 現行 handler は `includeJournal=1` で `journalStatus=available`、要求しない通常系で `journalStatus=omitted` を返す。
-  - `journalStatus=unavailable` は forward-compatible な予約値として扱う。
-- ResultSummary は **verificationChecks に加えて missing/invalid/excluded、STH 設定有無、dev-mode/demo evidence の文脈を参照**して要約を出す。
-- **Never show Verified unless all required checks pass** が前提。
-  - `excludedSlots > 0` は成功扱いにしない。
-  - stale cache 等で legacy `excludedCount > 0` を受けた場合も fail-closed に倒す。
-  - `recorded_consistency_proof`
-  - `counted_missing_indices_zero`
-  - `counted_expected_vs_tree_size`
-  - `counted_election_manifest_consistent`
-  - `counted_close_statement_consistent`
-  - `stark_receipt_verify`
-  - `recorded_sth_third_party` は STH source 設定時のみ blocking
+非交渉の原則は **Never show Verified unless all required checks pass** です。required check の失敗、
+未実行、実行中、欠落、または unknown check がある状態を `Verified` として表示してはいけません。
 
-## 画面構成（上から）
+## 到達条件とデータライフサイクル
 
-1. [Page Title + Subtitle] は必要
-2. 主体は [UnifiedVerificationCard]
-   - [Verification Steps]
-   - [ResultSummary]（**一言の総合表現**に留める）
-   - [Download CTA]
-3. [Tabs: 私の検証 | ボット検証] は **S3 / S4 のときだけ表示**
-   - 現行実装では「私の検証」タブのみ有効
-   - ボット検証タブは disabled プレースホルダで、既存 bot verification panel をまだマウントしていない
-4. ページ外側の状態表示
-   - loading / session error / direct access error は page-level alert で表示
-   - ステップ単位の operational error は Verification Steps Card 内でも表示されうる
+- 検証開始の導線は `/result` の「検証」ボタンです。
+- `/verify` は session capability を付けて `GET /api/verify` を実行し、response schema を通過した
+  server-validated data だけを表示に使います。
+- `/result` からの検証要求を示す session authority がなく、STARK status も `not_run` の直接アクセスは
+  block します。画面は error alert と `/result` へ戻るボタンを表示します。
+- 継続 authority がある場合、または STARK がすでに開始・完了している場合は、開始ボタンを出さずに
+  verification sequence を自動開始します。
+- `/api/verify` の `verificationSteps` と `verificationChecks` が server-side checks の authority です。
+  browser は保存済みの receipt、choice、random を使って Cast-as-Intended の4 checks を再計算し、
+  server の `not_run` 値を local result で補完します。Recorded、Counted、STARK の重い検証を
+  browser で再実装しません。
+- verification 開始前は `user.voteReceipt` と `user.merklePath` を knowledge panel に公開しません。
+  sequence 開始後、検証に使う evidence として反映します。
 
-## Verification Steps Card の詳細項目（細分化版）
+## Unified Verification Card と表示シーケンス
 
-- 従来の4カテゴリの中に、各小項目をリストしたような形にする（カテゴリ見出し＋小項目一覧）
-- カテゴリ名は下記の4つ（Cast-as-Intended / Recorded-as-Cast / Counted-as-Recorded / STARK Verification）
-- 検証ページに遷移した直後は、**まず STARK 状態の解決を待つ**。
-  - `not_run` / `running` の間は内部で poll し、必要なら `/api/verification/run` を起動する。
-- STARK 状態が解決した後、Verification Steps Card に「検証準備中」を **約2秒** 表示する。
-- その後、カテゴリと小項目が **上から順に** 表示され、ステータスが順次更新される。
-- 小項目には短いフェード/スライド系の状態変化を入れる。
-- **API上の stage status** と **UIカード上の見た目のカテゴリ状態** は分けて考える。
-  - `verificationSteps[].status` は、その stage で **required 扱いの checks** から導出する。
-  - カード見出しの状態と `successCount/totalCount` は、表示中の小項目を UI 側で再集計する。
-- `recorded_commitment_in_bulletin` と `recorded_root_at_cast_consistent` は、
-  Inclusion / Consistency の **派生・補助表示** として独立行を保つ。
-- STARK 依存項目は gate 付きで表示する。
-  - STARK 成功前は `pending`
-  - STARK 失敗時は対応する ZK 依存項目も fail 側に倒す
-- 検証が完了したら、小項目クリックで **知識パネルに視覚フィードバック**を表示
-  - 対応する知識キーを **枠線＋パルス**でハイライト（**2.5秒**でフェードアウト）
-  - クリックごとに前回のハイライトは解除し、**最新の選択を優先**
+画面は title、subtitle、`UnifiedVerificationCard`、knowledge panel、footer で構成します。
+`UnifiedVerificationCard` は Verification Steps、Result Summary、Download CTA を1つの card 内に
+表示します。
 
-### Cast-as-Intended（意図どおり投票されたか）
+S3 と S4 のときだけ「私の検証」「ボット検証」の tabs を表示します。現行では「私の検証」のみ有効で、
+「ボット検証」は disabled placeholder です。
 
-1. 受領データ最低限チェック（voteId / commitment の存在）
-2. 選択肢レンジ検証（0..4 / A–E）
-3. 乱数フォーマット検証（32-byte hex）
-4. Commitment再計算一致（electionId + choice + random）
+sequence は次の順で進みます。
 
-### Recorded-as-Cast（掲示板に正しく記録されたか）
+1. STARK status が `not_run` の場合は `POST /api/verification/run` を一度要求します。
+2. STARK status が `not_run` または `running` の間は `/api/verify` を poll し、terminal status
+   (`success`、`failed`、`dev_mode`) または timeout を待ちます。
+3. card は項目表示前に「検証準備中」を表示します。STARK 解決後も通常は約2秒表示を続けます。
+4. Cast-as-Intended、Recorded-as-Cast、Counted-as-Recorded、STARK Verification を上から順に
+   表示し、各 category の status を順次確定します。
+5. sequence 完了後、Result Summary と Download CTA を表示します。pending または running の
+   check が残る間は最終 summary を表示しません。
 
-5. 掲示板に commitment が存在
-   - `recorded_inclusion_proof` 由来の補助表示。現行では optional / derived item として残す
-6. bulletinIndex 範囲チェック
-7. bulletinRootAtCast の整合
-   - `recorded_consistency_proof` 由来の補助表示。現行では optional / derived item として残す
-8. Inclusion proof 検証（CTスタイル / RFC 6962ベース）
-9. Consistency proof 検証（split-view 対策）
-10. STH 検証（第三者一致）
-    - 設定されている場合のみ **blocking**（未設定時は optional 扱い）
+`verificationSteps[].status` は各 stage で runtime 上 required となる checks から導出した API status
+です。一方、card header の status と `successCount/totalCount` は、その category の表示22項目を
+UI 側で再集計します。この2つを同じ値として扱いません。
 
-### Counted-as-Recorded（記録された票が正しく集計されたか）
+ZK evidence に依存する項目は STARK gate を適用します。STARK 成功前は `pending`、STARK 失敗時は
+該当項目も `failed` として表示します。category と項目には短い slide/fade transition を使います。
 
-11. zkVM入力の妥当性（treeSize>0 / votes<=treeSize / root≠0）
-12. 重複 index 排除
-13. 重複 commitment 排除
-14. tally 再計算一致
-    - 公開 tally と zk 由来の verified tally の一致確認
-    - 公開 `tally.counts` 単独では成功扱いにしない
-15. **提示漏れ検知**（`missingSlots=0` を必須。check ID は `counted_missing_indices_zero`）
-16. totalExpected と treeSize の一致要求（必須）
-17. election manifest 整合
-18. close statement 整合
-19. **私の票の包含（bitmap proof）**
-    - `/api/bitmap-proof?kind=included|seen` を使う explainability を含む
-    - `seenBitmapRoot` があると、presented / invalid / not presented の切り分けが可能
-20. inputCommitment 一致（index順の canonical binding）
+sequence 完了後、knowledge key を持つ小項目を click すると、対応する knowledge panel 項目を
+枠線と pulse で highlight します。前回の highlight を解除して最新の click を優先し、2.5秒後に
+解除します。
 
-> **厳格モード補足**
->
-> - `excludedSlots > 0` は **Counted-as-Recorded を failed 扱い**（missing + invalid の合算）
-> - legacy `excludedCount` は現行 public response では返さず、互換入力としてだけ fail-closed に扱う
-> - `counted_tally_consistent` は **zk 由来の tally evidence 前提**（`tally.counts` だけでは足りない）
-> - `counted_expected_vs_tree_size` は **required hard failure**
-> - `counted_election_manifest_consistent` は **required hard failure**
-> - `counted_close_statement_consistent` は **required hard failure**
+UI copy は `apps/web/src/i18n/translations/en.ts` と `ja.ts` で同期します。test や page object は
+翻訳文字列ではなく、次の stable `data-testid` を使います。
 
-### STARK Verification（zkVM実行が正しいか）
+- category: `step-${categoryId}`
+- check: `check-${checkId}`
+- summary container: `result-summary`
+- overall status: `overall-status`
 
-21. receipt metadata の image_id 整合
-22. STARK証明そのものの検証（receipt.verify）
+## 22 checks の表示契約
 
-## ResultSummary（要約ロジック）
+`verificationChecks` は次の22項目です。`recorded_commitment_in_bulletin` と
+`recorded_root_at_cast_consistent` は、required proof の結果から導出する optional な補助表示です。
 
-- summary は `verificationChecks` を主入力とし、**missing/invalid/excluded の文脈**は別途参照する
-- **必須チェック欠落は missing_evidence** に落とす（不完全なチェック列で Verified を出さない）
-- STH は **設定時のみ required 扱い**で blocking
-- `tally_consistency` が失敗し、証明/包含/完全性/入力整合が成功なら **公開結果不一致** として要約する
-- dev-mode receipt や demo evidence が含まれる場合は `demo_only` とし、production Verified として扱わない
-- 現行 summary status は以下を区別する
-  - `fully_verified`
-  - `demo_only`
-  - `in_progress`
-  - `missing_evidence`
-  - `verified_with_limitations`
-  - `user_vote_excluded`
-  - `votes_excluded`
-  - `votes_excluded_unknown`
-  - `recorded_integrity_failed`
-  - `published_tally_mismatch`
-  - `counted_integrity_failed`
-  - `cast_integrity_failed`
-  - `proof_verification_failed`
-- **missing vs invalid** は sub message だけを分岐し、チェック自体は増やさない
+### Cast-as-Intended
 
-## 削除/不要
+1. `cast_receipt_present` — voteId / commitment の存在
+2. `cast_choice_range` — choice が A–E の範囲
+3. `cast_random_format` — random が 32-byte hex
+4. `cast_commitment_match` — electionId + choice + random からの commitment 再計算一致
 
-- [FinalizationProgressCard] は不要
-- [StatusCard: loading/error/info] は不要
-- [SummaryCard] / [ResultSummary] / [DownloadCard] / [VerificationStepsCard] の旧分割構成は不要
-  - 現行は [UnifiedVerificationCard] に統合
+### Recorded-as-Cast
 
-## エラー表示
+5. `recorded_commitment_in_bulletin` — bulletin 上の commitment（optional、inclusion proof から導出）
+6. `recorded_index_in_range` — bulletinIndex の範囲
+7. `recorded_root_at_cast_consistent` — bulletinRootAtCast の整合
+   （optional、consistency proof から導出）
+8. `recorded_inclusion_proof` — CT / RFC 6962-style inclusion proof
+9. `recorded_consistency_proof` — append-only consistency proof
+10. `recorded_sth_third_party` — third-party STH consensus
 
-- page-level の loading / session / direct-access error はカード外 alert で伝える
-- step 実行中の operational error は **Verification Steps Card 内** でも伝える
+### Counted-as-Recorded
 
-## DownloadCard 方針
+11. `counted_input_sanity` — treeSize、vote count、root の基本条件
+12. `counted_unique_indices` — index の重複排除
+13. `counted_unique_commitments` — commitment の重複排除
+14. `counted_tally_consistent` — published tally と zkVM journal の verified tally の一致
+15. `counted_missing_indices_zero` — missing / invalid slot がないこと
+16. `counted_expected_vs_tree_size` — totalExpected と treeSize の一致
+17. `counted_election_manifest_consistent` — election manifest と session authority の一致
+18. `counted_close_statement_consistent` — close statement と finalized STH authority の一致
+19. `counted_my_vote_included` — included / seen bitmap proof による user vote の説明
+20. `counted_input_commitment_match` — index 順 canonical input の commitment 一致
 
-- UI上のリンク更新ボタンは不要
-- download セクションは **sequenceComplete 後** に表示
-- download は `sessionId` と `verificationExecutionId` から authenticated endpoint を組み立てる
-- S3-backed `bundle.zip` は authenticated endpoint の byte-range response を UI 側で結合して保存する。raw S3 URL や短命な配布 URL は UI contract にしない
-- `/report` は authenticated endpoint から通常の JSON body として取得する
-- download/report 候補は authenticated endpoint のみを扱う
+`counted_my_vote_included` は `/api/bitmap-proof?kind=included|seen` の authenticated evidence を使います。
+`seenBitmapRoot` がある場合は、user index を `presented and counted`、`presented but invalid`、
+`not presented to the prover` に分けて説明できます。
 
-## 補足
+### STARK Verification
 
-- 知識パネルとフッターは従来通り表示
-- 現行 journal contract は `methodVersion=14` で、`seenBitmapRoot` を含む
+21. `stark_image_id_match` — expected ImageID、receipt、journal の authority 一致
+22. `stark_receipt_verify` — `Receipt::verify(expectedImageId)` に相当する proof verification
+
+## Required、optional、blocking
+
+base optional は次の3 checks です。
+
+- `recorded_commitment_in_bulletin`
+- `recorded_root_at_cast_consistent`
+- `recorded_sth_third_party`
+
+それ以外は base required です。`recorded_sth_third_party` は STH source が設定されている場合に
+effectively required となり、設定された consensus threshold を満たさなければ blocking です。
+
+すべての required check の失敗は fully verified を block します。特に次の checks は
+hard-failure signal です。
+
+- `recorded_consistency_proof`
+- `counted_missing_indices_zero`
+- `counted_expected_vs_tree_size`
+- `counted_election_manifest_consistent`
+- `counted_close_statement_consistent`
+- `counted_my_vote_included`
+- `counted_input_commitment_match`
+- `stark_image_id_match`
+- `stark_receipt_verify`
+
+`stark_receipt_verify` は required ですが、単独で `Verified` にする十分条件ではありません。
+`excludedSlots > 0`、treeSize の不一致、または ImageID の不一致は成功を block します。
+
+## Result Summary と verdict
+
+summary authority は `deriveVerificationSummary()` です。22 checks に加えて、
+`missingSlots`、`invalidPresentedSlots`、`rejectedRecords`、`excludedSlots`、STH source 設定、
+dev-mode evidence を context として使います。
+
+- required check の欠落、`not_run`、unknown check は `missing_evidence`
+- required check の `pending` / `running` は `in_progress`
+- optional check だけが `failed` / `not_run` なら `verified_with_limitations`
+- completeness failure は user inclusion result と組み合わせて `user_vote_excluded`、
+  `votes_excluded`、`votes_excluded_unknown` を区別
+- `counted_tally_consistent` だけが失敗し、proof、inclusion、completeness、input integrity、
+  Recorded checks が成功していれば `published_tally_mismatch`
+- dev-mode receipt または demo evidence を含む成功は `demo_only`。production `Verified` として
+  表示しない
+- proof、Recorded、Counted、Cast の required failure は対応する failure summary にする
+
+現行 status は次の集合です。
+
+```text
+fully_verified
+demo_only
+in_progress
+missing_evidence
+verified_with_limitations
+user_vote_excluded
+votes_excluded
+votes_excluded_unknown
+recorded_integrity_failed
+published_tally_mismatch
+counted_integrity_failed
+cast_integrity_failed
+proof_verification_failed
+```
+
+missing と invalid の違いは summary の sub message と bitmap note で説明し、check ID を増やしません。
+
+## Verdict に影響しない最終観測
+
+sequence 完了後、browser は次の条件をすべて満たすときだけ
+`POST /api/verification/observation` を best-effort で実行します。
+
+- `/api/verify` response が server validation 済み
+- STARK status が `success`、`failed`、`dev_mode` のいずれか
+- sequence が完了し、`pending` / `running` check がない
+- current `verificationExecutionId` と Cast-as-Intended の4 status が揃っている
+
+request は session capability で認証し、body には `verificationExecutionId` と次の4 status
+(`success | failed | not_run`) だけを含めます。
+
+- `cast_receipt_present`
+- `cast_choice_range`
+- `cast_random_format`
+- `cast_commitment_match`
+
+同じ session、execution、4 status の fingerprint は in-flight と送信済みを重複送信しません。
+deterministic な 4xx は terminal とし、`408`、`425`、`429`、network failure、5xx は dependency
+state が変わった場合だけ再試行対象になりえます。
+
+この observation は browser-local Cast result と server authority を結合した運用観測用です。
+送信成功、失敗、未送信のいずれも画面の verdict、summary、check status を変更しません。
+server-side の保存、idempotency、event emission contract は `docs/ui/api-contract.md` と
+`docs/verification/README.md` を参照してください。
+
+## Error と direct access
+
+- initial loading、session missing / replaced、direct access block は card 外の page-level alert で表示
+- direct access block では `/result` へ戻る操作を提供
+- STARK poll timeout は verification failure として summary に反映
+- step 実行中の operational error は該当 category 内に一般化した message で表示可能
+- unsupported / corrupt finalized artifact や capability loss は fail closed とし、stale finalized
+  projection をそのまま表示しない
+
+## Bundle と protected report
+
+Download CTA は `sequenceComplete` 後だけ表示します。候補は current `sessionId` と
+`verificationExecutionId` から組み立てた authenticated endpoint に限定します。
+
+- bundle:
+  `GET /api/verification/bundles/:sessionId/:executionId`
+- protected report:
+  `GET /api/verification/bundles/:sessionId/:executionId/report`
+
+raw S3 URL、S3 redirect、presigned URL、任意の cross-origin URL を UI contract にしません。
+S3-backed `bundle.zip` が byte-range response を返す場合、browser は認証付き range request を
+順番に結合して zip を保存します。report は range を使わず認証付き JSON body として取得します。
+Download CTA は bundle を保存し、report candidate がある場合は同じ操作で protected report も
+取得します。
+
+## Journal と legacy exclusion
+
+通常の `/verify` 画面は `GET /api/verify` を journal 本体なしで呼び出します。
+`GET /api/verify?includeJournal=1` の response contract は次のとおりです。
+
+- requested and available: `journalStatus=available` と `journal`
+- not requested: `journalStatus=omitted`、`journal` なし
+- requested but unavailable: `journalStatus=unavailable`、`journal` なし
+
+現行 journal は `methodVersion=14` で、`seenBitmapRoot` を必須 field として含みます。
+current exclusion authority は `missingSlots`、`invalidPresentedSlots`、`rejectedRecords`、
+`excludedSlots` です。public response に legacy `excludedCount`、`missingIndices`、
+`invalidIndices`、`countedIndices` を戻しません。
+
+canonical journal が clean な場合、stale top-level の legacy count aliases は authority として
+採用せず無視します。一方、journal-shaped payload 内に legacy count alias が1つでも存在すれば、
+値が0でも current journal として受理せず fail closed にします。

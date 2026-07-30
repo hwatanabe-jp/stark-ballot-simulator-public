@@ -16,15 +16,32 @@ resource "aws_codepipeline" "development_toolchain_release" {
   }
 
   variable {
-    name          = "RequestedSourceSha"
-    default_value = "__MISSING_REQUESTED_SOURCE_SHA__"
-    description   = "Operator-requested toolchain source Git SHA that candidate and promotion evidence must match when set; leave the default to build the resolved branch head (recorded as sourceShaMode branch-head)."
+    name        = "RequestedSourceSha"
+    description = "Required full lowercase control source Git SHA; the Source override and every release stage must match it exactly."
   }
 
   variable {
-    name          = "ToolchainScanWaiverId"
-    default_value = "__NO_TOOLCHAIN_SCAN_WAIVER__"
-    description   = "Reviewed scan waiver evidence id required when the warn-only toolchain scan reports HIGH/CRITICAL findings."
+    name          = "ToolchainSelection"
+    default_value = "build"
+    description   = "Select build for a new Toolchain image or existing for one retained immutable Toolchain artifact."
+  }
+
+  variable {
+    name          = "ExistingToolchainArtifactKey"
+    default_value = "__NOT_APPLICABLE__"
+    description   = "Retained immutable Toolchain artifact record key when ToolchainSelection is existing."
+  }
+
+  variable {
+    name          = "ExistingToolchainArtifactVersionId"
+    default_value = "__NOT_APPLICABLE__"
+    description   = "Retained immutable Toolchain artifact record S3 VersionId when ToolchainSelection is existing."
+  }
+
+  variable {
+    name          = "ExistingToolchainArtifactSha256"
+    default_value = "__NOT_APPLICABLE__"
+    description   = "Retained immutable Toolchain artifact record body checksum when ToolchainSelection is existing."
   }
 
   stage {
@@ -50,26 +67,28 @@ resource "aws_codepipeline" "development_toolchain_release" {
   }
 
   stage {
-    name = "BuildApproval"
+    name = "CandidateApproval"
 
+    # Both modes require this gate because the shared candidate project keeps
+    # build-mode ECR mutation permissions even though existing is read/validate-only.
     action {
-      name     = "ApproveToolchainBuild"
+      name     = "ApproveToolchainCandidateExecution"
       category = "Approval"
       owner    = "AWS"
       provider = "Manual"
       version  = "1"
 
       configuration = {
-        CustomData = "Approve to start the ~2h ARM64 RISC Zero toolchain candidate build for this execution's source revision. Verify the execution's Source revision first: a pending execution does not follow later pushes, so approving an old execution builds its own resolved source. This starts a build only; promotion to the accepted toolchain channel still requires ApproveToolchainPromotion after candidate evidence exists."
+        CustomData = "Approve the candidate action for the selected mode after verifying its control source and parameters. build creates a new image from this execution's exact source revision; existing performs retained-artifact resolution by exact key, VersionId, and body SHA-256 with no Docker build, image push, ECR mutation, or new scan. Promotion reissues the validated image authority as a current semantic record while preserving its original build provenance. This approval is required in both modes because the shared candidate project is privileged. Promotion to the accepted toolchain channel still requires ApproveToolchainPromotion after candidate evidence exists."
       }
     }
   }
 
   stage {
-    name = "BuildToolchainCandidate"
+    name = "PrepareToolchainCandidate"
 
     action {
-      name             = "BuildToolchainCandidate"
+      name             = "PrepareToolchainCandidate"
       category         = "Build"
       owner            = "AWS"
       provider         = "CodeBuild"
@@ -80,18 +99,43 @@ resource "aws_codepipeline" "development_toolchain_release" {
       configuration = {
         EnvironmentVariables = jsonencode([
           {
-            name  = "TOOLCHAIN_IMAGE_METADATA_PREFIX"
-            value = "candidates/toolchain/#{codepipeline.PipelineExecutionId}"
-            type  = "PLAINTEXT"
-          },
-          {
             name  = "REQUESTED_SOURCE_SHA"
             value = "#{variables.RequestedSourceSha}"
             type  = "PLAINTEXT"
           },
           {
+            name  = "PIPELINE_SOURCE_SHA"
+            value = "#{ToolchainReleaseSource.CommitId}"
+            type  = "PLAINTEXT"
+          },
+          {
             name  = "TOOLCHAIN_IMAGE_TAG"
             value = "candidate-#{codepipeline.PipelineExecutionId}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "RELEASE_PIPELINE_EXECUTION_ID"
+            value = "#{codepipeline.PipelineExecutionId}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "TOOLCHAIN_SELECTION"
+            value = "#{variables.ToolchainSelection}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "EXISTING_TOOLCHAIN_ARTIFACT_KEY"
+            value = "#{variables.ExistingToolchainArtifactKey}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "EXISTING_TOOLCHAIN_ARTIFACT_VERSION_ID"
+            value = "#{variables.ExistingToolchainArtifactVersionId}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "EXISTING_TOOLCHAIN_ARTIFACT_SHA256"
+            value = "#{variables.ExistingToolchainArtifactSha256}"
             type  = "PLAINTEXT"
           },
         ])
@@ -102,7 +146,7 @@ resource "aws_codepipeline" "development_toolchain_release" {
   }
 
   stage {
-    name = "ManualApproval"
+    name = "PromotionApproval"
 
     action {
       name     = "ApproveToolchainPromotion"
@@ -112,47 +156,7 @@ resource "aws_codepipeline" "development_toolchain_release" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve only after reviewing ToolchainCandidateOutput/image-info.json, confirming the digest-pinned toolchain image, the warn-only scan result (a waiver evidence id is required when findings are present), and ECR signing status COMPLETE. This approval promotes the toolchain candidate only; it is not prover or app approval."
-      }
-    }
-  }
-
-  stage {
-    name = "PublishPromotionEvidence"
-
-    action {
-      name             = "PublishPromotionEvidence"
-      category         = "Build"
-      owner            = "AWS"
-      provider         = "CodeBuild"
-      version          = "1"
-      input_artifacts  = ["ToolchainCandidateOutput"]
-      output_artifacts = ["ToolchainPromotionEvidenceOutput"]
-
-      configuration = {
-        EnvironmentVariables = jsonencode([
-          {
-            name  = "TOOLCHAIN_RELEASE_PIPELINE_EXECUTION_ID"
-            value = "#{codepipeline.PipelineExecutionId}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "TOOLCHAIN_RELEASE_EVIDENCE_KEY"
-            value = "promotions/develop/toolchain/#{codepipeline.PipelineExecutionId}/toolchain-promotion-evidence.json"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "REQUESTED_SOURCE_SHA"
-            value = "#{variables.RequestedSourceSha}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "TOOLCHAIN_SCAN_WAIVER_ID"
-            value = "#{variables.ToolchainScanWaiverId}"
-            type  = "PLAINTEXT"
-          },
-        ])
-        ProjectName = aws_codebuild_project.toolchain_release_promotion_evidence[0].name
+        CustomData = "Approve only after reviewing ToolchainCandidateOutput/image-info.json. Confirm selection mode and control source; for build, confirm candidate source; for existing, confirm original source plus exact artifact key, VersionId, and body SHA-256. In both modes confirm the digest-pinned image and warn-only scan result. Toolchain findings are accepted and non-blocking for this PoC; no waiver, remediation, signature, or signature-verification review is required. This promotes only the selected Toolchain authority, not Prover or App."
       }
     }
   }
@@ -166,7 +170,7 @@ resource "aws_codepipeline" "development_toolchain_release" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "ToolchainPromotionEvidenceOutput"]
+      input_artifacts  = ["SourceOutput", "ToolchainCandidateOutput"]
       output_artifacts = ["ToolchainAcceptedPointerOutput"]
 
       configuration = {
@@ -177,8 +181,38 @@ resource "aws_codepipeline" "development_toolchain_release" {
             type  = "PLAINTEXT"
           },
           {
-            name  = "TOOLCHAIN_RELEASE_EVIDENCE_KEY"
-            value = "promotions/develop/toolchain/#{codepipeline.PipelineExecutionId}/toolchain-promotion-evidence.json"
+            name  = "REQUESTED_SOURCE_SHA"
+            value = "#{variables.RequestedSourceSha}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "PIPELINE_SOURCE_SHA"
+            value = "#{ToolchainReleaseSource.CommitId}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "RELEASE_PIPELINE_EXECUTION_ID"
+            value = "#{codepipeline.PipelineExecutionId}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "TOOLCHAIN_SELECTION"
+            value = "#{variables.ToolchainSelection}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "EXISTING_TOOLCHAIN_ARTIFACT_KEY"
+            value = "#{variables.ExistingToolchainArtifactKey}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "EXISTING_TOOLCHAIN_ARTIFACT_VERSION_ID"
+            value = "#{variables.ExistingToolchainArtifactVersionId}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "EXISTING_TOOLCHAIN_ARTIFACT_SHA256"
+            value = "#{variables.ExistingToolchainArtifactSha256}"
             type  = "PLAINTEXT"
           },
         ])

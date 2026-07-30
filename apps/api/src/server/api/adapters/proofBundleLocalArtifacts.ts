@@ -11,6 +11,7 @@ import {
 import type { ProofBundleOptions, VerifierInvocationResult, VerificationBundleResult } from './proofBundleService';
 import type { VerificationReport } from '@stark-ballot/verification/shared/types';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 export function persistProofVerificationBundle(
@@ -60,7 +61,7 @@ export async function createMockVerificationReport(input: {
   await fs.writeFile(bundle.reportPath, JSON.stringify(report, null, 2), 'utf-8');
 
   logger.info('[API] Persisted mock verification report for bundle download contract', {
-    sessionId: bundle.sessionId,
+    session_id_hash: hashSessionIdForLogging(bundle.sessionId),
     executionId: bundle.executionId,
   });
 

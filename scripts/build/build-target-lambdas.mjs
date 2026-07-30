@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import * as yazl from 'yazl';
+import { buildImageSignatureVerifierLambda } from './build-image-signature-verifier-lambda.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const outRoot = path.join(repoRoot, '.tmp/target-lambdas');
@@ -15,7 +16,6 @@ const targets = [
   ['finalization_writer', 'infra/lambdas/finalization-writer/handler.ts'],
   ['proof_dispatcher', 'infra/lambdas/proof-dispatcher/handler.ts'],
   ['verification_worker', 'infra/lambdas/verification-worker/handler.ts'],
-  ['image_signature_gate', 'infra/lambdas/image-signature-gate/index.mjs'],
   ['semaphore_janitor', 'infra/lambdas/semaphore-janitor/handler.ts'],
 ];
 
@@ -140,7 +140,10 @@ async function writeZip(sourceDir, zipPath, options = {}) {
       });
     }
     zip.outputStream.on('error', reject);
-    zip.outputStream.pipe(createWriteStream(zipPath)).on('close', resolve).on('error', reject);
+    zip.outputStream
+      .pipe(createWriteStream(zipPath))
+      .on('close', () => resolve(undefined))
+      .on('error', reject);
     zip.end();
   });
 }
@@ -158,7 +161,7 @@ async function sha256(filePath) {
 await rm(outRoot, { recursive: true, force: true });
 await mkdir(outRoot, { recursive: true });
 
-/** @type {Record<string, { entry: string; fileName: string; path: string; sha256: string; sourceCodeHash: string }>} */
+/** @type {Record<string, { entry: string; fileName: string; path: string; sha256: string; sourceCodeHash: string; assetManifestSha256?: string; trustRootSha256?: string }>} */
 const artifacts = {};
 
 for (const [name, entry] of targets) {
@@ -172,7 +175,7 @@ for (const [name, entry] of targets) {
     outfile,
     bundle: true,
     platform: 'node',
-    target: 'node22',
+    target: 'node24',
     format: 'esm',
     banner: {
       js: 'import { createRequire as __starkCreateRequire } from "node:module"; const require = __starkCreateRequire(import.meta.url);',
@@ -200,6 +203,27 @@ for (const [name, entry] of targets) {
     sourceCodeHash: Buffer.from(digest, 'hex').toString('base64'),
   };
 }
+
+const imageSignatureVerifierBuildRoot = path.join(outRoot, '.image-signature-verifier-build');
+const imageSignatureVerifierManifest = await buildImageSignatureVerifierLambda({
+  platform: 'linux-amd64',
+  outputDirectory: imageSignatureVerifierBuildRoot,
+});
+const imageSignatureVerifierZipPath = path.join(outRoot, 'image_signature_verifier.zip');
+await copyFile(
+  path.join(imageSignatureVerifierBuildRoot, imageSignatureVerifierManifest.fileName),
+  imageSignatureVerifierZipPath,
+);
+await rm(imageSignatureVerifierBuildRoot, { recursive: true, force: true });
+artifacts['image_signature_verifier'] = {
+  entry: 'infra/lambdas/image-signature-verifier/index.mjs',
+  fileName: 'image_signature_verifier.zip',
+  path: path.relative(repoRoot, imageSignatureVerifierZipPath),
+  sha256: imageSignatureVerifierManifest.sha256,
+  sourceCodeHash: imageSignatureVerifierManifest.sourceCodeHash,
+  assetManifestSha256: imageSignatureVerifierManifest.assetManifestSha256,
+  trustRootSha256: imageSignatureVerifierManifest.trustRootSha256,
+};
 
 await writeFile(path.join(outRoot, 'manifest.json'), JSON.stringify({ artifacts }, null, 2) + '\n');
 console.log(`Built target Lambda artifacts in ${path.relative(repoRoot, outRoot)}`);

@@ -25,6 +25,7 @@ import {
   resolveSupportedFinalizedRead,
 } from '../utils/currentArtifactAdmission';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import {
   resolveBundleKeyIdentity,
   resolveReportKeyIdentity,
@@ -305,7 +306,7 @@ export async function runVerificationHandler({ request, store, clientIp }: ApiCo
         logger.error(
           '[VerificationRun] Failed to repair pending verification queue work',
           {
-            sessionId,
+            session_id_hash: hashSessionIdForLogging(sessionId),
             executionId,
           },
           error,
@@ -324,7 +325,7 @@ export async function runVerificationHandler({ request, store, clientIp }: ApiCo
         logger.warn(
           '[VerificationRun] Verification work was queued but queued marker persistence failed',
           {
-            sessionId,
+            session_id_hash: hashSessionIdForLogging(sessionId),
             executionId,
           },
           error,
@@ -363,7 +364,7 @@ export async function runVerificationHandler({ request, store, clientIp }: ApiCo
     logger.error(
       '[VerificationRun] Failed to mark verification running',
       {
-        sessionId,
+        session_id_hash: hashSessionIdForLogging(sessionId),
         executionId,
       },
       error,
@@ -388,7 +389,7 @@ export async function runVerificationHandler({ request, store, clientIp }: ApiCo
       logger.error(
         '[VerificationRun] Failed to enqueue verification work',
         {
-          sessionId,
+          session_id_hash: hashSessionIdForLogging(sessionId),
           executionId,
         },
         error,
@@ -407,7 +408,7 @@ export async function runVerificationHandler({ request, store, clientIp }: ApiCo
       logger.warn(
         '[VerificationRun] Verification work was queued but queued marker persistence failed',
         {
-          sessionId,
+          session_id_hash: hashSessionIdForLogging(sessionId),
           executionId,
         },
         error,
@@ -438,10 +439,10 @@ export async function runVerificationHandler({ request, store, clientIp }: ApiCo
 
       if (lambdaResponse.status !== 'success') {
         logger.error('[VerificationRun] Verifier runner returned an error response', {
-          sessionId,
+          session_id_hash: hashSessionIdForLogging(sessionId),
           executionId,
-          runnerMessage: lambdaResponse.message,
-          runnerDetails: lambdaResponse.details,
+          worker_response_status: lambdaResponse.status,
+          worker_details_present: lambdaResponse.details !== undefined,
         });
         throw new Error(VERIFIER_INVOCATION_FAILURE_DETAILS);
       }
@@ -478,7 +479,7 @@ export async function runVerificationHandler({ request, store, clientIp }: ApiCo
     logger.error(
       '[VerificationRun] Verifier invocation failed',
       {
-        sessionId,
+        session_id_hash: hashSessionIdForLogging(sessionId),
         executionId,
         bundleMode: bundleReference.mode,
       },

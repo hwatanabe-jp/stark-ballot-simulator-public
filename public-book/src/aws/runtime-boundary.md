@@ -56,9 +56,7 @@ Target runtime の `POST /api/verification/run` は、session capability、final
 ### Proof artifacts
 
 Proof artifact storage は private S3 bucket です。
-`input.json`、`verification.json`、`included-bitmap.json`、`seen-bitmap.json` などの private artifact は public `bundle.zip` に含めません。
-
-ここでの `public` の分類は [公開境界](../verification/public-boundary.md) の定義に従います。
+保護対象 artifact を public `bundle.zip` に含めない分類と除外リストは、[公開境界](../verification/public-boundary.md) に従います。
 `bundle.zip` や report（`verification.json`）の通常配信は、capability 保護 API が session、execution ID、artifact locator を検証したうえで S3 から読み出し、API response として返す経路です。
 raw S3 URL や presigned URL は通常の browser / CLI contract ではありません。
 
@@ -79,6 +77,7 @@ raw S3 URL や presigned URL は通常の browser / CLI contract ではありま
 - [現行構成とサービス一覧](design-and-services.md)：AWS service ごとの責務
 - [トポロジー](topology.md)：CloudFront、API Gateway、Lambda、DynamoDB、S3、SQS、Step Functions、ECS の通信経路
 - [非同期プローバー](async-prover.md)：SQS / Step Functions / ECS Fargate による証明生成
+- [可観測性設計](observability.md)：runtime を横断する構造化ログ、検出、相関、通知境界
 - [バンドル構造](../verification/bundle-structure.md)：`bundle.zip` と private artifact の境界
 
 <!-- source: public-book/src/aws/topology.md, public-book/src/aws/async-prover.md, public-book/src/verification/bundle-structure.md -->

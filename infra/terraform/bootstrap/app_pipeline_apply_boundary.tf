@@ -28,3 +28,13 @@ resource "aws_iam_policy" "app_apply_deploy_permissions_boundary" {
     StateScope = "app"
   })
 }
+
+check "app_apply_deploy_permissions_boundary_size" {
+  assert {
+    condition = (
+      !local.app_pipeline_enabled
+      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.app_apply_deploy_permissions_boundary[0].json))) <= 6144, false)
+    )
+    error_message = "The app apply deploy permissions boundary must remain within the IAM 6,144-character quota."
+  }
+}

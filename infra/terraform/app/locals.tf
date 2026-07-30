@@ -92,6 +92,7 @@ locals {
     for reference in local.runtime_secret_reference_paths :
     "arn:aws:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:${reference}-*"
   ]
+  log_ip_hash_salt_secret_arn = "arn:aws:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:${local.runtime_reference_names.LOG_IP_HASH_SALT_REF}-*"
 
   dynamodb_table_names = distinct([
     local.dynamodb_tables.sessions.name,
@@ -103,22 +104,29 @@ locals {
     local.dynamodb_tables.prover_semaphore.name,
   ])
 
-  target_lambda_names = {
-    public_api           = "${local.name_prefix}-public-api"
-    finalization_writer  = "${local.name_prefix}-finalization-writer"
-    proof_dispatcher     = "${local.name_prefix}-proof-dispatcher"
-    verification_worker  = "${local.name_prefix}-verification-worker"
-    image_signature_gate = "${local.name_prefix}-image-signature-gate"
-    semaphore_janitor    = "${local.name_prefix}-semaphore-janitor"
+  target_application_lambda_names = {
+    public_api          = "${local.name_prefix}-public-api"
+    finalization_writer = "${local.name_prefix}-finalization-writer"
+    proof_dispatcher    = "${local.name_prefix}-proof-dispatcher"
+    verification_worker = "${local.name_prefix}-verification-worker"
+    semaphore_janitor   = "${local.name_prefix}-semaphore-janitor"
   }
-  target_lambda_role_names = {
-    public_api           = "${local.name_prefix}-api-role"
-    finalization_writer  = "${local.name_prefix}-finalizer-role"
-    proof_dispatcher     = "${local.name_prefix}-dispatcher-role"
-    verification_worker  = "${local.name_prefix}-verifier-role"
-    image_signature_gate = "${local.name_prefix}-image-gate-role"
-    semaphore_janitor    = "${local.name_prefix}-janitor-role"
+  target_application_lambda_role_names = {
+    public_api          = "${local.name_prefix}-api-role"
+    finalization_writer = "${local.name_prefix}-finalizer-role"
+    proof_dispatcher    = "${local.name_prefix}-dispatcher-role"
+    verification_worker = "${local.name_prefix}-verifier-role"
+    semaphore_janitor   = "${local.name_prefix}-janitor-role"
   }
+  image_signature_name_prefix        = "stark-ballot-sim-${var.account_alias}-${var.deployment_environment}"
+  image_signature_verifier_name      = "${local.image_signature_name_prefix}-image-signature-verifier"
+  image_signature_verifier_role_name = "${local.image_signature_name_prefix}-image-signature-verifier-role"
+  target_lambda_names = merge(local.target_application_lambda_names, {
+    image_signature_verifier = local.image_signature_verifier_name
+  })
+  target_lambda_role_names = merge(local.target_application_lambda_role_names, {
+    image_signature_verifier = local.image_signature_verifier_role_name
+  })
 
   proof_artifact_bucket_name             = "${local.name_prefix}-proof-artifacts"
   frontend_bucket_name                   = "${local.name_prefix}-static-frontend"
@@ -139,25 +147,33 @@ locals {
   target_develop_operator_gate_requested = var.deployment_environment == "develop" && var.develop_operator_gate_enabled
   api_origin_verify_header_name          = "X-Stark-Ballot-Origin-Verify"
   api_origin_verify_header_secret_ref    = local.runtime_reference_names.EXPECTED_ORIGIN_VERIFY_HEADER_REF
-  api_origin_verify_header_configured    = true
-  api_origin_verify_header_value         = local.api_origin_verify_header_configured ? trimspace(data.aws_secretsmanager_secret_version.api_origin_verify_header[0].secret_string) : ""
-  target_develop_operator_gate_enabled   = local.operator_gate_keyset_configured && local.api_origin_verify_header_configured
-  target_public_session_create_enabled   = !local.dynamodb_recovery_quiesced && local.target_develop_operator_gate_enabled
-  session_create_turnstile_required      = !local.target_develop_operator_gate_enabled
-  target_state_machine_name              = "${local.name_prefix}-finalization"
-  target_state_machine_arn               = "arn:aws:states:${var.aws_region}:${var.aws_account_id}:stateMachine:${local.target_state_machine_name}"
-  target_execution_arn                   = "arn:aws:states:${var.aws_region}:${var.aws_account_id}:execution:${local.target_state_machine_name}:*"
-  prover_semaphore_table_name            = local.dynamodb_tables.prover_semaphore.name
-  prover_semaphore_lock_name             = "prover-fargate"
-  prover_semaphore_stale_seconds         = var.prover_task_timeout_seconds + 900
-  prover_image_uri_pattern               = "^${var.aws_account_id}\\.dkr\\.ecr\\.${var.aws_region}\\.amazonaws\\.com\\/[A-Za-z0-9._\\/-]+@sha256:[0-9a-f]{64}$"
-  prover_image_repo_uri                  = split("@", var.prover_image_uri)[0]
-  prover_image_repo_parts                = split("/", local.prover_image_repo_uri)
-  prover_image_repository                = join("/", slice(local.prover_image_repo_parts, 1, length(local.prover_image_repo_parts)))
-  prover_image_digest                    = split("@", var.prover_image_uri)[1]
+  api_origin_verify_header_value         = trimspace(data.aws_secretsmanager_secret_version.api_origin_verify_header[0].secret_string)
+  api_origin_verify_header_configured = nonsensitive(
+    length(trimspace(data.aws_secretsmanager_secret_version.api_origin_verify_header[0].secret_string)) > 0
+  )
+  target_develop_operator_gate_enabled = local.operator_gate_keyset_configured && local.api_origin_verify_header_configured
+  target_public_session_create_enabled = !local.dynamodb_recovery_quiesced && local.target_develop_operator_gate_enabled
+  session_create_turnstile_required    = !local.target_develop_operator_gate_enabled
+  target_state_machine_name            = "${local.name_prefix}-finalization"
+  target_state_machine_arn             = "arn:aws:states:${var.aws_region}:${var.aws_account_id}:stateMachine:${local.target_state_machine_name}"
+  target_execution_arn                 = "arn:aws:states:${var.aws_region}:${var.aws_account_id}:execution:${local.target_state_machine_name}:*"
+  prover_semaphore_table_name          = local.dynamodb_tables.prover_semaphore.name
+  prover_semaphore_lock_name           = "prover-fargate"
+  prover_semaphore_stale_seconds       = var.prover_task_timeout_seconds + 900
+  prover_image_uri_pattern             = "^${var.aws_account_id}\\.dkr\\.ecr\\.${var.aws_region}\\.amazonaws\\.com\\/[A-Za-z0-9._\\/-]+@sha256:[0-9a-f]{64}$"
+  prover_image_repo_uri                = split("@", var.prover_image_uri)[0]
+  prover_image_repo_parts              = split("/", local.prover_image_repo_uri)
+  prover_image_repository              = join("/", slice(local.prover_image_repo_parts, 1, length(local.prover_image_repo_parts)))
+  prover_image_digest                  = split("@", var.prover_image_uri)[1]
+  prover_image_repository_arn          = "arn:aws:ecr:${var.aws_region}:${var.aws_account_id}:repository/${local.prover_image_repository}"
+  image_signature_signing_profile_name = "${replace(local.name_prefix, "-", "_")}_ecr"
+  image_signature_signing_profile_arn  = "arn:aws:signer:${var.aws_region}:${var.aws_account_id}:/signing-profiles/${local.image_signature_signing_profile_name}"
+  image_signature_signing_job_arn_pattern = (
+    "arn:aws:signer:${var.aws_region}:${var.aws_account_id}:/signing-jobs/*"
+  )
   callback_delivery_retry = [
     {
-      ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"]
+      ErrorEquals     = ["TransientBundleRestoreError", "Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"]
       IntervalSeconds = 2
       MaxAttempts     = 3
       BackoffRate     = 2

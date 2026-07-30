@@ -1,16 +1,42 @@
 {
+  "mappingType": "image-id-mapping",
   "mappings": {
     "14": {
       "methodVersion": 14,
-      "expectedImageID": "0x4db926db832cc19d84af84cfb2e64b2be02c9ce6966bdd4ed824d269d8f3b232",
-      "expectedImageID_x86_64": "0xf0ea09b47949a8610f4ba13e5ec36d791983edb899d62eed21bf5bfb6f54e94b",
-      "supportedVariants": ["default", "x86_64"],
-      "description": "v1.4 Phase 4 hardening - active ARM64 target-account prover ImageID plus retained local production-feature x86_64 ImageID",
-      "trustStatus": "default-arm64-and-x86_64-active",
-      "compiledAt": "2026-07-02T12:38:15Z",
-      "rustVersion": "1.91.1",
-      "risc0Version": "3.0.5",
-      "guestToolchain": "r0.1.91.1",
+      "variants": {
+        "default": {
+          "state": "confirmed",
+          "imageId": "0xd8619329804e7f183fc66aed960a69ec1c5aa326ecd51ac6a9f79eae4e35f15c",
+          "provenance": {
+            "evidenceType": "accepted-prover-release",
+            "sourceSha": "55a527a1c980750b81577f1a53d9e581e573516f",
+            "proverImageDigest": "sha256:1894dcc2cdcb61a807617d933d48fae936d172630677267c1054584feb0558a3",
+            "candidateMetadataSha256": "4ea4cdfb92785df44af01a034347f92ca1f059e182d7fd0e154f2ace470e2a25",
+            "releaseRecordSha256": "99d1384e3866972e38e25dd5bff4c2ebb75c268935c8f7daa67e81ccb27935df",
+            "toolchainArtifactRecordSha256": "c78fecd1ebfd9fec2dacff6b440172cdcc684d9729a291a91486949fe51fd31e"
+          }
+        },
+        "x86_64": {
+          "state": "confirmed",
+          "imageId": "0x634850d3fc881e5c534ad32a03a49e1ed2d8f6841707cfdba35660fc883e5002",
+          "provenance": {
+            "evidenceType": "local-guest-build",
+            "compiledAt": "2026-07-26T16:41:14Z",
+            "buildProfile": "release+production",
+            "hostRustVersion": "1.97.1",
+            "hostRustCommit": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+            "risc0Version": "3.0.6",
+            "risc0Commit": "1cc70cf05033a79ebc90f07c679cb4bd1cd301b9",
+            "guestToolchain": "r0.1.97.0",
+            "guestToolchainCommit": "e638c6cfea1eff5fbbb24a27e60538e3760d21b8",
+            "guestElfSha256": "8468f067a0f6f4353d392f332f7a40c46181a0be30076bfb5bb4ec98ccd7a550",
+            "guestProgramBinarySha256": "2505e8cc9c9a8b83a77bf37712a4300be81a1c498c6827f7f5253519e6e8fc2a",
+            "hostBinarySha256": "b7bb26b496ea1527e82d6cf5d6a0887ce8278be8570ee85f271043315fff2eed",
+            "zkvmCargoLockSha256": "a91583877a52b49ffb32da435585b031b90a57e60edce1257ce484864864e710"
+          }
+        }
+      },
+      "description": "v1.4 Phase 4 hardening - default is confirmed from the accepted managed ARM64 Prover release; x86_64 is confirmed from the reviewed fresh no_std local production guest build",
       "features": [
         "STH digest binding",
         "CT leaf usage tags",
@@ -27,132 +53,16 @@
         "Output-only production guest tally path",
         "Sorted input-commitment fast path",
         "Guest work-budget preflight",
-        "Bitmap proof parity vectors"
-      ]
-    },
-    "13": {
-      "methodVersion": 13,
-      "expectedImageID": "0xa7bd99bf5aca572770b0c8670c029ace2352a04f2ddb477d9bc59800601cf537",
-      "expectedImageID_x86_64": "0x64e47f6ce9267f75e8b6681a01496edb01a84d582377f43e638f2d1cd8053bc3",
-      "description": "v1.3 shared methodVersion constant cleanup - ARM64 AWS deployment confirmed, x86_64 local build differs",
-      "compiledAt": "2026-05-12T08:52:59Z",
-      "rustVersion": "1.91.1",
-      "risc0Version": "3.0.5",
-      "guestToolchain": "r0.1.91.1",
-      "features": [
-        "STH digest binding",
-        "CT leaf usage tags",
-        "Input commitment sorting",
-        "Slot/record count split",
-        "Rejected record accounting",
-        "Seen bitmap root explainability",
-        "Domain-separated commitments",
-        "RFC 6962 inclusion proofs",
-        "Bitmap-based individual verification"
-      ]
-    },
-    "12": {
-      "methodVersion": 12,
-      "expectedImageID": "0xfa42cd07e70484a943d40f530b9b001392f215a0404398d63c710cef9b30f4b4",
-      "expectedImageID_x86_64": "0x090ad73dbc6d3504b947ab5d41e7327f10d8bbcd649df141c47cfa1bb1610db6",
-      "description": "v1.2 slot/record count contract cleanup - ARM64 AWS deployment confirmed, x86_64 local build differs",
-      "compiledAt": "2026-03-29T04:02:46Z",
-      "rustVersion": "1.91.1",
-      "risc0Version": "3.0.5",
-      "guestToolchain": "r0.1.91.1",
-      "features": [
-        "STH digest binding",
-        "CT leaf usage tags",
-        "Input commitment sorting",
-        "Slot/record count split",
-        "Rejected record accounting",
-        "Seen bitmap root explainability",
-        "Domain-separated commitments",
-        "RFC 6962 inclusion proofs",
-        "Bitmap-based individual verification"
-      ]
-    },
-    "11": {
-      "methodVersion": 11,
-      "expectedImageID": "0x162a81431144e2863c39f98ef4e9fae1c5e916d12ea173377a3c6b0fa748840f",
-      "expectedImageID_x86_64": "0x554b4727c8bd3dd22129e51c2ca40de2cc1407cf517bedf32fc57fd7473ceadb",
-      "description": "v1.1 implementation - methodVersion 11 (ARM64 AWS deployment confirmed, x86_64 local build differs)",
-      "compiledAt": "2026-03-25T08:22:13Z",
-      "rustVersion": "1.91.1",
-      "risc0Version": "3.0.5",
-      "guestToolchain": "r0.1.91.1",
-      "features": [
-        "STH digest binding",
-        "CT leaf usage tags",
-        "Input commitment sorting",
-        "Three-way exclusion display",
-        "Seen bitmap root explainability",
-        "Domain-separated commitments",
-        "RFC 6962 inclusion proofs",
-        "Bitmap-based individual verification"
-      ]
-    },
-    "10": {
-      "methodVersion": 10,
-      "expectedImageID": "0x98465a16a6776bd5fc35299e06dfea5886f87d2f94aac5fd79353af50caa01f4",
-      "expectedImageID_x86_64": "0x05bdfcc6ac09548b6270f1d797b0b8516bd041566c2b195b24fa5d1855ccc805",
-      "description": "v1.0 implementation - methodVersion 10 (ARM64 AWS-native build, x86_64 local build)",
-      "compiledAt": "2026-03-21T07:51:11Z",
-      "rustVersion": "1.91.1",
-      "risc0Version": "3.0.5",
-      "guestToolchain": "r0.1.91.1",
-      "features": [
-        "STH digest binding",
-        "CT leaf usage tags",
-        "Input commitment sorting",
-        "Three-way exclusion display",
-        "Domain-separated commitments",
-        "RFC 6962 inclusion proofs",
-        "Bitmap-based individual verification"
-      ]
-    },
-    "9": {
-      "methodVersion": 9,
-      "expectedImageID": "0xa53a308eab57ccfe32eb3e423d7f7aaa1eda35128f159f3e1e7084e1d8724969",
-      "description": "legacy build (pre-rebrand) - RISC Zero 3.0.4 upgrade",
-      "compiledAt": "2026-01-02T16:30:00Z",
-      "rustVersion": "1.91.1",
-      "risc0Version": "3.0.4",
-      "guestToolchain": "r0.1.91.1",
-      "features": [
-        "STH digest binding",
-        "CT leaf usage tags",
-        "Input commitment sorting",
-        "Three-way exclusion display",
-        "Domain-separated commitments",
-        "RFC 6962 inclusion proofs",
-        "Bitmap-based individual verification"
-      ]
-    },
-    "8": {
-      "methodVersion": 8,
-      "expectedImageID": "0xaf58015bd28c8c3ef32ce62625cdb2e2559c5982de2f5f9ada4c0e5022fdc8b7",
-      "description": "legacy build (pre-rebrand) - final zkVM build before rename",
-      "compiledAt": "2025-10-12T11:36:42Z",
-      "rustVersion": "1.90.0",
-      "risc0Version": "3.0.3",
-      "features": [
-        "STH digest binding",
-        "CT leaf usage tags",
-        "Input commitment sorting",
-        "Three-way exclusion display",
-        "Domain-separated commitments",
-        "RFC 6962 inclusion proofs",
-        "Bitmap-based individual verification"
+        "Bitmap proof parity vectors",
+        "Rust 1.97 no_std embedded allocator"
       ]
     }
   },
   "current": "14",
-  "deprecated": ["8", "9", "10", "11", "12", "13"],
+  "deprecated": [],
   "metadata": {
-    "lastUpdated": "2026-07-02T12:38:15Z",
-    "format": "v1.0",
+    "lastUpdated": "2026-07-26T17:57:16Z",
     "purpose": "ImageID to methodVersion mapping for STARK Ballot Simulator",
-    "notes": "Method version 14 is current. Its default/ARM64 trust material was refreshed from the target-account prover image build `stark-ballot-simulator-pipeline-stark-dev-develop-release-candidate-prover:8b4ffd83-7b55-447b-991d-5d7bd3461906`; that build ID is provenance context for this public compatibility ledger, not proof of prover image promotion or release authority. Its x86_64 variant remains the local production-feature host build from 2026-06-21. Version 13 and earlier are historical trust material retained for audit context only; current verification paths reject non-current method versions."
+    "notes": "Method version 14 remains current. The default variant is confirmed from an accepted managed ARM64 Prover release whose pre-push and post-push ImageID and method version match; its provenance binds the source, digest, candidate, release record, and accepted Toolchain record. The x86_64 variant was computed without proof generation from a fresh-target no_std production guest build using host Rust 1.97.1, RISC Zero 3.0.6, guest r0.1.97.0, and the embedded allocator. Runtime selection remains explicit and never falls back between variants."
   }
 }

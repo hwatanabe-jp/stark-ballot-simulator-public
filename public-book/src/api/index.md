@@ -2,9 +2,6 @@
 
 この章では、ブラウザクライアント、CLI、第三者検証で使う公開 API を、現行実装に基づいて説明します。
 
-通常の browser / CLI contract は active route と capability 保護 API に限ります。
-retired route、private inspection variant、operator-only callback は、章入口では active public API として扱いません。
-
 ## 含まれるページ
 
 - [エンドポイント一覧](endpoints.md): active browser / CLI API と owner-scoped tooling API のリクエスト/レスポンス仕様
@@ -17,15 +14,14 @@ retired route、private inspection variant、operator-only callback は、章入
 
 ## 本章で扱わないもの
 
-- retired、内部運用、デバッグ向け API（`/api/debug/enable`、`/api/finalize/callback`）の詳細
-- retired private inspection route（`GET /api/botdata/:id`）や `GET /api/zkvm-input-hash?includeData=true` などの private-data variant
-- raw S3 URL / presigned URL を通常の browser / CLI contract として扱う取得経路
-- レート制限、Turnstile、capability TTL などの環境変数チューニング
-- Amplify、Hono、Lambda 側の認可とルーティング実装
+通常の browser / CLI contract は active route と capability 保護 API に限ります。
+以下は本章では扱いません。
 
-`GET /api/zkvm-input-hash` の active contract は hash-only です。
-Bundle/report 取得は、capability 保護された `GET /api/verification/bundles/:sessionId/:executionId` と同 `/report` を通ります。
-public `bundle.zip` は秘密を含まない監査用アーカイブであり、protected report artifact の `verification.json` とは別物です。
+- retired、内部運用、デバッグ向け API（`/api/debug/enable`、`/api/finalize/callback`）の詳細
+- retired private inspection route（`GET /api/botdata/:id`）や `GET /api/zkvm-input-hash?includeData=true` などの private-data variant（active な `GET /api/zkvm-input-hash` contract は hash-only。詳細は[エンドポイント一覧](endpoints.md)）
+- raw S3 URL / presigned URL を通常の browser / CLI contract として扱う取得経路（bundle/report は capability 保護された API から取得し、秘密を含まない public `bundle.zip` と protected report artifact の `verification.json` は別物）
+- レート制限、Turnstile、capability TTL などの環境変数チューニング
+- API Gateway、Hono、Lambda 側の認可とルーティング実装
 
 ## 関連する章
 

@@ -1,4 +1,4 @@
-# Docker Implementation Review (2026-04-26)
+# Docker Implementation Review (updated 2026-07-24)
 
 ## Overview
 
@@ -21,8 +21,9 @@ Plan 03 readiness.
 
 ## Files Reviewed
 
-- `infra/docker/Dockerfile.fargate-prover` (80 lines)
-- `infra/docker/entrypoint.sh` (944 lines)
+- `infra/docker/Dockerfile.fargate-prover`
+- `infra/docker/entrypoint.sh`
+- `infra/docker/prover-failure-marker-contract.json`
 - root `.dockerignore` for the repository-root Docker build context
 - `buildspec.yml`
 - `buildspec-risc0-toolchain.yml`
@@ -34,8 +35,14 @@ Plan 03 readiness.
 
 ## Summary
 
-**Overall status**: approved for the current async prover design, with one low-priority
-hardening item still open.
+**Overall status**: approved for the current async prover design. The former
+root-runtime hardening item is repository-resolved and pending the ordered
+prover release plus app saved-plan apply; it is not yet live evidence.
+
+The cryptographic verifier and unversioned failure-marker behavior described
+below are the repository-defined hard-cutover target. Live AWS continues to use
+the old status-only gate and old failure-marker contract until the coordinated
+bootstrap, Foundation, image-promotion, and App cutover sequence succeeds.
 
 The Docker implementation now supports the current SQS -> Step Functions -> ECS Fargate
 prover flow:
@@ -99,13 +106,15 @@ as Plan 03 image evidence. Their lifecycle policy was:
 
 ### Runtime Path
 
-The ECS task definition uses ARM64 Fargate with 16 vCPU / 32 GiB memory. The Step
-Functions state machine verifies ECR image signing status before starting ECS:
-
-1. `VerifyImageSignature`
-2. `CheckImageSignature`
-3. `RunProver`
-4. `FinalizeSucceeded` / `FinalizeFailed` / `FinalizeSignatureFailed`
+The repository target ECS task definition uses ARM64 Fargate with 16 vCPU /
+32 GiB memory. After the hard cutover and before starting ECS, the Step
+Functions state machine invokes the qualified
+`image-signature-verifier` runtime alias for the exact digest-pinned prover
+image. `CheckImageSignature` advances only when the verifier returns both
+`result: "VERIFIED"` and `mode: "cryptographic"`; every other response and
+invocation failure follows the fail-closed `CallbackSignatureFailed` path.
+After the prover slot is acquired and its start is admitted, `RunProver`
+invokes the ECS task.
 
 The current network model is public subnets with `AssignPublicIp = ENABLED`. It is not
 the older private-subnet-plus-NAT model.
@@ -117,16 +126,27 @@ the older private-subnet-plus-NAT model.
 - Uses a required `RISC0_TOOLCHAIN_IMAGE` build arg instead of embedding private ECR
   URLs in the Dockerfile.
 - Builds the Rust host in a dedicated build stage and copies only runtime essentials.
+- Uses Cargo `--quiet` for the production host/guest build so successful
+  dependency progress does not dominate candidate logs; warnings and errors
+  remain visible.
 - Uses Amazon Linux 2023 for the ARM64 runtime image.
 - Installs the AWS CLI v2 in the runtime image because the entrypoint needs S3 access.
 - Keeps `RUST_LOG=info` as an overridable runtime default.
 
-### Open Hardening Item
+### Runtime Hardening Status
 
-The runtime container still runs as root. Current ECS task definitions also do not set
-a container `user`. Moving to a non-root runtime remains desirable, but it should be
-done as a deliberate hardening patch because RISC Zero runtime assets currently live
-under `/root/.cargo/bin` and `/root/.risc0`.
+The repository runtime now moves immutable RISC Zero assets to `/opt/risc0`,
+uses fixed UID/GID `10001:10001`, declares only `/tmp` and
+`/var/task/output` as writable volumes, and repeats the identity in the ECS
+task definition. The task uses a read-only root filesystem, drops all Linux
+capabilities, enables init, and allows 120 seconds for stop handling. The
+release build runs the actual ARM64 image under this posture and rejects writes
+outside the declared volumes before publishing image evidence.
+
+The entrypoint forwards `TERM` and `INT` through its bounded host wrapper and
+records `infrastructure_interruption` unless durable publication already
+completed. These are repository and release-gate contracts until the new image
+is promoted and the app task definition is applied.
 
 ## Entrypoint Review
 
@@ -146,6 +166,30 @@ under `/root/.cargo/bin` and `/root/.risc0`.
   - `receipt.json`
 - consistency validation across public audit artifacts before bundling
 - S3 upload retry via `upload_with_retry`
+
+### Failure Marker Contract
+
+The canonical private failure-marker descriptor is
+`infra/docker/prover-failure-marker-contract.json`. The repository target
+entrypoint writes `failure-marker.json` with exactly one `category` key and
+rejects categories outside this closed allowlist:
+
+- `configuration`
+- `input`
+- `prover_execution`
+- `infrastructure_interruption`
+- `artifact`
+- `upload`
+- `timeout`
+- `unknown`
+
+The prover candidate smoke exercises this exact writer contract. The candidate
+record retains the descriptor's SHA-256 and
+`failureMarkerSmokeStatus: "PASS"`, and promotion rejects a mismatched checksum
+or non-passing smoke result. The writer becomes live only when the newly built
+and promoted prover is selected by the same App hard cutover that installs the
+strict unversioned parser; the pre-cutover runtime keeps its old writer/parser
+pair.
 
 ### Bundle Boundary
 
@@ -171,8 +215,9 @@ for authenticated restore/report paths, not as public bundle members.
 
 The previous review drifted in several places:
 
-- `entrypoint.sh` was listed as 106 lines; it is now 944 lines and contains bundle
-  generation and public audit artifact logic.
+- `entrypoint.sh` was listed with a brittle line count. This review no longer
+  treats line counts as an implementation contract; the entrypoint contains
+  bundle generation and public audit artifact logic.
 - Upload retry, input validation, and execution timeout were listed as future
   improvements; they are now implemented.
 - The planned GitHub Actions build path is no longer the retained
@@ -207,14 +252,18 @@ docker buildx build \
   --load \
   .
 
-mkdir -p output
+scripts/tests/fargate-prover-container-smoke.sh \
+  stark-ballot-simulator/zkvm-prover:local-test
 
 docker run --rm \
+  --read-only \
+  --cap-drop ALL \
+  --init \
+  --network none \
   -e RISC0_DEV_MODE=1 \
-  -e INPUT_PATH=/tmp/input.json \
+  -e INPUT_PATH=/input/test-fixture-valid.json \
   -e OUTPUT_DIR=/var/task/output \
-  -v "$PWD/zkvm/test-data/test-fixture-valid.json:/tmp/input.json:ro" \
-  -v "$PWD/output:/var/task/output" \
+  --mount type=bind,src="$PWD/zkvm/test-data",dst=/input,readonly \
   stark-ballot-simulator/zkvm-prover:local-test
 ```
 
@@ -237,7 +286,8 @@ and timeout error reporting.
 
 ## Recommendation
 
-The Dockerfile and entrypoint implementations match the active async prover
-runtime path, while the legacy/shared image-build notes above remain background
-only. Keep this file updated whenever the entrypoint public bundle contract,
-target image authority, or ECS runtime model changes.
+The Dockerfile and entrypoint implementations match the repository-defined
+target async prover runtime path, while the legacy/shared image-build notes
+above remain background only. Keep this file updated whenever the entrypoint
+public bundle or failure-marker contract, target image authority, or ECS
+runtime model changes.

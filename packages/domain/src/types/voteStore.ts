@@ -4,6 +4,7 @@
 
 import type { CurrentArtifactState } from '@stark-ballot/domain/contract';
 import type { VoteData, SessionData, AddVoteResult } from './server';
+import type { RecordVerificationObservationResult, VerificationObservation } from './verificationObservation';
 
 /**
  * Lightweight session summary for polling endpoints.
@@ -70,6 +71,14 @@ export interface VoteStore {
    * @returns The updated session data or void
    */
   updateSession(sessionId: string, data?: SessionStoreUpdate): Promise<SessionData | void>;
+
+  /**
+   * Record the first browser verification observation for the current execution.
+   */
+  recordVerificationObservation(
+    sessionId: string,
+    observation: VerificationObservation,
+  ): Promise<RecordVerificationObservationResult>;
 
   /**
    * Get the count of active sessions

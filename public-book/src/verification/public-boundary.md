@@ -37,15 +37,17 @@ UI の最終判定には、session-scoped な本人票 proof、bitmap proof、�
 
 次のファイルは `bundle.zip` のメンバーではありません。
 
-| ファイル               | 理由                                                         |
-| ---------------------- | ------------------------------------------------------------ |
-| `input.json`           | 投票選択や乱数を含み得る zkVM witness 付き private input     |
-| `verification.json`    | 検証サービスの protected report artifact                     |
-| `included-bitmap.json` | counted された index を説明する private bitmap artifact      |
-| `seen-bitmap.json`     | prover に提示された index を説明する private bitmap artifact |
+| ファイル               | 理由                                                           |
+| ---------------------- | -------------------------------------------------------------- |
+| `input.json`           | 投票選択や乱数を含み得る zkVM witness 付き private input       |
+| `verification.json`    | 検証サービスの protected report artifact                       |
+| `included-bitmap.json` | counted された index を説明する private bitmap artifact        |
+| `seen-bitmap.json`     | prover に提示された index を説明する private bitmap artifact   |
+| `failure-marker.json`  | async prover の bounded category だけを持つ private diagnostic |
 
-`verification.json` は public bundle member ではありません。
-サーバー側の STARK receipt verification 結果として保存される protected report artifact であり、必要な場合は `bundle.zip` とは別の report endpoint から取得します。
+`input.json`、`verification.json`、`included-bitmap.json`、`seen-bitmap.json` の 4 つは、モードに依存しない保護対象です。
+`verification.json` は必要な場合に `bundle.zip` とは別の report endpoint から取得します。
+`failure-marker.json` は非同期モードのみで生成され得る private diagnostic で、report endpoint からも配布しません。ライフサイクル契約の詳細は [非同期プローバー](../aws/async-prover.md) を参照してください。
 
 ## bundle と report の取得経路
 
@@ -65,19 +67,8 @@ API handler が権限と execution scope を確認したうえで、ローカル
 
 ## sync mode と async mode の差分
 
-公開境界は sync mode と async mode で同じですが、`bundle.zip` の中身には実装上の差があります。
-
-| モード | public `bundle.zip` に入るもの                                                                        |
-| ------ | ----------------------------------------------------------------------------------------------------- |
-| sync   | 通常は必須 5 ファイルと `metadata.json` を含み、任意証拠も許可される allowlist 全体が対象             |
-| async  | `public-input.json`, `election-manifest.json`, `close-statement.json`, `receipt.json`, `journal.json` |
-
-async mode では ECS Fargate prover が public audit artifact を生成し、`bundle.zip` を S3 に保存します。
-`included-bitmap.json` と `seen-bitmap.json` が生成される場合でも、bundle member ではなく隣接する private artifact として扱います。
-`verification.json` は finalize 時点の public bundle には入らず、後続の verifier run が保存した場合に protected report として参照されます。
-
-sync mode では TypeScript 側の allowlist に基づいて archive を作成します。
-`input.json`、`included-bitmap.json`、`seen-bitmap.json`、`verification.json` が保存される場合でも、`bundle.zip` には含めません。
+公開境界(何を入れないか)は sync mode と async mode で同じです。
+モードごとの実際のメンバー構成、生成環境、生成フローの差分は [バンドル構造](bundle-structure.md) を参照してください。
 
 ## 実装上の照合点
 
@@ -85,9 +76,10 @@ sync mode では TypeScript 側の allowlist に基づいて archive を作成�
 
 - sync bundle allowlist: `packages/verification/src/verification/verification-bundle.ts`
 - async bundle creation: `infra/docker/entrypoint.sh`
+- async prover failure marker: `infra/docker/prover-failure-marker-contract.json`, `packages/aws-adapters/src/finalize/async-prover-artifacts.ts`
 - authenticated bundle/report delivery: `apps/api/src/server/api/handlers/verificationBundles.ts`
 - 現行 verification flow notes: `docs/verification/README.md`
 
 詳細なファイル構造とローカル監査手順は、[バンドル構造](bundle-structure.md) と [第三者検証ガイド](../reproducibility/index.md) を参照してください。
 
-<!-- source: packages/verification/src/verification/verification-bundle.ts, infra/docker/entrypoint.sh, apps/api/src/server/api/handlers/verificationBundles.ts, docs/verification/README.md -->
+<!-- source: packages/verification/src/verification/verification-bundle.ts, packages/aws-adapters/src/finalize/async-prover-artifacts.ts, infra/docker/entrypoint.sh, infra/docker/prover-failure-marker-contract.json, apps/api/src/server/api/handlers/verificationBundles.ts, docs/verification/README.md -->

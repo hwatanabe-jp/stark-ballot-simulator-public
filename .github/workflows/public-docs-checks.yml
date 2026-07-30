@@ -7,6 +7,9 @@ on:
       - 'docs/**'
       - 'public-book/**'
       - 'scripts/docs/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '**/Cargo.lock'
       - '.github/workflows/public-docs-checks.yml'
   workflow_dispatch:
 
@@ -23,12 +26,23 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          node-version: '24'
+
+      - name: Check local Markdown links
+        run: pnpm docs:links:check
+
+      - name: Check license metadata freshness
+        run: pnpm licenses:check
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
         with:
-          toolchain: '1.91.1'
+          toolchain: '1.97.1'
 
       - name: Install mdBook
         run: cargo install --locked mdbook --version 0.5.4

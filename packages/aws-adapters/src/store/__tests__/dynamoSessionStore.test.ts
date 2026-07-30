@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { DynamoSessionStore } from '../dynamoSessionStore';
 import type { VoteData } from '@stark-ballot/domain/types/server';
@@ -17,6 +17,7 @@ import {
   createSessionCapabilityToken,
   verifySessionCapabilityToken,
 } from '@stark-ballot/domain/security/sessionCapabilityToken';
+import { logger } from '@stark-ballot/diagnostics/logger';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -59,6 +60,7 @@ class FakeDynamoDocumentClient {
   readonly votes = new Map<string, Map<number, Record<string, unknown>>>();
   readonly extraVoteRows = new Map<string, Array<Record<string, unknown>>>();
   private beforeNextTransactWrite: (() => Promise<void> | void) | null = null;
+  private beforeNextUpdate: (() => Promise<void> | void) | null = null;
 
   constructor(
     private readonly sessionsTableName = 'sessions',
@@ -78,6 +80,11 @@ class FakeDynamoDocumentClient {
       case 'ScanCommand':
         return this.scan(command.input);
       case 'UpdateCommand':
+        if (this.beforeNextUpdate) {
+          const callback = this.beforeNextUpdate;
+          this.beforeNextUpdate = null;
+          await callback();
+        }
         return this.update(command.input);
       default:
         throw new Error(`Unsupported command: ${command.constructor.name}`);
@@ -140,6 +147,10 @@ class FakeDynamoDocumentClient {
     this.beforeNextTransactWrite = callback;
   }
 
+  runBeforeNextUpdate(callback: () => Promise<void> | void): void {
+    this.beforeNextUpdate = callback;
+  }
+
   putBitmapSidecar(
     sessionId: string,
     bitmapData: {
@@ -197,6 +208,24 @@ class FakeDynamoDocumentClient {
       }
       if (condition.includes('attribute_exists(#sessionId)') && !this.sessions.has(sessionId)) {
         throw new Error('ConditionalCheckFailedException');
+      }
+      if (condition.includes('#session.#finalizationResult.#verificationExecutionId = :executionId')) {
+        const existingSession = existing?.['session'] as
+          | {
+              finalizationResult?: { verificationExecutionId?: unknown };
+              verificationObservation?: { executionId?: unknown };
+            }
+          | undefined;
+        const values = input['ExpressionAttributeValues'] as Record<string, unknown> | undefined;
+        if (existingSession?.finalizationResult?.verificationExecutionId !== values?.[':executionId']) {
+          throw new Error('ConditionalCheckFailedException');
+        }
+        if (
+          condition.includes('attribute_not_exists(#session.#verificationObservation)') &&
+          existingSession?.verificationObservation?.executionId === values?.[':executionId']
+        ) {
+          throw new Error('ConditionalCheckFailedException');
+        }
       }
       if (condition.includes('attribute_not_exists(#session.#userVoteIndex)')) {
         if (!existing) {
@@ -351,6 +380,11 @@ class FakeDynamoDocumentClient {
           finalizationArtifactState?: unknown;
           finalizationResult?: { verificationExecutionId?: unknown };
           finalizationState?: { status?: unknown; executionId?: unknown };
+          verificationObservation?: {
+            executionId?: unknown;
+            fingerprint?: unknown;
+            observedAt?: unknown;
+          };
           userVoteIndex?: unknown;
           bulletinRootHistory?: unknown;
         }
@@ -439,6 +473,20 @@ class FakeDynamoDocumentClient {
     ) {
       throw new Error('ConditionalCheckFailedException');
     }
+    if (values[':expectedObservationExecutionId'] !== undefined) {
+      if (
+        session.verificationObservation?.executionId !== values[':expectedObservationExecutionId'] ||
+        session.verificationObservation.fingerprint !== values[':expectedObservationFingerprint'] ||
+        session.verificationObservation.observedAt !== values[':expectedObservationObservedAt']
+      ) {
+        throw new Error('ConditionalCheckFailedException');
+      }
+    } else if (
+      condition.includes('attribute_not_exists(#session.#verificationObservation)') &&
+      session.verificationObservation !== undefined
+    ) {
+      throw new Error('ConditionalCheckFailedException');
+    }
     if (values[':expectedFinalizationStateStatus'] !== undefined) {
       const finalizationState = parsePersistedFinalizationState(session.finalizationState);
       if (
@@ -490,6 +538,31 @@ class FakeDynamoDocumentClient {
     const current = this.sessions.get(key.sessionId);
     const condition = typeof input['ConditionExpression'] === 'string' ? input['ConditionExpression'] : '';
     const values = input['ExpressionAttributeValues'] as Record<string, unknown> | undefined;
+    if (
+      typeof input['UpdateExpression'] === 'string' &&
+      input['UpdateExpression'].includes('#session.#verificationObservation')
+    ) {
+      const session = current?.['session'] as
+        | {
+            finalizationResult?: { verificationExecutionId?: unknown };
+            verificationObservation?: { executionId?: unknown };
+            lastActivity?: unknown;
+          }
+        | undefined;
+      if (!current || !session) {
+        throw new Error('ConditionalCheckFailedException');
+      }
+      if (
+        session.finalizationResult?.verificationExecutionId !== values?.[':executionId'] ||
+        session.verificationObservation?.executionId === values?.[':executionId']
+      ) {
+        throw new Error('ConditionalCheckFailedException');
+      }
+      session.verificationObservation = structuredClone(values?.[':observation'] as { executionId: string });
+      session.lastActivity = values?.[':observedAt'];
+      current['lastActivity'] = values?.[':observedAt'];
+      return {};
+    }
     if (condition.includes('attribute_not_exists(#value)') && current?.['value'] !== undefined) {
       throw new Error('ConditionalCheckFailedException');
     }
@@ -596,11 +669,146 @@ describe('DynamoSessionStore', () => {
     client = new FakeDynamoDocumentClient();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('does not expose standalone receipt-board publication', () => {
     const store = new DynamoSessionStore({ documentClient: asDocumentClient(client) });
 
     expect('saveReceiptToBoard' in store).toBe(false);
     expect(Reflect.get(store, 'saveReceiptToBoard')).toBeUndefined();
+  });
+
+  it('atomically records one verification observation across concurrent store instances', async () => {
+    const setup = new DynamoSessionStore({ documentClient: asDocumentClient(client) });
+    const session = await setup.createSession();
+    const executionId = 'exec-dynamo-observation';
+    await setup.finalizeSession(
+      session.sessionId,
+      buildFinalizationResult(executionId),
+      session.contractGeneration ?? 'current',
+      executionId,
+    );
+    const firstWriter = new DynamoSessionStore({ documentClient: asDocumentClient(client) });
+    const secondWriter = new DynamoSessionStore({ documentClient: asDocumentClient(client) });
+
+    const results = await Promise.all([
+      firstWriter.recordVerificationObservation(session.sessionId, {
+        executionId,
+        fingerprint: 'a'.repeat(64),
+        observedAt: 1_750_000_000_000,
+      }),
+      secondWriter.recordVerificationObservation(session.sessionId, {
+        executionId,
+        fingerprint: 'b'.repeat(64),
+        observedAt: 1_750_000_000_100,
+      }),
+    ]);
+
+    expect(results).toContainEqual({ status: 'recorded' });
+    expect(results).toContainEqual({ status: 'conflict', reason: 'fingerprint_mismatch' });
+    const persisted = await new DynamoSessionStore({ documentClient: asDocumentClient(client) }).getSession(
+      session.sessionId,
+    );
+    expect(persisted?.verificationObservation?.executionId).toBe(executionId);
+    expect(['a'.repeat(64), 'b'.repeat(64)]).toContain(persisted?.verificationObservation?.fingerprint);
+  });
+
+  it('keeps duplicate observation writes idempotent and rejects stale execution ids', async () => {
+    const store = new DynamoSessionStore({ documentClient: asDocumentClient(client) });
+    const session = await store.createSession();
+    const executionId = 'exec-dynamo-observation-current';
+    await store.finalizeSession(
+      session.sessionId,
+      buildFinalizationResult(executionId),
+      session.contractGeneration ?? 'current',
+      executionId,
+    );
+    const observation = {
+      executionId,
+      fingerprint: 'a'.repeat(64),
+      observedAt: 1_750_000_000_000,
+    };
+
+    await expect(store.recordVerificationObservation(session.sessionId, observation)).resolves.toEqual({
+      status: 'recorded',
+    });
+    await expect(
+      new DynamoSessionStore({ documentClient: asDocumentClient(client) }).recordVerificationObservation(
+        session.sessionId,
+        { ...observation, observedAt: observation.observedAt + 100 },
+      ),
+    ).resolves.toEqual({ status: 'idempotent' });
+    await expect(
+      store.recordVerificationObservation(session.sessionId, {
+        executionId: 'exec-dynamo-observation-stale',
+        fingerprint: 'a'.repeat(64),
+        observedAt: observation.observedAt + 200,
+      }),
+    ).resolves.toEqual({ status: 'conflict', reason: 'execution_mismatch' });
+  });
+
+  it('does not overwrite unrelated fields changed concurrently with an observation write', async () => {
+    const store = new DynamoSessionStore({ documentClient: asDocumentClient(client) });
+    const session = await store.createSession();
+    const executionId = 'exec-dynamo-observation-preserve';
+    await store.finalizeSession(
+      session.sessionId,
+      buildFinalizationResult(executionId),
+      session.contractGeneration ?? 'current',
+      executionId,
+    );
+    client.runBeforeNextUpdate(() => {
+      client.mutateSessionRow(session.sessionId, (row) => {
+        row['concurrentMarker'] = 'preserved';
+      });
+    });
+
+    await expect(
+      store.recordVerificationObservation(session.sessionId, {
+        executionId,
+        fingerprint: 'c'.repeat(64),
+        observedAt: 1_750_000_000_000,
+      }),
+    ).resolves.toEqual({ status: 'recorded' });
+
+    expect(client.sessionRow(session.sessionId)?.['concurrentMarker']).toBe('preserved');
+  });
+
+  it('does not let a stale full-session write erase a concurrently recorded observation', async () => {
+    const staleWriter = new DynamoSessionStore({ documentClient: asDocumentClient(client) });
+    const session = await staleWriter.createSession();
+    const executionId = 'exec-dynamo-observation-full-put-race';
+    await staleWriter.finalizeSession(
+      session.sessionId,
+      buildFinalizationResult(executionId),
+      session.contractGeneration ?? 'current',
+      executionId,
+    );
+    const observation = {
+      executionId,
+      fingerprint: 'd'.repeat(64),
+      observedAt: 1_750_000_000_000,
+    };
+
+    client.runBeforeNextTransactWrite(async () => {
+      const observer = new DynamoSessionStore({ documentClient: asDocumentClient(client) });
+      await expect(observer.recordVerificationObservation(session.sessionId, observation)).resolves.toEqual({
+        status: 'recorded',
+      });
+    });
+
+    await expect(
+      staleWriter.updateSession(session.sessionId, { electionId: 'stale-observation-race' }),
+    ).resolves.toMatchObject({
+      verificationObservation: observation,
+    });
+    const persisted = await new DynamoSessionStore({ documentClient: asDocumentClient(client) }).getSession(
+      session.sessionId,
+    );
+    expect(persisted?.verificationObservation).toEqual(observation);
+    expect(persisted?.electionId).not.toBe('stale-observation-race');
   });
 
   it('persists sessions and restores exact session-scoped CT proofs from vote rows', async () => {
@@ -1014,9 +1222,12 @@ describe('DynamoSessionStore', () => {
   });
 
   it('rejects a stale DynamoDB finalization transition without dirtying the local cache', async () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     const staleWriter = new DynamoSessionStore({ documentClient: asDocumentClient(client) });
     const session = await staleWriter.createSession();
     const contractGeneration = session.contractGeneration ?? 'current';
+    info.mockClear();
 
     client.runBeforeNextTransactWrite(() => {
       client.mutateSessionRow(session.sessionId, (row) => {
@@ -1044,6 +1255,66 @@ describe('DynamoSessionStore', () => {
     );
     expect(cached?.finalizationState).toMatchObject({ status: 'pending', executionId: 'exec-winning' });
     expect(persisted?.finalizationState).toMatchObject({ status: 'pending', executionId: 'exec-winning' });
+    expect(info.mock.calls.filter(([message]) => message === 'finalize_state_transition')).toHaveLength(0);
+    expect(warn.mock.calls.filter(([message]) => message === 'finalize_state_update_rejected')).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith(
+      'finalize_state_update_rejected',
+      expect.objectContaining({ to: 'pending', reason: 'EXECUTION_MISMATCH' }),
+    );
+  });
+
+  it('emits one transition only after a DynamoDB finalization write succeeds', async () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const store = new DynamoSessionStore({ documentClient: asDocumentClient(client) });
+    const session = await store.createSession();
+    info.mockClear();
+
+    await store.markFinalizationQueued(session.sessionId, {
+      executionId: 'exec-dynamo-observed',
+      queuedAt: 10,
+      contractGeneration: session.contractGeneration ?? 'current',
+      observability: { source: 'finalize', reason: 'FINALIZE_REQUESTED' },
+    });
+
+    const transitionCalls = info.mock.calls.filter(([message]) => message === 'finalize_state_transition');
+    expect(transitionCalls).toHaveLength(1);
+    expect(transitionCalls[0]?.[1]).toMatchObject({ from: 'none', to: 'pending', changed: true });
+  });
+
+  it('emits changed false when a competing DynamoDB writer already persisted the requested state', async () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const store = new DynamoSessionStore({ documentClient: asDocumentClient(client) });
+    const session = await store.createSession();
+    const contractGeneration = session.contractGeneration ?? 'current';
+    info.mockClear();
+
+    client.runBeforeNextTransactWrite(() => {
+      client.mutateSessionRow(session.sessionId, (row) => {
+        const storedSession = row['session'] as Record<string, unknown>;
+        storedSession['finalizationContractGeneration'] = contractGeneration;
+        storedSession['finalizationState'] = {
+          status: 'pending',
+          executionId: 'exec-dynamo-idempotent',
+          queuedAt: 10,
+        };
+      });
+    });
+
+    await store.markFinalizationQueued(session.sessionId, {
+      executionId: 'exec-dynamo-idempotent',
+      queuedAt: 10,
+      contractGeneration,
+      observability: { source: 'finalize', reason: 'FINALIZE_REQUESTED' },
+    });
+
+    const transitionCalls = info.mock.calls.filter(([message]) => message === 'finalize_state_transition');
+    expect(transitionCalls).toHaveLength(1);
+    expect(transitionCalls[0]?.[1]).toMatchObject({
+      from: 'pending',
+      to: 'pending',
+      changed: false,
+      reason: 'IDEMPOTENT_RETRY',
+    });
   });
 
   it('rejects stale callback success for a competing execution ID', async () => {
@@ -1802,6 +2073,7 @@ describe('DynamoSessionStore', () => {
       },
       verificationResult: {
         status: 'success' as const,
+        failureCategory: 'none' as const,
         report: {
           status: 'success' as const,
           verifier_version: 'test',
@@ -1839,11 +2111,20 @@ describe('DynamoSessionStore', () => {
     expect(storedFinalizationResult).not.toHaveProperty('receiptRaw');
     expect(storedFinalizationResult).not.toHaveProperty('bitmapData');
     expect(storedVerificationResult).not.toHaveProperty('report');
+    expect(storedVerificationResult).toHaveProperty('failureCategory', 'none');
+    expect(storedVerificationResult).toHaveProperty('devModeReceipt', false);
     expect(storedSessionJson).not.toContain('receiptRaw');
     expect(storedSessionJson).not.toContain('private-bundle');
     expect(storedSessionJson).not.toContain('receipt-seal');
     expect(storedSessionJson).toContain(s3BundleKey);
     expect(storedSessionJson).toContain(s3ReportKey);
+
+    const restored = await new DynamoSessionStore({ documentClient: asDocumentClient(client) }).getSession(
+      session.sessionId,
+    );
+    expect(parseAwsPersistedFinalizationResult(restored?.finalizationResult)?.verificationResult).toMatchObject({
+      devModeReceipt: false,
+    });
   });
 
   it('saves and reads bitmap sidecars only for sessions with writable finalization authority', async () => {

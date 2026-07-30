@@ -1,7 +1,7 @@
 # Terraform Infrastructure Guide
 
 > **Status:** current target-account Terraform ownership and execution guide.
-> Last reconciled: 2026-07-13. The retired Amplify/local-workspace workflow is
+> Last reconciled: 2026-07-29. The retired Amplify/local-workspace workflow is
 > deliberately excluded and must not be used as a target deployment path.
 
 Terraform separates application runtime, foundation prerequisites, and
@@ -15,12 +15,12 @@ that are safe to keep in general project documentation.
 
 ## Terraform roots
 
-| Root                          | State identity                       | Owns                                                                                                                                                                          | Does not own                                                                                                 |
-| ----------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `infra/terraform/bootstrap/`  | `<account>/<environment>/bootstrap`  | Remote state, KMS, CodeConnections, CodePipeline/CodeBuild, deploy roles, artifact buckets, backend grants, GitHub trigger role                                               | App runtime, ECR workloads, secret values, production authorization                                          |
-| `infra/terraform/foundation/` | `<account>/<environment>/foundation` | ECR repositories, ECR signing authority, prover networking, release storage, secret containers, non-secret config containers, DNS/ACM handoff records                         | Lambda/API/DynamoDB/SQS/Step Functions/ECS tasks/CloudFront/static and proof buckets, image builds           |
-| `infra/terraform/app/`        | `<account>/<environment>/app`        | Static frontend, CloudFront and operator-gate keys, API Gateway/Hono Lambda, DynamoDB, SQS, Step Functions, ECS task definition, proof/report storage, alarms, runtime wiring | ECR repository creation, image publication, secret values, DNS zones, ACM issuance, production authorization |
-| `infra/terraform/legacy/`     | Retired legacy workspace/state       | Read-only retirement inventory                                                                                                                                                | New work, routine plan/apply, target state                                                                   |
+| Root                          | State identity                             | Owns                                                                                                                                                                          | Does not own                                                                                                 |
+| ----------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `infra/terraform/bootstrap/`  | `<account-alias>/<environment>/bootstrap`  | Remote state, KMS, CodeConnections, CodePipeline/CodeBuild, deploy roles, artifact buckets, backend grants, GitHub trigger role                                               | App runtime, ECR workloads, secret values, production authorization                                          |
+| `infra/terraform/foundation/` | `<account-alias>/<environment>/foundation` | ECR repositories, ECR signing authority, prover networking, release storage, secret containers, non-secret config containers, DNS/ACM handoff records                         | Lambda/API/DynamoDB/SQS/Step Functions/ECS tasks/CloudFront/static and proof buckets, image builds           |
+| `infra/terraform/app/`        | `<account-alias>/<environment>/app`        | Static frontend, CloudFront and operator-gate keys, API Gateway/Hono Lambda, DynamoDB, SQS, Step Functions, ECS task definition, proof/report storage, alarms, runtime wiring | ECR repository creation, image publication, secret values, DNS zones, ACM issuance, production authorization |
+| `infra/terraform/legacy/`     | Retired legacy workspace/state             | Read-only retirement inventory                                                                                                                                                | New work, routine plan/apply, target state                                                                   |
 
 Root-specific details live in the per-root operator `README.md` files, which
 remain in private operator documentation:
@@ -46,116 +46,187 @@ encryption, public-access blocking, bucket policy, and the S3 lockfile. Treat
 the state body as secret-bearing private data; never copy it into documentation,
 chat, CI summaries, or public exports.
 
-## Execution model
+## Selecting a deployment story
+
+Terraform root ownership does not by itself describe the full release
+sequence. In particular, every new source SHA used by a normal full App
+execution must first complete the Foundation lane at the same control SHA. The
+App lane may reuse an accepted Prover from a different source only when its
+recorded zkVM contract hash matches the hash recomputed from the App source.
+That Prover exact-links one immutable Toolchain artifact, which may also come
+from a different source SHA. Do not run an image lane merely to align source
+SHAs.
+
+| Change story                         | Required sequence                                    | Image behavior                                                              | Acceptance boundary                         |
+| ------------------------------------ | ---------------------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------- |
+| App/API/shared code or App Terraform | Foundation saved-plan -> App full saved-plan         | Reuse a contract-compatible accepted Prover; rebuild no ECR image           | App plan, smoke, and gated flow             |
+| Foundation Terraform                 | Foundation saved-plan                                | No image build                                                              | Foundation smoke and publication evidence   |
+| Bootstrap Terraform                  | Bootstrap saved-plan                                 | No image build                                                              | Revalidate every affected lane              |
+| Prover, guest, or Prover image input | Prover release -> App full saved-plan                | Build, scan, and managed-sign the Prover                                    | Prover promotion, App preflight, gated flow |
+| Toolchain image input or selection   | Toolchain release -> Prover release -> App full lane | Build or select Toolchain, then build and managed-sign the dependent Prover | Each promotion plus App preflight           |
+| Static presentation-only change      | Develop static-fast lane                             | Reuse the current accepted App and image authority                          | Static gate and lightweight smoke           |
+| `infra/terraform/legacy/**`          | No routine lane                                      | None                                                                        | Explicit retirement work only               |
+
+Run Toolchain only when its contents or accepted selection must change. Run
+Prover only when its image contents, ImageID or method version, selected
+Toolchain, or zkVM contract changes. Concrete start commands, approval
+procedures, and post-deploy checks remain in the private operator guide.
+
+## Lane shapes and shared controls
+
+Bootstrap and Foundation are conventional saved-plan lanes:
 
 ```text
-GitHub source
-  -> AWS CodePipeline
-  -> CodeBuild validation and saved Terraform plan
-  -> conditional scoped manual approval
-  -> CodeBuild applies the exact reviewed plan
-  -> post-apply smoke and retained evidence
+Source -> validate -> saved plan -> approval -> exact-plan apply -> smoke
+```
+
+Foundation smoke also publishes the immutable networking and image-signing
+authority coordinates consumed by later lanes. A successful Foundation apply
+does not accept an image digest.
+
+Toolchain and Prover have deliberately different trust boundaries:
+
+```text
+Toolchain:
+Source -> candidate approval -> build or exact retained selection
+       -> digest-bound scan/validation -> promotion approval -> accepted pointer
+
+Prover:
+Source -> resolve Foundation signing authority and Toolchain
+       -> build approval -> build/scan/managed signing
+       -> promotion approval -> accepted pointer
+```
+
+Toolchain images are not signed or cryptographically verified. Their
+digest-bound scan result and immutable provenance are retained, and promotion
+selects that authority for a later Prover build. The Prover image is managed
+signed, but the Prover release lane does not perform the cryptographic
+verification that authorizes App use. Only the App lane's packaged verifier
+cryptographically verifies the exact selected Prover digest.
+
+The full App lane includes that verification before the ordinary App saved
+plan:
+
+```text
+Source
+  -> conditional verifier state-refresh plan/approval/apply
+  -> verifier preflight plan/approval/apply/cryptographic verification
+  -> App deployment record and validation
+  -> App saved plan -> conditional approval -> exact-plan apply
+  -> static deploy -> smoke -> retained acceptance evidence
 ```
 
 Shared rules:
 
 - Verify the account alias, deployment environment, state scope, backend key,
-  and caller role for every execution.
-- Keep plan and apply roles separate. Apply consumes only the reviewed saved
-  plan.
-- In the develop app lane, manual approval may be skipped only for a normal
-  deployment whose saved plan is machine-proven empty. Rollback always requires
-  approval even when Terraform is empty, and protected production remains
-  unconditionally approval-gated. Parse failures, unresolved plan status, and
-  any resource, output, move, or import change fail closed to approval.
-- GitHub Actions may start or observe an allowed AWS pipeline; it must not read
-  Terraform state or runtime secrets.
-- Local app/foundation `plan` or `apply` is not acceptance evidence.
-- Local `terraform fmt` and any root-approved backend-disabled validation are
-  repository preflight, not substitutes for AWS deployment.
+  source SHA, and caller role for every execution.
+- Keep plan and apply roles separate. Each apply consumes only its reviewed
+  saved plan.
+- In the develop App lane, the ordinary App approval may be skipped only for a
+  normal deployment whose plan is machine-proven empty. Rollback always
+  requires approval even when Terraform is empty. Parse failures, unresolved
+  plan status, and any resource, output, move, or import change fail closed to
+  approval.
+- GitHub Actions may start or observe an allowed AWS pipeline; they must not
+  read Terraform state or runtime secrets.
+- Local App or Foundation `plan` and `apply` are not acceptance evidence.
+  Local `terraform fmt` and root-approved backend-disabled validation are
+  repository preflight only.
 - Never bypass `scripts/terraform/terraform-guarded.sh` inside a managed lane.
+- Protected production remains unconditionally approval-gated, and
+  `stark-prod/main` has no authorized live deployment path.
 
-## Selecting a lane
+## App modes and retained authority
 
-| Terraform change                | Lane                  | Image build                                                                       | Follow-up                                         |
-| ------------------------------- | --------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `infra/terraform/app/**`        | App full saved-plan   | No ECR image; normal rebuilds Lambda/frontend, rollback reuses retained artifacts | Gated integration smoke                           |
-| `infra/terraform/foundation/**` | Foundation saved-plan | None                                                                              | Image or app lane when changed outputs require it |
-| `infra/terraform/bootstrap/**`  | Bootstrap saved-plan  | None                                                                              | Live validation of every affected lane            |
-| `infra/terraform/legacy/**`     | No routine lane       | None                                                                              | Retirement work only                              |
+The full App lane supports `normal` and `rollback` deployment modes and also
+carries the DynamoDB recovery phase.
 
-Concrete start commands, approvals, build decisions, and post-deploy checks are
-retained in the private operator guide.
+### Normal
 
-The full app lane supports `normal` and `rollback` deployment modes. Normal
-deployment resolves the currently accepted release authority and produces
-immutable application artifacts for the selected source. Rollback requires the
-exact key, version, and checksum of a previously accepted app deployment
-record, revalidates its historical approval and release authority, and reuses
-the retained Lambda and static artifacts. The current pipeline source remains
-the control source; the accepted record supplies the deployable source.
+A normal deployment uses the current source as both control and deployable
+source. It consumes exact same-source Foundation publications, resolves a
+contract-compatible accepted Prover and its linked Toolchain, builds immutable
+static and Lambda artifacts, and cryptographically verifies the selected
+Prover before the App saved plan.
 
-The same saved-plan lane carries the DynamoDB recovery state through four
-explicit phases:
+### Rollback
+
+A rollback uses the current pipeline source as its control source but selects a
+previously accepted App deployment by exact object key, version, and body
+checksum. The lane revalidates that record's historical approval, release
+authority, verifier authority, and retained artifact coordinates before
+reusing its Lambda and static artifacts. Rollback never uses the normal
+empty-plan approval skip.
+
+### DynamoDB recovery
+
+The App saved-plan lane represents the served table pair through four explicit
+phases:
 
 - `primary_active` serves the Terraform-owned primary tables and has no
   recovery manifest;
 - `primary_quiesced` still serves the primary tables while disabling public
-  session creation and prover/verifier event-source consumption;
+  session creation and Prover/Verifier event-source consumption;
 - `replacement_quiesced` selects the validated replacement pair while keeping
   those admission and event-source paths disabled; and
 - `replacement_active` serves the validated replacement pair with normal
   admission and event-source behavior restored.
 
-Every phase other than `primary_active` is bound to immutable
-recovery-manifest coordinates. The plan records the validated selection, apply
-must consume that reviewed selection unchanged, and post-apply smoke checks the
-live table pair, admission state, Lambda configuration, and event-source
-mappings against the phase. Terraform switches the served pair; it does not
-copy or reconcile data between tables.
+Every phase other than `primary_active` is bound to immutable recovery-manifest
+coordinates. The plan records the validated selection, apply consumes it
+unchanged, and smoke checks the live table pair, admission state, Lambda
+configuration, and event-source mappings against the phase. Terraform switches
+the served pair; it does not copy or reconcile data.
 
-## App resources
+### Accepted App evidence
 
-The target app root manages:
+After smoke succeeds, the lane publishes create-only evidence under both the
+pipeline execution and a distinct acceptance attempt. It binds approval or the
+allowed normal empty-plan skip, verifier preflight, App plan/apply, release
+authority, recovery selection, and retained deployable coordinates. Mutable
+accepted pointers use conditional first-create or compare-and-swap updates.
+App authority is selected only by
+`accepted-deployments/stark-dev/develop/app/current.json`, never the retired
+`index.json`.
 
-- the private static frontend bucket, CloudFront OAC/distribution, and policies;
+## Workload resources
+
+### App root
+
+The App root manages:
+
+- the private static frontend bucket, CloudFront OAC/distribution, policies,
+  and develop-only operator-gate KMS keys and trusted key group;
 - the API Gateway HTTP API and Hono `public-api` Lambda;
-- DynamoDB/KMS resources for sessions, votes, rate limits, and the prover
-  semaphore, including the validated primary/replacement recovery selection;
-- the develop-only operator gate's versioned asymmetric KMS signing keys,
-  aliases, derived CloudFront public keys, and stable trusted key group;
-- proof dispatcher, finalization writer, verification worker, image-signature
-  gate, and semaphore-janitor Lambdas;
-- prover and verification SQS queues and DLQs;
-- Step Functions semaphore orchestration and the ECS/Fargate prover task
+- DynamoDB/KMS resources for sessions, votes, rate limits, the Prover
+  semaphore, and validated primary/replacement recovery selection;
+- proof dispatcher, finalization writer, verification worker, cryptographic
+  image-signature verifier, and semaphore-janitor Lambdas;
+- Prover and verification SQS queues and DLQs;
+- Step Functions semaphore orchestration and the ECS/Fargate Prover task
   definition;
-- the private proof/report bucket, versioning, and lifecycle;
-- passive CloudWatch alarms and log groups; and
+- the private proof/report bucket, versioning, lifecycle, and retention
+  controls;
+- CloudWatch log groups, alarms, closed-field metric filters, the compact
+  dashboard, and the normalized operations ledger;
+- the invariant-only SNS topic and optional fixed-path email subscription; and
 - non-secret SSM runtime wiring records.
 
-For a normal deployment, the app pipeline produces immutable static and Lambda
-artifacts and supplies them to the saved plan. Rollback instead supplies the
-exact retained artifacts from the selected accepted deployment. The app root
-does not build the prover image; it consumes a digest-pinned URI from accepted
-release authority.
+Only the verdict-invariant alarm has an SNS action. Other App-root alarms are
+passive evidence for operator diagnosis, and telemetry never changes a
+verification verdict.
 
-After smoke succeeds, the app lane publishes immutable evidence under the
-pipeline execution and a distinct acceptance attempt. That evidence binds the
-manual approval or allowed empty-plan skip, saved-plan and apply evidence,
-release authority, recovery selection, and retained deployable coordinates.
-Immutable objects are create-only; mutable accepted indexes use conditional
-first-create or compare-and-swap updates.
+The App root does not build or promote images. It consumes exact Foundation
+publications and a digest-pinned Prover from accepted release authority.
 
-## Foundation resources and image boundary
+### Foundation root
 
-The foundation root owns the prover/toolchain ECR repositories, Signer
-configuration, networking, release-manifest storage, and runtime secret/config
-containers. Dedicated toolchain and prover release lanes own each image build,
-scan, signing check, and promotion.
-
-A successful foundation apply does not accept an image digest. Mutable tags,
-direct CodeBuild output, local Docker builds, and operator-written manifests are
-not app deployment authority.
+The Foundation root owns the Prover and Toolchain ECR repositories, ECR managed
+signing configuration for the Prover, networking, release-manifest storage,
+and runtime secret/configuration containers. It publishes immutable handoff
+coordinates for later lanes but does not accept an image digest. Mutable tags,
+direct CodeBuild output, local Docker builds, and operator-written manifests
+are not App deployment authority.
 
 ## Secret and configuration boundary
 
@@ -197,12 +268,12 @@ and applying them from a workstation.
 
 ```bash
 aws sts get-caller-identity \
-  --profile stark-dev-admin \
+  --profile stark-dev-operator \
   --output json \
   --no-cli-pager
 
 aws codepipeline list-pipelines \
-  --profile stark-dev-admin \
+  --profile stark-dev-operator \
   --region ap-northeast-1 \
   --output json \
   --no-cli-pager

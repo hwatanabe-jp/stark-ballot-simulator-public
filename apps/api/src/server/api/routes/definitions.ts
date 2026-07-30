@@ -15,6 +15,7 @@ import { getSessionStatusHandler } from '../handlers/sessionStatus';
 import { getSthHandler } from '../handlers/sth';
 import { getVerificationBundleHandler, getVerificationReportHandler } from '../handlers/verificationBundles';
 import { getVerifyHandler } from '../handlers/verify';
+import { submitVerificationObservationHandler } from '../handlers/verificationObservation';
 import { runVerificationHandler } from '../handlers/verificationRun';
 import { submitVoteHandler } from '../handlers/vote';
 import { getZkvmInputHashHandler } from '../handlers/zkvmInputHash';
@@ -94,6 +95,12 @@ const apiRoutes: ApiRouteDefinition[] = [
     excludeFromLambda: true,
   }),
   defineRoute({ method: 'POST', path: '/verification/run', kind: 'mutation', handler: runVerificationHandler }),
+  defineRoute({
+    method: 'POST',
+    path: '/verification/observation',
+    kind: 'mutation',
+    handler: submitVerificationObservationHandler,
+  }),
 ];
 
 export function getApiRouteDefinitions(mode: ApiRouteMode = 'full'): ApiRouteDefinition[] {

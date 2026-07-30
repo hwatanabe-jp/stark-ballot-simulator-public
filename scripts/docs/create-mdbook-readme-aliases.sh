@@ -1,28 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
+IFS=$'\n\t'
 
 book_dir="${1:-public-book/book}"
 
-sections=(
-  "protocol"
-  "zkvm"
-  "verification"
-  "tamper"
-  "aws"
-  "api"
-  "reproducibility"
-  "decisions"
-)
+if [[ ! -d "${book_dir}" ]]; then
+  echo "error: mdBook output directory not found: ${book_dir}" >&2
+  exit 1
+fi
 
-for section in "${sections[@]}"; do
-  section_dir="${book_dir}/${section}"
-  target="${section_dir}/index.html"
+shopt -s nullglob
+section_indexes=("${book_dir}"/*/index.html)
+shopt -u nullglob
+
+if ((${#section_indexes[@]} == 0)); then
+  echo "error: no top-level section index files found under ${book_dir}" >&2
+  exit 1
+fi
+
+for target in "${section_indexes[@]}"; do
+  section_dir="${target%/index.html}"
   alias_file="${section_dir}/README.html"
-
-  if [[ ! -f "${target}" ]]; then
-    echo "skip: ${target} not found" >&2
-    continue
-  fi
 
   cat >"${alias_file}" <<'HTML'
 <!doctype html>

@@ -36,6 +36,7 @@ import {
   resolveVerificationClientApiError,
 } from '@stark-ballot/web/verification/client-api-errors';
 import { useVerificationData } from './hooks/useVerificationData';
+import { useVerificationObservation } from './hooks/useVerificationObservation';
 import { useVerificationSequence } from './hooks/useVerificationSequence';
 import {
   buildBundleCandidates,
@@ -443,6 +444,15 @@ export default function VerifyPage(): React.ReactElement {
     data?.verificationStatus === 'dev_mode' ||
     data?.verificationReport?.status === 'dev_mode' ||
     data?.verificationReport?.dev_mode_receipt === true;
+
+  useVerificationObservation({
+    data,
+    sequenceComplete,
+    hasCheckPending,
+    serverValidated,
+    verificationStatus: actualStarkStatus,
+    sessionIdentityRef: expectedSessionIdentityRef,
+  });
 
   const starkTimeoutDetected = useMemo(
     () => isStarkTimeoutError(stepStatusMap.stark_verification.error),

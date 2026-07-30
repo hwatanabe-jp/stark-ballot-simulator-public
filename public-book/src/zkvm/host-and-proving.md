@@ -2,10 +2,8 @@
 
 この章では、ホストプログラムが zkVM 入力を組み立て、同期モードまたは非同期モードで STARK 証明を生成する流れを扱います。
 
-証明パスは、ローカルプロセスとして起動する同期モードと、ECS Fargate タスクとして実行する非同期モードの 2 つです。
-どちらのパスも同じ Rust ホスト CLI / 入出力契約を使用します。
-同期モードはローカルにビルドされた `zkvm/target/release/host` を起動し、非同期モードは Fargate 用コンテナに組み込まれた production feature 有効のホストバイナリを起動します。
-入力構築からレシート出力までの流れを、両モードの差異とともに説明します。
+証明パスは、ローカルにビルドされた `zkvm/target/release/host` をローカルプロセスとして起動する同期モードと、Fargate 用コンテナに組み込まれた production feature 有効のホストバイナリを ECS Fargate タスクとして実行する非同期モードの 2 つで、どちらも同じ Rust ホスト CLI / 入出力契約を使用します。
+以下では、入力構築からレシート出力までの流れを両モードの差異とともに説明します。
 
 ## パイプライン全体像
 
@@ -112,7 +110,7 @@ flowchart TD
 
 入力 JSON は TypeScript 側のエグゼキューターが事前に正規化して生成します（UUID/ハッシュ文字列をバイト配列へ変換）。
 
-ImageID の確認だけを行う場合は `host --print-image-id [--json]` を使います。
+Image ID の確認だけを行う場合は `host --print-image-id [--json]` を使います。
 このモードでは入力ファイルを読まず、証明生成やアーティファクト出力も行いません。
 `--json` 付きでは `imageId` と `methodVersion` を含む JSON を stdout に出力します。
 
@@ -141,8 +139,7 @@ ImageID の確認だけを行う場合は `host --print-image-id [--json]` を�
 | `*-bitmap.json`      | counted bitmap の厳密 artifact（`includedBitmapRoot` と対応） |
 | `*-seen-bitmap.json` | presented bitmap の厳密 artifact（`seenBitmapRoot` と対応）   |
 
-非同期モードでは、これらの host 生出力は `included-bitmap.json` と `seen-bitmap.json` として `bundle.zip` の隣に配置されます。
-どちらも非公開アーティファクトであり、配布対象アーカイブ `bundle.zip` には含めません。
+非同期モードでの配置と非同梱の扱いは [配布対象アーカイブの構築](#配布対象アーカイブの構築) を参照してください。
 
 ## 同期モード
 
@@ -196,9 +193,9 @@ sequenceDiagram
   participant S3 as S3
   participant CB as コールバック Lambda
 
-  S->>SQS: finalization リクエスト
+  S->>S3: 入力 JSON アップロード
+  S->>SQS: finalization リクエスト<br/>(inputS3Key を含む)
   SQS->>D: work message
-  D->>S3: 入力 JSON アップロード
   D->>SFN: SFN 実行開始<br/>(inputS3Key を渡す)
   Note over SFN: イメージ署名チェック
   SFN->>ECS: プローバータスク起動
@@ -217,24 +214,24 @@ Step Functions はプローバータスク起動前にコンテナイメージ�
 
 ### 配布対象アーカイブの構築
 
-非同期モードでは、ホストバイナリの出力のうち秘密データを含まないファイルだけを `bundle.zip` に同梱します。
-`input.json` などの秘密入力は含めません。
-同梱対象の一覧、整合性検査ルール、取得経路は [バンドル構造](../verification/bundle-structure.md) を参照してください。
-`public-input.json` の項目と `inputCommitment` の関係は [入力コミットメント](../protocol/input-commitment.md) を参照してください。
+非同期モードでは、ホストバイナリの出力のうち秘密データを含まないファイルだけを `bundle.zip` に同梱し、`input.json` などの秘密入力は含めません。
+同梱対象の一覧、整合性検査ルール、取得経路は [バンドル構造](../verification/bundle-structure.md) を、`public-input.json` の項目と `inputCommitment` の関係は [入力コミットメント](../protocol/input-commitment.md) を参照してください。
 
-async Docker entrypoint は methodVersion 14 の host output を受け付け、`journal.json`、`public-input.json`、`election-manifest.json`、`close-statement.json` を生成する際に methodVersion と `inputCommitment` の整合性を検査します。
-methodVersion 14 契約と一致しない host artifact は fail-closed で停止します。
-`journal.json` は `bundle.zip` の中に生成される公開アーティファクトです。
-非同期 S3 出力では、通常はホスト生出力の `*-output.json` と `*-receipt.json`、生成済みの公開アーティファクト、private bitmap sibling、`bundle.zip` が保存され、固定名の standalone `journal.json` は sibling object として保存しません。
+async Docker entrypoint は、`journal.json`、`public-input.json`、`election-manifest.json`、`close-statement.json` を生成する際に methodVersion（現行 14）と `inputCommitment` の整合性を検査し、契約と一致しない host artifact は fail-closed で停止します。
+非同期 S3 出力では、通常はホスト生出力の `*-output.json` と `*-receipt.json`、生成済みの公開アーティファクト、private bitmap sibling（`included-bitmap.json` / `seen-bitmap.json`。非公開のまま `bundle.zip` には同梱しない）、`bundle.zip` が保存されます。
+`journal.json` は `bundle.zip` の中に生成される公開アーティファクトであり、固定名の standalone `journal.json` は sibling object として保存しません。
+
+entrypoint が非ゼロ終了した場合は、失敗分類だけを持つ private sibling artifact `failure-marker.json` を同じ execution scope に best-effort で保存します（分類の制限、create-only 保存、finalization writer による検証などの契約は [非同期プローバー](../aws/async-prover.md) を参照）。
 
 ### 非同期モードの特性
 
-| 項目           | 値                                                          |
-| -------------- | ----------------------------------------------------------- |
-| タイムアウト   | 15 分（デフォルト、環境変数で変更可能）                     |
-| リトライ       | S3 アップロードは指数バックオフで 3 回リトライ              |
-| エラー処理     | Step Functions がタスク失敗を検出し、失敗コールバックを実行 |
-| ステータス確認 | クライアントは `/api/sessions/:id/status` でポーリング      |
+| 項目                   | 値                                                                                                                          |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| ホスト実行タイムアウト | 15 分（900 秒）がデフォルト。entrypoint の `ZKVM_TIMEOUT_SECONDS` で変更可能                                                |
+| ECS タスクタイムアウト | 30 分（1800 秒）がデフォルト。Terraform の `prover_task_timeout_seconds` が Step Functions の `RunProver` に設定            |
+| リトライ               | S3 アップロードはデフォルトで最大 3 回の合計試行（初回 + 最大 2 回のリトライ）。再試行間隔は指数バックオフ                  |
+| エラー処理             | entrypoint が private failure marker を best-effort で保存し、Step Functions がタスク失敗を検出して failure callback を実行 |
+| ステータス確認         | クライアントは `/api/sessions/:sessionId/status` でポーリング                                                               |
 
 ## 開発モードの動作
 

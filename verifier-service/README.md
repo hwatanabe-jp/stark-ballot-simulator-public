@@ -107,14 +107,13 @@ For deployed or bundle-based flows, you can resolve the mapped ImageID from
 
 `read-image-id.mjs` supports `--variant default|x86_64`:
 
-- `default` (default): always uses `expectedImageID`
-- `x86_64`: requires `expectedImageID_x86_64`
+- `default` (default): resolves `variants.default`
+- `x86_64`: resolves `variants.x86_64`
 
-For the current methodVersion `14`, the checked-in mapping retains both the
-target-account default/ARM64 ImageID and the local `x86_64` ImageID. The
-develop app handoff helpers treat `default` / `expectedImageID` as the active
-deployment evidence when multiple variants are present. Use `x86_64`
-explicitly for local receipts produced by the local x86_64 guest build.
+Only `state: "confirmed"` variants resolve. An unconfirmed variant fails
+closed; it does not fall back to the other architecture. For methodVersion
+`14`, `x86_64` is the confirmed local production guest authority, while the
+target `default` is confirmed only from an accepted managed Prover release.
 
 ```bash
 # Current local x86_64 verification

@@ -93,8 +93,6 @@ locals {
     enable_development_pipeline                    = true
     github_full_repository_id                      = var.github_full_repository_id
     pipeline_artifact_bucket_name                  = local.pipeline_artifact_bucket_name
-    pipeline_artifact_retention_days               = var.pipeline_artifact_retention_days
-    pipeline_log_retention_days                    = var.pipeline_log_retention_days
     project_name                                   = var.project_name
     source_branch                                  = var.source_branch
     state_backend_key                              = var.state_backend_key
@@ -270,6 +268,7 @@ data "aws_iam_policy_document" "bootstrap_deploy_permissions_boundary" {
       ]
       resources = [
         "arn:aws:codebuild:${var.aws_region}:${var.aws_account_id}:project/${var.project_name}-pipeline-${var.account_alias}-${var.deployment_environment}*",
+        local.foundation_image_signing_authority_resolver_project_arn,
         "arn:aws:codepipeline:${var.aws_region}:${var.aws_account_id}:${var.project_name}-pipeline-${var.account_alias}-${var.deployment_environment}*",
       ]
     }
@@ -554,6 +553,13 @@ resource "aws_iam_policy" "bootstrap_deploy_permissions_boundary" {
   name   = local.bootstrap_deploy_permissions_boundary_policy_name
   policy = data.aws_iam_policy_document.bootstrap_deploy_permissions_boundary[0].json
   tags   = local.common_tags
+
+  lifecycle {
+    precondition {
+      condition     = length(jsonencode(jsondecode(data.aws_iam_policy_document.bootstrap_deploy_permissions_boundary[0].json))) <= 6144
+      error_message = "The bootstrap deploy permissions boundary must remain within the IAM 6,144-character quota."
+    }
+  }
 }
 
 data "aws_iam_policy_document" "github_trigger_assume_role" {
@@ -722,15 +728,15 @@ resource "aws_s3_bucket_lifecycle_configuration" "pipeline_artifacts" {
     filter {}
 
     expiration {
-      days = var.pipeline_artifact_retention_days
+      days = local.storage_retention.bootstrap_pipeline_artifact_days
     }
 
     noncurrent_version_expiration {
-      noncurrent_days = var.pipeline_artifact_retention_days
+      noncurrent_days = local.storage_retention.bootstrap_pipeline_artifact_days
     }
 
     abort_incomplete_multipart_upload {
-      days_after_initiation = 7
+      days_after_initiation = local.storage_retention.incomplete_multipart_retention_days
     }
   }
 }
@@ -787,7 +793,7 @@ resource "aws_cloudwatch_log_group" "pipeline_codebuild" {
   for_each = local.pipeline_enabled ? toset(local.codebuild_project_names) : toset([])
 
   name              = "/aws/codebuild/${each.key}"
-  retention_in_days = var.pipeline_log_retention_days
+  retention_in_days = local.storage_retention.bootstrap_codebuild_log_days
   tags              = local.common_tags
 }
 
@@ -1040,6 +1046,7 @@ data "aws_iam_policy_document" "terraform_plan" {
     ]
     resources = ["*"]
   }
+
 }
 
 resource "aws_iam_role_policy" "terraform_plan" {
@@ -1265,6 +1272,7 @@ data "aws_iam_policy_document" "terraform_apply_app_lane_policy_admin" {
     resources = concat(
       local.app_lane_management_policy_arns,
       local.bootstrap_apply_managed_policy_arns,
+      local.app_deploy_permissions_boundary_policy_arns,
       local.app_deployment_managed_policy_arns,
     )
 
@@ -1291,6 +1299,7 @@ data "aws_iam_policy_document" "terraform_apply_app_lane_policy_admin" {
       variable = "aws:RequestTag/StateScope"
       values = [
         var.state_scope,
+        "app",
         "foundation",
       ]
     }
@@ -1391,6 +1400,17 @@ resource "aws_iam_policy" "terraform_apply_app_lane_policy_admin" {
   tags   = local.common_tags
 }
 
+check "terraform_apply_app_lane_policy_admin_size" {
+  assert {
+    condition = (
+      !local.pipeline_enabled
+      || !local.app_pipeline_enabled
+      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.terraform_apply_app_lane_policy_admin[0].json))) <= 6144, false)
+    )
+    error_message = "The bootstrap app-lane policy-admin managed policy must remain within the IAM 6,144-character quota."
+  }
+}
+
 resource "aws_iam_role_policy_attachment" "terraform_apply_app_lane_policy_admin" {
   count = local.pipeline_enabled && local.app_pipeline_enabled ? 1 : 0
 
@@ -1404,6 +1424,16 @@ resource "aws_iam_role_policy" "terraform_apply" {
   name   = "${local.terraform_apply_role_name}-policy"
   role   = aws_iam_role.terraform_apply[0].id
   policy = data.aws_iam_policy_document.terraform_apply[0].json
+}
+
+check "terraform_apply_inline_policy_size" {
+  assert {
+    condition = (
+      !local.pipeline_enabled
+      || try(length(data.aws_iam_policy_document.terraform_apply[0].json) <= 10240, false)
+    )
+    error_message = "The bootstrap Terraform apply inline policy must remain within the IAM 10,240-character role-policy quota."
+  }
 }
 
 data "aws_iam_policy_document" "terraform_apply_artifact_management" {
@@ -1464,6 +1494,29 @@ data "aws_iam_policy_document" "terraform_apply_artifact_management" {
   }
 
   statement {
+    sid    = "ReadBootstrapArtifactKeyMetadata"
+    effect = "Allow"
+
+    actions = [
+      "kms:DescribeKey",
+      "kms:GetKeyPolicy",
+      "kms:GetKeyRotationStatus",
+      "kms:ListResourceTags",
+    ]
+    resources = ["arn:aws:kms:${var.aws_region}:${var.aws_account_id}:key/*"]
+
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "kms:ResourceAliases"
+      values = [
+        local.artifact_kms_alias,
+        local.app_artifact_kms_alias,
+        local.foundation_artifact_kms_alias,
+      ]
+    }
+  }
+
+  statement {
     sid    = "ListBootstrapKmsAliases"
     effect = "Allow"
 
@@ -1489,11 +1542,7 @@ data "aws_iam_policy_document" "terraform_apply_artifact_management" {
         local.codebuild_log_group_arn_pattern,
         "${local.codebuild_log_group_arn_pattern}:*",
       ],
-      local.foundation_codebuild_log_group_arns,
-      [
-        for arn in local.foundation_codebuild_log_group_arns :
-        "${arn}:*"
-      ],
+      local.foundation_bootstrap_managed_codebuild_log_group_resource_arn_patterns,
     )
   }
 
@@ -1517,8 +1566,20 @@ data "aws_iam_policy_document" "terraform_apply_artifact_management" {
       "s3:PutBucketPublicAccessBlock",
       "s3:PutBucketTagging",
       "s3:PutBucketVersioning",
+      "s3:PutLifecycleConfiguration",
     ]
     resources = [aws_s3_bucket.pipeline_artifacts[0].arn]
+  }
+
+  statement {
+    sid    = "ManageStateBucketLifecycle"
+    effect = "Allow"
+
+    actions = [
+      "s3:GetLifecycleConfiguration",
+      "s3:PutLifecycleConfiguration",
+    ]
+    resources = [aws_s3_bucket.state.arn]
   }
 }
 
@@ -1530,6 +1591,16 @@ resource "aws_iam_policy" "terraform_apply_artifact_management" {
   name   = local.bootstrap_apply_artifact_management_policy_name
   policy = data.aws_iam_policy_document.terraform_apply_artifact_management[0].json
   tags   = local.common_tags
+}
+
+check "terraform_apply_artifact_management_policy_size" {
+  assert {
+    condition = (
+      !local.pipeline_enabled
+      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.terraform_apply_artifact_management[0].json))) <= 6144, false)
+    )
+    error_message = "The bootstrap artifact-management managed policy must remain within the IAM 6,144-character quota."
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "terraform_apply_artifact_management" {
@@ -1682,6 +1753,7 @@ resource "aws_codebuild_project" "terraform_apply" {
         }
         build = {
           commands = [
+            "set -eu",
             "test -n \"$CODEBUILD_SRC_DIR_PlanOutput\"",
             "cp \"$CODEBUILD_SRC_DIR_PlanOutput\"/infra/terraform/bootstrap/.terraform.lock.hcl infra/terraform/bootstrap/.terraform.lock.hcl",
             "cp \"$CODEBUILD_SRC_DIR_PlanOutput\"/infra/terraform/bootstrap/tfplan infra/terraform/bootstrap/tfplan",
@@ -1831,7 +1903,7 @@ resource "aws_codepipeline" "development" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/bootstrap/tfplan.txt and infra/terraform/bootstrap/tfplan.sha256 for ${var.account_alias}/${var.deployment_environment}/${var.state_scope}."
+        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/bootstrap/tfplan.txt and PlanOutput/infra/terraform/bootstrap/tfplan.sha256 for ${var.account_alias}/${var.deployment_environment}/${var.state_scope}."
       }
     }
   }

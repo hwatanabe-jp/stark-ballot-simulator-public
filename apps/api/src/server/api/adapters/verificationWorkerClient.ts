@@ -35,6 +35,16 @@ function decodePayload(payload?: Uint8Array): string {
   return Buffer.from(payload).toString('utf-8');
 }
 
+function classifyFunctionError(value: string): 'handled' | 'unhandled' | 'unknown' {
+  if (value === 'Handled') {
+    return 'handled';
+  }
+  if (value === 'Unhandled') {
+    return 'unhandled';
+  }
+  return 'unknown';
+}
+
 export async function invokeVerificationWorker(
   payload: VerificationWorkerPayload,
 ): Promise<VerificationWorkerResponse> {
@@ -47,17 +57,16 @@ export async function invokeVerificationWorker(
   });
 
   const response = await client.send(command);
-  const decoded = decodePayload(response.Payload);
 
   if (response.FunctionError) {
     logger.error('[VerificationWorkerClient] verification-worker returned FunctionError', {
-      functionName,
-      functionError: response.FunctionError,
-      payload: decoded || undefined,
+      function_error: classifyFunctionError(response.FunctionError),
+      response_payload_present: Boolean(response.Payload?.byteLength),
     });
     throw new Error('verification-worker invocation failed');
   }
 
+  const decoded = decodePayload(response.Payload);
   if (!decoded) {
     throw new Error('verification-worker returned empty payload');
   }

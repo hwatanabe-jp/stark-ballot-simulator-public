@@ -36,6 +36,5 @@ resource "terraform_data" "ecr_signing_configuration" {
 
   depends_on = [
     aws_ecr_repository.prover,
-    aws_ecr_repository.toolchain,
   ]
 }

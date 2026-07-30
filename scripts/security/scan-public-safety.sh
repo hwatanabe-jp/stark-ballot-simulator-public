@@ -120,6 +120,13 @@ my %allowed_account_ids = map { $_ => 1 } qw(
   999999999999
 );
 
+my %allowed_public_distribution_urls = map { $_ => 1 } qw(
+  https://amazon-ecr-credential-helper-releases.s3.us-east-2.amazonaws.com/0.12.0/linux-amd64/docker-credential-ecr-login
+  https://amazon-ecr-credential-helper-releases.s3.us-east-2.amazonaws.com/0.12.0/linux-arm64/docker-credential-ecr-login
+);
+
+my $raw_s3_object_url_regex = qr{https://(?:[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\.s3(?:\.dualstack)?(?:[.-][a-z0-9-]+)?\.amazonaws\.com/[^\s"'\x60<>?#]+|s3(?:\.dualstack)?(?:[.-][a-z0-9-]+)?\.amazonaws\.com/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/[^\s"'\x60<>?#]+)}i;
+
 my @simple_rules = (
   ['aws_access_key_id', qr/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
   ['private_key_block', qr/-----BEGIN (?:RSA |EC |OPENSSH |DSA |)?PRIVATE KEY-----/],
@@ -138,7 +145,6 @@ my @simple_rules = (
   ['personal_mfa_device_name', qr/\b(?:mfa\/)?smartphone_\d+\b/],
   ['gpg_fingerprint', qr/\b(?:pass init|Password store initialized for)\s+[0-9A-F]{32,}\b/],
   ['aws_presigned_url', qr{https?://[^\s"'`<>]+[?&][^\s"'`<>]*(?:X-Amz-Algorithm=AWS4-HMAC-SHA256|X-Amz-Credential=[^&\s"'`<>]{16,}|X-Amz-Security-Token=[A-Za-z0-9%._~+/=-]{16,}|X-Amz-Signature=[0-9a-f]{16,})}i],
-  ['raw_s3_object_url', qr{https://(?:[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\.s3(?:\.dualstack)?(?:[.-][a-z0-9-]+)?\.amazonaws\.com/[^\s"'\x60<>?#]+|s3(?:\.dualstack)?(?:[.-][a-z0-9-]+)?\.amazonaws\.com/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/[^\s"'\x60<>?#]+)}i],
   ['cloudfront_signed_cookie', qr/\bCloudFront-(?:Policy|Signature|Key-Pair-Id)=[A-Za-z0-9%._~+\/=-]{8,}(?=.*\bCloudFront-(?:Policy|Signature|Key-Pair-Id)=)/],
 );
 
@@ -180,6 +186,12 @@ while (my $line = <$fh>) {
     if ($line =~ $regex) {
       print "$display_path:$.: $name\n";
     }
+  }
+
+  while ($line =~ /($raw_s3_object_url_regex)/g) {
+    my $url = $1;
+    next if $allowed_public_distribution_urls{$url};
+    print "$display_path:$.: raw_s3_object_url\n";
   }
 
   for my $rule (@account_rules) {

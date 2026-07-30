@@ -13,6 +13,7 @@ import {
   buildAuthenticatedReportDownloadUrl,
   buildBundleCandidates,
   buildDetectionReceipt,
+  buildVerificationObservationPayload,
   parseVerificationPayload,
   buildReportCandidates,
 } from './verification-data';
@@ -127,6 +128,92 @@ describe('parseVerificationPayload', () => {
     });
 
     expect(parsed.verificationExecutionId).toBeUndefined();
+  });
+});
+
+describe('buildVerificationObservationPayload', () => {
+  const castCheckIds = [
+    'cast_receipt_present',
+    'cast_choice_range',
+    'cast_random_format',
+    'cast_commitment_match',
+  ] as const;
+
+  const buildCastChecks = (
+    overrides: Partial<Record<(typeof castCheckIds)[number], 'success' | 'failed' | 'not_run' | 'pending'>> = {},
+  ) =>
+    castCheckIds.map((id) => {
+      const definition = VERIFICATION_CHECK_DEFINITIONS.find((candidate) => candidate.id === id);
+      if (!definition) {
+        throw new Error(`Missing verification check definition: ${id}`);
+      }
+      return {
+        id,
+        status: overrides[id] ?? 'success',
+        evidence: definition.evidence,
+        inputs: definition.inputs,
+      };
+    });
+
+  it('projects only the exact execution ID and four browser-local cast statuses', () => {
+    const payload = buildVerificationObservationPayload({
+      verificationExecutionId: 'execution-1',
+      verificationChecks: buildCastChecks({ cast_commitment_match: 'failed' }),
+      userVote: {
+        commitment: `0x${'1'.repeat(64)}`,
+        voteId: 'vote-sensitive',
+      },
+      voteReceipt: {
+        voteId: 'vote-sensitive',
+        commitment: `0x${'1'.repeat(64)}`,
+        bulletinIndex: 0,
+        bulletinRootAtCast: `0x${'2'.repeat(64)}`,
+        timestamp: 1,
+      },
+    });
+
+    expect(payload).toEqual({
+      verificationExecutionId: 'execution-1',
+      castChecks: {
+        cast_receipt_present: 'success',
+        cast_choice_range: 'success',
+        cast_random_format: 'success',
+        cast_commitment_match: 'failed',
+      },
+    });
+    expect(JSON.stringify(payload)).not.toContain('vote-sensitive');
+    expect(Object.keys(payload ?? {})).toEqual(['verificationExecutionId', 'castChecks']);
+    expect(payload).not.toHaveProperty('choice');
+    expect(payload).not.toHaveProperty('random');
+    expect(payload).not.toHaveProperty('receipt');
+  });
+
+  it('refuses incomplete, duplicate, or non-terminal cast observations', () => {
+    const checks = buildCastChecks();
+    const firstCheck = checks.at(0);
+    if (!firstCheck) {
+      throw new Error('Expected a cast check fixture');
+    }
+
+    expect(
+      buildVerificationObservationPayload({
+        verificationExecutionId: 'execution-1',
+        verificationChecks: checks.slice(1),
+      }),
+    ).toBeNull();
+    expect(
+      buildVerificationObservationPayload({
+        verificationExecutionId: 'execution-1',
+        verificationChecks: [...checks, firstCheck],
+      }),
+    ).toBeNull();
+    expect(
+      buildVerificationObservationPayload({
+        verificationExecutionId: 'execution-1',
+        verificationChecks: buildCastChecks({ cast_choice_range: 'pending' }),
+      }),
+    ).toBeNull();
+    expect(buildVerificationObservationPayload({ verificationChecks: checks })).toBeNull();
   });
 });
 

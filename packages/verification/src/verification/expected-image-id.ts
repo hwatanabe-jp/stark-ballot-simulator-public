@@ -23,7 +23,7 @@ export async function resolveExpectedImageId(
   }
 
   if (options.legacyExpectedImageIdPoc && options.legacyExpectedImageIdPoc.length > 0) {
-    logger.warn('[ImageID] EXPECTED_IMAGEID_POC is deprecated; ignoring legacy override');
+    logger.warn('legacy_image_id_override_ignored');
   }
 
   if (methodVersion !== undefined && methodVersion !== CURRENT_METHOD_VERSION) {

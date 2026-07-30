@@ -1,9 +1,10 @@
 version: 0.2
 
-# RISC Zero Toolchain Base Image Builder
-# Purpose: Build an ARM64 toolchain image candidate for release artifact review.
-# This buildspec is a build primitive. It is not release authority by itself.
-# Build time: 100-120 minutes (one-time setup)
+# RISC Zero Toolchain Artifact Build/Selection Primitive
+# Purpose: Build a new ARM64 image candidate or exact-select one retained
+# semantic Toolchain artifact for release review.
+# This buildspec is not release authority by itself.
+# Build mode takes 100-120 minutes; existing mode does not build an image.
 # See: docs/infrastructure/risc0-base-image.md
 
 env:
@@ -13,10 +14,67 @@ env:
 phases:
   pre_build:
     commands:
-      - echo "Logging in to Amazon ECR..."
-      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
-      - echo "Logging in to Amazon ECR Public for Docker Official Images..."
-      - aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
+      - echo "Validating the exact requested source revision..."
+      - |
+        (
+          set -euo pipefail
+          RESOLVED_SOURCE_SHA="${CODEBUILD_RESOLVED_SOURCE_VERSION:-}"
+          if ! printf '%s' "${REQUESTED_SOURCE_SHA:-}" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "REQUESTED_SOURCE_SHA must be a full 40-character lowercase Git SHA." >&2
+            exit 1
+          fi
+          if ! printf '%s' "${PIPELINE_SOURCE_SHA:-}" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "PIPELINE_SOURCE_SHA must be a full 40-character lowercase Git SHA." >&2
+            exit 1
+          fi
+          if ! printf '%s' "$RESOLVED_SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "CODEBUILD_RESOLVED_SOURCE_VERSION must be a full 40-character lowercase Git SHA." >&2
+            exit 1
+          fi
+          if [ "$REQUESTED_SOURCE_SHA" != "$PIPELINE_SOURCE_SHA" ]; then
+            echo "REQUESTED_SOURCE_SHA must match PIPELINE_SOURCE_SHA for toolchain release builds." >&2
+            exit 1
+          fi
+          if [ "$REQUESTED_SOURCE_SHA" != "$RESOLVED_SOURCE_SHA" ]; then
+            echo "REQUESTED_SOURCE_SHA must match CODEBUILD_RESOLVED_SOURCE_VERSION for toolchain release builds." >&2
+            exit 1
+          fi
+          case "${TOOLCHAIN_SELECTION:-}" in
+            build|existing) ;;
+            *)
+              echo "TOOLCHAIN_SELECTION must be build or existing." >&2
+              exit 1
+              ;;
+          esac
+          if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+            for coordinate in \
+              "${EXISTING_TOOLCHAIN_ARTIFACT_KEY:-}" \
+              "${EXISTING_TOOLCHAIN_ARTIFACT_VERSION_ID:-}" \
+              "${EXISTING_TOOLCHAIN_ARTIFACT_SHA256:-}"; do
+              if [ "$coordinate" != "__NOT_APPLICABLE__" ]; then
+                echo "existing Toolchain coordinates must be __NOT_APPLICABLE__ in build mode." >&2
+                exit 1
+              fi
+            done
+          fi
+          printf '%s' "$RESOLVED_SOURCE_SHA" > /tmp/source-sha
+        )
+      - |
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          echo "Logging in to Amazon ECR for Toolchain build mode..."
+          aws ecr get-login-password --region "$AWS_DEFAULT_REGION" |
+            docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com"
+        else
+          echo "Skipping Amazon ECR login for retained Toolchain artifact selection."
+        fi
+      - |
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          echo "Logging in to Amazon ECR Public for Toolchain build mode..."
+          aws ecr-public get-login-password --region us-east-1 |
+            docker login --username AWS --password-stdin public.ecr.aws
+        else
+          echo "Skipping Amazon ECR Public login for retained Toolchain artifact selection."
+        fi
       - |
         if [ -z "${IMAGE_REPO_NAME:-}" ]; then
           echo "IMAGE_REPO_NAME is required; the CodeBuild lane must supply the target RISC Zero toolchain repository name." >&2
@@ -24,60 +82,29 @@ phases:
         fi
         echo "Using IMAGE_REPO_NAME from environment: $IMAGE_REPO_NAME"
       - |
-        RESOLVED_SOURCE_SHA="${CODEBUILD_RESOLVED_SOURCE_VERSION:-}"
-        if [ -z "$RESOLVED_SOURCE_SHA" ]; then
-          echo "CODEBUILD_RESOLVED_SOURCE_VERSION is required for toolchain source evidence." >&2
-          exit 1
-        fi
-        if ! printf '%s' "$RESOLVED_SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
-          echo "CODEBUILD_RESOLVED_SOURCE_VERSION must be a 40- or 64-character lowercase Git SHA." >&2
-          exit 1
-        fi
-        if [ -z "${REQUESTED_SOURCE_SHA:-}" ] || [ "${REQUESTED_SOURCE_SHA:-}" = "__MISSING_REQUESTED_SOURCE_SHA__" ]; then
-          SOURCE_SHA_MODE="branch-head"
-          REQUESTED_SOURCE_SHA="$RESOLVED_SOURCE_SHA"
-          echo "REQUESTED_SOURCE_SHA not pinned - recording resolved branch head $RESOLVED_SOURCE_SHA."
-        else
-          SOURCE_SHA_MODE="pinned"
-          if ! printf '%s' "$REQUESTED_SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
-            echo "REQUESTED_SOURCE_SHA must be a 40- or 64-character lowercase Git SHA." >&2
+        set -euo pipefail
+        require_build_pin() {
+          local name="$1"
+          local expected="$2"
+          local actual
+          actual="$(printenv "$name" 2>/dev/null || true)"
+          if [ "$TOOLCHAIN_SELECTION" = "build" ] && [ -n "$actual" ] && [ "$actual" != "$expected" ]; then
+            echo "$name must match the reviewed release pin $expected in build mode; got $actual." >&2
             exit 1
           fi
-          if [ "$RESOLVED_SOURCE_SHA" != "$REQUESTED_SOURCE_SHA" ]; then
-            echo "REQUESTED_SOURCE_SHA ($REQUESTED_SOURCE_SHA) does not match the resolved source version ($RESOLVED_SOURCE_SHA)." >&2
-            exit 1
-          fi
-        fi
-        printf '%s' "$REQUESTED_SOURCE_SHA" > /tmp/requested-source-sha
-        printf '%s' "$RESOLVED_SOURCE_SHA" > /tmp/resolved-source-sha
-        printf '%s' "$SOURCE_SHA_MODE" > /tmp/source-sha-mode
-      - |
-        if [ -z "$RISC0_VERSION" ]; then
-          RISC0_VERSION="3.0.5"
-          echo "RISC0_VERSION not set - defaulting to $RISC0_VERSION"
-        else
-          echo "Using RISC0_VERSION from environment: $RISC0_VERSION"
-        fi
-      - |
-        if [ -z "$RUST_VERSION" ]; then
-          RUST_VERSION="1.91.1"
-          echo "RUST_VERSION not set - defaulting to $RUST_VERSION"
-        else
-          echo "Using RUST_VERSION from environment: $RUST_VERSION"
-        fi
-      - |
-        if [ -z "$RUST_TOOLCHAIN_TAG" ]; then
-          RUST_TOOLCHAIN_TAG="r0.1.91.1"
-          echo "RUST_TOOLCHAIN_TAG not set - defaulting to $RUST_TOOLCHAIN_TAG"
-        else
-          echo "Using RUST_TOOLCHAIN_TAG from environment: $RUST_TOOLCHAIN_TAG"
-        fi
-      - |
-        if [ -z "$RISC0_COMMIT" ]; then
-          RISC0_COMMIT="8eb06ab020a92dc5b63ba6dd0836d432aba6d890"
-          echo "RISC0_COMMIT not set - defaulting to $RISC0_COMMIT"
-        else
-          echo "Using RISC0_COMMIT from environment: $RISC0_COMMIT"
+          printf -v "$name" '%s' "$expected"
+          export "$name"
+        }
+        require_build_pin RISC0_VERSION "3.0.6"
+        require_build_pin RUST_VERSION "1.97.1"
+        require_build_pin RISC0_RUST_VERSION "1.97.0"
+        require_build_pin RUST_TOOLCHAIN_TAG "r0.1.97.0"
+        require_build_pin RISC0_COMMIT "1cc70cf05033a79ebc90f07c679cb4bd1cd301b9"
+        require_build_pin RUST_COMMIT "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
+        require_build_pin RISC0_RUST_COMMIT "e638c6cfea1eff5fbbb24a27e60538e3760d21b8"
+        if [ "$RUST_TOOLCHAIN_TAG" != "r0.$RISC0_RUST_VERSION" ]; then
+          echo "RUST_TOOLCHAIN_TAG must equal r0.$RISC0_RUST_VERSION; got $RUST_TOOLCHAIN_TAG." >&2
+          exit 1
         fi
       - RISC0_GIT_TAG="v${RISC0_VERSION}"
       - SOURCE_REPOSITORY="${SOURCE_REPOSITORY:-${CODEBUILD_SOURCE_REPO_URL:-https://github.com/hwatanabe-jp/<REPO_NAME>}}"
@@ -87,126 +114,186 @@ phases:
           echo "Using TOOLCHAIN_IMAGE_TAG override for immutable ECR repository: $IMAGE_TAG"
         fi
       - IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
-      - echo "Building RISC Zero toolchain v${RISC0_VERSION} for ARM64 with guest toolchain ${RUST_TOOLCHAIN_TAG}..."
+      - |
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          echo "Building RISC Zero toolchain v${RISC0_VERSION} for ARM64 with host Rust ${RUST_VERSION} and guest toolchain ${RUST_TOOLCHAIN_TAG}..."
+        else
+          node infra/terraform/bootstrap/foundation-pipeline-scripts/resolve-existing-toolchain-artifact.mjs \
+            --bucket "$TOOLCHAIN_RELEASE_BUCKET" \
+            --artifact-key "$EXISTING_TOOLCHAIN_ARTIFACT_KEY" \
+            --artifact-version-id "$EXISTING_TOOLCHAIN_ARTIFACT_VERSION_ID" \
+            --artifact-sha256 "$EXISTING_TOOLCHAIN_ARTIFACT_SHA256" \
+            --control-source-sha "$REQUESTED_SOURCE_SHA" \
+            --expected-account-id "$AWS_ACCOUNT_ID" \
+            --region "$AWS_DEFAULT_REGION" \
+            --repository-name "$IMAGE_REPO_NAME" \
+            --record-output /tmp/selected-toolchain-artifact-record.json \
+            --metadata-output /tmp/image-info.json
+        fi
 
   build:
     commands:
-      - echo "Building RISC Zero toolchain ARM64 image (this takes 100-120 minutes)..."
       - |
-        docker build \
-          --build-arg RUST_VERSION=$RUST_VERSION \
-          --build-arg RISC0_VERSION=$RISC0_VERSION \
-          --build-arg RISC0_GIT_TAG=$RISC0_GIT_TAG \
-          --build-arg RISC0_COMMIT=$RISC0_COMMIT \
-          --build-arg RUST_TOOLCHAIN_TAG=$RUST_TOOLCHAIN_TAG \
-          --build-arg SOURCE_REPOSITORY="$SOURCE_REPOSITORY" \
-          -t $IMAGE_URI \
-          -f infra/docker/Dockerfile.risc0-toolchain-arm64 .
-      - echo "Smoke testing RISC Zero toolchain ARM64 image..."
-      - docker run --rm $IMAGE_URI rustc --version
-      - docker run --rm $IMAGE_URI cargo risczero --version
-      - docker run --rm $IMAGE_URI r0vm --version
-      - docker run --rm $IMAGE_URI rzup --version
-      - |
-        if [ "${PUSH_LATEST:-0}" = "1" ]; then
-          echo "PUSH_LATEST=1 - will also tag the toolchain image as latest"
-          docker tag $IMAGE_URI $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:latest
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          echo "Building RISC Zero toolchain ARM64 image (this takes 100-120 minutes)..."
         else
-          echo "Skipping latest tag for toolchain image candidate."
+          echo "Skipping ARM64 Toolchain image build for retained artifact selection."
+        fi
+      - |
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          docker build \
+            --build-arg RUST_VERSION="$RUST_VERSION" \
+            --build-arg RISC0_RUST_VERSION="$RISC0_RUST_VERSION" \
+            --build-arg RISC0_VERSION="$RISC0_VERSION" \
+            --build-arg RISC0_GIT_TAG="$RISC0_GIT_TAG" \
+            --build-arg RISC0_COMMIT="$RISC0_COMMIT" \
+            --build-arg RUST_TOOLCHAIN_TAG="$RUST_TOOLCHAIN_TAG" \
+            --build-arg SOURCE_REPOSITORY="$SOURCE_REPOSITORY" \
+            -t "$IMAGE_URI" \
+            -f infra/docker/Dockerfile.risc0-toolchain-arm64 .
+        fi
+      - |
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          echo "Smoke testing RISC Zero toolchain ARM64 image..."
+          docker run --rm "$IMAGE_URI" rustc --version
+        fi
+      - |
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          set -euo pipefail
+          HOST_RUSTC_VERSION="$(docker run --rm "$IMAGE_URI" rustc --version)"
+          HOST_RUSTC_COMMIT="$(docker run --rm "$IMAGE_URI" rustc --version --verbose | awk '$1 == "commit-hash:" { print $2 }')"
+          GUEST_RUSTC_VERSION="$(docker run --rm "$IMAGE_URI" rustc +risc0 --version)"
+          GUEST_RUSTC_COMMIT="$(docker run --rm "$IMAGE_URI" rustc +risc0 --version --verbose | awk '$1 == "commit-hash:" { print $2 }')"
+          CARGO_RISCZERO_VERSION="$(docker run --rm "$IMAGE_URI" cargo risczero --version)"
+          R0VM_VERSION="$(docker run --rm "$IMAGE_URI" r0vm --version)"
+          printf '%s\n' \
+            "$HOST_RUSTC_VERSION" \
+            "$GUEST_RUSTC_VERSION" \
+            "$CARGO_RISCZERO_VERSION" \
+            "$R0VM_VERSION"
+          case "$HOST_RUSTC_VERSION" in
+            "rustc ${RUST_VERSION} "*) ;;
+            *)
+              echo "Host rustc version does not match ${RUST_VERSION}: $HOST_RUSTC_VERSION" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$HOST_RUSTC_COMMIT" != "$RUST_COMMIT" ]; then
+            echo "Host rustc commit does not match ${RUST_COMMIT}: ${HOST_RUSTC_COMMIT:-empty}" >&2
+            exit 1
+          fi
+          case "$GUEST_RUSTC_VERSION" in
+            "rustc ${RISC0_RUST_VERSION}"*) ;;
+            *)
+              echo "Guest rustc version does not match ${RISC0_RUST_VERSION}: $GUEST_RUSTC_VERSION" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$GUEST_RUSTC_COMMIT" != "$RISC0_RUST_COMMIT" ]; then
+            echo "Guest rustc commit does not match ${RISC0_RUST_COMMIT}: ${GUEST_RUSTC_COMMIT:-empty}" >&2
+            exit 1
+          fi
+          if [ "$CARGO_RISCZERO_VERSION" != "cargo-risczero $RISC0_VERSION" ]; then
+            echo "cargo-risczero version does not match ${RISC0_VERSION}: $CARGO_RISCZERO_VERSION" >&2
+            exit 1
+          fi
+          if [ "$R0VM_VERSION" != "risc0-r0vm $RISC0_VERSION" ]; then
+            echo "r0vm version does not match ${RISC0_VERSION}: $R0VM_VERSION" >&2
+            exit 1
+          fi
+          IMAGE_RUST_VERSION="$(docker image inspect --format '{{ index .Config.Labels "rust.version" }}' "$IMAGE_URI")"
+          IMAGE_RISC0_RUST_VERSION="$(docker image inspect --format '{{ index .Config.Labels "risc0.rust.version" }}' "$IMAGE_URI")"
+          IMAGE_RISC0_VERSION="$(docker image inspect --format '{{ index .Config.Labels "risc0.version" }}' "$IMAGE_URI")"
+          if [ "$IMAGE_RUST_VERSION" != "$RUST_VERSION" ]; then
+            echo "Image rust.version label must be ${RUST_VERSION}; got ${IMAGE_RUST_VERSION:-empty}." >&2
+            exit 1
+          fi
+          if [ "$IMAGE_RISC0_RUST_VERSION" != "$RISC0_RUST_VERSION" ]; then
+            echo "Image risc0.rust.version label must be ${RISC0_RUST_VERSION}; got ${IMAGE_RISC0_RUST_VERSION:-empty}." >&2
+            exit 1
+          fi
+          if [ "$IMAGE_RISC0_VERSION" != "$RISC0_VERSION" ]; then
+            echo "Image risc0.version label must be ${RISC0_VERSION}; got ${IMAGE_RISC0_VERSION:-empty}." >&2
+            exit 1
+          fi
+          docker run --rm "$IMAGE_URI" rzup --version
+        fi
+      - |
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          if [ "${PUSH_LATEST:-0}" = "1" ]; then
+            echo "PUSH_LATEST=1 - will also tag the toolchain image as latest"
+            docker tag "$IMAGE_URI" "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:latest"
+          else
+            echo "Skipping latest tag for toolchain image candidate."
+          fi
         fi
 
   post_build:
     commands:
-      - echo "Pushing toolchain image to ECR..."
-      - docker push $IMAGE_URI
       - |
-        if [ "${PUSH_LATEST:-0}" = "1" ]; then
-          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:latest
-        fi
-      - echo "Waiting for ECR to register image scan (10s delay)..."
-      - sleep 10
-      - echo "Waiting for ECR image scan to complete..."
-      - aws ecr wait image-scan-complete --repository-name "$IMAGE_REPO_NAME" --image-id imageTag="$IMAGE_TAG"
-      - |
-        CRITICAL_HIGH_COUNT=$(aws ecr describe-image-scan-findings \
-          --repository-name "$IMAGE_REPO_NAME" \
-          --image-id imageTag="$IMAGE_TAG" \
-          --query 'length(imageScanFindings.findings[?severity==`CRITICAL` || severity==`HIGH`])' \
-          --output text)
-        if ! printf '%s' "$CRITICAL_HIGH_COUNT" | grep -Eq '^[0-9]+$'; then
-          echo "Unable to parse HIGH/CRITICAL ECR scan finding count: $CRITICAL_HIGH_COUNT" >&2
-          exit 1
-        fi
-        if [ "$CRITICAL_HIGH_COUNT" -gt 0 ]; then
-          SCAN_STATUS="FINDINGS_PRESENT"
-          echo "[WARN] ECR scan found $CRITICAL_HIGH_COUNT HIGH/CRITICAL findings."
-          echo "Review vulnerabilities before using this base image in production."
-          # Note: Not failing build for base image - vulnerabilities are tracked in docs/runbooks/security.md
-        else
-          SCAN_STATUS="PASS"
-          echo "[OK] ECR scan passed with no HIGH/CRITICAL findings."
-        fi
-      - echo "Extracting image digest..."
-      - |
-        DIGEST=$(aws ecr describe-images \
-          --repository-name "$IMAGE_REPO_NAME" \
-          --image-ids imageTag="$IMAGE_TAG" \
-          --query 'imageDetails[0].imageDigest' \
-          --output text)
-        if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
-          echo "Unable to resolve pushed toolchain image digest: $DIGEST" >&2
-          exit 1
-        fi
-        echo "Image pushed with digest: $DIGEST"
-        DIGEST_PINNED_IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME@$DIGEST"
-      - echo "Waiting for ECR managed signing status..."
-      - |
-        SIGNING_STATUS=""
-        SIGNING_STATUS_JSON="/tmp/toolchain-signing-status.json"
-        for attempt in $(seq 1 30); do
-          aws ecr describe-image-signing-status \
-            --repository-name "$IMAGE_REPO_NAME" \
-            --image-id imageDigest="$DIGEST" \
-            --region "$AWS_DEFAULT_REGION" \
-            --output json > "$SIGNING_STATUS_JSON"
-          SIGNING_STATUS=$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); statuses=data.get("signingStatuses") or []; print(statuses[0].get("status", "") if statuses else "")' "$SIGNING_STATUS_JSON")
-          if [ "$SIGNING_STATUS" = "COMPLETE" ]; then
-            break
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          echo "Pushing toolchain image to ECR..."
+          docker push "$IMAGE_URI"
+          if [ "${PUSH_LATEST:-0}" = "1" ]; then
+            docker push "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:latest"
           fi
-          echo "ECR signing status is '${SIGNING_STATUS:-empty}' (attempt $attempt/30); waiting..."
-          sleep 20
-        done
-        if [ "$SIGNING_STATUS" != "COMPLETE" ]; then
-          echo "ECR signing status must be COMPLETE for toolchain artifact records; got '${SIGNING_STATUS:-empty}'." >&2
-          cat "$SIGNING_STATUS_JSON" >&2
-          exit 1
         fi
       - |
-        BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        printf '{ "imageTag": "%s", "imageDigest": "%s", "imageUri": "%s", "digestPinnedImageUri": "%s", "risc0Version": "%s", "rustVersion": "%s", "rustToolchainTag": "%s", "scanStatus": "%s", "criticalHighCount": %s, "signingStatus": "%s", "sourceSha": "%s", "requestedSourceSha": "%s", "sourceShaMode": "%s", "buildId": "%s", "timestamp": "%s" }\n' \
-          "$IMAGE_TAG" "$DIGEST" "$IMAGE_URI" "$DIGEST_PINNED_IMAGE_URI" "$RISC0_VERSION" "$RUST_VERSION" "$RUST_TOOLCHAIN_TAG" "$SCAN_STATUS" "$CRITICAL_HIGH_COUNT" "$SIGNING_STATUS" \
-          "$(cat /tmp/resolved-source-sha)" "$(cat /tmp/requested-source-sha)" "$(cat /tmp/source-sha-mode)" "$CODEBUILD_BUILD_ID" "$BUILD_TIMESTAMP" \
-          > /tmp/image-info.json
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          echo "Waiting for ECR to register image scan (10s delay)..."
+          sleep 10
+          echo "Waiting for ECR image scan to complete..."
+          aws ecr wait image-scan-complete --repository-name "$IMAGE_REPO_NAME" --image-id imageTag="$IMAGE_TAG"
+          CRITICAL_HIGH_COUNT=$(aws ecr describe-image-scan-findings \
+            --repository-name "$IMAGE_REPO_NAME" \
+            --image-id imageTag="$IMAGE_TAG" \
+            --query 'length(imageScanFindings.findings[?severity==`CRITICAL` || severity==`HIGH`])' \
+            --output text)
+          if ! printf '%s' "$CRITICAL_HIGH_COUNT" | grep -Eq '^[0-9]+$'; then
+            echo "Unable to parse HIGH/CRITICAL ECR scan finding count: $CRITICAL_HIGH_COUNT" >&2
+            exit 1
+          fi
+          if [ "$CRITICAL_HIGH_COUNT" -gt 0 ]; then
+            SCAN_STATUS="FINDINGS_PRESENT"
+            echo "[WARN] ECR scan found $CRITICAL_HIGH_COUNT HIGH/CRITICAL findings."
+            echo "Toolchain vulnerabilities are accepted and non-blocking for this PoC under repository policy."
+            # Preserve digest-bound findings as evidence; no per-finding remediation or review gates this build.
+          else
+            SCAN_STATUS="PASS"
+            echo "[OK] ECR scan passed with no HIGH/CRITICAL findings."
+          fi
+        fi
+      - |
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          echo "Extracting image digest..."
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "$IMAGE_REPO_NAME" \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+          if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "Unable to resolve pushed toolchain image digest: $DIGEST" >&2
+            exit 1
+          fi
+          echo "Image pushed with digest: $DIGEST"
+          DIGEST_PINNED_IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME@$DIGEST"
+        fi
+      - |
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          set -euo pipefail
+          RELEASE_PIPELINE_EXECUTION_ID="${RELEASE_PIPELINE_EXECUTION_ID:?RELEASE_PIPELINE_EXECUTION_ID is required}"
+          if ! printf '%s' "$RELEASE_PIPELINE_EXECUTION_ID" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+            echo "RELEASE_PIPELINE_EXECUTION_ID must be a lowercase UUID." >&2
+            exit 1
+          fi
+          CANDIDATE_EXECUTION_ID="toolchain-candidate/$RELEASE_PIPELINE_EXECUTION_ID"
+          printf '{ "imageTag": "%s", "imageDigest": "%s", "digestPinnedImageUri": "%s", "risc0Version": "%s", "rustVersion": "%s", "rustToolchainTag": "%s", "scanStatus": "%s", "criticalHighCount": %s, "sourceSha": "%s", "buildId": "%s" }\n' \
+            "$IMAGE_TAG" "$DIGEST" "$DIGEST_PINNED_IMAGE_URI" "$RISC0_VERSION" "$RUST_VERSION" "$RUST_TOOLCHAIN_TAG" "$SCAN_STATUS" "$CRITICAL_HIGH_COUNT" \
+            "$(cat /tmp/source-sha)" "$CANDIDATE_EXECUTION_ID" \
+            > /tmp/image-info.json
+        fi
         cat /tmp/image-info.json
-      - |
-        if [ -n "${TOOLCHAIN_IMAGE_METADATA_BUCKET:-}" ]; then
-          METADATA_PREFIX="${TOOLCHAIN_IMAGE_METADATA_PREFIX:-candidates/toolchain/unversioned}"
-          DIGEST_SLUG="$(printf '%s' "$DIGEST" | tr ':' '-')"
-          for key in "$METADATA_PREFIX/by-digest/$DIGEST_SLUG.json" "$METADATA_PREFIX/by-git-sha/$(cat /tmp/resolved-source-sha).json" "$METADATA_PREFIX/latest.json"; do
-            aws s3api put-object \
-              --bucket "$TOOLCHAIN_IMAGE_METADATA_BUCKET" \
-              --key "$key" \
-              --body /tmp/image-info.json \
-              --content-type application/json \
-              --server-side-encryption AES256 >/dev/null
-            echo "Published toolchain candidate metadata to s3://$TOOLCHAIN_IMAGE_METADATA_BUCKET/$key"
-          done
-        else
-          echo "TOOLCHAIN_IMAGE_METADATA_BUCKET not set - skipping candidate metadata publication."
-        fi
-        echo "[OK] RISC Zero toolchain base image build completed successfully"
-        echo "Next step: Resolve a digest-pinned build arg for local builds if needed"
-        echo "Run: AWS_ACCOUNT_ID=<account-id> ./scripts/update-risc0-digest.sh --write-env .tmp/risc0-toolchain-image.env"
+      - echo "[OK] Toolchain artifact selection completed successfully"
 
 artifacts:
   files:

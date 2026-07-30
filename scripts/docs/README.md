@@ -8,8 +8,8 @@ license metadata.
 
 ### create-mdbook-readme-aliases.sh
 
-Creates `README.html` redirect aliases for public-book section index pages after `mdbook build
-public-book`.
+Creates `README.html` redirect aliases for every top-level public-book section
+index after `mdbook build public-book`.
 
 ### harden-mdbook-output.sh
 
@@ -19,6 +19,27 @@ tags plus best-effort frame busting.
 ### check-mdbook-security-tags.sh
 
 Checks that generated mdBook HTML contains the required security hardening tags.
+
+### check-markdown-links.ts
+
+Checks local targets and Markdown anchors in a repository tree. Public export
+generation runs it against the generated snapshot; the package script is:
+
+```bash
+pnpm docs:links:check -- --root public-book/src
+```
+
+An explicit `--root` is required outside a generated public repository.
+
+### check-license-metadata-freshness.ts
+
+Compares the tracked pnpm and Cargo license JSON/CSV artifacts with the current
+lockfiles without modifying files or accessing the network. The package script
+is:
+
+```bash
+pnpm licenses:check
+```
 
 ### regenerate-license-metadata.sh
 
@@ -49,7 +70,8 @@ The directory groups documentation-adjacent automation and reference notes so th
 license metadata refreshes, and historical verification context have a single local home. This includes:
 
 - mdBook post-processing helpers
-- license metadata generation
+- local Markdown-link validation
+- license metadata validation and generation
 - generated documentation assets
 - Test results and summaries
 - Technical documentation

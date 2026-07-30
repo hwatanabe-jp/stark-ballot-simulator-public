@@ -42,6 +42,7 @@
   - [現行構成とサービス一覧](aws/design-and-services.md)
   - [トポロジー](aws/topology.md)
   - [非同期プローバー](aws/async-prover.md)
+  - [可観測性設計](aws/observability.md)
   - [イメージ署名](aws/image-signing.md)
   - [Terraform](aws/terraform.md)
 

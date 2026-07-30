@@ -17,6 +17,20 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
   }
 
   statement {
+    sid    = "ReadImmutableReleaseAuthority"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+    ]
+    resources = [
+      local.app_deployment_record_objects_arn,
+      local.app_toolchain_artifact_records_objects_arn,
+      local.app_prover_release_records_objects_arn,
+    ]
+  }
+
+  statement {
     effect = "Allow"
 
     actions = [
@@ -55,7 +69,10 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
       "codepipeline:ListPipelineExecutions",
       "codepipeline:StartPipelineExecution",
     ]
-    resources = concat(local.app_codebuild_project_arns, [local.app_pipeline_arn])
+    resources = [
+      local.app_codebuild_project_arn_pattern,
+      local.app_pipeline_arn,
+    ]
   }
 
   statement {
@@ -85,6 +102,25 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
     effect    = "Allow"
     actions   = ["sts:GetCallerIdentity"]
     resources = ["*"]
+  }
+
+  statement {
+    sid       = "PublishAcceptedDeploymentEvent"
+    effect    = "Allow"
+    actions   = ["events:PutEvents"]
+    resources = ["arn:aws:events:${var.aws_region}:${var.aws_account_id}:event-bus/default"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "events:source"
+      values   = ["stark-ballot.observability"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "events:detail-type"
+      values   = ["Accepted Deployment"]
+    }
   }
 
   statement {
@@ -143,11 +179,10 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
       "dynamodb:Query",
     ]
 
-    resources = concat(
-      local.app_dynamodb_table_arns,
-      local.app_dynamodb_index_arns,
-      local.app_dynamodb_recovery_table_arn_patterns,
-    )
+    resources = [
+      local.app_dynamodb_table_arn_pattern,
+      local.app_dynamodb_index_arn_pattern,
+    ]
   }
 
   statement {
@@ -177,9 +212,37 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
   }
 
   statement {
-    effect    = "Allow"
-    actions   = ["lambda:GetFunctionConfiguration"]
-    resources = [local.app_target_lambda_arn_pattern]
+    effect = "Allow"
+    actions = [
+      "lambda:GetAlias",
+      "lambda:GetFunction",
+      "lambda:GetFunctionConfiguration",
+    ]
+    resources = concat(
+      [local.app_target_lambda_arn_pattern],
+      [
+        local.app_signature_verifier_lambda_arn,
+        "${local.app_signature_verifier_lambda_arn}:*",
+      ],
+    )
+  }
+
+  statement {
+    sid    = "ReadImageSignatureVerifierLiveIam"
+    effect = "Allow"
+
+    actions = [
+      "iam:GetPolicy",
+      "iam:GetPolicyVersion",
+      "iam:GetRole",
+      "iam:GetRolePolicy",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListRolePolicies",
+    ]
+    resources = [
+      local.app_signature_verifier_role_arn,
+      local.app_signature_verifier_execution_boundary_policy_arn,
+    ]
   }
 
   statement {

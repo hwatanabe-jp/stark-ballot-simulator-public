@@ -62,7 +62,7 @@ export async function executeZkVM(input: ZkVMInput): Promise<ZkVMExecutionResult
 
     // Execute zkVM host
     const command = `${HOST_BINARY} ${inputFile}`;
-    logger.info('[zkVM] Executing:', command);
+    logger.info('[zkVM] Host execution starting');
 
     // Log zkVM mode
     if (process.env['RISC0_DEV_MODE'] === '1') {
@@ -90,7 +90,6 @@ export async function executeZkVM(input: ZkVMInput): Promise<ZkVMExecutionResult
           result: 'failure',
           input_votes: input.votes.length,
         },
-        error: error instanceof Error ? error.message : String(error),
       });
       if (isTimeoutError(error)) {
         throw new Error('zkVM execution timeout');
@@ -109,7 +108,7 @@ export async function executeZkVM(input: ZkVMInput): Promise<ZkVMExecutionResult
     });
 
     if (stderr) {
-      logger.warn('[zkVM] stderr:', stderr);
+      logger.warn('[zkVM] Host stderr was present', { stderr_present: true });
     }
 
     // Read output files (zkVM creates files based on input file name)
@@ -144,7 +143,7 @@ export async function executeZkVM(input: ZkVMInput): Promise<ZkVMExecutionResult
     } catch (error) {
       if ((error as NodeJS.ErrnoException | undefined)?.code !== 'ENOENT') {
         logger.warn('[zkVM] Failed to read seen bitmap artifact', {
-          error: error instanceof Error ? error.message : String(error),
+          error_code: 'artifact_read_failed',
         });
       }
     }
@@ -161,7 +160,7 @@ export async function executeZkVM(input: ZkVMInput): Promise<ZkVMExecutionResult
     } catch (error) {
       if ((error as NodeJS.ErrnoException | undefined)?.code !== 'ENOENT') {
         logger.warn('[zkVM] Failed to read included bitmap artifact', {
-          error: error instanceof Error ? error.message : String(error),
+          error_code: 'artifact_read_failed',
         });
       }
     }
@@ -226,7 +225,7 @@ export async function buildZkVM(): Promise<void> {
   });
 
   if (stderr) {
-    logger.warn('[zkVM] Build warnings:', stderr);
+    logger.warn('[zkVM] Build warnings were present', { stderr_present: true });
   }
 
   logger.info('[zkVM] Build completed');

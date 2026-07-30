@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./canonicalEvents": "./src/canonicalEvents.ts",
     "./logger": "./src/logger.ts",
     "./loggerTypes": "./src/loggerTypes.ts",
     "./logging": "./src/logging.ts",
@@ -13,6 +14,6 @@
     "@stark-ballot/validation": "workspace:*"
   },
   "devDependencies": {
-    "vitest": "4.1.9"
+    "vitest": "4.1.10"
   }
 }

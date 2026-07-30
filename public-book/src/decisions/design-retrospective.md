@@ -35,7 +35,7 @@
 #### 背景
 
 `VoteStore` インターフェース（`packages/domain/src/types/voteStore.ts`）は、現在はセッションと投票の最小操作に寄せられ、10 メソッドを持ちます。
-optional なメソッドは軽量な polling 用の `getSessionSummary` だけです。
+optional なメソッドは軽量な ポーリング用の `getSessionSummary` だけです。
 非同期 finalization の状態遷移は、`packages/application/src/finalize/finalization-store.ts` の `FinalizationLifecycleStore` / `FinalizationStore` 側に分離されています。
 永続化実装は Mock、FileMock、DynamoDB の 3 種類です。
 
@@ -219,9 +219,7 @@ cross-ref: [4 段階検証モデル](../verification/four-stage-model.md), [入�
 
 #### 背景
 
-検証用に配布する `bundle.zip` には、少なくとも `receipt.json`、`journal.json`、`public-input.json`、`election-manifest.json`、`close-statement.json` を含めます。
-sync path の allowlist には補助的な `metadata.json` と、任意の `sth.json`、`consistency-proof.json` も含まれます。
-一方、`input.json`（証拠）、`verification.json`（検証レポート）、`included-bitmap.json`、`seen-bitmap.json` は公開対象外です。
+検証用に配布する `bundle.zip` は明示的な許可リストで管理し、`input.json` や `verification.json` などの保護対象 artifact は公開対象外です（現行の許可リストと除外は [公開境界](../verification/public-boundary.md) を参照）。
 
 #### 知見
 

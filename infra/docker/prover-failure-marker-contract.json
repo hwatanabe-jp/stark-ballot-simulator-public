@@ -1,0 +1,14 @@
+{
+  "markerFilename": "failure-marker.json",
+  "exactKeys": ["category"],
+  "categories": [
+    "configuration",
+    "input",
+    "prover_execution",
+    "infrastructure_interruption",
+    "artifact",
+    "upload",
+    "timeout",
+    "unknown"
+  ]
+}

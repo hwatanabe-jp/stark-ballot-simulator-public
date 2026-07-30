@@ -3,18 +3,24 @@ import { cors } from 'hono/cors';
 import type { Context } from 'hono';
 import { getGlobalStore } from '@stark-ballot/aws-adapters/store/storeInstance';
 import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
-import { handleApiErrorPayload } from '@stark-ballot/api-contract/errors/errorPayload';
 import { errorResponse, jsonResponse } from '../../http/response';
-import { toApiContext } from '../../http/adapters/hono';
+import { resolveAwsRequestContextSourceIp, resolveAwsRequestId, toApiContext } from '../../http/adapters/hono';
 import type { ApiParams } from '../context';
 import * as apiSchemas from '@stark-ballot/api-contract/validation/apiSchemas';
 import { s, type SchemaTypeAny } from '@stark-ballot/validation/schema';
 import { getApiRouteDefinitions, type ApiMethod, type ApiRouteDefinition, type ApiRouteMode } from './definitions';
-import { logRequestSummary, withRequestLogContext } from '../../http/requestLogging';
+import {
+  logRequestSummary,
+  resolveUntrustedClientRequestId,
+  withRequestLogContext,
+  withTrustedRequestIdHeader,
+} from '../../http/requestLogging';
 import { SESSION_CAPABILITY_HEADER, SESSION_ID_HEADER } from '@stark-ballot/domain/session/capability';
 import { isRetiredTargetRouteVariant } from '@stark-ballot/api-contract/api-contract/routes';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { isExpectedTargetOriginVerified } from '../security/developOperatorGate';
+import { handleApiError } from '../../http/errorHandler';
+import { randomUUID } from 'node:crypto';
 
 export { ORIGIN_VERIFY_HEADER } from '../security/developOperatorGate';
 
@@ -121,46 +127,22 @@ function createHonoRoute(route: ApiRouteDefinition): (context: Context) => Promi
       return retiredRouteResponse();
     }
 
-    const startedAt = Date.now();
     const request = context.req.raw;
 
     const originVerifyResponse = validateTargetOriginVerifyHeader(request);
     if (originVerifyResponse) {
-      return await withRequestLogContext(
-        request,
-        () => {
-          logRequestSummary(originVerifyResponse, Date.now() - startedAt);
-          return originVerifyResponse;
-        },
-        { service: 'public-api' },
-      );
+      return originVerifyResponse;
     }
 
     const store = getGlobalStore();
     const params = resolveParams(context);
     const apiContext = toApiContext({ context, store, ...omitUndefinedProperties({ params }) });
 
-    return await withRequestLogContext(
-      apiContext.request,
-      async () => {
-        try {
-          const validationResponse = validateRouteRequestSchemas(route, apiContext.request, params);
-          if (validationResponse) {
-            logRequestSummary(validationResponse, Date.now() - startedAt);
-            return validationResponse;
-          }
-          const response = await route.handler(apiContext);
-          logRequestSummary(response, Date.now() - startedAt);
-          return response;
-        } catch (error) {
-          const payload = handleApiErrorPayload(error);
-          const response = jsonResponse(payload, { status: payload.statusCode });
-          logRequestSummary(response, Date.now() - startedAt);
-          return response;
-        }
-      },
-      { service: 'public-api', fallbackIp: apiContext.clientIp ?? null },
-    );
+    const validationResponse = validateRouteRequestSchemas(route, apiContext.request, params);
+    if (validationResponse) {
+      return validationResponse;
+    }
+    return await route.handler(apiContext);
   };
 }
 
@@ -197,6 +179,36 @@ export function createHonoApp(options: HonoAppOptions = {}): Hono {
   const { basePath = '/api', mode = 'full' } = options;
   const app = new Hono().basePath(basePath);
 
+  app.use('*', async (context, next) => {
+    const startedAt = Date.now();
+    const request = context.req.raw;
+    const requestId = resolveAwsRequestId(context) ?? randomUUID();
+    const clientRequestId = resolveUntrustedClientRequestId(request.headers);
+    const matchedRoutePath = context.req.matchedRoutes.at(-1)?.path;
+    const safeRoutePath = matchedRoutePath && matchedRoutePath !== '*' ? matchedRoutePath : `${basePath}/*`;
+
+    await withRequestLogContext(
+      request,
+      async () => {
+        try {
+          await next();
+        } catch (error) {
+          context.res = handleApiError(error);
+        }
+        context.res = withTrustedRequestIdHeader(context.res, requestId);
+        logRequestSummary(context.res, Date.now() - startedAt, omitUndefinedProperties({ clientRequestId }));
+      },
+      {
+        service: 'public-api',
+        fallbackIp: resolveAwsRequestContextSourceIp(context),
+        routePath: safeRoutePath,
+        requestId,
+      },
+    );
+  });
+
+  app.onError((error) => handleApiError(error));
+
   // CORS middleware for cross-origin requests from UI.
   app.use(
     '*',
@@ -204,7 +216,7 @@ export function createHonoApp(options: HonoAppOptions = {}): Hono {
       origin: getCorsOrigins(),
       allowMethods: ['GET', 'POST', 'OPTIONS'],
       allowHeaders: ['Content-Type', SESSION_ID_HEADER, SESSION_CAPABILITY_HEADER, 'Range'],
-      exposeHeaders: ['Content-Range', 'Accept-Ranges', 'X-Stark-Bundle-Range-Chunk-Size'],
+      exposeHeaders: ['Content-Range', 'Accept-Ranges', 'X-Stark-Bundle-Range-Chunk-Size', 'x-request-id'],
     }),
   );
 

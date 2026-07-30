@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { parseFinalizeRequest, parseSessionCreateRequest, parseVoteRequest } from './validation';
+import {
+  parseFinalizeRequest,
+  parseSessionCreateRequest,
+  parseVerificationObservationRequest,
+  parseVoteRequest,
+} from './validation';
 import { readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
 import { getStringProperty } from '@stark-ballot/domain/utils/guards';
 
@@ -126,6 +131,39 @@ describe('parseVoteRequest', () => {
       const payload = await readJsonRecord(result, 'vote payload too large');
       expect(result.status).toBe(413);
       expect(getStringProperty(payload, 'error')).toBe('PAYLOAD_TOO_LARGE');
+    }
+  });
+});
+
+describe('parseVerificationObservationRequest', () => {
+  it('returns only the strict browser-local observation payload', async () => {
+    const request = new Request('http://localhost/api/verification/observation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        verificationExecutionId: 'execution-1',
+        castChecks: {
+          cast_receipt_present: 'success',
+          cast_choice_range: 'success',
+          cast_random_format: 'not_run',
+          cast_commitment_match: 'failed',
+        },
+      }),
+    });
+
+    const result = await parseVerificationObservationRequest(request);
+
+    expect(result).not.toBeInstanceOf(Response);
+    if (!(result instanceof Response)) {
+      expect(result.data).toEqual({
+        verificationExecutionId: 'execution-1',
+        castChecks: {
+          cast_receipt_present: 'success',
+          cast_choice_range: 'success',
+          cast_random_format: 'not_run',
+          cast_commitment_match: 'failed',
+        },
+      });
     }
   });
 });

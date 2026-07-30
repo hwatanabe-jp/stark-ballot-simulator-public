@@ -36,6 +36,7 @@ export type ApiContractRouteId =
   | 'finalize.post'
   | 'finalizeCancel.post'
   | 'finalizeCallback.post'
+  | 'verificationObservation.post'
   | 'verificationRun.post';
 
 export type ApiContractBodySizeLimitPath = 'API_REQUEST_BODY_LIMIT_BYTES' | 'FINALIZE_CALLBACK_BODY_LIMIT_BYTES';
@@ -648,6 +649,42 @@ export const TARGET_API_ROUTE_CONTRACTS = [
     rateLimit: noRateLimit,
     turnstile: noTurnstile,
     productionBypass: 'internal-operator-only',
+  },
+  {
+    routeId: 'verificationObservation.post',
+    method: 'POST',
+    path: '/verification/observation',
+    kind: 'mutation',
+    lifecycle: 'active',
+    authScope: 'header-session-capability',
+    capabilityScope: 'header',
+    requestSchemas: { headers: SESSION_HEADERS_SCHEMA, body: 'VerificationObservationRequestSchema' },
+    responseSchemas: [jsonResponse(200, 'VerificationObservationResponseSchema')],
+    requestSchema: 'VerificationObservationRequestSchema',
+    responseSchema: 'VerificationObservationResponseSchema',
+    publicErrorShape: 'standard-error-envelope',
+    publicErrors: standardErrors(
+      'SESSION_NOT_FINALIZED',
+      'UNSUPPORTED_CURRENT_ARTIFACT',
+      'CORRUPT_OR_UNREADABLE_FINALIZED_STATE',
+      'VERIFICATION_OBSERVATION_CONFLICT',
+    ),
+    dataClassification: 'owner-scoped-public-projection',
+    admissionControls: [
+      'session-header-capability',
+      'api-gateway-default-throttle',
+      'body-size',
+      'malformed-json',
+      'finalized-session',
+      'current-artifact',
+      'execution-id',
+      'durable-observation-cas',
+    ],
+    bodySize: apiBodySize,
+    sourceIp: noSourceIp,
+    rateLimit: noRateLimit,
+    turnstile: noTurnstile,
+    productionBypass: 'deny-outside-approved-non-production',
   },
   {
     routeId: 'verificationRun.post',

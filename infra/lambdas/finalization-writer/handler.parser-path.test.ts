@@ -47,6 +47,7 @@ const mocks = vi.hoisted(() => {
       outputS3Prefix: `sessions/${sessionId}/${executionId}/`,
       bundleS3Key: `sessions/${sessionId}/${executionId}/bundle.zip`,
     })),
+    readAsyncProverFailureCategory: vi.fn(() => Promise.resolve(undefined)),
     validateAsyncProverBundleKey: vi.fn((sessionId: string, executionId: string, bundleS3Key: string) => {
       const expected = `sessions/${sessionId}/${executionId}/bundle.zip`;
       if (bundleS3Key !== expected) {
@@ -65,6 +66,11 @@ vi.mock('@stark-ballot/runtime-config/env/validate', () => ({
   validateEnv: vi.fn(),
 }));
 
+vi.mock('@stark-ballot/runtime-config/env/observability', () => ({
+  collectInvalidTargetObservabilityEnvNames: vi.fn(() => []),
+  validateTargetObservabilityEnv: vi.fn(),
+}));
+
 vi.mock('@stark-ballot/aws-adapters/store/storeInstance', () => ({
   getGlobalStore: vi.fn(() => mocks.state.store),
 }));
@@ -72,6 +78,7 @@ vi.mock('@stark-ballot/aws-adapters/store/storeInstance', () => ({
 vi.mock('@stark-ballot/aws-adapters/finalize/async-prover-artifacts', () => ({
   buildAsyncProverArtifactKeys: mocks.buildAsyncProverArtifactKeys,
   buildFinalizationResultFromS3Bundle: mocks.buildFinalizationResultFromS3Bundle,
+  readAsyncProverFailureCategory: mocks.readAsyncProverFailureCategory,
   validateAsyncProverBundleKey: mocks.validateAsyncProverBundleKey,
 }));
 
@@ -326,6 +333,15 @@ function createStore(): {
 describe('target finalization-writer real parser admission', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env['TARGET_AWS_RUNTIME'] = '1';
+    process.env['USE_MOCK_STORE'] = 'false';
+    process.env['USE_S3'] = 'true';
+    process.env['AWS_ACCOUNT_ID'] = '123456789012';
+    process.env['AWS_REGION'] = 'ap-northeast-1';
+    process.env['DYNAMODB_SESSIONS_TABLE'] = 'sessions';
+    process.env['DYNAMODB_VOTES_TABLE'] = 'votes';
+    process.env['S3_PROOF_BUCKET'] = 'proofs';
+    process.env['S3_PROOF_PREFIX'] = 'sessions';
     mocks.state.restoredResult = createRestoredFinalizationResult();
   });
 
@@ -380,6 +396,27 @@ describe('target finalization-writer real parser admission', () => {
     expect(succeededPayload).not.toHaveProperty('stepFunctionsArn');
     expect(succeededPayload).not.toHaveProperty('bundleMetadata');
     expectNoProverWorkFields(succeededPayload);
+  });
+
+  it('ignores the retired top-level s3BundleKey alias', async () => {
+    const { store } = createStore();
+    mocks.state.store = store;
+    const payload = createStateMachinePayload();
+    delete payload['bundleS3Key'];
+    payload['s3BundleKey'] = 'sessions/retired-alias/other-execution/bundle.zip';
+
+    await expect(
+      handler({
+        status: 'SUCCEEDED',
+        executionArn,
+        payload,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ status: 'success' }));
+    expect(mocks.buildFinalizationResultFromS3Bundle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bundleS3Key: `sessions/${sessionId}/${executionId}/bundle.zip`,
+      }),
+    );
   });
 
   it('normalizes RUNNING direct events and returns the applied running state', async () => {
@@ -486,14 +523,7 @@ describe('target finalization-writer real parser admission', () => {
         error: {
           code: 'PROVER_TASK_FAILED',
           message: 'Target prover task failed',
-          details: {
-            code: 'PROVER_TASK_FAILED',
-            message: 'Target prover task failed',
-            details: {
-              Error: 'States.TaskFailed',
-              Cause: 'container exited',
-            },
-          },
+          category: 'prover_execution',
         },
       }),
     );
@@ -510,7 +540,13 @@ describe('target finalization-writer real parser admission', () => {
       status: 'TIMED_OUT',
       executionArn,
       timeoutAt,
-      payload: createStateMachinePayload(),
+      payload: {
+        ...createStateMachinePayload(),
+        error: {
+          Error: 'States.Timeout',
+          Cause: 'private Step Functions timeout cause',
+        },
+      },
     });
 
     expect(response).toEqual(
@@ -532,6 +568,7 @@ describe('target finalization-writer real parser admission', () => {
       }),
     );
     expect(timedOutPayload).not.toHaveProperty('stepFunctionsArn');
+    expect(timedOutPayload).not.toHaveProperty('error');
     expectNoProverWorkFields(timedOutPayload);
   });
 });

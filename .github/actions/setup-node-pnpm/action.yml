@@ -19,7 +19,7 @@ runs:
   using: composite
   steps:
     - name: Setup Node.js
-      uses: actions/setup-node@v6
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: ${{ inputs.node-version }}
 
@@ -29,7 +29,7 @@ runs:
         export COREPACK_HOME="$RUNNER_TEMP/corepack"
         mkdir -p "$RUNNER_TEMP/pnpm-bin"
         corepack enable --install-directory "$RUNNER_TEMP/pnpm-bin"
-        corepack prepare pnpm@11.12.0 --activate
+        corepack prepare pnpm@11.15.1 --activate
         printf '%s\n' "$RUNNER_TEMP/pnpm-bin" >> "$GITHUB_PATH"
         printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
         "$RUNNER_TEMP/pnpm-bin/pnpm" --version

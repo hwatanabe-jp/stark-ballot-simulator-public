@@ -85,6 +85,7 @@ describe('isProductionRuntimeEnv', () => {
     'stark-ballot-simulator-dev-preview-public-api',
     'custom-prod-worker',
     'legacy-develop-finalization-writer',
+    'stark-ballot-simulator-stark-dev-develop-image-signature-gate',
   ])('does not classify legacy or arbitrary Lambda function names: %s', (functionName) => {
     expect(
       resolveRuntimeEnvMode(

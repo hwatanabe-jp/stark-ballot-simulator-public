@@ -58,6 +58,34 @@ export type ApplicationErrorCode = (typeof ApplicationErrorCode)[keyof typeof Ap
 
 export type ApplicationErrorDetails = unknown;
 
+export const FinalizationFailureCategory = {
+  CONFIGURATION: 'configuration',
+  INPUT: 'input',
+  PROVER_EXECUTION: 'prover_execution',
+  INFRASTRUCTURE_INTERRUPTION: 'infrastructure_interruption',
+  IMAGE_SIGNATURE: 'image_signature',
+  CAPACITY: 'capacity',
+  ARTIFACT: 'artifact',
+  UPLOAD: 'upload',
+  TIMEOUT: 'timeout',
+  UNKNOWN: 'unknown',
+} as const;
+
+export type FinalizationFailureCategory =
+  (typeof FinalizationFailureCategory)[keyof typeof FinalizationFailureCategory];
+
+export const PROVER_FAILURE_CATEGORY_VALUES = [
+  FinalizationFailureCategory.CONFIGURATION,
+  FinalizationFailureCategory.INPUT,
+  FinalizationFailureCategory.PROVER_EXECUTION,
+  FinalizationFailureCategory.INFRASTRUCTURE_INTERRUPTION,
+  FinalizationFailureCategory.ARTIFACT,
+  FinalizationFailureCategory.UPLOAD,
+  FinalizationFailureCategory.TIMEOUT,
+  FinalizationFailureCategory.UNKNOWN,
+] as const;
+export type ProverFailureCategory = (typeof PROVER_FAILURE_CATEGORY_VALUES)[number];
+
 export type FinalizationState =
   | {
       status: 'pending';
@@ -86,6 +114,7 @@ export type FinalizationState =
       error: {
         code: string;
         message: string;
+        category?: FinalizationFailureCategory;
         details?: unknown;
       };
     }

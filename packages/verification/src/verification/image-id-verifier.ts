@@ -7,11 +7,15 @@
  */
 
 import { resolveExpectedImageIdFromMapping, type ImageIdVariant } from './image-id-policy.js';
+import {
+  ImageIdMappingValidationError,
+  ImageIdVariantResolutionError,
+} from '@stark-ballot/validation/image-id-mapping';
 import type { ImageIdMapping, MultiSourceVerificationResult } from './image-id-types';
 
 export class ImageIdResolutionError extends Error {
   constructor(
-    public readonly reason: 'mapping_unavailable' | 'mapping_missing' | 'variant_unavailable',
+    public readonly reason: 'mapping_unavailable' | 'mapping_missing' | 'variant_unavailable' | 'variant_unconfirmed',
     message: string,
   ) {
     super(message);
@@ -33,8 +37,14 @@ export function getExpectedImageId(
     return resolveExpectedImageIdFromMapping(mapping, version, variant);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (message.startsWith('Unknown method version:')) {
+    if (error instanceof ImageIdVariantResolutionError && error.reason === 'unknown_method') {
       throw new ImageIdResolutionError('mapping_missing', message);
+    }
+    if (error instanceof ImageIdVariantResolutionError && error.reason === 'variant_unconfirmed') {
+      throw new ImageIdResolutionError('variant_unconfirmed', message);
+    }
+    if (error instanceof ImageIdMappingValidationError) {
+      throw new ImageIdResolutionError('mapping_unavailable', message);
     }
     throw new ImageIdResolutionError('variant_unavailable', message);
   }

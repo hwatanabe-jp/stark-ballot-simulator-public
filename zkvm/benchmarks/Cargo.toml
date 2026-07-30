@@ -10,7 +10,7 @@ path = "src/bench_minimal.rs"
 
 [dependencies]
 methods-minimal = { path = "../methods-minimal" }
-risc0-zkvm = { workspace = true }
+risc0-zkvm = { workspace = true, features = ["bonsai", "client"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 csv = { workspace = true }

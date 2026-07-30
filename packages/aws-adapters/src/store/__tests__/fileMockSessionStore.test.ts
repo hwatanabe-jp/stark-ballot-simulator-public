@@ -131,6 +131,56 @@ describe('FileMockSessionStore', () => {
     expect(Reflect.get(store, 'saveReceiptToBoard')).toBeUndefined();
   });
 
+  it('persists verification observation CAS state across store instances', async () => {
+    const writer = new FileMockSessionStore();
+    const session = await writer.createSession();
+    const executionId = 'exec-file-observation';
+    await writer.finalizeSession(
+      session.sessionId,
+      createStoredFinalizationResult(executionId),
+      resolveCurrentContractGeneration(),
+      executionId,
+    );
+
+    const firstWriter = new FileMockSessionStore();
+    const secondWriter = new FileMockSessionStore();
+    const results = await Promise.all([
+      firstWriter.recordVerificationObservation(session.sessionId, {
+        executionId,
+        fingerprint: 'a'.repeat(64),
+        observedAt: 1_750_000_000_000,
+      }),
+      secondWriter.recordVerificationObservation(session.sessionId, {
+        executionId,
+        fingerprint: 'b'.repeat(64),
+        observedAt: 1_750_000_000_100,
+      }),
+    ]);
+
+    expect(results).toContainEqual({ status: 'recorded' });
+    expect(results).toContainEqual({ status: 'conflict', reason: 'fingerprint_mismatch' });
+
+    const reader = new FileMockSessionStore();
+    const persisted = (await reader.getSession(session.sessionId))?.verificationObservation;
+    expect(persisted?.executionId).toBe(executionId);
+    expect(['a'.repeat(64), 'b'.repeat(64)]).toContain(persisted?.fingerprint);
+    const conflictingFingerprint = persisted?.fingerprint === 'a'.repeat(64) ? 'b'.repeat(64) : 'a'.repeat(64);
+    await expect(
+      reader.recordVerificationObservation(session.sessionId, {
+        executionId,
+        fingerprint: persisted?.fingerprint ?? '',
+        observedAt: 1_750_000_000_100,
+      }),
+    ).resolves.toEqual({ status: 'idempotent' });
+    await expect(
+      reader.recordVerificationObservation(session.sessionId, {
+        executionId,
+        fingerprint: conflictingFingerprint,
+        observedAt: 1_750_000_000_200,
+      }),
+    ).resolves.toEqual({ status: 'conflict', reason: 'fingerprint_mismatch' });
+  });
+
   it('returns the exact cast-time bulletin root from addVote', async () => {
     const store = new FileMockSessionStore();
     const session = await store.createSession();

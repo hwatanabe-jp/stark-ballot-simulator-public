@@ -94,17 +94,15 @@ describe('StepIndicatorHorizontal', () => {
   it('should use language prop for reset confirmation', async () => {
     vi.mocked(useAppPathname).mockReturnValue('/aggregate');
     const onReset = vi.fn();
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => true),
-    );
+    const confirmMock = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirmMock);
     const user = userEvent.setup();
 
     render(<StepIndicatorHorizontal language="en" onReset={onReset} />);
 
     await user.click(screen.getByRole('button', { name: 'Home' }));
 
-    expect(window.confirm).toHaveBeenCalledWith('Start over from the beginning? All current progress will be lost.');
+    expect(confirmMock).toHaveBeenCalledWith('Start over from the beginning? All current progress will be lost.');
     expect(onReset).toHaveBeenCalledTimes(1);
   });
 });

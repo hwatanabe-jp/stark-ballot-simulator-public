@@ -142,13 +142,23 @@ version checks. The app consumes the accepted record chain; mutable tags,
 direct CodeBuild starts, local pushes, and operator-transcribed digests are not
 deployment authority.
 
+These image-release controls describe the repository-defined hard-cutover
+target. Until the coordinated bootstrap, Foundation, image-promotion, and App
+sequence succeeds, live AWS retains the old status-only runtime gate and old
+operational contracts.
+
 - The prover lane fails on HIGH or CRITICAL findings.
-- The toolchain lane records findings and requires a reviewed waiver evidence
-  ID before promotion when HIGH or CRITICAL findings are present.
-- Digest-level ECR signing status must be `COMPLETE` before either image is
-  promoted.
-- Step Functions verifies the selected prover digest's signing status before
-  launching ECS.
+- The toolchain lane retains digest-bound findings as accepted and
+  non-blocking under the repository PoC policy. If the lane requires a
+  disposition ID, it cites that policy; no per-finding review or remediation
+  is required before promotion.
+- Digest-level ECR signing status is bounded readiness evidence only. Both
+  image lanes cryptographically verify the exact digest, configured signing
+  profile, certificate chain, trust policy, and revocation state for the
+  candidate and again for promotion.
+- After the hard cutover, Step Functions invokes the qualified runtime verifier
+  alias to cryptographically verify the selected prover digest before launching
+  ECS.
 
 Use the [infrastructure guide](../infrastructure/README.md) and
 [RISC Zero ARM64 toolchain guide](../infrastructure/risc0-base-image.md)

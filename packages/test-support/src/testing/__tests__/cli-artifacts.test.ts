@@ -96,7 +96,7 @@ describe('extractBundleArchive', () => {
     cleanupPaths.push(baseDir);
 
     const zipPath = path.join(baseDir, 'bundle.zip');
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       const zipfile = new yazl.ZipFile();
       zipfile.addBuffer(Buffer.from('{"ok":true}', 'utf-8'), 'input.json', { mtime: new Date(0), compress: false });
       zipfile.addBuffer(Buffer.from('{"entries":[]}', 'utf-8'), 'journal.json', {
@@ -104,7 +104,7 @@ describe('extractBundleArchive', () => {
         compress: false,
       });
       const output = createWriteStream(zipPath);
-      output.on('close', resolve);
+      output.on('close', () => resolve());
       output.on('error', reject);
       zipfile.outputStream.on('error', reject);
       zipfile.outputStream.pipe(output);

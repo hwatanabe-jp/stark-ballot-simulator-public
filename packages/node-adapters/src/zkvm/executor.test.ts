@@ -735,7 +735,9 @@ describe('zkVM Executor', () => {
     });
 
     it('should surface zkVM execution errors', async () => {
-      const execError = new Error('zkVM execution failed');
+      const privateErrorText = 'PRIVATE_CHILD_PROCESS_ERROR_WITH_INPUT_PATH';
+      const execError = new Error(privateErrorText);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       mockExec.mockImplementationOnce((cmd: string, opts?: ExecOptions | ExecCallback, callback?: ExecCallback) => {
         void cmd;
         if (typeof opts === 'function') {
@@ -766,7 +768,29 @@ describe('zkVM Executor', () => {
         timestamp: Date.now(),
       };
 
-      await expect(executeZkVM(input)).rejects.toThrow('zkVM execution failed');
+      await expect(executeZkVM(input)).rejects.toThrow(privateErrorText);
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateErrorText);
+      errorSpy.mockRestore();
+    });
+
+    it('does not log arbitrary host stderr', async () => {
+      const privateStderr = 'PRIVATE_HOST_STDERR_WITH_INPUT_PATH';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockHostArtifacts(createValidCurrentHostOutput());
+      mockExec.mockImplementationOnce((cmd: string, opts?: ExecOptions | ExecCallback, callback?: ExecCallback) => {
+        void cmd;
+        if (typeof opts === 'function') {
+          opts(null, { stdout: '', stderr: privateStderr } as unknown as string, privateStderr);
+          return;
+        }
+        callback?.(null, { stdout: '', stderr: privateStderr } as unknown as string, privateStderr);
+      });
+
+      await expect(executeZkVM(createBaseInput())).resolves.toBeDefined();
+      const captured = JSON.stringify(warnSpy.mock.calls);
+      expect(captured).not.toContain(privateStderr);
+      expect(captured).toContain('stderr_present');
+      warnSpy.mockRestore();
     });
 
     it('should timeout after configured duration', async () => {

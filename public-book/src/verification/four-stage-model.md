@@ -43,6 +43,7 @@ flowchart LR
 ### 検証する内容
 
 `/verify` 画面のクライアントコードがローカルに保持された 3 つの値（選挙 ID、選択肢、乱数）からコミットメントを再計算し、投票レシートのコミットメント値と照合します。
+再計算の規則（ドメインタグ、正準フォーマット）は [コミットメントスキーム](../protocol/commitment.md) を参照してください。
 
 ```mermaid
 flowchart LR
@@ -103,6 +104,7 @@ flowchart LR
 投票者のコミットメントが、追記専用の掲示板（CT Merkle ツリー）に正しく記録されていることを確認します。
 さらに、掲示板が追記専用性を維持していることを検証します。
 つまり、過去のエントリが削除や改変を受けていないことを確認します。
+掲示板のツリー構造とハッシュ規則は [CT Merkle ツリー](../protocol/ct-merkle.md) を参照してください。
 
 ### 検証する内容
 
@@ -141,7 +143,7 @@ RFC 6962 の SUBPROOF アルゴリズムに基づく整合性証明により、�
 
 複数の独立した STH（Signed Tree Head）ソースに問い合わせ、合意が成立しているかを確認します。
 この確認により、サーバーが検証者ごとに異なるツリー状態を提示するスプリットビュー攻撃を検出します。
-照合条件の詳細は [チェック一覧](checks-catalog.md#recorded_sth_third_party) を参照してください。
+照合対象となるダイジェストの構成は [STH ダイジェスト](../protocol/sth-digest.md) を、照合条件の詳細は [チェック一覧](checks-catalog.md#recorded_sth_third_party) を参照してください。
 
 ### 必要な証拠
 
@@ -208,13 +210,8 @@ RFC 6962 の SUBPROOF アルゴリズムに基づく整合性証明により、�
 
 ### 重要な判定: 除外数（`excludedSlots`）
 
-`excludedSlots` は authoritative な公開除外数です。
-
-- `excludedSlots == 0`: 除外なし（正常）
-- `excludedSlots > 0`: 掲示板スロットの未提示または計上失敗（即座に検証失敗）
-
-`counted_missing_indices_zero` が除外数を解決し、0 でなければ `failed` になります。
-解決順序と legacy aliases の扱いは [チェック一覧](checks-catalog.md#counted_missing_indices_zero) を参照してください。
+`excludedSlots > 0` はハード失敗であり、全体の検証成功を阻止します。
+除外数の解決順序と legacy aliases の扱いは [チェック一覧の `counted_missing_indices_zero`](checks-catalog.md#counted_missing_indices_zero) を、全体判定への影響は [ゲーティングロジック](gating-logic.md) を参照してください。
 
 ### 失敗モード
 
@@ -247,7 +244,7 @@ flowchart LR
   end
 
   subgraph "Rust 検証サービス"
-    VF["Receipt::verify(imageId)"]
+    VF["Receipt::verify(image_id)"]
   end
 
   subgraph "結果"
@@ -271,7 +268,7 @@ STARK Verification では 2 つのチェックを実行します。
 Image ID はゲストプログラムから導出される暗号的識別子であり、プログラムの改変やホスト主張値の食い違いを検出します。
 解決順の詳細は [チェック一覧](checks-catalog.md#stark_image_id_match) を参照してください。
 
-**レシート検証**: RISC Zero の `Receipt::verify()` を呼び出し、Seal（STARK 証明）がジャーナルと Image ID に対して暗号学的に正当であることを検証します。
+**レシート検証**: RISC Zero の `Receipt::verify(image_id)` を呼び出し、Seal（STARK 証明）がジャーナルと Image ID に対して暗号学的に正当であることを検証します。
 この検証は計算量が多いため、サーバー側の Rust 検証サービスで実行されます。
 
 ### 必要な証拠
@@ -284,10 +281,8 @@ Image ID はゲストプログラムから導出される暗号的識別子で�
 
 ### 開発モードの検出
 
-`RISC0_DEV_MODE=1` で生成されたレシートは `InnerReceipt::Fake` 型であり、暗号学的な保証を持たないため本番 STARK 検証としては受理されません。
-検証サービスはこれを `dev_mode` ステータスとして報告します。
-core evaluator では明示的な dev-mode allowance が有効な場合だけ `success` に正規化し、それ以外では `not_run` として扱います。
-判定の詳細は [ゲーティングロジック](gating-logic.md#stark-検証のゲーティング) を参照してください。
+`RISC0_DEV_MODE=1` で生成された dev-mode receipt はフェイクレシートであり、本物の STARK 証明ではありません。
+`dev_mode` ステータスの検出と正規化のルールは [ゲーティングロジック](gating-logic.md#stark-検証のゲーティング) を参照してください。
 
 ### 失敗モード
 

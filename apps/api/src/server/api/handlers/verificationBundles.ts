@@ -16,6 +16,12 @@ import { validateSessionCapabilityForSession } from '../middleware/session';
 import { buildFailClosedDownloadResponse, resolveSupportedFinalizedRead } from '../utils/currentArtifactAdmission';
 import { isTargetAwsRuntime } from '@stark-ballot/runtime-config/env/targetRuntime';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import {
+  emitCanonicalEvent,
+  type BundleDownloadEndpoint,
+  type BundleDownloadS3ErrorCode,
+} from '@stark-ballot/diagnostics/canonicalEvents';
+import { hashKeyPrefixForLogging, hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 
 const S3_BUNDLE_RANGE_CHUNK_BYTES = 4 * 1024 * 1024;
 const S3_REPORT_INLINE_MAX_BYTES = S3_BUNDLE_RANGE_CHUNK_BYTES;
@@ -49,13 +55,14 @@ async function ensureExecutionScope(
       ok: true;
       finalizationResult: NonNullable<ReturnType<typeof resolveSupportedFinalizedRead>['finalizationResult']>;
     }
-  | { ok: false; response: Response }
+  | { ok: false; response: Response; s3ErrorCode: BundleDownloadS3ErrorCode }
 > {
   const session = await store.getSession(sessionId);
   if (!session || !session.finalized) {
     return {
       ok: false,
       response: artifactErrorResponse(ErrorCode.BUNDLE_NOT_FOUND, 404, 'Bundle not found'),
+      s3ErrorCode: 'no_such_key',
     };
   }
 
@@ -64,6 +71,7 @@ async function ensureExecutionScope(
     return {
       ok: false,
       response: buildFailClosedDownloadResponse(finalizedRead.artifactState),
+      s3ErrorCode: 'not_applicable',
     };
   }
 
@@ -72,6 +80,7 @@ async function ensureExecutionScope(
     return {
       ok: false,
       response: buildFailClosedDownloadResponse('corrupt_or_unreadable'),
+      s3ErrorCode: 'not_applicable',
     };
   }
 
@@ -80,6 +89,7 @@ async function ensureExecutionScope(
     return {
       ok: false,
       response: artifactErrorResponse(ErrorCode.BUNDLE_NOT_FOUND, 404, 'Bundle not found'),
+      s3ErrorCode: 'no_such_key',
     };
   }
 
@@ -98,13 +108,73 @@ interface S3ServeOptions {
   tooLargeError?: ErrorCode;
 }
 
-function resolveS3DownloadFailureStatus(error: unknown): number {
+interface AuthenticatedDownloadObservation {
+  endpoint: BundleDownloadEndpoint;
+  sessionId: string;
+  executionId: string;
+  keyMaterial: string;
+}
+
+interface S3DownloadFailure {
+  status: number;
+  s3ErrorCode: BundleDownloadS3ErrorCode;
+}
+
+function createAuthenticatedDownloadObservation(
+  endpoint: BundleDownloadEndpoint,
+  sessionId: string,
+  executionId: string,
+  artifactKey?: string,
+): AuthenticatedDownloadObservation {
+  return {
+    endpoint,
+    sessionId,
+    executionId,
+    keyMaterial:
+      artifactKey ??
+      `sessions/${sessionId}/${executionId}/${endpoint === 'bundle' ? 'bundle.zip' : 'verification.json'}`,
+  };
+}
+
+function observeAuthenticatedDownloadFailure(
+  response: Response,
+  observation: AuthenticatedDownloadObservation,
+  s3ErrorCode: BundleDownloadS3ErrorCode,
+): Response {
+  if (response.status < 400) {
+    return response;
+  }
+  try {
+    emitCanonicalEvent({
+      event: 'bundle_download_failed',
+      endpoint: observation.endpoint,
+      http_status: response.status,
+      s3_error_code: s3ErrorCode,
+      key_prefix: hashKeyPrefixForLogging(observation.keyMaterial),
+      session_id_hash: hashSessionIdForLogging(observation.sessionId),
+      execution_id: observation.executionId,
+    });
+  } catch {
+    // Artifact-delivery telemetry must never alter the authenticated response.
+  }
+  return response;
+}
+
+function resolveS3DownloadFailure(error: unknown): S3DownloadFailure {
   const code = getStringProperty(error, 'Code') ?? getStringProperty(error, 'code') ?? getStringProperty(error, 'name');
   if (code === 'NoSuchKey' || code === 'NotFound' || code === 'NotFoundError') {
-    return 404;
+    return { status: 404, s3ErrorCode: 'no_such_key' };
   }
-
-  return 500;
+  if (code === 'AccessDenied' || code === 'Forbidden') {
+    return { status: 500, s3ErrorCode: 'access_denied' };
+  }
+  if (code === 'RequestTimeout' || code === 'RequestTimeoutException' || code === 'TimeoutError') {
+    return { status: 500, s3ErrorCode: 'timeout' };
+  }
+  if (code === 'SlowDown' || code === 'Throttling' || code === 'ThrottlingException') {
+    return { status: 500, s3ErrorCode: 'throttled' };
+  }
+  return { status: 500, s3ErrorCode: 'unknown' };
 }
 
 function buildS3BundleHeaders(executionId: string, extra?: HeadersInit): Headers {
@@ -190,14 +260,25 @@ async function maybeServeS3Bundle(
   artifactKey: string | undefined,
   requestHeaders: Headers,
   executionId: string,
+  observation: AuthenticatedDownloadObservation,
 ): Promise<Response | null> {
   const targetAwsRuntime = isTargetAwsRuntime();
   if (!artifactKey) {
-    return targetAwsRuntime ? artifactErrorResponse(ErrorCode.BUNDLE_NOT_FOUND, 404, 'Bundle not found') : null;
+    return targetAwsRuntime
+      ? observeAuthenticatedDownloadFailure(
+          artifactErrorResponse(ErrorCode.BUNDLE_NOT_FOUND, 404, 'Bundle not found'),
+          observation,
+          'no_such_key',
+        )
+      : null;
   }
   if (!isS3UploadEnabled()) {
     return targetAwsRuntime
-      ? artifactErrorResponse(ErrorCode.BUNDLE_DOWNLOAD_FAILED, 500, 'Failed to load bundle')
+      ? observeAuthenticatedDownloadFailure(
+          artifactErrorResponse(ErrorCode.BUNDLE_DOWNLOAD_FAILED, 500, 'Failed to load bundle'),
+          observation,
+          'not_applicable',
+        )
       : null;
   }
 
@@ -205,51 +286,71 @@ async function maybeServeS3Bundle(
   try {
     ({ contentLength: totalSize } = await headS3Object(artifactKey));
   } catch (error) {
-    const status = resolveS3DownloadFailureStatus(error);
-    return status === 404
-      ? artifactErrorResponse(ErrorCode.BUNDLE_NOT_FOUND, status, 'Bundle not found')
-      : artifactErrorResponse(ErrorCode.BUNDLE_DOWNLOAD_FAILED, status, 'Failed to load bundle');
+    const failure = resolveS3DownloadFailure(error);
+    return observeAuthenticatedDownloadFailure(
+      failure.status === 404
+        ? artifactErrorResponse(ErrorCode.BUNDLE_NOT_FOUND, failure.status, 'Bundle not found')
+        : artifactErrorResponse(ErrorCode.BUNDLE_DOWNLOAD_FAILED, failure.status, 'Failed to load bundle'),
+      observation,
+      failure.s3ErrorCode,
+    );
   }
 
   const rangeHeader = requestHeaders.get('range');
   if (!rangeHeader) {
     if (totalSize > S3_BUNDLE_RANGE_CHUNK_BYTES) {
-      return artifactErrorResponse(
-        ErrorCode.BUNDLE_REQUIRES_RANGE_DOWNLOAD,
-        413,
-        'Bundle requires ranged download',
-        buildS3BundleErrorHeaders({
-          'Content-Range': `bytes */${totalSize}`,
-        }),
+      return observeAuthenticatedDownloadFailure(
+        artifactErrorResponse(
+          ErrorCode.BUNDLE_REQUIRES_RANGE_DOWNLOAD,
+          413,
+          'Bundle requires ranged download',
+          buildS3BundleErrorHeaders({
+            'Content-Range': `bytes */${totalSize}`,
+          }),
+        ),
+        observation,
+        'not_applicable',
       );
     }
 
-    return maybeServeFromS3(artifactKey, {
-      contentType: 'application/zip',
-      contentDisposition: `attachment; filename="${executionId}.zip"`,
-      notFoundMessage: 'Bundle not found',
-      notFoundError: ErrorCode.BUNDLE_NOT_FOUND,
-      failureMessage: 'Failed to load bundle',
-      failureError: ErrorCode.BUNDLE_DOWNLOAD_FAILED,
-    });
+    return maybeServeFromS3(
+      artifactKey,
+      {
+        contentType: 'application/zip',
+        contentDisposition: `attachment; filename="${executionId}.zip"`,
+        notFoundMessage: 'Bundle not found',
+        notFoundError: ErrorCode.BUNDLE_NOT_FOUND,
+        failureMessage: 'Failed to load bundle',
+        failureError: ErrorCode.BUNDLE_DOWNLOAD_FAILED,
+      },
+      observation,
+    );
   }
 
   const parsedRange = parseByteRange(rangeHeader, totalSize);
   if (parsedRange === 'invalid') {
-    return artifactErrorResponse(
-      ErrorCode.INVALID_RANGE,
-      416,
-      'Invalid range',
-      buildS3BundleErrorHeaders({
-        'Content-Range': `bytes */${totalSize}`,
-      }),
+    return observeAuthenticatedDownloadFailure(
+      artifactErrorResponse(
+        ErrorCode.INVALID_RANGE,
+        416,
+        'Invalid range',
+        buildS3BundleErrorHeaders({
+          'Content-Range': `bytes */${totalSize}`,
+        }),
+      ),
+      observation,
+      'not_applicable',
     );
   }
 
   try {
     const file = await downloadRangeFromS3(artifactKey, parsedRange);
     if (!isExpectedS3RangeDownload(file, parsedRange, totalSize)) {
-      return artifactErrorResponse(ErrorCode.BUNDLE_DOWNLOAD_FAILED, 500, 'Failed to load bundle');
+      return observeAuthenticatedDownloadFailure(
+        artifactErrorResponse(ErrorCode.BUNDLE_DOWNLOAD_FAILED, 500, 'Failed to load bundle'),
+        observation,
+        'unknown',
+      );
     }
     const headers = buildS3BundleHeaders(executionId, {
       'Content-Range': buildContentRange(parsedRange, totalSize),
@@ -260,40 +361,68 @@ async function maybeServeS3Bundle(
       ...omitUndefinedProperties({ headers: headers }),
     });
   } catch (error) {
-    const status = resolveS3DownloadFailureStatus(error);
-    return status === 404
-      ? artifactErrorResponse(ErrorCode.BUNDLE_NOT_FOUND, status, 'Bundle not found')
-      : artifactErrorResponse(ErrorCode.BUNDLE_DOWNLOAD_FAILED, status, 'Failed to load bundle');
+    const failure = resolveS3DownloadFailure(error);
+    return observeAuthenticatedDownloadFailure(
+      failure.status === 404
+        ? artifactErrorResponse(ErrorCode.BUNDLE_NOT_FOUND, failure.status, 'Bundle not found')
+        : artifactErrorResponse(ErrorCode.BUNDLE_DOWNLOAD_FAILED, failure.status, 'Failed to load bundle'),
+      observation,
+      failure.s3ErrorCode,
+    );
   }
 }
 
-async function maybeServeFromS3(artifactKey: string | undefined, options: S3ServeOptions): Promise<Response | null> {
+async function maybeServeFromS3(
+  artifactKey: string | undefined,
+  options: S3ServeOptions,
+  observation: AuthenticatedDownloadObservation,
+): Promise<Response | null> {
   const targetAwsRuntime = isTargetAwsRuntime();
   if (!artifactKey) {
-    return targetAwsRuntime ? artifactErrorResponse(options.notFoundError, 404, options.notFoundMessage) : null;
+    return targetAwsRuntime
+      ? observeAuthenticatedDownloadFailure(
+          artifactErrorResponse(options.notFoundError, 404, options.notFoundMessage),
+          observation,
+          'no_such_key',
+        )
+      : null;
   }
   if (!isS3UploadEnabled()) {
-    return targetAwsRuntime ? artifactErrorResponse(options.failureError, 500, options.failureMessage) : null;
+    return targetAwsRuntime
+      ? observeAuthenticatedDownloadFailure(
+          artifactErrorResponse(options.failureError, 500, options.failureMessage),
+          observation,
+          'not_applicable',
+        )
+      : null;
   }
 
   if (options.maxInlineBytes !== undefined) {
     try {
       const { contentLength } = await headS3Object(artifactKey);
       if (contentLength > options.maxInlineBytes) {
-        return artifactErrorResponse(
-          options.tooLargeError ?? options.failureError,
-          413,
-          options.tooLargeMessage ?? options.failureMessage,
-          {
-            'Cache-Control': 'no-store',
-          },
+        return observeAuthenticatedDownloadFailure(
+          artifactErrorResponse(
+            options.tooLargeError ?? options.failureError,
+            413,
+            options.tooLargeMessage ?? options.failureMessage,
+            {
+              'Cache-Control': 'no-store',
+            },
+          ),
+          observation,
+          'not_applicable',
         );
       }
     } catch (error) {
-      const status = resolveS3DownloadFailureStatus(error);
-      return status === 404
-        ? artifactErrorResponse(options.notFoundError, status, options.notFoundMessage)
-        : artifactErrorResponse(options.failureError, status, options.failureMessage);
+      const failure = resolveS3DownloadFailure(error);
+      return observeAuthenticatedDownloadFailure(
+        failure.status === 404
+          ? artifactErrorResponse(options.notFoundError, failure.status, options.notFoundMessage)
+          : artifactErrorResponse(options.failureError, failure.status, options.failureMessage),
+        observation,
+        failure.s3ErrorCode,
+      );
     }
   }
 
@@ -307,10 +436,14 @@ async function maybeServeFromS3(artifactKey: string | undefined, options: S3Serv
       },
     });
   } catch (error) {
-    const status = resolveS3DownloadFailureStatus(error);
-    return status === 404
-      ? artifactErrorResponse(options.notFoundError, status, options.notFoundMessage)
-      : artifactErrorResponse(options.failureError, status, options.failureMessage);
+    const failure = resolveS3DownloadFailure(error);
+    return observeAuthenticatedDownloadFailure(
+      failure.status === 404
+        ? artifactErrorResponse(options.notFoundError, failure.status, options.notFoundMessage)
+        : artifactErrorResponse(options.failureError, failure.status, options.failureMessage),
+      observation,
+      failure.s3ErrorCode,
+    );
   }
 }
 
@@ -334,16 +467,15 @@ export async function getVerificationBundleHandler({
     return capabilityResult;
   }
 
+  const defaultObservation = createAuthenticatedDownloadObservation('bundle', sessionId, executionId);
   const executionScope = await ensureExecutionScope(store, sessionId, executionId);
   if (!executionScope.ok) {
-    return executionScope.response;
+    return observeAuthenticatedDownloadFailure(executionScope.response, defaultObservation, executionScope.s3ErrorCode);
   }
 
-  const s3Response = await maybeServeS3Bundle(
-    executionScope.finalizationResult.s3BundleKey,
-    request.headers,
-    executionId,
-  );
+  const s3BundleKey = executionScope.finalizationResult.s3BundleKey;
+  const s3Observation = createAuthenticatedDownloadObservation('bundle', sessionId, executionId, s3BundleKey);
+  const s3Response = await maybeServeS3Bundle(s3BundleKey, request.headers, executionId, s3Observation);
   if (s3Response) {
     return s3Response;
   }
@@ -356,13 +488,17 @@ export async function getVerificationBundleHandler({
     if (rangeHeader) {
       const parsedRange = parseByteRange(rangeHeader, file.byteLength);
       if (parsedRange === 'invalid') {
-        return artifactErrorResponse(
-          ErrorCode.INVALID_RANGE,
-          416,
-          'Invalid range',
-          buildS3BundleErrorHeaders({
-            'Content-Range': `bytes */${file.byteLength}`,
-          }),
+        return observeAuthenticatedDownloadFailure(
+          artifactErrorResponse(
+            ErrorCode.INVALID_RANGE,
+            416,
+            'Invalid range',
+            buildS3BundleErrorHeaders({
+              'Content-Range': `bytes */${file.byteLength}`,
+            }),
+          ),
+          defaultObservation,
+          'not_applicable',
         );
       }
       return new Response(Uint8Array.from(file.subarray(parsedRange.start, parsedRange.end + 1)), {
@@ -382,10 +518,18 @@ export async function getVerificationBundleHandler({
     });
   } catch (error) {
     if (getStringProperty(error, 'code') === 'ENOENT') {
-      return artifactErrorResponse(ErrorCode.BUNDLE_NOT_FOUND, 404, 'Bundle not found');
+      return observeAuthenticatedDownloadFailure(
+        artifactErrorResponse(ErrorCode.BUNDLE_NOT_FOUND, 404, 'Bundle not found'),
+        defaultObservation,
+        'no_such_key',
+      );
     }
 
-    return artifactErrorResponse(ErrorCode.BUNDLE_DOWNLOAD_FAILED, 500, 'Failed to load bundle');
+    return observeAuthenticatedDownloadFailure(
+      artifactErrorResponse(ErrorCode.BUNDLE_DOWNLOAD_FAILED, 500, 'Failed to load bundle'),
+      defaultObservation,
+      'not_applicable',
+    );
   }
 }
 
@@ -409,13 +553,16 @@ export async function getVerificationReportHandler({
     return capabilityResult;
   }
 
+  const defaultObservation = createAuthenticatedDownloadObservation('report', sessionId, executionId);
   const executionScope = await ensureExecutionScope(store, sessionId, executionId);
   if (!executionScope.ok) {
-    return executionScope.response;
+    return observeAuthenticatedDownloadFailure(executionScope.response, defaultObservation, executionScope.s3ErrorCode);
   }
 
+  const s3ReportKey = getStringField(executionScope.finalizationResult.verificationResult, 's3ReportKey');
+  const s3Observation = createAuthenticatedDownloadObservation('report', sessionId, executionId, s3ReportKey);
   const s3Response = await maybeServeFromS3(
-    getStringField(executionScope.finalizationResult.verificationResult, 's3ReportKey'),
+    s3ReportKey,
     {
       contentType: 'application/json',
       contentDisposition: `inline; filename="${executionId}-verification.json"`,
@@ -427,6 +574,7 @@ export async function getVerificationReportHandler({
       tooLargeMessage: 'Report exceeds authenticated download limit',
       tooLargeError: ErrorCode.REPORT_DOWNLOAD_TOO_LARGE,
     },
+    s3Observation,
   );
   if (s3Response) {
     return s3Response;
@@ -445,9 +593,17 @@ export async function getVerificationReportHandler({
     });
   } catch (error) {
     if (getStringProperty(error, 'code') === 'ENOENT') {
-      return artifactErrorResponse(ErrorCode.REPORT_NOT_FOUND, 404, 'Report not found');
+      return observeAuthenticatedDownloadFailure(
+        artifactErrorResponse(ErrorCode.REPORT_NOT_FOUND, 404, 'Report not found'),
+        defaultObservation,
+        'no_such_key',
+      );
     }
 
-    return artifactErrorResponse(ErrorCode.REPORT_DOWNLOAD_FAILED, 500, 'Failed to load report');
+    return observeAuthenticatedDownloadFailure(
+      artifactErrorResponse(ErrorCode.REPORT_DOWNLOAD_FAILED, 500, 'Failed to load report'),
+      defaultObservation,
+      'not_applicable',
+    );
   }
 }

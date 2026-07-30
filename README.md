@@ -87,6 +87,7 @@ verification paths and must not be counted as production STARK proofs.
 - **API surface:** Hono route handlers backed by a framework-neutral route definition inventory
 - **Validation:** local schema validators and explicit response-shape tests
 - **Proof stack:** RISC Zero zkVM guest/host plus a standalone Rust `verifier-service`
+- **Image supply chain:** a dedicated verifier checks the selected digest-pinned prover image at app preflight and before runtime launch
 - **Formal scope:** Lean 4 models for selected summary, count, bitmap, input-commitment, and guest-model contracts
 - **AWS path:** Terraform-managed static frontend, Hono/API, DynamoDB store, and async prover infrastructure
 - **Public docs:** mdBook in `public-book/`, published as the Public Specs
@@ -99,8 +100,8 @@ external services.
 ### Prerequisites
 
 - Node.js 24
-- Corepack with pnpm 11.12.0, as pinned by `packageManager`
-- Rust 1.91.1 only if you want Rust builds or real zkVM flows
+- Corepack with pnpm 11.15.1, as pinned by `packageManager`
+- Rust 1.97.1 only if you want Rust builds or real zkVM flows
 - RISC Zero tooling only if you want real zkVM flows
 - Lean / `elan` only if you want to run the formal verification gate
 - `mdbook` / `mdbook-mermaid` only if you want to build the Public Specs
@@ -112,14 +113,16 @@ corepack enable
 pnpm install --frozen-lockfile
 ```
 
-Create a local environment file before first boot:
+The browser-only mock flow does not need a server capability secret. Copy the local environment template
+for the remaining local defaults:
 
 ```bash
 cp .env.local.example .env.local
 ```
 
-Then edit `.env.local` and replace `SESSION_CAPABILITY_SECRET` with a fresh random value of at least 32
-characters. Do not reuse the placeholder from `.env.local.example`.
+`SESSION_CAPABILITY_SECRET` is intentionally commented out in the template. Leave it unset for `pnpm dev`.
+If you run the same-origin local Hono API with `pnpm start`, uncomment it and replace the placeholder with
+a fresh random value of at least 32 characters.
 
 ### Run the Browser Mock Flow
 
@@ -133,12 +136,13 @@ Then open:
 http://localhost:3000
 ```
 
-`pnpm dev` starts the Vite frontend shell. The script supplies browser-only
-development flags, while `.env.local` generated from `.env.local.example`
-supplies local runtime defaults:
+`pnpm dev` starts the Vite frontend shell and supplies these browser-only development flags:
 
 - `VITE_USE_MOCK_API=true`
 - `VITE_TURNSTILE_BYPASS=1`
+
+The `.env.local` copied from `.env.local.example` supplies the remaining local runtime defaults:
+
 - `USE_MOCK_STORE=true`
 - `USE_MOCK_ZKVM=true`
 - `RUNTIME_DEPLOYMENT_ENV=develop`
@@ -176,10 +180,12 @@ Notes:
 Real zkVM flows require the pinned Rust toolchain and RISC Zero tooling.
 
 ```bash
-rustup toolchain install 1.91.1
-rustup component add rustfmt clippy --toolchain 1.91.1
-cargo install --locked cargo-risczero --version 3.0.5
-cargo risczero install
+rustup toolchain install 1.97.1
+rustup component add rustfmt clippy --toolchain 1.97.1
+cargo install --locked --git https://github.com/risc0/risc0 --tag v3.0.6 rzup
+rzup install rust 1.97.0
+rzup install r0vm 3.0.6
+rzup install cargo-risczero 3.0.6
 ```
 
 Build the Rust components:
@@ -235,6 +241,8 @@ For scope and claim boundaries, see [`docs/formal/README.md`](./docs/formal/READ
 |- docs/                Current documentation and supporting notes
 |- infra/terraform/     Terraform-managed infrastructure source
 |- infra/docker/         Prover container files
+|- infra/image-signature-verifier/  Prover image-signature verifier source and pinned assets
+|- infra/lambdas/        Lambda handlers and runtime adapters
 `- public/              Static assets and public mappings
 ```
 

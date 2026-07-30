@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Last updated: 2026-07-13
+Last updated: 2026-07-29
 
 This repository is published as source. The notices below summarize known
 third-party licenses used by this codebase and by vendored documentation assets.
@@ -14,7 +14,7 @@ This summary assumes the public repository includes the full codebase, including
 - zkVM workspace under `zkvm/`
 - verifier-service under `verifier-service/`
 - Target Lambdas under `infra/lambdas/`: `public-api`, `finalization-writer`,
-  `proof-dispatcher`, `verification-worker`, `image-signature-gate`, and
+  `proof-dispatcher`, `verification-worker`, `image-signature-verifier`, and
   `semaphore-janitor`
 - Lean formal models under `formal/` (current Lake metadata lists no external packages)
 - Docs, scripts, and tests
@@ -45,8 +45,23 @@ Use these tracked files for current package-level license data:
 - `docs/licenses/cargo-metadata-zkvm.json`
 - `docs/licenses/cargo-metadata-verifier.json`
 
-The Terraform image-signature Lambda is bundled from the root pnpm dependency
+The `image-signature-verifier` Lambda is bundled from the root pnpm dependency
 graph; regenerate this metadata when its bundled dependencies change.
+
+## Native image-signature verifier assets
+
+The `image-signature-verifier` Lambda package distributes these checksum-pinned
+native assets:
+
+- Notation 1.3.2 — Apache-2.0
+- AWS Signer Notation plugin 1.0.2292 — Apache-2.0, including the plugin's
+  bundled third-party notices
+- Amazon ECR credential helper 0.12.0 — Apache-2.0
+
+The pinned source revisions, download URLs, checksums, and license metadata are
+recorded in `infra/image-signature-verifier/asset-manifest.json`. The package
+installer copies the corresponding LICENSE and NOTICE files into its
+`licenses/` directory.
 
 ## Vendored public-book browser assets
 
@@ -67,6 +82,13 @@ the generated Public Specs can build without a network fetch:
   - License: BSD-3-Clause
   - Source: <https://github.com/ajitid/fzf-for-js>
   - Header notice: "Copyright (c) 2021 Ajit"
+- `public-book/elasticlunr-fzf.js`
+  - Project-local mdBook search patch
+  - Covered by this repository's Apache-2.0 license rather than a third-party
+    package license
+- `public-book/mermaid-init.js`
+  - License: MPL-2.0
+  - The committed file carries the MPL-2.0 source-code notice
 
 ## Special obligations / attention
 
@@ -93,7 +115,4 @@ Unicode-3.0 (Rust):
 
 - Some Rust crates are multi-licensed (e.g., "MIT OR Apache-2.0"). You may choose
   the permissive option for compliance.
-- If you distribute compiled artifacts that embed LGPL components, ensure the LGPL
-  obligations are met (e.g., relinking requirements). Source-only publication may
-  not trigger the same obligations, but verify based on your distribution model.
 - This file is informational and not legal advice.

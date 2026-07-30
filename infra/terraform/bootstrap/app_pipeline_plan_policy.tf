@@ -67,6 +67,7 @@ data "aws_iam_policy_document" "app_deployment_record" {
     resources = [
       local.app_toolchain_accepted_pointer_object_arn,
       local.app_prover_accepted_pointer_object_arn,
+      local.app_foundation_networking_handoff_object_arn,
       local.app_toolchain_artifact_records_objects_arn,
       local.app_prover_release_records_objects_arn,
       local.app_deployment_record_objects_arn,
@@ -157,7 +158,18 @@ data "aws_iam_policy_document" "app_codebuild_common" {
 data "aws_iam_policy_document" "app_terraform_plan" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  source_policy_documents = [data.aws_iam_policy_document.app_codebuild_common[0].json]
+  statement {
+    sid    = "ReadImmutableReleaseAuthority"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+    ]
+    resources = [
+      local.app_toolchain_artifact_records_objects_arn,
+      local.app_prover_release_records_objects_arn,
+    ]
+  }
 
   statement {
     sid    = "ReadSelectedReleaseImageDigests"
@@ -280,14 +292,18 @@ data "aws_iam_policy_document" "app_terraform_plan" {
   }
 
   statement {
-    sid    = "ReadTargetOriginVerifyHeaderSecret"
+    sid    = "ReadTargetRuntimeSecrets"
     effect = "Allow"
 
     actions = [
       "secretsmanager:DescribeSecret",
+      "secretsmanager:GetResourcePolicy",
       "secretsmanager:GetSecretValue",
     ]
-    resources = [local.app_expected_origin_verify_header_secret_arn]
+    resources = [
+      local.app_expected_origin_verify_header_secret_arn,
+      local.app_log_ip_hash_salt_secret_arn,
+    ]
   }
 
   statement {
@@ -301,7 +317,18 @@ data "aws_iam_policy_document" "app_terraform_plan" {
       "iam:ListRolePolicies",
       "iam:ListRoleTags",
     ]
-    resources = [local.app_target_runtime_role_arn_pattern]
+    resources = local.app_target_runtime_role_resource_arns
+  }
+
+  statement {
+    sid    = "ReadImageSignatureVerifierExecutionBoundary"
+    effect = "Allow"
+
+    actions = [
+      "iam:GetPolicy",
+      "iam:GetPolicyVersion",
+    ]
+    resources = [local.app_signature_verifier_execution_boundary_policy_arn]
   }
 
   statement {
@@ -321,6 +348,7 @@ data "aws_iam_policy_document" "app_terraform_plan" {
 
     actions = [
       "lambda:GetEventSourceMapping",
+      "lambda:GetAlias",
       "lambda:GetFunction",
       "lambda:GetFunctionCodeSigningConfig",
       "lambda:GetPolicy",
@@ -349,18 +377,6 @@ data "aws_iam_policy_document" "app_terraform_plan" {
       "states:ListTagsForResource",
     ]
     resources = [local.app_target_queue_arn, local.app_target_state_machine_arn]
-  }
-
-  statement {
-    sid    = "ReadTargetSemaphoreJanitorEvents"
-    effect = "Allow"
-
-    actions = [
-      "events:DescribeRule",
-      "events:ListTagsForResource",
-      "events:ListTargetsByRule",
-    ]
-    resources = local.app_target_event_rule_arns
   }
 
   statement {
@@ -472,6 +488,109 @@ data "aws_iam_policy_document" "app_terraform_plan_runtime" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   statement {
+    sid       = "ReadTargetMetricFilters"
+    effect    = "Allow"
+    actions   = ["logs:DescribeMetricFilters"]
+    resources = local.app_target_all_log_group_resource_arns
+  }
+
+  statement {
+    sid    = "ReadTargetObservabilityDashboard"
+    effect = "Allow"
+
+    actions = [
+      "cloudwatch:GetDashboard",
+    ]
+    resources = [local.app_observability_dashboard_arn]
+  }
+
+  statement {
+    sid       = "ListTargetObservabilityDashboards"
+    effect    = "Allow"
+    actions   = ["cloudwatch:ListDashboards"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ReadTargetInvariantNotificationTopic"
+    effect = "Allow"
+
+    actions = [
+      "sns:GetTopicAttributes",
+      "sns:ListSubscriptionsByTopic",
+      "sns:ListTagsForResource",
+    ]
+    resources = [local.app_invariant_sns_topic_arn]
+  }
+
+  statement {
+    sid    = "ReadTargetInvariantEmailSubscription"
+    effect = "Allow"
+
+    actions = [
+      "sns:GetSubscriptionAttributes",
+    ]
+    # GetSubscriptionAttributes has no resource-level IAM type.
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ReadTargetInvariantEmailParameter"
+    effect = "Allow"
+
+    actions = ["ssm:GetParametersByPath"]
+    resources = [
+      local.app_invariant_email_parameter_path_arn,
+      local.app_invariant_email_parameter_children_arn,
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "ssm:Recursive"
+      values   = ["false"]
+    }
+  }
+
+  statement {
+    sid    = "DecryptTargetInvariantEmailParameter"
+    effect = "Allow"
+
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:PARAMETER_ARN"
+      values   = [local.app_invariant_email_parameter_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${var.aws_region}.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid       = "ReadTargetLogQueryDefinitions"
+    effect    = "Allow"
+    actions   = ["logs:DescribeQueryDefinitions"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ReadTargetSemaphoreJanitorEvents"
+    effect = "Allow"
+
+    actions = [
+      "events:DescribeRule",
+      "events:ListTagsForResource",
+      "events:ListTargetsByRule",
+    ]
+    resources = local.app_target_event_rule_arns
+  }
+
+  statement {
     sid       = "ReadTargetRuntimeConfigParameterBatch"
     effect    = "Allow"
     actions   = ["ssm:GetParameters"]
@@ -506,7 +625,7 @@ data "aws_iam_policy_document" "app_terraform_plan_runtime" {
     actions = [
       "lambda:ListVersionsByFunction",
     ]
-    resources = local.app_target_lambda_arns
+    resources = local.app_target_lambda_version_inventory_arns
   }
 
   statement {
@@ -528,6 +647,41 @@ data "aws_iam_policy_document" "app_terraform_plan_runtime" {
   }
 }
 
+resource "aws_iam_policy" "app_codebuild_common" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management]
+
+  name   = local.app_codebuild_common_policy_name
+  policy = data.aws_iam_policy_document.app_codebuild_common[0].json
+  tags   = local.common_tags
+
+  lifecycle {
+    precondition {
+      condition     = length(jsonencode(jsondecode(data.aws_iam_policy_document.app_codebuild_common[0].json))) <= 6144
+      error_message = "The shared app CodeBuild managed policy must remain within the IAM 6,144-character quota."
+    }
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "app_codebuild_common_plan" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
+
+  role       = aws_iam_role.app_terraform_plan[0].name
+  policy_arn = aws_iam_policy.app_codebuild_common[0].arn
+}
+
+resource "aws_iam_role_policy_attachment" "app_codebuild_common_apply" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
+
+  role       = aws_iam_role.app_terraform_apply[0].name
+  policy_arn = aws_iam_policy.app_codebuild_common[0].arn
+}
+
 resource "aws_iam_policy" "app_terraform_plan_runtime" {
   count = local.app_pipeline_enabled ? 1 : 0
 
@@ -547,10 +701,26 @@ resource "aws_iam_role_policy_attachment" "app_terraform_plan_runtime" {
   policy_arn = aws_iam_policy.app_terraform_plan_runtime[0].arn
 }
 
+resource "aws_iam_role_policy_attachment" "app_terraform_apply_plan_runtime" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
+
+  role       = aws_iam_role.app_terraform_apply[0].name
+  policy_arn = aws_iam_policy.app_terraform_plan_runtime[0].arn
+}
+
 resource "aws_iam_role_policy" "app_terraform_plan" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   name   = "${local.app_terraform_plan_role_name}-policy"
   role   = aws_iam_role.app_terraform_plan[0].id
   policy = data.aws_iam_policy_document.app_terraform_plan[0].json
+
+  lifecycle {
+    precondition {
+      condition     = length(jsonencode(jsondecode(data.aws_iam_policy_document.app_terraform_plan[0].json))) <= 10240
+      error_message = "The app Terraform plan inline policy must remain within the IAM 10,240-character role-policy quota."
+    }
+  }
 }

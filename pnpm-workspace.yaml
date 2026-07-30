@@ -20,7 +20,10 @@ trustPolicyExclude:
   - 'ua-parser-js@1.0.41'
 
 overrides:
-  '@smithy/types': 4.15.1
+  '@smithy/types': 4.16.1
+  'brace-expansion@^1.0.0': 1.1.16
+  'brace-expansion@^2.0.0': 2.1.2
+  'js-yaml@^4.0.0': 4.3.0
 
 peerDependencyRules:
   allowedVersions:

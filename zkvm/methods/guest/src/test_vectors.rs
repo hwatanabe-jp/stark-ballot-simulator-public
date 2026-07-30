@@ -2,8 +2,10 @@
 // Matching the TypeScript implementation for compatibility verification
 // Regenerate expected values with scripts/generate-test-vectors.ts.
 
+use alloc::{vec, vec::Vec};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
+use std::println;
 
 // Test vector structures matching TypeScript
 #[derive(Debug)]

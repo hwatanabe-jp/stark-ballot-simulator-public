@@ -2,6 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PROVER_WORK_MESSAGE_VERSION } from '@stark-ballot/aws-adapters/sqs/proverWorkMessage';
 import type { FinalizationWorkItem } from '@stark-ballot/application/finalize/finalization-work-item';
 import { buildDefaultElectionConfig, hashElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
+
+const emitCanonicalEventMock = vi.hoisted(() => vi.fn());
+
+vi.mock('@stark-ballot/diagnostics/canonicalEvents', () => ({
+  emitCanonicalEvent: emitCanonicalEventMock,
+}));
 
 const sqsState = vi.hoisted(() => ({
   clients: [] as Array<{ config: unknown; send: ReturnType<typeof vi.fn> }>,
@@ -77,6 +84,7 @@ describe('publishProverWorkMessage', () => {
   beforeEach(() => {
     sqsState.clients.length = 0;
     sqsState.sendQueue.length = 0;
+    emitCanonicalEventMock.mockClear();
     resetSqsClients();
 
     originalQueueUrl = process.env['PROVER_WORK_QUEUE_URL'];
@@ -92,7 +100,11 @@ describe('publishProverWorkMessage', () => {
   });
 
   it('publishes with the default SQS client', async () => {
-    sqsState.sendQueue.push(vi.fn().mockResolvedValueOnce({}));
+    sqsState.sendQueue.push(
+      vi.fn().mockResolvedValueOnce({
+        MessageId: '35f6c6bc-0189-49df-9d7b-8a60f6f15dc5',
+      }),
+    );
 
     await publishProverWorkMessage(baseMessage);
 
@@ -105,10 +117,20 @@ describe('publishProverWorkMessage', () => {
     expect(body['zkvmInput']).toBeTruthy();
     expect(body).not.toHaveProperty('requestMeta');
     expect(body).not.toHaveProperty('inputS3Key');
+    expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+      event: 'queue_publish',
+      queue: 'prover',
+      result: 'succeeded',
+      sqs_message_id: '35f6c6bc-0189-49df-9d7b-8a60f6f15dc5',
+      session_id_hash: hashSessionIdForLogging(baseMessage.sessionId),
+      execution_id: baseMessage.executionId,
+    });
+    expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(baseMessage.sessionId);
+    expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(queueUrl);
   });
 
   it('projects target S3 artifact keys at the AWS adapter boundary', async () => {
-    sqsState.sendQueue.push(vi.fn().mockResolvedValueOnce({}));
+    sqsState.sendQueue.push(vi.fn().mockResolvedValueOnce({ MessageId: 'projected-artifact-message' }));
 
     await publishProverWorkMessage({
       sessionId: baseMessage.sessionId,
@@ -137,6 +159,13 @@ describe('publishProverWorkMessage', () => {
     await expect(publishProverWorkMessage(baseMessage)).rejects.toThrow('Could not load credentials');
 
     expect(sqsState.clients).toHaveLength(1);
+    expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+      event: 'queue_publish',
+      queue: 'prover',
+      result: 'failed',
+      session_id_hash: hashSessionIdForLogging(baseMessage.sessionId),
+      execution_id: baseMessage.executionId,
+    });
   });
 
   it('rethrows non-credential errors', async () => {
@@ -148,10 +177,37 @@ describe('publishProverWorkMessage', () => {
     expect(sqsState.clients).toHaveLength(1);
   });
 
+  it('fails closed when SQS returns an oversized message id', async () => {
+    sqsState.sendQueue.push(vi.fn().mockResolvedValueOnce({ MessageId: 'x'.repeat(129) }));
+
+    await expect(publishProverWorkMessage(baseMessage)).rejects.toThrow('valid message ID');
+
+    expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+      event: 'queue_publish',
+      queue: 'prover',
+      result: 'failed',
+      session_id_hash: hashSessionIdForLogging(baseMessage.sessionId),
+      execution_id: baseMessage.executionId,
+    });
+    expect(emitCanonicalEventMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'queue_publish',
+        result: 'succeeded',
+      }),
+    );
+  });
+
   it('fails when PROVER_WORK_QUEUE_URL is not configured', async () => {
     delete process.env['PROVER_WORK_QUEUE_URL'];
 
     await expect(publishProverWorkMessage(baseMessage)).rejects.toThrow('PROVER_WORK_QUEUE_URL is not configured');
     expect(sqsState.clients).toHaveLength(0);
+    expect(emitCanonicalEventMock).toHaveBeenCalledWith({
+      event: 'queue_publish',
+      queue: 'prover',
+      result: 'failed',
+      session_id_hash: hashSessionIdForLogging(baseMessage.sessionId),
+      execution_id: baseMessage.executionId,
+    });
   });
 });

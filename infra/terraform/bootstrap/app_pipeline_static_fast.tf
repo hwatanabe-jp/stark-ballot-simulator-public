@@ -73,19 +73,31 @@ data "aws_iam_policy_document" "app_static_fast_pipeline" {
   }
 
   statement {
-    sid    = "UseAppStaticFastArtifactBucket"
+    sid    = "UseAppStaticFastPipelineArtifacts"
     effect = "Allow"
 
     actions = [
       "s3:GetObject",
       "s3:GetObjectVersion",
-      "s3:ListBucket",
       "s3:PutObject",
     ]
-    resources = [
-      aws_s3_bucket.app_pipeline_artifacts[0].arn,
-      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/*",
-    ]
+    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.app_static_fast_pipeline_name}/*"]
+  }
+
+  statement {
+    sid       = "ListAppStaticFastPipelineArtifacts"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.app_pipeline_artifacts[0].arn]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values = [
+        local.app_static_fast_pipeline_name,
+        "${local.app_static_fast_pipeline_name}/*",
+      ]
+    }
   }
 
   statement {
@@ -148,31 +160,45 @@ data "aws_iam_policy_document" "app_static_fast_gate_and_build" {
       "s3:GetObjectVersion",
     ]
     resources = [
-      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/accepted-deployments/stark-dev/develop/app/index.json",
-      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/accepted-deployments/stark-dev/develop/app/*",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/accepted-deployments/stark-dev/develop/app/current.json",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/accepted-deployments/stark-dev/develop/app/executions/*/attempts/*/authoritative-app-deployment.json",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/accepted-deployments/stark-dev/develop/app/executions/*/attempts/*/apply-outputs.json",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/accepted-deployments/stark-dev/develop/app/executions/*/attempts/*/static-frontend-deploy.json",
     ]
   }
 
   statement {
-    sid    = "ReadAppStaticFastArtifacts"
+    sid    = "ReadAppStaticFastPipelineArtifacts"
     effect = "Allow"
 
     actions = [
       "s3:GetObject",
       "s3:GetObjectVersion",
-      "s3:ListBucket",
     ]
-    resources = [
-      aws_s3_bucket.app_pipeline_artifacts[0].arn,
-      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/*",
-    ]
+    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.app_static_fast_pipeline_name}/*"]
   }
 
   statement {
-    sid       = "WriteAppStaticFastArtifacts"
+    sid       = "WriteAppStaticFastPipelineArtifacts"
     effect    = "Allow"
     actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/*"]
+    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.app_static_fast_pipeline_name}/*"]
+  }
+
+  statement {
+    sid       = "ListAppStaticFastPipelineArtifacts"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.app_pipeline_artifacts[0].arn]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values = [
+        local.app_static_fast_pipeline_name,
+        "${local.app_static_fast_pipeline_name}/*",
+      ]
+    }
   }
 
   statement {
@@ -338,41 +364,14 @@ if (invalidEntries.length > 0) {
   );
 }
 NODE
-aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "accepted-deployments/stark-dev/develop/app/index.json" --expected-bucket-owner "${var.aws_account_id}" accepted-index.json --output json --no-cli-pager
-node <<'NODE' > .tmp/static-fast-accepted.env
-const fs = require("node:fs");
-const index = JSON.parse(fs.readFileSync("accepted-index.json", "utf8"));
-const deployments = Array.isArray(index.acceptedDeployments) ? index.acceptedDeployments : [];
-function retainedPath(deployment, key) {
-  const retained = deployment && deployment.retainedDeploymentArtifacts;
-  const nested = retained && retained[key];
-  return typeof nested === "string" && nested.length > 0 ? nested : deployment && deployment[key];
-}
-const latest = deployments[0];
-if (!latest || typeof latest.sourceSha !== "string" || !/^[0-9a-f]{40}$/.test(latest.sourceSha)) {
-  throw new Error("Static fast lane requires an accepted deployment marker with retained static deploy artifacts. Use the full app lane.");
-}
-const applyOutputsPath = retainedPath(latest, "applyOutputsPath");
-if (typeof applyOutputsPath !== "string" || applyOutputsPath.length === 0) {
-  throw new Error("Static fast lane accepted deployment is missing applyOutputsPath. Use the full app lane.");
-}
-if (typeof latest.applyOutputsSha256 !== "string" || !/^[0-9a-f]{64}$/i.test(latest.applyOutputsSha256)) {
-  throw new Error("Static fast lane accepted deployment is missing applyOutputsSha256. Use the full app lane.");
-}
-const staticFrontendDeployPath = retainedPath(latest, "staticFrontendDeployPath");
-if (typeof staticFrontendDeployPath !== "string" || staticFrontendDeployPath.length === 0) {
-  throw new Error("Static fast lane accepted deployment is missing staticFrontendDeployPath. Use the full app lane.");
-}
-function shellQuote(value) {
-  return "'" + String(value).replace(/'/g, "'\\''") + "'";
-}
-console.log("accepted_source_sha=" + shellQuote(latest.sourceSha));
-console.log("apply_outputs_path=" + shellQuote(applyOutputsPath));
-console.log("apply_outputs_sha256=" + shellQuote(latest.applyOutputsSha256.toLowerCase()));
-console.log("static_frontend_deploy_path=" + shellQuote(staticFrontendDeployPath));
-NODE
+aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "accepted-deployments/stark-dev/develop/app/current.json" --expected-bucket-owner "${var.aws_account_id}" accepted-current.json --output json --no-cli-pager > accepted-current.get-object.json
+node infra/terraform/bootstrap/app-pipeline-scripts/app-static-fast-authority.cjs select-current accepted-current.json > .tmp/static-fast-manifest.env
+. .tmp/static-fast-manifest.env
+export accepted_manifest_path accepted_manifest_version_id accepted_manifest_sha256
+aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "$accepted_manifest_path" --version-id "$accepted_manifest_version_id" --expected-bucket-owner "${var.aws_account_id}" accepted-deployment.json --output json --no-cli-pager > accepted-deployment.get-object.json
+node infra/terraform/bootstrap/app-pipeline-scripts/app-static-fast-authority.cjs validate-record accepted-current.json accepted-deployment.json accepted-deployment.get-object.json > .tmp/static-fast-accepted.env
 . .tmp/static-fast-accepted.env
-export accepted_source_sha apply_outputs_path apply_outputs_sha256 static_frontend_deploy_path
+export accepted_source_sha accepted_deployment_id apply_outputs_path apply_outputs_sha256 static_frontend_deploy_path
 current_source_sha="$${CODEBUILD_RESOLVED_SOURCE_VERSION:-HEAD}"
 if ! git rev-parse --verify "$accepted_source_sha^{commit}" >/dev/null 2>&1 ||
    ! git rev-parse --verify "$current_source_sha^{commit}" >/dev/null 2>&1 ||
@@ -499,7 +498,8 @@ if (!staticFrontend || !staticFrontend.frontend_bucket_name || !staticFrontend.c
   throw new Error("static_frontend output is required before static fast deploy.");
 }
 const evidence = {
-  schemaVersion: "app-static-fast-gate-v1",
+  gateType: "app-static-fast",
+  deploymentId: process.env.accepted_deployment_id,
   sourceSha: process.env.CODEBUILD_RESOLVED_SOURCE_VERSION,
   acceptedSourceSha: process.env.accepted_source_sha,
   applyOutputsSha256: actualApplyOutputsSha256,
@@ -555,6 +555,7 @@ function exportValue(name, value) {
 }
 console.log("unset VITE_API_BASE_URL");
 exportValue("VITE_APP_ENV", "develop");
+exportValue("VITE_DEPLOYMENT_ID", process.env.accepted_deployment_id);
 console.log("unset VITE_CONTRACT_GENERATION");
 console.log("unset CONTRACT_GENERATION");
 exportValue("TARGET_DEVELOP_OPERATOR_GATE_ENABLED", "true");
@@ -660,7 +661,7 @@ export root_status mapping_status expected_http_status operator_gate_enabled
 node <<'NODE'
 const fs = require("node:fs");
 const evidence = {
-  schemaVersion: "app-static-fast-smoke-lite-v1",
+  evidenceType: "app-static-fast-smoke",
   operatorGateEnabled: process.env.operator_gate_enabled === "true",
   expectedHttpStatus: Number(process.env.expected_http_status),
   rootStatus: Number(process.env.root_status),

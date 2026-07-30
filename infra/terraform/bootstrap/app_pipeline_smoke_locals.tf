@@ -1,7 +1,7 @@
 locals {
-  app_no_runtime_source_check_command         = "bash infra/terraform/bootstrap/app-pipeline-scripts/app-smoke-source-boundary.sh"
-  app_smoke_operator_gate_keyset_command      = "bash infra/terraform/bootstrap/app-pipeline-scripts/app-smoke-operator-gate-keyset.sh"
-  app_smoke_dynamodb_data_plane_command       = <<-EOT
+  app_no_runtime_source_check_command                     = "bash infra/terraform/bootstrap/app-pipeline-scripts/app-smoke-source-boundary.sh"
+  app_smoke_operator_gate_keyset_command                  = "bash infra/terraform/bootstrap/app-pipeline-scripts/app-smoke-operator-gate-keyset.sh"
+  app_smoke_dynamodb_data_plane_command                   = <<-EOT
 set -eu
 node <<'NODE' > app-smoke-dynamodb-config.json
 const fs = require("node:fs");
@@ -141,8 +141,7 @@ for (const [label, describedTable] of Object.entries(describedTables)) {
   liveTables[label] = live;
 }
 const evidence = {
-  schemaVersion: "target-dynamodb-data-plane-smoke-v1",
-  manifestType: "dynamodb-data-plane-smoke",
+  evidenceType: "dynamodb-data-plane-smoke",
   expectedAccountId: config.expectedAccountId,
   expectedRegion: config.expectedRegion,
   smokeCallerAccountId: config.smokeCallerAccountId,
@@ -175,8 +174,8 @@ const evidence = {
 fs.writeFileSync("app-smoke-dynamodb-data-plane-evidence.json", JSON.stringify(evidence, null, 2) + "\n");
 NODE
 EOT
-  app_smoke_dynamodb_recovery_phase_command   = "bash infra/terraform/bootstrap/app-pipeline-scripts/app-smoke-dynamodb-recovery-phase.sh"
-  app_smoke_denial_checks_command             = <<-EOT
+  app_smoke_dynamodb_recovery_phase_command               = "bash infra/terraform/bootstrap/app-pipeline-scripts/app-smoke-dynamodb-recovery-phase.sh"
+  app_smoke_denial_checks_command                         = <<-EOT
 aws iam simulate-principal-policy --policy-source-arn "${aws_iam_role.app_terraform_smoke[0].arn}" --action-names s3:GetObject s3:PutObject kms:Decrypt kms:Encrypt --resource-arns "${aws_s3_bucket.state.arn}/${local.app_state_backend_key}" "${aws_kms_key.state.arn}" --output json --no-cli-pager > app-smoke-state-denial-simulation.json
 aws iam simulate-principal-policy --policy-source-arn "${aws_iam_role.app_terraform_smoke[0].arn}" --action-names iam:CreateRole iam:PutRolePolicy cloudfront:CreateDistribution route53:CreateHostedZone acm:RequestCertificate ecr:CreateRepository ecs:CreateService secretsmanager:CreateSecret s3:PutObject s3:PutBucketPolicy s3:PutBucketWebsite s3:PutBucketAcl --resource-arns "*" --output json --no-cli-pager > app-smoke-mutation-denial-simulation.json
 node <<'NODE'
@@ -194,8 +193,7 @@ function assertAllDenied(report) {
 }
 
 const evidence = {
-  schemaVersion: "target-app-deployment-evidence-v1",
-  manifestType: "smoke-denial-evidence",
+  evidenceType: "app-smoke-denial",
   stateAccessDenied: assertAllDenied(stateDenial),
   mutationAccessDenied: assertAllDenied(mutationDenial),
   stateSimulationPath: "app-smoke-state-denial-simulation.json",
@@ -204,85 +202,67 @@ const evidence = {
 fs.writeFileSync("app-smoke-denial-evidence.json", JSON.stringify(evidence, null, 2) + "\n");
 NODE
 EOT
-  app_fetch_existing_acceptance_index_command = <<-EOT
+  app_fetch_existing_acceptance_current_authority_command = <<-EOT
 set +e
-aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "${local.app_accepted_marker_path}/index.json" --expected-bucket-owner "${var.aws_account_id}" accepted-index-existing.json --output json --no-cli-pager > accepted-index-existing.get-object.json 2> accepted-index-existing.error
-accepted_index_status="$?"
+aws s3api get-object --bucket "${local.app_pipeline_artifact_bucket_name}" --key "${local.app_accepted_marker_path}/current.json" --expected-bucket-owner "${var.aws_account_id}" accepted-current-existing.json --output json --no-cli-pager > accepted-current-existing.get-object.json 2> accepted-current-existing.error
+accepted_current_status="$?"
 set -e
-if [ "$accepted_index_status" -eq 0 ]; then
+if [ "$accepted_current_status" -eq 0 ]; then
   node <<'NODE'
 const fs = require("node:fs");
-const response = JSON.parse(fs.readFileSync("accepted-index-existing.get-object.json", "utf8"));
-if (typeof response.ETag !== "string" || response.ETag.length === 0) {
-  throw new Error("Existing accepted deployment index get-object response is missing ETag.");
+const crypto = require("node:crypto");
+const response = JSON.parse(fs.readFileSync("accepted-current-existing.get-object.json", "utf8"));
+if (
+  typeof response.ETag !== "string" ||
+  response.ETag.length === 0 ||
+  typeof response.VersionId !== "string" ||
+  response.VersionId.length === 0 ||
+  response.VersionId === "null"
+) {
+  throw new Error("Existing accepted deployment current authority get-object response is missing exact ETag or VersionId.");
 }
+const body = fs.readFileSync("accepted-current-existing.json");
 fs.writeFileSync(
-  "accepted-index-existing-state.json",
-  JSON.stringify({ exists: true, etag: response.ETag, versionId: response.VersionId ?? null }, null, 2) + "\n",
+  "accepted-current-existing-state.json",
+  JSON.stringify({
+    observationType: "app-accepted-current-authority-observation",
+    key: "accepted-deployments/stark-dev/develop/app/current.json",
+    exists: true,
+    etag: response.ETag,
+    versionId: response.VersionId,
+    sha256: crypto.createHash("sha256").update(body).digest("hex"),
+  }, null, 2) + "\n",
 );
 NODE
-elif grep -Eq '(^|[^[:alnum:]])(NoSuchKey|Not[[:space:]]*Found)([^[:alnum:]]|$)' accepted-index-existing.error; then
-  printf '{"schemaVersion":"target-app-deployment-evidence-v1","stateIdentity":"stark-dev/develop/app","acceptedDeployments":[]}\n' > accepted-index-existing.json
-  printf '{"exists":false}\n' > accepted-index-existing-state.json
+elif grep -Eq '(^|[^[:alnum:]])(NoSuchKey|Not[[:space:]]*Found)([^[:alnum:]]|$)' accepted-current-existing.error; then
+  printf '{"authorityType":"app-accepted-deployment-authority","stateIdentity":"stark-dev/develop/app","retentionDays":%s,"maxRetainedAcceptedDeployments":%s,"acceptedDeployments":[]}\n' "$APP_PIPELINE_ARTIFACT_RETENTION_DAYS" "$APP_ACCEPTED_DEPLOYMENT_RETENTION_COUNT" > accepted-current-existing.json
+  printf '{"observationType":"app-accepted-current-authority-observation","key":"%s/current.json","exists":false}\n' "${local.app_accepted_marker_path}" > accepted-current-existing-state.json
 else
-  cat accepted-index-existing.error >&2
-  exit "$accepted_index_status"
+  cat accepted-current-existing.error >&2
+  exit "$accepted_current_status"
 fi
 node <<'NODE'
 const fs = require("node:fs");
+const {
+  validateAcceptedDeploymentCurrentAuthority,
+} = require("./infra/terraform/bootstrap/app-pipeline-scripts/app-accepted-current-contract.cjs");
 
-let index;
+let currentAuthority;
 try {
-  index = JSON.parse(fs.readFileSync("accepted-index-existing.json", "utf8"));
+  currentAuthority = JSON.parse(fs.readFileSync("accepted-current-existing.json", "utf8"));
 } catch (error) {
-  throw new Error("Existing accepted deployment index is not valid JSON: " + error.message);
+  throw new Error("Existing accepted deployment current authority is not valid JSON: " + error.message);
 }
-
-if (!index || typeof index !== "object" || Array.isArray(index)) {
-  throw new Error("Existing accepted deployment index must be a JSON object.");
-}
-if (index.schemaVersion !== "target-app-deployment-evidence-v1") {
-  throw new Error("Existing accepted deployment index has an unsupported schemaVersion.");
-}
-if (index.stateIdentity !== "stark-dev/develop/app") {
-  throw new Error("Existing accepted deployment index has the wrong stateIdentity.");
-}
-if (!Array.isArray(index.acceptedDeployments)) {
-  throw new Error("Existing accepted deployment index acceptedDeployments must be an array.");
-}
-for (const [entryIndex, deployment] of index.acceptedDeployments.entries()) {
-  if (!deployment || typeof deployment !== "object" || Array.isArray(deployment)) {
-    throw new Error("Existing accepted deployment index entry " + entryIndex + " must be an object.");
-  }
-  for (const field of [
-    "sourceSha",
-    "manifestPath",
-    "planPath",
-    "planChecksumPath",
-    "planSummaryPath",
-    "planJsonPath",
-    "sourcePreflightPath",
-    "targetLambdaArtifactsPath",
-    "terraformVersionPath",
-    "terraformProvidersPath",
-    "applyOutputsPath",
-    "staticFrontendDeployPath",
-    "smokeReportPath",
-    "smokeCallerPath",
-    "smokeTerraformFilesPath",
-    "smokeDeclaredBlocksPath",
-    "dynamodbDataPlaneSmokePath",
-    "denialSmokePath",
-    "stateDenialSimulationPath",
-    "mutationDenialSimulationPath",
-    "planChecksum",
-  ]) {
-    if (typeof deployment[field] !== "string" || deployment[field].length === 0) {
-      throw new Error("Existing accepted deployment index entry " + entryIndex + " has invalid " + field + ".");
-    }
-  }
-}
+validateAcceptedDeploymentCurrentAuthority(currentAuthority);
 NODE
+node infra/terraform/bootstrap/app-pipeline-scripts/validate-retained-acceptance-authority.mjs \
+  --accepted-current-authority accepted-current-existing.json \
+  --account-id "$APP_AWS_ACCOUNT_ID" \
+  --app-artifact-bucket "$APP_PIPELINE_ARTIFACT_BUCKET" \
+  --max-retained-accepted-deployments "$APP_ACCEPTED_DEPLOYMENT_RETENTION_COUNT" \
+  --output infra/terraform/app/evidence/retained-acceptance-authority-validation.json \
+  --region "$APP_AWS_REGION" \
+  --release-record-bucket "$APP_RELEASE_MANIFEST_BUCKET"
 EOT
 
 }

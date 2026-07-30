@@ -15,6 +15,7 @@ export interface HonoAdapterInput<TParams extends ApiParams> {
 }
 
 type AwsRequestContextLike = {
+  requestId?: unknown;
   http?: { sourceIp?: unknown };
   identity?: { sourceIp?: unknown };
 };
@@ -23,6 +24,10 @@ type AwsEnvLike = {
   requestContext?: AwsRequestContextLike;
   event?: { requestContext?: AwsRequestContextLike };
 };
+
+interface HonoEnvContextLike {
+  readonly env: unknown;
+}
 
 function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== 'string') {
@@ -46,12 +51,16 @@ function tryResolveIpWithAwsConnInfo(context: Context): string | null {
   }
 }
 
-function resolveAwsSourceIp(context: Context): string | null {
+export function resolveAwsSourceIp(context: Context): string | null {
   const awsConnInfoIp = tryResolveIpWithAwsConnInfo(context);
   if (awsConnInfoIp) {
     return awsConnInfoIp;
   }
 
+  return resolveAwsRequestContextSourceIp(context);
+}
+
+export function resolveAwsRequestContextSourceIp(context: HonoEnvContextLike): string | null {
   const env = context.env as AwsEnvLike | undefined;
   const requestContext = env?.requestContext ?? env?.event?.requestContext;
   if (!requestContext) {
@@ -69,6 +78,12 @@ function resolveAwsSourceIp(context: Context): string | null {
   }
 
   return null;
+}
+
+export function resolveAwsRequestId(context: HonoEnvContextLike): string | null {
+  const env = context.env as AwsEnvLike | undefined;
+  const requestContext = env?.requestContext ?? env?.event?.requestContext;
+  return asNonEmptyString(requestContext?.requestId);
 }
 
 /**

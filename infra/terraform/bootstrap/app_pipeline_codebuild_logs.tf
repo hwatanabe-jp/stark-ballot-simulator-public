@@ -9,7 +9,7 @@ resource "aws_cloudwatch_log_group" "app_pipeline_codebuild" {
   ]
 
   name              = "/aws/codebuild/${each.key}"
-  retention_in_days = var.app_pipeline_log_retention_days
+  retention_in_days = local.storage_retention.app_codebuild_log_days
   tags = merge(local.common_tags, {
     StateScope = "app"
   })

@@ -11,10 +11,9 @@ locals {
     for generation, key in local.operator_gate_key_generations : generation => key
     if contains(["issuer", "trusted-retiring"], key.status)
   }
-  operator_gate_legacy_trusted_public_key_ids = tolist(local.operator_gate_keyset.legacyTrustedPublicKeyIds)
   operator_gate_keyset_static_valid = (
-    local.operator_gate_keyset.schemaVersion == "develop-operator-gate-keyset-v1"
-    && toset(keys(local.operator_gate_keyset)) == toset(["schemaVersion", "issuerGeneration", "legacyTrustedPublicKeyIds", "generations"])
+    local.operator_gate_keyset.keysetType == "operator-gate"
+    && toset(keys(local.operator_gate_keyset)) == toset(["keysetType", "issuerGeneration", "generations"])
     && length(local.operator_gate_key_generations) > 0
     && alltrue([
       for generation in keys(local.operator_gate_key_generations) :
@@ -30,12 +29,7 @@ locals {
     ])
     && length(local.operator_gate_issuer_generations) == 1
     && try(local.operator_gate_issuer_generations[0] == local.operator_gate_keyset.issuerGeneration, false)
-    && alltrue([
-      for public_key_id in local.operator_gate_legacy_trusted_public_key_ids :
-      can(regex("^K[A-Z0-9]{10,}$", public_key_id))
-    ])
-    && length(distinct(local.operator_gate_legacy_trusted_public_key_ids)) == length(local.operator_gate_legacy_trusted_public_key_ids)
-    && length(local.operator_gate_trusted_managed_generations) + length(local.operator_gate_legacy_trusted_public_key_ids) <= 5
+    && length(local.operator_gate_trusted_managed_generations) <= 5
   )
   operator_gate_managed_generations = (
     local.target_develop_operator_gate_requested && local.operator_gate_keyset_static_valid
@@ -46,23 +40,15 @@ locals {
     for generation, key in local.operator_gate_managed_generations : generation => key
     if contains(["issuer", "trusted-retiring"], key.status)
   }
-  operator_gate_active_legacy_trusted_public_key_ids = (
-    local.target_develop_operator_gate_requested && local.operator_gate_keyset_static_valid
-    ? local.operator_gate_legacy_trusted_public_key_ids
-    : []
-  )
   operator_gate_managed_trusted_public_key_ids = [
     for generation in sort(keys(local.operator_gate_active_trusted_managed_generations)) :
     aws_cloudfront_public_key.develop_operator_gate_managed[generation].id
   ]
-  operator_gate_trusted_public_key_ids = concat(
-    local.operator_gate_managed_trusted_public_key_ids,
-    local.operator_gate_active_legacy_trusted_public_key_ids,
-  )
+  operator_gate_trusted_public_key_ids = local.operator_gate_managed_trusted_public_key_ids
   operator_gate_keyset_configured = (
     local.target_develop_operator_gate_requested
     && local.operator_gate_keyset_static_valid
-    && length(local.operator_gate_active_trusted_managed_generations) + length(local.operator_gate_active_legacy_trusted_public_key_ids) > 0
+    && length(local.operator_gate_active_trusted_managed_generations) > 0
   )
   operator_gate_trusted_key_groups = (
     local.operator_gate_keyset_configured
@@ -112,23 +98,15 @@ resource "aws_cloudfront_key_group" "develop_operator_gate" {
   items   = local.operator_gate_trusted_public_key_ids
 }
 
-removed {
-  from = aws_cloudfront_public_key.develop_operator_gate
-
-  lifecycle {
-    destroy = false
-  }
-}
-
 check "develop_operator_gate_keyset" {
   assert {
-    condition     = toset(keys(local.operator_gate_keyset)) == toset(["schemaVersion", "issuerGeneration", "legacyTrustedPublicKeyIds", "generations"])
+    condition     = toset(keys(local.operator_gate_keyset)) == toset(["keysetType", "issuerGeneration", "generations"])
     error_message = "develop operator-gate keyset contains unsupported or missing top-level fields."
   }
 
   assert {
-    condition     = local.operator_gate_keyset.schemaVersion == "develop-operator-gate-keyset-v1"
-    error_message = "develop operator-gate keyset must use schema develop-operator-gate-keyset-v1."
+    condition     = local.operator_gate_keyset.keysetType == "operator-gate"
+    error_message = "develop operator-gate keyset must use keysetType operator-gate."
   }
 
   assert {
@@ -167,16 +145,4 @@ check "develop_operator_gate_keyset" {
     error_message = "develop operator-gate trusted public-key IDs must be unique."
   }
 
-  assert {
-    condition = alltrue([
-      for public_key_id in local.operator_gate_legacy_trusted_public_key_ids :
-      can(regex("^K[A-Z0-9]{10,}$", public_key_id))
-    ])
-    error_message = "legacy operator-gate trusted public-key IDs must use CloudFront public-key ID syntax."
-  }
-
-  assert {
-    condition     = length(local.operator_gate_active_legacy_trusted_public_key_ids) == 0 || var.deployment_environment == "develop"
-    error_message = "legacy operator-gate trusted public-key IDs are allowed only in develop."
-  }
 }

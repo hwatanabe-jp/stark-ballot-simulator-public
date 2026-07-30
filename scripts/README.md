@@ -6,7 +6,6 @@ This directory contains all utility scripts for the STARK Ballot Simulator proje
 
 - `__tests__/` - Script-level Vitest coverage
 - **api-contract/** - API contract baseline helpers
-- **aws/** - AWS operator helpers
 - **build/** - Build and cleanup scripts
 - **dev/** - Local static Hono server helpers
 - **docs/** - Documentation and license metadata helpers
@@ -14,7 +13,6 @@ This directory contains all utility scripts for the STARK Ballot Simulator proje
 - **frontend/** - Frontend build-boundary and artifact scans
 - **security/** - Public-safety and secret-leak guard scripts
 - **showcase/** - Public repository showcase automation helpers
-- **skills/** - Agent skill mirror verification helpers
 - **stark-proofs/** - STARK proof generation utilities
 - **terraform/** - Terraform rendering and guarded execution helpers
 - **tests/** - Maintained CLI, fixture, and regression test scripts
@@ -67,6 +65,7 @@ pnpm tsx scripts/showcase/public-weekly-monitor.ts --output .tmp/public-weekly-m
 ### License Metadata
 
 ```bash
+pnpm licenses:check              # Verify tracked metadata matches current lockfiles
 pnpm licenses:regen              # Regenerate sanitized docs/licenses metadata
 ```
 

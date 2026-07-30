@@ -17,7 +17,7 @@ Environment:
   AWS_REGION                    default: ap-northeast-1
   AWS_PROFILE                   optional AWS CLI profile
   RISC0_TOOLCHAIN_REPO_NAME     default: stark-ballot-simulator/risc0-toolchain
-  RISC0_VERSION                 default: 3.0.5
+  RISC0_VERSION                 default: 3.0.6
   RISC0_TOOLCHAIN_IMAGE_TAG     default: ${RISC0_VERSION}-arm64
 
 The command prints variable names and the digest only. Use --write-env to write
@@ -46,7 +46,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 REPOSITORY="${RISC0_TOOLCHAIN_REPO_NAME:-stark-ballot-simulator/risc0-toolchain}"
-RISC0_VERSION="${RISC0_VERSION:-3.0.5}"
+RISC0_VERSION="${RISC0_VERSION:-3.0.6}"
 IMAGE_TAG="${RISC0_TOOLCHAIN_IMAGE_TAG:-${RISC0_VERSION}-arm64}"
 AWS_REGION="${AWS_REGION:-ap-northeast-1}"
 AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-}"
@@ -105,7 +105,7 @@ FULL_IMAGE="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPOSITORY@$DIGES
 
 echo "Digest: $DIGEST"
 echo "Use it locally with:"
-echo '  docker build --build-arg RISC0_TOOLCHAIN_IMAGE="$RISC0_TOOLCHAIN_IMAGE" -f infra/docker/Dockerfile.fargate-prover .'
+echo "  docker build --build-arg RISC0_TOOLCHAIN_IMAGE=\"\$RISC0_TOOLCHAIN_IMAGE\" -f infra/docker/Dockerfile.fargate-prover ."
 
 if [ -n "$write_env_path" ]; then
   mkdir -p "$(dirname "$write_env_path")"

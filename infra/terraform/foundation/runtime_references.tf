@@ -7,7 +7,8 @@ resource "aws_secretsmanager_secret" "runtime_secret" {
     LOG_IP_HASH_SALT_REF              = local.runtime_reference_names.LOG_IP_HASH_SALT_REF
   }
 
-  name = each.value
+  name                    = each.value
+  recovery_window_in_days = 30
   tags = merge(local.common_tags, {
     RuntimeReference = each.key
   })

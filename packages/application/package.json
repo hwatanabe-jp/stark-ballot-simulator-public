@@ -17,6 +17,6 @@
   },
   "devDependencies": {
     "@stark-ballot/test-support": "workspace:*",
-    "vitest": "4.1.9"
+    "vitest": "4.1.10"
   }
 }

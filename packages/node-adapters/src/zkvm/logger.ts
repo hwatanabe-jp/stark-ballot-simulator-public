@@ -1,3 +1,5 @@
+import { logger as safeLogger } from '@stark-ballot/diagnostics/logger';
+
 type LogPayload = Record<string, unknown>;
 
 function emit(level: 'debug' | 'info' | 'warn' | 'error', message: string, payload?: unknown): void {
@@ -5,7 +7,7 @@ function emit(level: 'debug' | 'info' | 'warn' | 'error', message: string, paylo
     return;
   }
   const args = payload === undefined ? [message] : [message, payload as LogPayload];
-  console[level](...args);
+  safeLogger[level](...args);
 }
 
 export const logger = {

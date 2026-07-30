@@ -1,6 +1,6 @@
 # はじめに
 
-> **最終更新:** 2026-07-13
+> **最終更新:** 2026-07-29
 
 このドキュメントは、`STARK Ballot Simulator` の公開向けガイドです。
 `STARK Ballot Simulator` は投票の完全性を段階的に検証する教育・ポートフォリオ向けの PoC であり、実運用の選挙基盤ではありません。
@@ -21,7 +21,7 @@
 
 公開仕様は、runtime、検証、artifact の 3 つの境界を説明します。
 これらは利用者、監査者、実装追跡者が確認できる範囲です。
-開発中ブランチの移行作業記録、運用証跡、個別の本番切替進捗は内部ドキュメント側で管理し、本書では完了状態として主張しません。
+内部の作業記録や運用証跡は本書の範囲外であり、完了状態として主張しません。
 
 ## 想定読者
 
@@ -101,8 +101,9 @@ AWS インフラ、非同期プローバー、デプロイを担当する読者�
 1. [AWS runtime boundary](aws/runtime-boundary.md) で frontend、API、DynamoDB、async prover、artifact delivery の責務分担を把握する
 2. [AWS アーキテクチャ](aws/index.md) で runtime 構成、環境分離、Terraform-managed infrastructure の連携点を把握する
 3. [非同期プローバー](aws/async-prover.md) で SQS、Step Functions、ECS の責務を理解する
-4. [イメージ署名](aws/image-signing.md) と [Image ID](zkvm/image-id.md) で署名検証と Image ID 解決の連動を確認する
-5. [公開境界](verification/public-boundary.md) と [バンドル構造](verification/bundle-structure.md) で artifact の公開 / 保護境界を把握する
+4. [可観測性設計](aws/observability.md) で構造化ログ、検出、相関、通知境界を確認する
+5. [イメージ署名](aws/image-signing.md) と [Image ID](zkvm/image-id.md) で署名検証と Image ID 解決の連動を確認する
+6. [公開境界](verification/public-boundary.md) と [バンドル構造](verification/bundle-structure.md) で artifact の公開 / 保護境界を把握する
 
-運用時に監視するエンドポイントは [API リファレンス](api/index.md) を参照してください。
+観測対象となるエンドポイントの契約は [API リファレンス](api/index.md) を参照してください。
 飛ばしてよい: [暗号プロトコル](protocol/index.md) の数式、[改ざんシナリオ](tamper/index.md) の教育的デモ詳細

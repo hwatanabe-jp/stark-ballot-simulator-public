@@ -1,207 +1,222 @@
-# zkvm
+# zkVM Prover Workspace
 
-RISC Zero zkVM prover workspace for STARK Ballot Simulator.
+`zkvm/` contains the RISC Zero host CLI, guest method, and shared Rust contract
+code used to generate tally proofs for STARK Ballot Simulator.
 
-## Overview
+The same host binary supports two application paths:
 
-`zkvm/` contains the Rust host CLI, guest method, and supporting workspace crates used to generate tally proofs for the simulator.
+- local or synchronous execution through
+  `packages/node-adapters/src/zkvm/executor.ts`
+- asynchronous execution in an ECS Fargate prover task through
+  `infra/docker/entrypoint.sh`
 
-The workspace is used in two execution paths:
+Receipt verification is independent of proof generation and is owned by
+`verifier-service/`.
 
-- Local and synchronous proof generation from the application process (`packages/node-adapters/src/zkvm/executor.ts`)
-- Async prover execution in the cloud (Step Functions -> ECS Fargate -> `infra/docker/entrypoint.sh`)
+## Architecture and Sources of Truth
 
-Earlier design docs referred to this component as "Lambda A". The current async prover path is ECS Fargate based, not a standalone Lambda runtime.
+The workspace separates contract-critical code from runtime-specific concerns:
 
-## Shared-Core Boundary
+- `contract-core/` owns shared Rust types, commitment and canonical
+  input-commitment encoding, RFC 6962 inclusion-proof folding, bitmap roots,
+  and guest work-budget validation.
+- `methods/guest/` owns the zkVM entrypoint, tally flow, journal emission, and
+  Rust-side compatibility/property tests.
+- `host/` owns JSON parsing, proof execution, CLI behavior, and local artifact
+  persistence.
+- `methods-minimal/` and `benchmarks/` provide supporting workspace targets.
+- `verifier-service/` owns receipt discovery, report shaping, and
+  `Receipt::verify(expected_image_id)`.
+- `infra/docker/entrypoint.sh` owns async artifact conversion, public bundle
+  packaging, private artifact promotion, and S3 upload.
 
-`WS4` extracts one shared Rust contract core into `zkvm/contract-core/`.
-That crate is intentionally smaller than the whole prover stack and now owns
-the contract-critical Rust logic shared by host and guest.
+See [`shared-core-law-inventory.md`](./shared-core-law-inventory.md) for the
+shared-core laws and their Rust-side evidence.
 
-Shared-core owner:
+Current contract authorities:
 
-- commitment computation and canonical input-commitment encoding
-- RFC 6962 / CT inclusion-proof folding and related contract-critical helpers
-- bitmap root helpers that must stay in lockstep with TypeScript proof helpers
-- contract-critical types shared by host and guest
+| Concern                                     | Authority                                    |
+| ------------------------------------------- | -------------------------------------------- |
+| Rust input/journal types and method version | `contract-core/src/types.rs`                 |
+| TypeScript input/journal types              | `packages/zkvm-contract/src/zkvm/types.ts`   |
+| TypeScript-to-host JSON conversion          | `packages/zkvm-contract/src/zkvm/host-io.ts` |
+| Guest tally behavior                        | `methods/guest/src/tally.rs`                 |
+| Host CLI and raw artifacts                  | `host/src/main.rs`                           |
+| Expected ImageIDs and provenance            | `public/imageId-mapping.json`                |
+| Async public bundle                         | `infra/docker/entrypoint.sh`                 |
 
-Host-only responsibilities:
+Current cross-language and formal evidence includes:
 
-- JSON input parsing, local artifact persistence, bundle-friendly file layout
-- CLI wiring and exact bitmap artifact best-effort output
-
-Guest-only responsibilities:
-
-- zkVM execution entrypoint, journal emission, and in-guest tally flow control
-
-Verifier-service-only responsibilities:
-
-- receipt or bundle discovery, report shaping, and `Receipt::verify(expected_image_id)` orchestration
-
-Tooling-only responsibilities:
-
-- bridge payloads that hand raw artifacts across process boundaries without being part of the supported app selector contract
-
-Container/orchestration responsibilities:
-
-- Step Functions and ECS task dispatch
-- Docker entrypoint packaging, private artifact promotion, and S3 upload flow
-
-Shared-core law inventory:
-
-- `zkvm/shared-core-law-inventory.md`
-
-Rust-side property-test track around the shared crate:
-
-- canonical input-commitment permutation invariance and duplicate-index tie-break laws
-- RFC 6962 proof round-trip and tamper-failure laws
-- bitmap root oracle and tamper-failure laws
-
-Current generative harness:
-
-- `zkvm/methods/guest/src/property_tests.rs`
-
-Cross-language golden-vector evidence:
-
-- `zkvm/contract-core/testdata/rfc6962-ts-golden-vectors.json`
-- `scripts/tests/rfc6962-golden-vectors.ts`
-- `scripts/tests/generate-rfc6962-golden-vectors.ts`
+- `contract-core/testdata/rfc6962-ts-golden-vectors.json`
+- `contract-core/testdata/bitmap-ts-golden-vectors.json`
 - `scripts/tests/__tests__/rfc6962-golden-vectors.test.ts`
+- `docs/formal/generated-vectors/input-commitment-cases.json`
+- `docs/formal/generated-vectors/bitmap-cases.json`
+- `docs/formal/generated-vectors/guest-model-cases.json`
 
-Formal correspondence vector evidence:
-
-- `docs/formal/generated-vectors/input-commitment-cases.json` feeds Rust input-commitment tests in `zkvm/contract-core/src/encoding.rs`
-- `docs/formal/generated-vectors/bitmap-cases.json` feeds Rust bitmap tests in `zkvm/contract-core/src/bitmap.rs`
-- `docs/formal/generated-vectors/guest-model-cases.json` feeds Rust guest-model tests in `zkvm/methods/guest/src/tally.rs`
-
-Regenerate the checked-in TS-to-Rust RFC6962 fixture from the repository root:
+Regenerate the checked-in TypeScript-to-Rust RFC 6962 fixture from the
+repository root:
 
 ```bash
 pnpm tsx scripts/tests/generate-rfc6962-golden-vectors.ts
 ```
 
-## Features
+## Toolchain and Features
 
-- STARK proof generation with RISC Zero 3.0.5
-- Vote aggregation with commitment and inclusion-proof checks
-- RFC 6962 style bulletin inclusion verification
-- Domain-separated SHA-256 commitments and input commitment binding
-- Dev mode support with fake receipts (`RISC0_DEV_MODE=1`)
-- Output artifacts that can be repackaged into verification bundles
+The current pins are:
 
-## Quick Start
+- host Rust: **1.97.1**
+- RISC Zero guest Rust toolchain: **`r0.1.97.0`**
+- RISC Zero: **3.0.6**
 
-### Build
+The host Rust pin is declared in `rust-toolchain.toml` and
+`zkvm/rust-toolchain.toml`. RISC Zero versions and crate features are declared
+in the workspace Cargo manifests.
+
+Guest crates use `no_std`, disable `risc0-zkvm` default features, and select
+`heap-embedded-alloc`. Host-only crates select the `client` and `bonsai`
+features. The host `production` feature enables
+`risc0-zkvm/disable-dev-mode`, so a production-feature binary rejects
+`RISC0_DEV_MODE=1`.
+
+The implementation provides:
+
+- STARK proof generation and fake-receipt development mode
+- vote aggregation with commitment and inclusion-proof checks
+- RFC 6962-style bulletin inclusion verification
+- domain-separated SHA-256 commitments and canonical input binding
+- exact counted/presented bitmap artifacts when their roots match the journal
+- raw artifacts that the application or async prover can package for
+  verification
+
+For complete installation instructions, see
+[`docs/guides/risc0-setup.md`](../docs/guides/risc0-setup.md).
+
+## Build, Test, Prove, and Verify
+
+Run commands from the repository root unless a command explicitly changes
+directory.
+
+### Build the host
+
+Use the production-feature build for real proofs and release artifacts:
 
 ```bash
-# From zkvm/
-cargo build --release
-
-# From repo root, build the production-feature host used for real proofs
-pnpm run build:zkvm
-
-# From repo root, build a host that allows RISC0_DEV_MODE=1
-pnpm run build:zkvm:dev-mode
+pnpm build:zkvm
 ```
 
-### Run the host CLI
+Use the dev-mode-capable build for fake-receipt iteration:
 
 ```bash
-cd zkvm
-
-# Production mode: real STARK proof, slow
-./target/release/host test-data/test-fixture-valid.json
-
-# Dev mode: fake receipt, fast; requires the dev-mode build above
-RISC0_DEV_MODE=1 ./target/release/host test-data/test-fixture-valid.json
+pnpm build:zkvm:dev-mode
 ```
 
-Notes:
+Both commands write `zkvm/target/release/host`.
 
-- `RISC0_DEV_MODE=1` does not generate a real STARK proof.
-- Host binaries built by `pnpm build:zkvm` use the `production` feature and reject `RISC0_DEV_MODE=1`; use `pnpm build:zkvm:dev-mode` for fake-receipt iteration.
-- Local release builds on x86_64 can take around 6 minutes for 64 votes.
-- Async ARM64 Fargate runs are documented separately and can be faster than local x86_64 runs.
+### Run the checked-in fixtures
 
-### Run tests
+Fast development receipt:
 
 ```bash
-cd zkvm
-
-# Recommended default for local test runs
-RISC0_DEV_MODE=1 cargo test
-
-# Property-based laws on the current canonical Rust owner
-cargo test -p guest property_
-
-# With output
-cargo test -- --nocapture
-
-# Example targeted test
-cargo test test_json_to_aggregator_input -- --nocapture
+RISC0_DEV_MODE=1 \
+  ./zkvm/target/release/host zkvm/test-data/test-fixture-valid.json
 ```
 
-### Makefile helpers
+Real STARK proof:
 
 ```bash
-cd zkvm
-make help
-make build-release
-make test
-make verify-fixture
+unset RISC0_DEV_MODE
+./zkvm/target/release/host zkvm/test-data/test-fixture-valid.json
 ```
 
-### Smoke-test the checked-in fixtures
+The real proof path is intentionally slow. `RISC0_DEV_MODE=1` produces a fake
+receipt and is never evidence of production proof correctness.
+
+The fixture smoke script runs both checked-in inputs in dev mode:
 
 ```bash
-# From repo root
 bash scripts/tests/test-zkvm.sh
 ```
 
-This script is the fastest end-to-end sanity check for the checked-in fixture pair:
+Expected results:
 
-- `test-fixture-valid.json` should pass with `rejectedRecords = 0` and `excludedSlots = 0`
-- `test-fixture-tampered.json` should fail with non-zero `rejectedRecords`
+- `test-fixture-valid.json` has `rejectedRecords = 0` and
+  `excludedSlots = 0`.
+- `test-fixture-tampered.json` has a non-zero `rejectedRecords` value.
 
-## CLI Usage
+### Run contract tests
+
+These checks do not generate real proofs:
+
+```bash
+cd zkvm
+RISC0_DEV_MODE=1 cargo test
+cargo test -p contract-core
+cargo test -p guest property_
+```
+
+The Makefile also exposes `make help`, `make build-release`, `make test`, and
+`make verify-fixture`. The repository-level package scripts are authoritative
+when choosing between production and dev-mode-capable host builds.
+
+### Verify a receipt
+
+For a fake receipt, build the verifier without its production feature so it
+can report `dev_mode`:
+
+```bash
+pnpm build:verifier-service:dev-mode
+./verifier-service/target/release/verifier-service verify \
+  --bundle zkvm/test-data/test-fixture-valid-receipt.json \
+  --image-id 0x<matching-image-id>
+```
+
+For a real receipt, use the production verifier:
+
+```bash
+pnpm build:verifier-service
+./verifier-service/target/release/verifier-service verify \
+  --bundle zkvm/test-data/test-fixture-valid-receipt.json \
+  --image-id 0x<matching-image-id>
+```
+
+Verification outcomes are:
+
+- `dev_mode` for a fake receipt
+- `success` for a valid real proof with the matching ImageID
+- `failed` for an invalid proof or wrong ImageID
+
+Point `--bundle` at the specific receipt file, a single-receipt directory, or
+a bundle archive. Avoid a directory containing multiple `*-receipt.json`
+files because directory discovery selects the first sorted matching entry.
+
+## Host CLI
 
 ```text
 host <INPUT_JSON_PATH>
 host --print-image-id [--json]
 ```
 
-Arguments:
-
-- `<INPUT_JSON_PATH>`: path to the zkVM input JSON file
+`<INPUT_JSON_PATH>` proves the supplied input and writes raw artifacts beside
+it.
 
 Options:
 
-- `--print-image-id`: print the guest ImageID compiled into the host binary, then exit without proving or writing artifacts
-- `--json`: with `--print-image-id`, print `{"imageId":"0x...","methodVersion":14}`; this is the shape consumed by CodeBuild image metadata publishing
+- `--print-image-id` prints the compiled guest ImageID and exits without
+  proving or writing artifacts.
+- `--json`, used with `--print-image-id`, emits
+  `{"imageId":"0x...","methodVersion":14}`.
 
-Environment:
+`RISC0_DEV_MODE=1` selects fake receipts only when the host was built without
+the `production` feature.
 
-- `RISC0_DEV_MODE=1`: generate fake receipts instead of real proofs
+`EXPECTED_IMAGE_ID` and `EXPECTED_IMAGE_ID_VARIANT` are not host CLI inputs.
+They belong to downstream verification and deployment configuration.
 
-Note: `EXPECTED_IMAGE_ID` is not consumed by the host CLI itself. It is used downstream by verification flows such as `verifier-service`.
+## Input Contract
 
-## Input Format
-
-The host reads JSON in the format produced by `serializeZkvmAggregatorInput()` in `packages/zkvm-contract/src/zkvm/host-io.ts`.
-The `timestamp` field is a Unix timestamp in milliseconds encoded as a Rust
-`u64`; TypeScript callers validate it as a positive JavaScript safe integer
-before serialization.
-
-The guest correspondence contract is intentionally bounded. The checked guest
-path accepts `tree_size <= 1,000,000`, at most `1,000,000` presented vote
-records, candidate tally buckets no larger than `1,000,000`, no more than
-`1,000,000` aggregate Merkle path nodes, and serialized/structural input work
-within the current 64 MiB budget. Oversized inputs fail closed before journal
-fields are emitted; the host also rejects over-budget JSON before building the
-RISC Zero executor environment.
-
-Example structure:
+The host reads the JSON shape produced by `serializeZkvmAggregatorInput()` in
+`packages/zkvm-contract/src/zkvm/host-io.ts`:
 
 ```json
 {
@@ -224,42 +239,52 @@ Example structure:
 }
 ```
 
-Checked-in fixture inputs live under `zkvm/test-data/`.
+`timestamp` is a Unix timestamp in milliseconds encoded as a Rust `u64`.
+TypeScript callers require a positive JavaScript safe integer before
+serialization.
 
-To regenerate them:
+The current guest work budget fails closed when any of these bounds are
+exceeded:
+
+- `tree_size` is outside `1..=1,000,000`
+- `total_expected` exceeds `1,000,000`
+- more than `1,000,000` vote records are presented
+- one record has more than `65,535` Merkle path nodes
+- aggregate Merkle path nodes exceed `1,000,000`
+- serialized or estimated structural input exceeds 64 MiB
+
+The host enforces the same contract before constructing the RISC Zero executor
+environment. The guest validates it before emitting journal fields.
+
+Checked-in inputs and snapshots:
+
+- `test-data/test-fixture-valid.json`
+- `test-data/test-fixture-tampered.json`
+- `test-data/test-fixture-valid-bitmap.json`
+- `test-data/test-fixture-valid-seen-bitmap.json`
+
+Regenerate the fixture inputs with:
 
 ```bash
 pnpm tsx scripts/tests/generate-zkvm-fixtures.ts
 ```
 
-The generator reuses the repository's current CT Merkle implementation so the fixture root and audit paths stay aligned with the code used by the application.
+Other `*-output.json`, `*-receipt.json`, `*-bitmap.json`, and
+`*-seen-bitmap.json` files are local runtime outputs and should be regenerated
+with the same host build whose artifacts you intend to inspect.
 
-That script rewrites:
+## Raw Host Artifacts
 
-- `zkvm/test-data/test-fixture-valid.json`
-- `zkvm/test-data/test-fixture-tampered.json`
+In proof mode, the host writes `*-output.json` and `*-receipt.json` beside the
+input. It also writes exact private bitmap artifacts when it can reconstruct
+bitmaps whose roots match the journal.
 
-Those two JSON files are the canonical checked-in input fixtures.
-The repository also tracks the current valid-fixture bitmap snapshots:
+ImageID-only mode reads no input and writes no artifacts.
 
-- `zkvm/test-data/test-fixture-valid-bitmap.json`
-- `zkvm/test-data/test-fixture-valid-seen-bitmap.json`
+### `*-output.json`
 
-Aside from those checked-in snapshots, generated `*-output.json`, `*-receipt.json`,
-`*-bitmap.json`, and `*-seen-bitmap.json` artifacts are local runtime outputs and
-should be regenerated from the same build you plan to verify.
-
-## Output Artifacts
-
-In proof mode, the host writes `*-output.json` and `*-receipt.json` next to the input file, prints the guest ImageID to stdout, and may also write private bitmap artifacts when it can reconstruct exact bitmaps whose roots match the journal.
-
-In ImageID-only mode (`--print-image-id [--json]`), the host prints the compiled guest ImageID and exits without reading an input file or writing artifacts.
-
-### 1. `*-output.json`
-
-This is the host-decoded journal summary in camelCase JSON.
-
-Example structure:
+The output is the host-decoded method-version 14 journal plus host-provided
+ImageID metadata, serialized as camelCase JSON:
 
 ```json
 {
@@ -286,13 +311,12 @@ Example structure:
 }
 ```
 
-Application code converts these arrays into UUID and hex string forms after reading the file.
+Application code validates the method version and converts byte arrays to UUID
+or hex-string representations.
 
-### 2. `*-receipt.json`
+### `*-receipt.json`
 
-The host writes a wrapper object with the raw RISC Zero receipt plus top-level image metadata.
-
-Example structure:
+The host wraps the raw RISC Zero receipt with its compiled ImageID:
 
 ```json
 {
@@ -311,14 +335,13 @@ Example structure:
 }
 ```
 
-In dev mode, the receipt payload contains a `Fake` receipt instead of a production `Composite` receipt, but the top-level wrapper remains the same.
+A dev-mode wrapper has the same top-level shape but contains a `Fake` receipt.
+The receipt implementation may use another valid RISC Zero inner receipt
+variant; consumers must parse the wrapper rather than assume `Composite`.
 
-### 3. `*-bitmap.json`
+### `*-bitmap.json`
 
-The host also writes a private exact counted bitmap artifact next to the input when it can
-reconstruct a bitmap whose root matches `includedBitmapRoot`.
-
-Example structure:
+When the exact counted bitmap matches `includedBitmapRoot`, the host writes:
 
 ```json
 {
@@ -330,15 +353,10 @@ Example structure:
 }
 ```
 
-This file is for server-side `/api/bitmap-proof` support and S3/session restoration. It is not
-part of the public verification bundle.
+### `*-seen-bitmap.json`
 
-### 4. `*-seen-bitmap.json`
-
-The host also writes a private exact presented bitmap artifact when it can reconstruct a bitmap
-whose root matches `seenBitmapRoot`.
-
-Example structure:
+When the exact presented-index bitmap matches `seenBitmapRoot`, the host
+writes:
 
 ```json
 {
@@ -350,267 +368,153 @@ Example structure:
 }
 ```
 
-This file lets `/api/bitmap-proof?kind=seen` distinguish:
+The two bitmap files support server-side `/api/bitmap-proof` queries and
+session restoration. They are private artifacts and must not enter the public
+verification bundle.
 
-- indices that were never presented to the prover
-- indices that were presented but later excluded from the counted bitmap
+## Async Bundle Boundary
 
-Like `*-bitmap.json`, this is private server-side state and is not part of the public verification
-bundle.
+The ECS entrypoint converts raw host artifacts into application-level names:
 
-### 5. Public bundle conversion
+- `*-receipt.json` becomes `receipt.json`.
+- `*-output.json` becomes `journal.json`.
+- the private input and journal produce `public-input.json`,
+  `election-manifest.json`, and `close-statement.json`.
+- `*-bitmap.json` and `*-seen-bitmap.json` are promoted to private
+  `included-bitmap.json` and `seen-bitmap.json` when present.
 
-The async ECS prover path does additional packaging:
-
-- `infra/docker/entrypoint.sh` copies `*-receipt.json` to `receipt.json`
-- `infra/docker/entrypoint.sh` converts `*-output.json` to `journal.json`
-- `infra/docker/entrypoint.sh` builds `election-manifest.json`
-- `infra/docker/entrypoint.sh` builds `close-statement.json`
-- `infra/docker/entrypoint.sh` promotes `*-bitmap.json` to private `included-bitmap.json`
-- `infra/docker/entrypoint.sh` promotes `*-seen-bitmap.json` to private `seen-bitmap.json`
-- `infra/docker/entrypoint.sh` adds `public-input.json`
-- only the public files are zipped into `bundle.zip`
-
-For the current async public bundle contract, `bundle.zip` contains:
+The current async public `bundle.zip` contains exactly:
 
 ```text
-public-input.json, election-manifest.json, close-statement.json, receipt.json, journal.json
+public-input.json
+election-manifest.json
+close-statement.json
+receipt.json
+journal.json
 ```
 
-Private artifacts such as `included-bitmap.json`, `seen-bitmap.json`, `input.json`, and `verification.json` must stay out of the public archive.
+`input.json`, `verification.json`, `included-bitmap.json`, and
+`seen-bitmap.json` are private and must remain outside the public archive.
 
-Compatibility note: `infra/docker/entrypoint.sh` validates async host output against
-the current methodVersion. Keep that entrypoint in lockstep with
-`zkvm/contract-core/src/types.rs` before promoting a new async prover image.
+`infra/docker/entrypoint.sh` validates async host output against the current
+method version. Keep it in lockstep with `contract-core/src/types.rs` when the
+journal contract changes.
 
-That means app-level verification bundles use `receipt.json` and `journal.json`, while the raw host output on disk is still `*-receipt.json`, `*-output.json`, `*-bitmap.json`, and `*-seen-bitmap.json`.
+## ImageID Trust and Rotation
 
-## ImageID Notes
-
-The host prints and embeds the guest ImageID that was compiled into the local binary:
+The host embeds the guest ImageID compiled into that binary. During proof
+generation it prints:
 
 ```text
 Guest Program ImageID: 0x...
 ```
 
-For ImageID-only checks, use:
+For a proof-free query:
 
 ```bash
-./target/release/host --print-image-id
-./target/release/host --print-image-id --json
+./zkvm/target/release/host --print-image-id
+./zkvm/target/release/host --print-image-id --json
 ```
 
-The JSON form emits:
+The expected-ID source of truth is `public/imageId-mapping.json`. The current
+mapping is keyed by method version 14 and has two explicit variants:
 
-```json
-{ "imageId": "0x...", "methodVersion": 14 }
-```
+- `default` is the confirmed accepted managed ARM64 prover release.
+- `x86_64` is the independently confirmed local x86_64 build.
 
-CodeBuild uses that JSON output to record the ARM64 guest ImageID and method version in prover image metadata.
+Each variant is discriminated:
 
-The repository source of truth for expected IDs is:
+- `state: "confirmed"` carries an `imageId` and provenance.
+- `state: "unconfirmed"` carries only
+  `requiredEvidence: "accepted-prover-release"`.
 
-- `public/imageId-mapping.json`
+Runtime selection never falls back between variants. An unset variant means
+`default`; local x86_64 receipts require an explicit `x86_64` selection.
+Unknown method versions, missing mappings, unavailable variants, and
+unconfirmed variants fail closed.
 
-Important details:
+There is no resolver fallback to `DEFAULT_POC_IMAGE_ID`. That constant remains
+only for tests and compatibility references. `resolveExpectedImageId()`
+requires either an explicit `EXPECTED_IMAGE_ID` supplied by an authorized
+runtime boundary or a valid mapping loader. Target runtime configuration must
+still bind any explicit override to the deployed guest and active method
+version.
 
-- The mapping is keyed by `methodVersion`.
-- The mapping can contain platform-specific IDs, for example an ARM64 AWS build and a local x86_64 build.
-- Do not assume a locally built x86_64 ImageID matches the AWS Fargate ARM64 ImageID.
-- For methodVersion 14, the checked-in mapping retains both the target-account
-  default/ARM64 ImageID and the local `x86_64` ImageID. The develop app
-  handoff helpers treat `default` / `expectedImageID` as the active deployment
-  evidence when multiple variants are present. Use `x86_64` explicitly for
-  receipts produced by the local x86_64 guest build.
-- The target ARM64 image and ImageID release model is documented in
-  `docs/infrastructure/risc0-base-image.md`; account-specific
-  operator procedures remain in the private source repository.
-- Do not mix a newly updated mapping with an older locally generated `*-receipt.json` or `*-output.json`; `verifier-service` checks the receipt metadata `image_id` and will reject mismatches.
+When guest source, features, or dependencies change:
 
-When the guest image changes, update the mapping and any remaining hard-coded
-fallback constants or environment overrides:
+1. Build ImageID evidence with a fresh `CARGO_TARGET_DIR`; a cached embedded
+   guest artifact is not sufficient evidence.
+2. Query that build with `--print-image-id --json` without generating a proof.
+3. Update `public/imageId-mapping.json` with the appropriate confirmed or
+   unconfirmed authority and provenance.
+4. Update authorized `EXPECTED_IMAGE_ID` or `EXPECTED_IMAGE_ID_VARIANT`
+   deployment inputs in lockstep.
+5. Regenerate local receipts and output artifacts before using them for
+   verification.
 
-- `public/imageId-mapping.json`
-- `packages/verification/src/verification/expected-image-id.ts`, if its fallback constant still applies
-- any explicit `EXPECTED_IMAGE_ID` or `EXPECTED_IMAGE_ID_VARIANT` override in target runtime config, shell, `.env.local`, CI, or release-manifest inputs
+Do not update `DEFAULT_POC_IMAGE_ID` as part of release rotation. Do not mix a
+new mapping with artifacts produced by an older guest build.
 
-`vitest.setup.ts` currently derives its default ImageID from
-`public/imageId-mapping.json`, so it normally only needs review if test
-bootstrapping changes.
+The managed ARM64 evidence and release model is documented in
+[`docs/infrastructure/risc0-base-image.md`](../docs/infrastructure/risc0-base-image.md).
 
-Then regenerate any local zkVM artifacts you still use for debugging or verification, for example:
+## Integration
 
-```bash
-cd zkvm
-unset RISC0_DEV_MODE
-./target/release/host test-data/test-fixture-valid.json
-```
+### Synchronous/local
 
-## Integration with STARK Ballot Simulator
+`packages/node-adapters/src/zkvm/executor.ts`:
 
-### Sync and local execution
+- serializes the canonical TypeScript input
+- runs `zkvm/target/release/host`
+- validates and reads `*-output.json` and `*-receipt.json`
+- restores exact included/seen bitmaps when their artifacts are present
+- normalizes byte arrays for application consumers
 
-- `packages/node-adapters/src/zkvm/executor.ts` shells out to `zkvm/target/release/host`
-- it reads `*-output.json` and `*-receipt.json`
-- it also reads `*-bitmap.json` and `*-seen-bitmap.json` when present
-- it normalizes byte-array fields into application-level UUID and hex strings
-- it restores exact included/seen bitmaps for server-side `/api/bitmap-proof` support
+### Asynchronous
 
-### Async cloud execution
+Terraform dispatches an ECS Fargate task. `infra/docker/entrypoint.sh` runs the
+host, creates the public bundle and private supporting artifacts, then uploads
+the results to S3.
 
-- `infra/docker/entrypoint.sh` runs the host inside the prover container
-- Terraform provisions the async prover path with Step Functions and ECS Fargate
-- the prover task uploads `bundle.zip` and related artifacts to S3
+### Verification
 
-### Receipt verification
-
-- `verifier-service/` performs independent receipt verification
-- the app consumes the host output through verification bundles, not by parsing stdout
-
-## Development
-
-### Project Structure
-
-```text
-zkvm/
-├── Cargo.toml
-├── rust-toolchain.toml
-├── Makefile
-├── README.md
-├── contract-core/
-│   ├── Cargo.toml
-│   ├── src/
-│   │   ├── bitmap.rs
-│   │   ├── domain.rs
-│   │   ├── encoding.rs
-│   │   ├── inclusion_proof.rs
-│   │   ├── lib.rs
-│   │   ├── sha256.rs
-│   │   ├── types.rs
-│   │   └── work_budget.rs
-│   └── testdata/
-│       ├── bitmap-ts-golden-vectors.json
-│       └── rfc6962-ts-golden-vectors.json
-├── host/
-│   ├── Cargo.toml
-│   ├── methods/
-│   │   └── guest.json
-│   └── src/main.rs
-├── methods/
-│   ├── Cargo.toml
-│   ├── build.rs
-│   ├── src/lib.rs
-│   └── guest/
-│       ├── Cargo.toml
-│       └── src/
-│           ├── compatibility_test.rs
-│           ├── lib.rs
-│           ├── main.rs
-│           ├── profiling.rs
-│           ├── property_tests.rs
-│           ├── sth.rs
-│           └── test_vectors.rs
-├── methods-minimal/
-│   └── ...
-├── benchmarks/
-│   └── ...
-├── test-data/
-│   ├── test-fixture-valid.json
-│   ├── test-fixture-valid-bitmap.json
-│   ├── test-fixture-valid-seen-bitmap.json
-│   ├── test-fixture-tampered.json
-│   └── generated *-output.json / *-receipt.json / tampered artifacts
-└── target/
-```
-
-Notes:
-
-- `methods-minimal/` and `benchmarks/` are part of the Cargo workspace.
-- Command-line receipt verification is owned by `verifier-service`; use `verifier-service verify` for `Receipt::verify(expected_image_id)`.
+`verifier-service/` verifies the receipt against the expected ImageID. The
+application consumes its structured report; stdout from the prover host is not
+a verification result.
 
 ## Troubleshooting
 
-### "No such file or directory: host"
+### Host binary is missing
 
-Build the release binary first:
+Build the mode you need with `pnpm build:zkvm` or
+`pnpm build:zkvm:dev-mode`, then confirm that
+`zkvm/target/release/host` exists and is executable.
 
-```bash
-cd zkvm
-cargo build --release --bin host
-ls -la target/release/host
-```
+### Dev-mode receipt is rejected
 
-### Proof generation is too slow
-
-Use dev mode while iterating:
-
-```bash
-cd zkvm
-RISC0_DEV_MODE=1 ./target/release/host test-data/test-fixture-valid.json
-```
-
-Remember that dev mode receipts are fake and are not valid production proofs.
-
-### `verifier-service` reports `dev_mode`
-
-That is expected if the receipt was generated with `RISC0_DEV_MODE=1`.
-
-To produce a real proof:
-
-```bash
-cd zkvm
-unset RISC0_DEV_MODE
-./target/release/host test-data/test-fixture-valid.json
-```
+This is expected in production verification. A dev-mode-capable verifier
+reports `status: "dev_mode"` and exits non-zero; it does not promote a fake
+receipt to success.
 
 ### ImageID mismatch
 
-Check all of the following before assuming the proof is bad:
+Check:
 
-1. whether the receipt was produced on local x86_64 or AWS ARM64
-2. `public/imageId-mapping.json`
-3. `packages/verification/src/verification/expected-image-id.ts`
-4. `vitest.setup.ts`
-5. any explicit `EXPECTED_IMAGE_ID` environment override
-
-## STARK Proof Verification
-
-After generating artifacts, verify them with `verifier-service`:
-
-```bash
-# Build the verifier
-cd verifier-service
-cargo build --release
-
-# Verify a specific receipt file
-./target/release/verifier-service verify \
-  --bundle ../zkvm/test-data/test-fixture-valid-receipt.json \
-  --image-id 0x<expected-image-id>
-```
-
-Avoid pointing the verifier at `../zkvm/test-data/` directly when that directory contains multiple receipt files, because it will load the first matching `*-receipt.json` entry it finds.
-
-Important:
-
-- If `test-fixture-valid-receipt.json` was generated with `RISC0_DEV_MODE=1`, this command should return `status: "dev_mode"`, not `status: "success"`.
-- To exercise a real success path, rerun `host` without `RISC0_DEV_MODE` and verify the freshly generated `*-receipt.json`.
-- Use the expected ImageID from that same build or from the matching entry in `public/imageId-mapping.json`.
-
-Verification outcomes:
-
-- dev-mode receipts return `status: "dev_mode"`
-- real proofs return `status: "success"`
-- invalid proofs or wrong ImageIDs return `status: "failed"`
-
-Use the expected ImageID that matches the build you are verifying.
+1. the receipt-producing architecture (`default` ARM64 or local `x86_64`)
+2. the receipt wrapper's `image_id`
+3. `public/imageId-mapping.json`
+4. the selected `EXPECTED_IMAGE_ID_VARIANT`
+5. any authorized explicit `EXPECTED_IMAGE_ID`
+6. whether the host and receipt came from the same fresh guest build
 
 ## Related Documentation
 
-- `docs/zkvm/final-design.md`
-- `docs/runbooks/aws-runtime-operations.md`
-- `docs/guides/cli.md`
-- `verifier-service/README.md`
-- <https://dev.risczero.com>
+- [`docs/zkvm/final-design.md`](../docs/zkvm/final-design.md)
+- [`docs/guides/risc0-setup.md`](../docs/guides/risc0-setup.md)
+- [`docs/guides/cli.md`](../docs/guides/cli.md)
+- [`docs/verification/README.md`](../docs/verification/README.md)
+- [`verifier-service/README.md`](../verifier-service/README.md)
+- [RISC Zero documentation](https://dev.risczero.com/)
 
 ## License
 

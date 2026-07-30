@@ -82,7 +82,8 @@ resource "aws_dynamodb_table" "sessions" {
   }
 
   point_in_time_recovery {
-    enabled = true
+    enabled                 = true
+    recovery_period_in_days = local.storage_retention.dynamodb_point_in_time_recovery_days
   }
 
   server_side_encryption {
@@ -133,7 +134,8 @@ resource "aws_dynamodb_table" "votes" {
   }
 
   point_in_time_recovery {
-    enabled = true
+    enabled                 = true
+    recovery_period_in_days = local.storage_retention.dynamodb_point_in_time_recovery_days
   }
 
   server_side_encryption {
@@ -169,7 +171,8 @@ resource "aws_dynamodb_table" "rate_limit_events" {
   }
 
   point_in_time_recovery {
-    enabled = true
+    enabled                 = true
+    recovery_period_in_days = local.storage_retention.dynamodb_point_in_time_recovery_days
   }
 
   server_side_encryption {
@@ -199,7 +202,8 @@ resource "aws_dynamodb_table" "rate_limit_counters" {
   }
 
   point_in_time_recovery {
-    enabled = true
+    enabled                 = true
+    recovery_period_in_days = local.storage_retention.dynamodb_point_in_time_recovery_days
   }
 
   server_side_encryption {
@@ -224,7 +228,8 @@ resource "aws_dynamodb_table" "prover_semaphore" {
   }
 
   point_in_time_recovery {
-    enabled = true
+    enabled                 = true
+    recovery_period_in_days = local.storage_retention.dynamodb_point_in_time_recovery_days
   }
 
   server_side_encryption {

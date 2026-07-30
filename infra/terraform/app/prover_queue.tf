@@ -9,7 +9,7 @@ resource "aws_sqs_queue" "prover_work_dlq" {
 
 resource "aws_sqs_queue" "prover_work" {
   name                      = local.prover_work_queue_name
-  message_retention_seconds = 1209600
+  message_retention_seconds = 345600
   # Keep at 6x the proof dispatcher Lambda timeout; raising the dispatcher timeout requires raising this too.
   visibility_timeout_seconds = 180
   redrive_policy = jsonencode({
@@ -33,7 +33,7 @@ resource "aws_sqs_queue" "verification_work_dlq" {
 
 resource "aws_sqs_queue" "verification_work" {
   name                       = local.verification_work_queue_name
-  message_retention_seconds  = 1209600
+  message_retention_seconds  = 345600
   visibility_timeout_seconds = 180
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.verification_work_dlq.arn

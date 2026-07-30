@@ -119,13 +119,30 @@ describe('errorHandler', () => {
       expect(getStringProperty(data, 'error')).toBe('INTERNAL_ERROR');
     });
 
-    it('should log errors through the runtime logger', () => {
+    it('logs a canonical api_error event through the bounded runtime logger', () => {
       const error = new Error('Test error');
 
       handleApiError(error);
 
-      expect(loggerErrorSpy).toHaveBeenCalledWith('API Error:', error);
+      expect(loggerErrorSpy).toHaveBeenCalledWith('Unhandled API error', error, {
+        event: 'api_error',
+        public_code: ErrorCode.INTERNAL_ERROR,
+      });
       expect(loggerErrorSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not pass opaque thrown values through to telemetry', () => {
+      const opaqueError = {
+        details: '/api/verification/bundles/550e8400-e29b-41d4-a716-446655440000/execution-1',
+      };
+
+      handleApiError(opaqueError);
+
+      expect(loggerErrorSpy).toHaveBeenCalledWith('Unhandled API error', expect.any(Error), {
+        event: 'api_error',
+        public_code: ErrorCode.INTERNAL_ERROR,
+      });
+      expect(loggerErrorSpy.mock.calls.flat()).not.toContain(opaqueError);
     });
 
     it('should handle null and undefined errors', async () => {

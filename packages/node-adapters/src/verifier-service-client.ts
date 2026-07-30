@@ -4,6 +4,25 @@ import path from 'node:path';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 export type VerifierStatus = 'success' | 'failed' | 'dev_mode';
+export type VerifierStderrCategory = 'none' | 'present' | 'truncated';
+export const VERIFIER_STDERR_CAPTURE_LIMIT_BYTES = 4 * 1024;
+const VERIFIER_STDOUT_CAPTURE_LIMIT_BYTES = 1024 * 1024;
+
+export interface VerifierInvocationDiagnostics {
+  stderrCategory: VerifierStderrCategory;
+  stderrBytes: number;
+  stderrTruncated: boolean;
+}
+
+export class VerifierServiceExecutionError extends Error {
+  readonly diagnostics: VerifierInvocationDiagnostics;
+
+  constructor(message: string, diagnostics: VerifierInvocationDiagnostics) {
+    super(message);
+    this.name = 'VerifierServiceExecutionError';
+    this.diagnostics = diagnostics;
+  }
+}
 
 export interface VerifierInvocationOptions {
   bundlePath: string;
@@ -49,6 +68,7 @@ export interface VerifierInvocationResult {
   reportPath: string;
   bundlePath: string;
   report: VerifierServiceReport;
+  diagnostics?: VerifierInvocationDiagnostics;
 }
 
 export interface SpawnOptions {
@@ -64,6 +84,53 @@ export interface SpawnedProcess {
 }
 
 export type SpawnImpl = (command: string, args: readonly string[], options: SpawnOptions) => SpawnedProcess;
+
+interface BoundedStreamCapture {
+  append(chunk: unknown): void;
+  text(): string;
+  diagnostics(): VerifierInvocationDiagnostics;
+}
+
+function createBoundedStreamCapture(limitBytes: number): BoundedStreamCapture {
+  const storage = Buffer.alloc(limitBytes);
+  let capturedBytes = 0;
+  let truncated = false;
+
+  return {
+    append(chunk: unknown): void {
+      try {
+        const buffer = Buffer.isBuffer(chunk)
+          ? chunk
+          : Buffer.from(typeof chunk === 'string' ? chunk : String(chunk), 'utf8');
+        const remaining = limitBytes - capturedBytes;
+        if (remaining <= 0) {
+          truncated = true;
+          return;
+        }
+        const bytesToCapture = Math.min(buffer.byteLength, remaining);
+        if (bytesToCapture > 0) {
+          buffer.copy(storage, capturedBytes, 0, bytesToCapture);
+          capturedBytes += bytesToCapture;
+        }
+        if (bytesToCapture < buffer.byteLength) {
+          truncated = true;
+        }
+      } catch {
+        truncated = true;
+      }
+    },
+    text(): string {
+      return storage.toString('utf8', 0, capturedBytes);
+    },
+    diagnostics(): VerifierInvocationDiagnostics {
+      return {
+        stderrCategory: truncated ? 'truncated' : capturedBytes > 0 ? 'present' : 'none',
+        stderrBytes: capturedBytes,
+        stderrTruncated: truncated,
+      };
+    },
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -172,51 +239,52 @@ export async function invokeVerifierService(options: VerifierInvocationOptions):
     },
   });
 
-  let stdout = '';
-  let stderr = '';
-
-  const appendChunk = (chunk: unknown): string => {
-    if (typeof chunk === 'string') {
-      return chunk;
-    }
-    if (Buffer.isBuffer(chunk)) {
-      return chunk.toString('utf-8');
-    }
-    return String(chunk);
-  };
+  const stdoutCapture = createBoundedStreamCapture(VERIFIER_STDOUT_CAPTURE_LIMIT_BYTES);
+  const stderrCapture = createBoundedStreamCapture(VERIFIER_STDERR_CAPTURE_LIMIT_BYTES);
 
   if (!child.stdout || !child.stderr) {
     throw new Error('verifier-service did not provide stdout/stderr streams');
   }
 
   child.stdout.on('data', (data: unknown) => {
-    stdout += appendChunk(data);
+    stdoutCapture.append(data);
   });
 
   child.stderr.on('data', (data: unknown) => {
-    stderr += appendChunk(data);
+    stderrCapture.append(data);
   });
 
   const exitCode: number | null = await new Promise((resolve, reject) => {
-    child.on('error', reject);
+    child.on('error', () =>
+      reject(new VerifierServiceExecutionError('verifier-service process failed', stderrCapture.diagnostics())),
+    );
     child.on('close', (code) => resolve(code));
   });
 
   if (exitCode === null) {
-    throw new Error('verifier-service did not exit cleanly');
+    throw new VerifierServiceExecutionError('verifier-service did not exit cleanly', stderrCapture.diagnostics());
   }
 
   if (exitCode === 1) {
-    throw new Error(stderr.trim() || 'verifier-service exited with status 1 (general error)');
+    throw new VerifierServiceExecutionError('verifier-service exited with status 1', stderrCapture.diagnostics());
   }
 
-  const report = await readVerificationReport(options.reportPath, stdout);
+  let report: VerifierServiceReport;
+  try {
+    report = await readVerificationReport(options.reportPath, stdoutCapture.text());
+  } catch {
+    throw new VerifierServiceExecutionError(
+      'verifier-service report unavailable or invalid',
+      stderrCapture.diagnostics(),
+    );
+  }
 
   return {
     status: report.status,
     reportPath: options.reportPath,
     bundlePath: options.bundlePath,
     report,
+    diagnostics: stderrCapture.diagnostics(),
   };
 }
 

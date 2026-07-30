@@ -30,9 +30,13 @@ data "aws_iam_policy_document" "foundation_apply_deploy_permissions_boundary" {
     ]
     resources = [
       "${local.foundation_release_manifest_bucket_arn}/artifacts/*",
+      "${local.foundation_release_manifest_bucket_arn}/candidates/*",
       "${local.foundation_release_manifest_bucket_arn}/promotions/*",
       "${local.foundation_release_manifest_bucket_arn}/deployments/*",
       "${local.foundation_release_manifest_bucket_arn}/rollbacks/*",
+      "${local.foundation_release_manifest_bucket_arn}/reissue/*",
+      local.foundation_toolchain_accepted_pointer_object_arn,
+      local.foundation_prover_accepted_pointer_object_arn,
     ]
   }
 

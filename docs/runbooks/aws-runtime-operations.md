@@ -3,6 +3,9 @@
 > **Scope:** the deployed, operator-gated `stark-dev/develop` AWS runtime.
 > `stark-prod/main` has not been deployed, validated, or approved. Never turn a
 > develop command into a production command by substituting names or profiles.
+> The live finalization state machine invokes the qualified cryptographic
+> `image-signature-verifier:runtime` alias. The retired status-only
+> `image-signature-gate` is not part of the current runtime.
 
 Use this runbook for read-only incident triage and evidence collection. It does
 not authorize an AWS change. Lane selection, approvals, deployment procedures,
@@ -24,6 +27,7 @@ session for `stark-dev-admin`, then make identity the first AWS inspection:
 AWS_PROFILE_NAME="stark-dev-admin"
 AWS_REGION_NAME="ap-northeast-1"
 TARGET_PREFIX="stark-ballot-simulator-stark-dev-develop"
+IMAGE_SIGNATURE_PREFIX="stark-ballot-sim-stark-dev-develop"
 
 aws sts get-caller-identity \
   --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
@@ -51,11 +55,15 @@ Browser / approved CLI
      -> API Gateway -> Hono public-api Lambda -> DynamoDB
         -> async finalization:
            prover SQS -> dispatcher -> Step Functions
-             -> image-signature gate -> semaphore -> ECS prover -> private proof S3
+             -> qualified cryptographic image-signature-verifier:runtime alias
+             -> semaphore -> ECS prover -> private proof S3
              -> finalization writer -> DynamoDB terminal state and artifact metadata
         -> async verification:
            verification SQS -> verification-worker Lambda
              -> bundled verifier-service -> private report S3 + DynamoDB
+        -> verification observation:
+           capability-protected POST /api/verification/observation
+             -> durable exact-execution observation + verification_run_summary
 
 Authenticated delivery
   -> GET /api/verification/bundles/:sessionId/:executionId
@@ -99,8 +107,12 @@ first failed build log and retained artifact before considering a retry.
 For an accepted app deployment, identify both the CodePipeline execution ID
 and the acceptance-attempt ID. The retained authority is immutable under
 `accepted-deployments/stark-dev/develop/app/executions/<pipelineExecutionId>/attempts/<acceptanceAttemptId>/`;
-the mutable `index.json` is only the compare-and-swap-selected pointer to that
-attempt. In a restricted workspace, bind the authoritative deployment record
+the mutable
+`accepted-deployments/stark-dev/develop/app/current.json` authority is updated
+by compare-and-swap and contains the exact immutable record coordinates that
+remain reachable for current operation and rollback. Never read or infer
+authority from the retired `index.json`. In a restricted workspace, exact-read
+the selected record by its key, S3 `VersionId`, and body SHA-256, then bind it
 to its exact `tfplan`, checksum, approval-evidence object version and SHA-256,
 apply outputs, static deploy record, and smoke report before treating the
 runtime as accepted. Multiple smoke attempts can share one pipeline execution,
@@ -165,6 +177,12 @@ aws logs describe-log-groups \
 
 aws logs describe-log-groups \
   --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
+  --log-group-name-prefix "/aws/lambda/${IMAGE_SIGNATURE_PREFIX}-image-signature-verifier" \
+  --query 'logGroups[].{Name:logGroupName,RetentionDays:retentionInDays}' \
+  --output json --no-cli-pager
+
+aws logs describe-log-groups \
+  --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
   --log-group-name-prefix "/aws/vendedlogs/states/${TARGET_PREFIX}-finalization" \
   --query 'logGroups[].{Name:logGroupName,RetentionDays:retentionInDays}' \
   --output json --no-cli-pager
@@ -179,6 +197,21 @@ aws logs describe-log-groups \
 Use the narrowest useful time range and redact excerpts before sharing. The
 detailed Logs Insights query catalog remains in private operator
 documentation.
+
+### Hash-first session timeline
+
+When a report starts with only a raw session ID, private operators should use
+the read-only session-description aggregator instead of pasting the ID into a
+log query. Its exact invocation remains in private operator documentation.
+
+The helper hashes the raw ID in memory, searches the normalized
+`session_id_hash`, keeps attempts separate, and combines bounded log,
+DynamoDB, Step Functions, artifact-metadata, and operations-ledger evidence.
+It does not use `ListExecutions` as a name lookup or expose raw identifiers,
+secret material, full object keys, execution payloads, or pagination tokens.
+Treat its remaining hashes and execution IDs as restricted incident evidence.
+Its complete data-source, pagination, expiry, redaction, and polling contract is
+maintained in private operator documentation.
 
 ## 4. Edge and API
 
@@ -216,22 +249,20 @@ aws lambda get-function-configuration \
   --output json --no-cli-pager
 ```
 
-For operator-gate incidents, run the read-only checked-in inspector after the
-identity check:
+For operator-gate incidents, private operators should run the read-only
+checked-in inspector after the identity check, following the private operator
+procedure.
 
-```bash
-pnpm aws:operator-gate:develop -- inspect \
-  --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}"
-```
-
-`inspect` requires the exact develop distribution and hostname, the stable key
-group on every cache behavior, the exact tracked managed and legacy trust set,
-one checked-in issuer generation, an enabled KMS `RSA_2048` `SIGN_VERIFY` key
-with the supported SHA-256 signing algorithm, and byte-identical KMS and
-CloudFront public keys. Retain its non-secret generation, key-group, algorithm,
-and public-key fingerprint summary with the incident evidence. `inspect` does
-not issue cookies or perform a positive probe. Do not substitute `issue`,
-`--probe`, or a hand-built signing command during read-only triage.
+The inspector requires the exact develop distribution and hostname, the stable key
+group on every cache behavior, the exact checked-in managed keyset with no
+legacy trusted signer, one issuer generation, an enabled KMS `RSA_2048`
+`SIGN_VERIFY` key with the supported SHA-256 signing algorithm, and
+byte-identical KMS and CloudFront public keys. Retain its non-secret generation,
+key-group, algorithm, and public-key fingerprint summary with the incident
+evidence. The inspector does not issue cookies or perform a positive probe. Do
+not substitute credential issuance, a positive probe, or a hand-built signing
+command during read-only triage. The full inspection and issuance contract is
+maintained in private operator documentation.
 
 For TLS incidents, use the CloudFront certificate region explicitly:
 
@@ -255,7 +286,7 @@ Triage order:
 
 Do not rotate or reveal the origin-header secret as a quick fix. Positive
 gated smoke creates runtime data and requires explicit approval. Follow the
-[develop gated smoke procedure](../../scripts/tests/README.md#develop-gated-smoke)
+[develop gated smoke procedure](../../scripts/tests/README.md#live-develop-acceptance)
 without copying signed-cookie values into evidence.
 
 ## 5. Authenticated bundle and report delivery
@@ -286,28 +317,12 @@ Check in this order:
 5. Missing `bundle.zip` belongs to finalization; existing bundle with missing
    `verification.json` normally belongs to verification.
 
-Use `head-object`, not `get-object`, for routine metadata checks, and only for
-a locator already validated against the session:
-
-```bash
-PROOF_BUCKET="${TARGET_PREFIX}-proof-artifacts"
-SESSION_ID="<restricted-session-id>"
-EXECUTION_ID="<restricted-execution-id>"
-
-aws s3api head-object \
-  --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
-  --bucket "${PROOF_BUCKET}" \
-  --key "sessions/${SESSION_ID}/${EXECUTION_ID}/bundle.zip" \
-  --query '{ContentLength:ContentLength,ContentType:ContentType,LastModified:LastModified,Encryption:ServerSideEncryption}' \
-  --output json --no-cli-pager
-
-aws s3api head-object \
-  --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
-  --bucket "${PROOF_BUCKET}" \
-  --key "sessions/${SESSION_ID}/${EXECUTION_ID}/verification.json" \
-  --query '{ContentLength:ContentLength,ContentType:ContentType,LastModified:LastModified,Encryption:ServerSideEncryption}' \
-  --output json --no-cli-pager
-```
+Use the `describe-session` metadata listing for routine checks. If an owner
+needs a separate `head-object` check, first validate the exact persisted locator
+against the authenticated session, then pass that locator only inside the
+restricted incident terminal. Do not reconstruct, paste, or retain a full key
+pattern in a command or incident note, and never substitute `get-object` for a
+routine metadata check.
 
 If report content is essential, use the authenticated endpoint in a restricted
 workspace and retain only a redacted summary. See
@@ -317,7 +332,8 @@ workspace and retain only a redacted summary. See
 
 ```text
 POST /api/finalize -> prover SQS -> proof-dispatcher
-  -> Step Functions -> signature gate -> semaphore -> ECS prover
+  -> Step Functions -> qualified runtime image-signature verifier alias
+  -> semaphore -> ECS prover
   -> finalization writer -> terminal state and bundle metadata
 ```
 
@@ -345,8 +361,14 @@ a semaphore slot. Queue age is the `AWS/SQS` CloudWatch
 session-state preconditions, duplicate handling, and
 `StartExecution`/`DescribeExecution` errors. Malformed work retries/DLQs;
 missing-session or non-pending work can be intentionally discarded as stale.
+Q3 groups those acknowledged `dispatch_dropped` decisions. In an
+execution-scoped timeline, a `finalize_transition_attempted` event with
+`STEP_FUNCTIONS_EXECUTION_CLOSED` means the session is still pending while the
+same named execution is already closed; it records the caller-side guard and
+does not claim that persistence occurred. Preserve the queue/DLQ item and
+inspect reconciliation evidence instead of treating it as a safe stale drop.
 
-### Step Functions, signature, semaphore, and ECS
+### Step Functions, cryptographic signature verifier, semaphore, and ECS
 
 ```bash
 FINALIZATION_EXECUTION_ARN="<restricted-execution-arn>"
@@ -354,7 +376,7 @@ FINALIZATION_EXECUTION_ARN="<restricted-execution-arn>"
 aws stepfunctions describe-execution \
   --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
   --execution-arn "${FINALIZATION_EXECUTION_ARN}" \
-  --query '{Status:status,Start:startDate,Stop:stopDate,Error:error,Cause:cause,RedriveStatus:redriveStatus}' \
+  --query '{Status:status,Start:startDate,Stop:stopDate,RedriveStatus:redriveStatus}' \
   --output json --no-cli-pager
 
 aws stepfunctions get-execution-history \
@@ -364,8 +386,16 @@ aws stepfunctions get-execution-history \
   --output json --no-cli-pager
 ```
 
-- Signature states: inspect `image-signature-gate`, digest pin, ECR signing
-  configuration, and signing evidence. Do not bypass the check.
+- `VerifyImageSignature`: confirm the accepted state-machine definition invokes
+  only the qualified `runtime` alias, then bind its typed
+  `result = VERIFIED`, `mode = cryptographic` response to the exact digest and
+  signing profile, `verifierVersion`, `trustPolicySha256`,
+  `assetManifestSha256`, and `verifierAssets.trustRootSha256`. Successful
+  pinned Notation verification under that strict trust policy is the
+  certificate-chain, trusted-identity, and revocation-enforcement evidence;
+  `DescribeImageSigningStatus` is readiness evidence only. Do not accept an
+  unqualified function or `$LATEST`, a status-only ECR observation, or a
+  bypass.
 - Semaphore states: compare the counter, owner markers, execution status, and
   janitor logs. The work has already left the SQS backlog.
 - `RunProver`: inspect ECS capacity/retries, task status, stopped reason, exit
@@ -398,6 +428,15 @@ State reconciliation is fail closed:
 - terminal application states are sticky per execution ID;
 - cancellation during slot wait prevents later proof start and releases the
   superseded slot.
+
+Closed lifecycle reasons have these operator responses:
+
+| Reason                                  | Interpretation and response                                                                                                                  |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROVER_INPUT_PERSISTENCE_UNAVAILABLE`  | Target dependency wiring refused work before enqueue. Confirm the accepted deployment/config and persisted failed state; do not retry blind. |
+| `STEP_FUNCTIONS_EXECUTION_CLOSED`       | Dispatcher found a closed same-name execution while state remained pending. Preserve retry/DLQ evidence and reconcile the missing outcome.   |
+| `FINALIZATION_NOT_CANCELLABLE`          | Authenticated cancellation was refused before persistence. Compare requested execution ID with the current sticky/terminal state.            |
+| `CORRUPT_OR_UNREADABLE_FINALIZED_STATE` | The authoritative artifact guard failed closed. Escalate as artifact integrity; do not overwrite or retry to force a green result.           |
 
 Cancellation changes state and requires the matching capability plus owner
 approval. Direct `StopExecution` can split session state from semaphore
@@ -491,7 +530,10 @@ Map `AccessDenied` to the actual caller and intended owner:
 - dispatcher: queue consumption, artifacts, Step Functions;
 - verification worker: queue, bundle read/report write, DynamoDB, KMS;
 - finalization writer: terminal state and artifact metadata;
-- signature gate: ECR/signing observation;
+- qualified runtime image-signature verifier: exact prover ECR
+  manifest/layer and authorization-token reads, signing-readiness observation,
+  and scoped Signer revocation reads; Notation success under the strict trust
+  policy is the acceptance authority;
 - ECS roles: proof-artifact read/write, without delete;
 - Step Functions role: ECS, selected Lambda invoke, semaphore, and logs.
 
@@ -526,9 +568,11 @@ started AWS” from “the AWS pipeline succeeded.” Verify OIDC trust,
 CodeConnection status, requested source revision, and pipeline execution as
 separate evidence.
 
-## 10. Monitoring, evidence, and escalation
+## 10. Monitoring, investigation, and escalation
 
-Current alarms are passive and do not auto-remediate:
+All 31 Terraform-defined alarms are passive detectors and perform no
+remediation. Only `verification-invariant-contradiction` has an enabled SNS
+notification action.
 
 ```bash
 aws cloudwatch describe-alarms \
@@ -543,30 +587,101 @@ failure/timeout alarms to inspect history, semaphore, ECS, and callback;
 Lambda alarms to inspect the named handler; Fargate usage to inspect quota,
 tasks, retries, and slot limit; and DynamoDB throttling to identify the affected
 table and request path. Queue depth is not a user-visible position estimate.
+The current detector set also includes:
 
-An escalation packet should contain:
+| Alarm suffix                           | First response                                                                                                                                                                               |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `public-api-errors`                    | Correlate API access/request IDs, `api_error`, config, and the accepted deployment; distinguish handler error from API 5xx/throttle.                                                         |
+| `verification-worker-errors`           | Inspect queue retry/DLQ, bundle read, verifier category, report write, and terminal persistence; never retry a cryptographic red verdict.                                                    |
+| `image-signature-verifier-errors`      | Inspect the qualified runtime-alias invocation, typed result, selected digest, strict trust-policy/trust-root evidence, revocation enforcement, and state-machine history; do not bypass it. |
+| `public-api-throttles`                 | Compare API count/5xx, Lambda concurrency, and global rate-limit evidence; do not infer abuse from one demo request.                                                                         |
+| `finalization-writer-throttles`        | Preserve the Step Functions attempt and check whether the terminal outcome was recorded before considering replay.                                                                           |
+| `proof-dispatcher-throttles`           | Inspect SQS age/retry/DLQ and each execution attempt; do not redrive before confirming owner/idempotency state.                                                                              |
+| `verification-worker-throttles`        | Inspect verification queue age/retry/DLQ and the current execution result; keep demo red separate from infrastructure failure.                                                               |
+| `image-signature-verifier-throttles`   | Inspect state-machine retry/timeout and verifier concurrency; never replace signature evidence with a retry-only conclusion.                                                                 |
+| `semaphore-janitor-throttles`          | Compare the scheduled/terminal invocation, owner markers, and live executions; do not edit the semaphore during triage.                                                                      |
+| `api-gateway-5xx`                      | Join the access-log request ID to Lambda/system logs and native Lambda metrics; identify integration/pre-handler versus application 5xx.                                                     |
+| `prover-work-oldest-message-age`       | Inspect queue consumer, dispatcher, DLQ, state-machine attempts, and recovery quiescence before any receive/redrive/delete action.                                                           |
+| `verification-work-oldest-message-age` | Inspect mapping state, worker throttles/errors, DLQ, and current verification record before any queue mutation.                                                                              |
+| `verification-invariant-contradiction` | Security-escalate a likely verdict-pipeline code bug, preserve the raw-check summary evidence, and do not describe it as proof of tamper.                                                    |
 
-1. environment, incident owner, time range, symptom, and severity;
-2. control and selected source SHAs, deployment mode, pipeline execution,
-   acceptance attempt, authoritative deployment record, and exact stage
-   results;
-3. edge/API path and sanitized request/error IDs;
-4. restricted session/execution identifiers or stable hashes;
-5. relevant queue, Step Functions, ECS, semaphore, object-metadata, and alarm
-   summaries;
-6. short redacted log excerpts with timestamps;
-7. expected invariant, observed divergence, and hypothesis;
-8. every mutation already made, including partial apply or console action;
-9. saved-plan checksum, versioned approval evidence, and normal or rollback
-   retained-evidence identity;
-10. proposed change story, blast radius, containment/rollback, approval, and
-    validation.
+The invariant SNS topic carries only the last alarm. A subscription in
+`PendingConfirmation` cannot notify, and a confirmed subscription proves
+confirmation rather than test delivery. Use the dated AWS inventory for current
+subscription and delivery evidence. Never copy the endpoint or subscription ARN
+into incident notes. Enabling or changing the recipient is a deployment and
+secret-entry story in private operator documentation, not incident repair.
+
+Dispatcher, finalization, and verification custom metrics have only closed
+reason/category dimensions and are investigation aids, not verdict inputs.
+Lambda metric filters select canonical fields below the outer `$.message`
+object. The private operator documentation provides a bounded, read-only saved
+query smoke that prints query status, not query results.
 
 Escalate immediately for identity/state-scope uncertainty; possible secret or
 private-artifact leakage; direct-origin bypass; false **Verified** presentation;
 private files in a public bundle; a DLQ/semaphore/IAM/KMS/signing issue that
 needs mutation; Terraform/live drift or partial apply; or any production
 target.
+
+### Investigation workflows
+
+Each workflow begins with the identity check and a bounded UTC window.
+
+| Workflow                  | First evidence                                                                                    | Supported conclusion required before recovery                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| W1 stuck finalization     | `describe-session`, dispatcher/DLQ, each SFN attempt, ECS-stop ledger                             | what/where/why per attempt; `SUCCEEDED` without canonical outcome remains `FINALIZATION_OUTCOME_UNRECORDED` |
+| W2 bundle/report failure  | admission status, `bundle_download_failed`, canonical metadata                                    | distinguish 401/403, 404/409, missing/expired object, IAM denial, range/integrity failure                   |
+| W3 red verification       | server scenario, exact-execution browser observation, required checks, `verification_run_summary` | infrastructure category, expected S1–S5 educational red, or unexpected S0/product defect                    |
+| W4 quiet system           | API count/access log, queues, invocations, throttles, SFN, latest deploy                          | traffic lull versus broken admission/dispatch; gated journey only when explicitly authorized                |
+| W5 post-deploy regression | one accepted deployment/attempt plus before/after Q1/Q8 windows                                   | bind actual source/mode and keep resource smoke, operator probe, and full journey as separate evidence      |
+| W6 alarm or DLQ           | alarm definition/reason/window plus correlated deploy/traffic/runtime state                       | safe-to-redrive, stale-to-drop, or preserve untouched; returning to `OK` does not close the incident        |
+
+For W1, preserve ambiguity when multiple execution IDs exist. For W2, use
+`head-object` only after validating the stored locator and never create a
+presigned URL. For W3, never retry or change a verdict to make it green; a path
+that can show **Verified** with an unpassed required check is a security
+escalation. `verification_run_summary` is emitted only after the authenticated
+browser submits the four local cast-check statuses for the current execution;
+the server supplies the other checks and all scenario/failure metadata. For
+W5, do not mix action results from different pipeline executions. For W6,
+inspect before redrive, purge, deletion, cancellation, or semaphore repair.
+
+### Incident note and TTU
+
+Store the note in an approved private location. Record engagement-to-supported-
+conclusion time, not merely time to first response:
+
+```markdown
+# <date> <short title>
+
+- Environment: stark-dev/develop
+- Owner / severity / symptom: <owner / severity / one sentence>
+- Reported: <time / timezone / channel>
+- Engaged: <time> Concluded: <time>
+- TTU: <minutes from engagement to evidence-backed conclusion>
+- Surfaces touched: <count and short list>
+- Trigger: <user report / alarm review / gated smoke>
+- Deployment: <control and selected source SHAs; mode; pipeline execution; acceptance attempt; authoritative record; exact stage results>
+- Approval evidence: <saved-plan checksum; versioned approval; normal or rollback retained authority>
+- Edge/API: <path and sanitized request/error IDs>
+- Restricted identifiers: <stable hashes or session/execution IDs>
+- What: <one sentence>
+- Where: <journey stage and component>
+- Why: <expected invariant; observed divergence; closed reason codes; supported hypothesis>
+- Runtime evidence: <queue / Step Functions / ECS / semaphore / object metadata / alarms>
+- Logs: <query IDs/windows and short redacted excerpts>
+- Expired evidence: <expected expiry or none>
+- Unanswerable questions: <questions no longer supported or none>
+- Prior mutations: <partial apply / console action / other mutation or none>
+- Security/privacy review: <redaction and invariant impact>
+- Follow-up: <change story; blast radius; containment/rollback; approval; validation; signal gap>
+```
+
+Do not include account IDs, full ARNs, capability tokens, signed cookies,
+private artifact bodies, raw vote/session data, secret/config values, full S3
+keys, or unredacted log dumps. If a failure class repeatedly exceeds 30 minutes
+TTU, use that measured gap to prioritize the next signal investment.
 
 ## 11. Applying a change after triage
 
@@ -583,6 +698,13 @@ Diagnosis is not repair authorization. After owner approval:
 5. require same-execution apply and smoke evidence; partial updates in a failed
    pipeline are not a successful deployment;
 6. refresh the inventory and attach redacted evidence.
+
+`test:develop:gated-smoke` is deliberately not an automatic pipeline stage. It
+creates application state and consumes global rate-limit and Fargate capacity,
+so run it only as a separately authorized acceptance check. Preserve three
+claims: PostApplySmoke proves resource/configuration wiring, the operator-gate
+probe proves admission behavior, and the full gated journey proves its own
+state-creating end-to-end path.
 
 There is no deployed or validated production lane. Stop rather than adapting
 the develop procedure when the requested target is production.
