@@ -10,26 +10,59 @@ RISC Zero receipt verifier for STARK Ballot Simulator.
 For non-dev receipts, it also requires the receipt JSON to carry a matching
 top-level `image_id` metadata field.
 
-It is used in three places:
+It supports manual receipt verification and the bundle-backed application flow
+described below.
 
-- local/manual bundle verification
-- app-side server verification via `packages/node-adapters/src/verifier-service-client.ts`
-- Terraform-managed target `verification-worker` Lambda package
+## Application Integration
 
-## Supported App Path vs Bridge-Only Surfaces
+The supported application contract is authenticated bundle-backed verification
+selected by `(sessionId, finalizationId)`:
 
-The supported application contract is authenticated bundle-backed verification.
-That means the app chooses verification by `(sessionId, verificationExecutionId)`
-and then either:
+- In the target AWS runtime, the API validates the authoritative S3 bundle
+  locator, resolves the expected ImageID, publishes an exact
+  `verification-work` message, and returns a running status. SQS then invokes
+  `verification-worker`, which downloads and validates the bundle, invokes
+  `verifier-service`, uploads the resulting artifacts, and persists the terminal
+  verification result.
+- In local profiles, the API resolves a trusted bundle scoped to the selected
+  session and finalization, then invokes `verifier-service` directly through
+  `packages/node-adapters/src/verifier-service-client.ts`.
 
-- invokes `verification-worker` with an authoritative S3 bundle reference, or
-- verifies a trusted local bundle in-process through `verifier-service-client`
+Neither application branch accepts raw zkVM input or receipt payloads as a
+selector contract. Tooling that needs to verify a raw receipt should invoke the
+CLI directly, or first materialize a trusted bundle.
 
-Bridge-only runner payloads that pass raw zkVM inputs or receipts directly are
-not part of the supported app selector contract and are no longer part of the
-maintained runner payload surface. Tooling that needs raw artifact verification
-should invoke `verifier-service` directly or materialize a trusted bundle first,
-rather than treating the runner as a second production selector path.
+Application code should use the existing adapter instead of spawning the process
+manually:
+
+```ts
+import { invokeVerifierService } from '@stark-ballot/node-adapters/verifier-service-client';
+
+const result = await invokeVerifierService({
+  bundlePath,
+  expectedImageId,
+  reportPath,
+});
+
+if (result.status === 'success') {
+  // verified
+}
+```
+
+The adapter preserves the JSON report for exit codes `2` and `3`, which is
+required for `dev_mode` and failure handling.
+
+For the target runtime, the app pipeline runs:
+
+```bash
+pnpm terraform:build-lambda:target-runtime
+```
+
+That command builds the production-feature verifier and packages it as
+`/var/task/verifier-service` in the immutable `verification-worker` Lambda zip.
+Terraform supplies that exact path through `VERIFIER_SERVICE_BIN` and consumes
+the package coordinates and checksum through
+`lambda_artifacts["verification_worker"]`.
 
 ## What It Accepts
 
@@ -63,13 +96,32 @@ General errors such as invalid arguments or missing bundle paths exit with code 
 
 ### Build
 
+The repository-level package scripts distinguish production-feature and
+dev-mode-capable builds. From the repository root:
+
 ```bash
-# From repo root
+# Production-feature build for real proofs and release artifacts
 pnpm build:verifier-service
 
-# Or from verifier-service/
+# Dev-mode-capable build for local development and fake-receipt diagnostics
+pnpm build:verifier-service:dev-mode
+```
+
+The equivalent commands from `verifier-service/` are:
+
+```bash
+# Production-feature build
+cargo build --release --features production
+
+# Dev-mode-capable build
 cargo build --release
 ```
+
+The `production` feature enables `risc0-zkvm/disable-dev-mode`. Both builds
+reject fake receipts as successful verification; the dev-mode-capable build can
+report them with `status: "dev_mode"`. `make verify-fixture` uses the local
+dev-mode-capable release build while regenerating and checking a real receipt,
+so it is a smoke test rather than a production-feature build.
 
 ### Verify a Fresh Local Fixture
 
@@ -133,12 +185,17 @@ is only consumed when deriving that value through `read-image-id.mjs`.
 
 ## CLI Usage
 
+Expected ImageIDs contain exactly 64 hexadecimal characters. The CLI parser
+applies the same syntax to positional values, `--image-id`, and
+`EXPECTED_IMAGE_ID`: each accepts the value with or without a lowercase `0x`
+prefix and normalizes it to lowercase with the prefix.
+
 ```text
 verifier-service verify [OPTIONS] <BUNDLE_PATH> [IMAGE_ID]
 
 ARGS:
     <BUNDLE_PATH>    Path to receipt bundle (file, directory, or zip archive)
-    [IMAGE_ID]       Expected ImageID (hex string with 0x prefix)
+    [IMAGE_ID]       Expected ImageID (64 hex characters, optional 0x prefix)
 
 OPTIONS:
     -b, --bundle <PATH>      Path to receipt bundle (alternative to positional arg)
@@ -218,42 +275,6 @@ This workflow:
 1. regenerates a fresh real receipt from the checked-in zkVM input
 2. flips bits in the STARK seal
 3. confirms that `verifier-service verify` exits with `3`
-
-## Target Lambda Packaging
-
-The Terraform-managed target runtime packages the verifier binary directly into the
-Terraform-managed `verification-worker` Lambda zip. The app pipeline invokes:
-
-```bash
-pnpm terraform:build-lambda:target-runtime
-```
-
-That command builds `verifier-service` and stages the executable at
-`/var/task/verifier-service` inside the immutable verification worker package.
-`infra/terraform/app` consumes the package coordinates and checksum through
-`lambda_artifacts["verification_worker"]`; no Amplify layer is authoritative for the
-target runtime.
-
-## Integration with the App
-
-The app already wraps the CLI in `packages/node-adapters/src/verifier-service-client.ts`.
-Prefer that helper over spawning the process manually:
-
-```ts
-import { invokeVerifierService } from '@stark-ballot/node-adapters/verifier-service-client';
-
-const result = await invokeVerifierService({
-  bundlePath,
-  expectedImageId,
-  reportPath,
-});
-
-if (result.status === 'success') {
-  // verified
-}
-```
-
-That helper preserves the JSON report for exit codes `2` and `3`, which is important for `dev_mode` and failure handling.
 
 ## Development
 

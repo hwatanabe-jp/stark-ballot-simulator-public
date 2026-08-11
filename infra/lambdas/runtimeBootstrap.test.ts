@@ -1,7 +1,10 @@
-/**
- * @vitest-environment node
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  localRuntimeProfile,
+  targetRuntimeProfile,
+  targetRuntimeProfileEnv,
+} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { resolveRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 const loggerMocks = vi.hoisted(() => ({
   configureLogger: vi.fn(),
@@ -25,6 +28,12 @@ vi.mock('@stark-ballot/diagnostics/logger', () => ({
 }));
 
 const { RuntimeConfigValidationError, bootstrapLambdaRuntime } = await import('./runtimeBootstrap');
+const activeTargetProfile = targetRuntimeProfile();
+const quiescedTargetProfile = resolveRuntimeProfile({
+  ...targetRuntimeProfileEnv(),
+  RUNTIME_PROFILE: 'target-aws-async-quiesced',
+});
+const localProfile = localRuntimeProfile();
 
 async function captureRejectedError(promise: Promise<unknown>): Promise<Error> {
   try {
@@ -53,7 +62,7 @@ describe('Lambda runtime observability bootstrap', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env['TARGET_AWS_RUNTIME'] = '1';
+    process.env['RUNTIME_PROFILE'] = 'target-aws-async';
     process.env['LOG_FORMAT'] = 'json';
     process.env['LOG_LEVEL'] = 'warn';
     process.env['RUNTIME_DEPLOYMENT_ENV'] = 'develop';
@@ -77,6 +86,7 @@ describe('Lambda runtime observability bootstrap', () => {
 
     await bootstrapLambdaRuntime({
       serviceName: 'proof-dispatcher',
+      runtimeProfile: activeTargetProfile,
       resolveRuntimeReferences: () => {
         order.push('resolve_references');
         return Promise.resolve();
@@ -104,6 +114,30 @@ describe('Lambda runtime observability bootstrap', () => {
     });
   });
 
+  it.each([
+    ['active', activeTargetProfile],
+    ['quiesced', quiescedTargetProfile],
+  ] as const)('selects Lambda-native JSON logging from the injected %s target profile', async (_name, profile) => {
+    await bootstrapLambdaRuntime({
+      serviceName: 'public-api',
+      runtimeProfile: profile,
+      resolveRuntimeReferences: async () => await Promise.resolve(),
+      validationSteps: [],
+      env: {
+        RUNTIME_PROFILE: 'local-demo',
+        LOG_FORMAT: 'text',
+        LOG_LEVEL: 'warn',
+      },
+    });
+
+    expect(loggerMocks.configureLogger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        format: 'json',
+        jsonOutputMode: 'lambda-native',
+      }),
+    );
+  });
+
   it('logs exact reference names and rejects with a fresh names-only error', async () => {
     const unsafeOriginal =
       'SESSION_CAPABILITY_SECRET=never-log s3://private-bucket/sessions/raw/input.json token=eyJhbGciOiJIUzI1NiJ9';
@@ -114,6 +148,7 @@ describe('Lambda runtime observability bootstrap', () => {
     const rejectedError = await captureRejectedError(
       bootstrapLambdaRuntime({
         serviceName: 'verification-worker',
+        runtimeProfile: activeTargetProfile,
         resolveRuntimeReferences: (invalidNames) => {
           invalidNames.add('VOTE_SECRET_ENCRYPTION_KEY_REF');
           return Promise.reject(resolutionError);
@@ -156,6 +191,7 @@ describe('Lambda runtime observability bootstrap', () => {
     const rejectedError = await captureRejectedError(
       bootstrapLambdaRuntime({
         serviceName: 'proof-dispatcher',
+        runtimeProfile: activeTargetProfile,
         resolveRuntimeReferences: async () => await Promise.resolve(),
         validationSteps: [
           {
@@ -193,6 +229,7 @@ describe('Lambda runtime observability bootstrap', () => {
     await expect(
       bootstrapLambdaRuntime({
         serviceName: 'verification-worker',
+        runtimeProfile: activeTargetProfile,
         resolveRuntimeReferences: () => Promise.reject(unexpectedError),
         validationSteps: [],
       }),
@@ -202,11 +239,11 @@ describe('Lambda runtime observability bootstrap', () => {
   });
 
   it('keeps text logging available only when an explicit non-target runtime requests it', async () => {
-    process.env['TARGET_AWS_RUNTIME'] = '0';
     process.env['LOG_FORMAT'] = 'text';
 
     await bootstrapLambdaRuntime({
       serviceName: 'local-test-worker',
+      runtimeProfile: localProfile,
       resolveRuntimeReferences: async () => await Promise.resolve(),
       validationSteps: [],
     });
@@ -227,6 +264,7 @@ describe('Lambda runtime observability bootstrap', () => {
 
     await bootstrapLambdaRuntime({
       serviceName: 'verification-worker',
+      runtimeProfile: activeTargetProfile,
       resolveRuntimeReferences: async () => await Promise.resolve(),
       validationSteps: [],
     });
@@ -243,6 +281,7 @@ describe('Lambda runtime observability bootstrap', () => {
     await expect(
       bootstrapLambdaRuntime({
         serviceName: 'verification-worker',
+        runtimeProfile: activeTargetProfile,
         resolveRuntimeReferences: async () => await Promise.resolve(),
         validationSteps: [
           {

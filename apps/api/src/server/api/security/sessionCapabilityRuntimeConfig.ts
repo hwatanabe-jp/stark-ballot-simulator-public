@@ -4,6 +4,7 @@ import {
 } from '@stark-ballot/domain/security/sessionCapabilityToken';
 import { isUnresolvedRuntimeSecretPlaceholder } from '@stark-ballot/runtime-config/env/runtimeSecretPlaceholders';
 import { resolveRuntimeConfigReference } from '@stark-ballot/runtime-config/env/runtimeConfigReferences';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 const MIN_SECRET_LENGTH = 32;
 const DISALLOWED_SESSION_CAPABILITY_SECRETS = new Set([
@@ -33,26 +34,21 @@ function assertAllowedSessionCapabilitySecret(secret: string, env: NodeJS.Proces
   return secret;
 }
 
-function isTargetNonMockRuntime(env: NodeJS.ProcessEnv): boolean {
-  return env['USE_MOCK_STORE']?.trim().toLowerCase() === 'false';
-}
-
 function assertNoTargetRawRuntimeValue(name: string, rawValue: string | undefined): void {
   if (rawValue?.trim()) {
-    throw new Error(`${name} must not be set directly when USE_MOCK_STORE=false; use ${name}_REF.`);
+    throw new Error(`${name} must not be set directly for target AWS runtime; use ${name}_REF.`);
   }
 }
 
-export function resolveSessionCapabilitySecret(env: NodeJS.ProcessEnv = process.env): string {
-  if (isTargetNonMockRuntime(env)) {
+export function resolveSessionCapabilitySecret(
+  profile: ResolvedRuntimeProfile,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (profile.external.kind === 'aws') {
     assertNoTargetRawRuntimeValue('SESSION_CAPABILITY_SECRET', env['SESSION_CAPABILITY_SECRET']);
-    const secretRef = env['SESSION_CAPABILITY_SECRET_REF']?.trim();
-    if (!secretRef) {
-      throw new Error('SESSION_CAPABILITY_SECRET_REF must be set before resolving SESSION_CAPABILITY_SECRET.');
-    }
     const resolved = resolveRuntimeConfigReference({
       name: 'SESSION_CAPABILITY_SECRET',
-      reference: secretRef,
+      reference: profile.external.secretReferences.sessionCapabilitySecret,
     });
     return assertAllowedSessionCapabilitySecret(resolved, env);
   }
@@ -74,16 +70,17 @@ export function resolveSessionCapabilitySecret(env: NodeJS.ProcessEnv = process.
   throw new Error('SESSION_CAPABILITY_SECRET must be set to at least 32 characters');
 }
 
-export function resolveSessionCapabilityTtlSeconds(env: NodeJS.ProcessEnv = process.env): number {
+export function resolveSessionCapabilityTtlSeconds(
+  profile: ResolvedRuntimeProfile,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
   const directRaw = env['SESSION_CAPABILITY_TTL_SECONDS']?.trim();
-  const ttlRef = env['SESSION_CAPABILITY_TTL_SECONDS_REF']?.trim();
-  if (isTargetNonMockRuntime(env)) {
+  const ttlRef =
+    profile.external.kind === 'aws'
+      ? profile.external.secretReferences.sessionCapabilityTtlSeconds
+      : env['SESSION_CAPABILITY_TTL_SECONDS_REF']?.trim();
+  if (profile.external.kind === 'aws') {
     assertNoTargetRawRuntimeValue('SESSION_CAPABILITY_TTL_SECONDS', directRaw);
-    if (!ttlRef) {
-      throw new Error(
-        'SESSION_CAPABILITY_TTL_SECONDS_REF must be set before resolving SESSION_CAPABILITY_TTL_SECONDS.',
-      );
-    }
   }
   const raw =
     directRaw && directRaw.length > 0

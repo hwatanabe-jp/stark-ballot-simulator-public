@@ -39,7 +39,7 @@ resource "aws_codebuild_project" "prover_release_toolchain_resolver" {
 
   logs_config {
     cloudwatch_logs {
-      group_name  = aws_cloudwatch_log_group.foundation_pipeline_codebuild[local.prover_release_toolchain_resolver_project_name].name
+      group_name  = module.foundation_pipeline_codebuild_log_groups.log_groups[local.prover_release_toolchain_resolver_project_name].name
       stream_name = "toolchain-resolver"
     }
   }
@@ -86,7 +86,7 @@ resource "aws_codebuild_project" "prover_release_candidate" {
 
   logs_config {
     cloudwatch_logs {
-      group_name  = aws_cloudwatch_log_group.foundation_pipeline_codebuild[local.prover_release_candidate_project_name].name
+      group_name  = module.foundation_pipeline_codebuild_log_groups.log_groups[local.prover_release_candidate_project_name].name
       stream_name = "candidate"
     }
   }
@@ -151,7 +151,7 @@ resource "aws_codebuild_project" "prover_release_update_accepted_pointer" {
 
   logs_config {
     cloudwatch_logs {
-      group_name  = aws_cloudwatch_log_group.foundation_pipeline_codebuild[local.prover_release_update_accepted_pointer_project_name].name
+      group_name  = module.foundation_pipeline_codebuild_log_groups.log_groups[local.prover_release_update_accepted_pointer_project_name].name
       stream_name = "update-accepted-pointer"
     }
   }

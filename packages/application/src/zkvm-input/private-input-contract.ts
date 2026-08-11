@@ -1,7 +1,7 @@
-import type { SessionData } from '@stark-ballot/domain/types/server';
 import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
 import {
   buildZkVMInputFromSession,
+  type ZkVMInputSessionRecords,
   validateCanonicalZkVMInput,
 } from '@stark-ballot/application/zkvm-input/input-builder';
 
@@ -15,8 +15,8 @@ export class CanonicalZkVMInputValidationError extends Error {
   }
 }
 
-export function buildCanonicalZkVMInputFromSession(session: SessionData): ZkVMInput {
-  const zkVMInput = buildZkVMInputFromSession(session);
+export function buildCanonicalZkVMInputFromSession(records: ZkVMInputSessionRecords): ZkVMInput {
+  const zkVMInput = buildZkVMInputFromSession(records);
   const validation = validateCanonicalZkVMInput(zkVMInput);
   if (!validation.valid) {
     throw new CanonicalZkVMInputValidationError(validation.errors);

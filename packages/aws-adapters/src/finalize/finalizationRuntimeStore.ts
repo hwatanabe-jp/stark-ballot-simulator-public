@@ -1,4 +1,3 @@
-import type { SessionData } from '@stark-ballot/domain/types/server';
 import type {
   FinalizationFailedPayload,
   FinalizationRunningPayload,
@@ -6,18 +5,23 @@ import type {
   FinalizationTimedOutPayload,
 } from '@stark-ballot/application/finalize/finalization-store';
 import type { FinalizationState } from '@stark-ballot/application/finalize/finalization-types';
-import type {
-  AwsFinalizationLifecycleMetadata,
-  AwsPersistedFinalizationResult,
-} from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
 
 export type AwsRuntimeTransitionMetadata = {
   stepFunctionsArn?: string;
 };
 
-export type AwsSucceededTransitionMetadata = AwsRuntimeTransitionMetadata & {
-  bundleMetadata?: AwsFinalizationLifecycleMetadata;
-};
+export interface AwsFinalizationBundleMetadata {
+  s3BundleKey?: string;
+  s3UploadedAtMs?: number;
+}
+
+export interface AwsFinalizationRuntimeMetadata extends AwsRuntimeTransitionMetadata {
+  bundleMetadata?: AwsFinalizationBundleMetadata;
+}
+
+export type AwsFinalizationRuntimeState = FinalizationState & AwsFinalizationRuntimeMetadata;
+
+export type AwsSucceededTransitionMetadata = AwsFinalizationRuntimeMetadata;
 
 export function assertNoAwsRuntimeTransitionMetadata(payload: AwsSucceededTransitionMetadata): void {
   if (payload.stepFunctionsArn !== undefined || payload.bundleMetadata !== undefined) {
@@ -25,19 +29,20 @@ export function assertNoAwsRuntimeTransitionMetadata(payload: AwsSucceededTransi
   }
 }
 
-export type AwsFinalizationRunningPayload = FinalizationRunningPayload &
-  AwsRuntimeTransitionMetadata & {
-    scenarioContext?: SessionData['finalizationScenarioContext'] | null;
-  };
+export type AwsFinalizationRunningPayload = FinalizationRunningPayload & AwsRuntimeTransitionMetadata;
 
-export type AwsFinalizationSucceededPayload = Omit<FinalizationSucceededPayload, 'finalizationResult'> &
-  AwsSucceededTransitionMetadata & {
-    finalizationResult: FinalizationSucceededPayload['finalizationResult'] | AwsPersistedFinalizationResult;
-  };
+export type AwsFinalizationSucceededPayload = FinalizationSucceededPayload & AwsSucceededTransitionMetadata;
 
 export type AwsFinalizationFailedPayload = FinalizationFailedPayload & AwsRuntimeTransitionMetadata;
 
 export type AwsFinalizationTimedOutPayload = FinalizationTimedOutPayload & AwsRuntimeTransitionMetadata;
+
+export interface AwsFinalizationRuntimeMetadataStore {
+  getAwsFinalizationRuntimeMetadata(
+    sessionId: string,
+    finalizationId: string,
+  ): Promise<AwsFinalizationRuntimeMetadata | undefined>;
+}
 
 export interface AwsFinalizationRuntimeTransitionStore {
   markAwsFinalizationRunning(sessionId: string, payload: AwsFinalizationRunningPayload): Promise<FinalizationState>;

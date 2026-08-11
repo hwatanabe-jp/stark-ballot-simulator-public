@@ -1,8 +1,10 @@
 import {
-  SessionStatusResponseSchema,
-  type SessionStatusResponse as SessionStatusPayload,
-} from '@stark-ballot/api-contract/validation/apiSchemas';
+  CurrentFinalizationResponseSchema,
+  type FinalizationResource,
+} from '@stark-ballot/api-contract/schemas/finalizations';
+import { API_ROUTES, buildApiRouteUrl } from '@stark-ballot/api-contract/routes';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import { getRecordProperty } from '@stark-ballot/validation/unknown-value-guards';
 
 function getStringProperty(value: unknown, key: string): string | undefined {
   if (typeof value !== 'object' || value === null) {
@@ -12,75 +14,54 @@ function getStringProperty(value: unknown, key: string): string | undefined {
   return typeof candidate === 'string' ? candidate : undefined;
 }
 
-export type QueueInfo = NonNullable<NonNullable<SessionStatusPayload['queue']>>;
-export type FinalizationStatusState = SessionStatusPayload['finalizationState'];
-export type FinalizationStatusFinalizationResult = SessionStatusPayload['finalizationResult'];
-type StepFunctionsDetails = NonNullable<SessionStatusPayload['stepFunctions']>;
-
-export type FinalizationStatusResponse = {
-  sessionId: string;
-  finalizationState: FinalizationStatusState;
-  artifactState?: SessionStatusPayload['artifactState'];
-  queue: QueueInfo | null;
-  finalizationResult: FinalizationStatusFinalizationResult;
-  stepFunctions: StepFunctionsDetails | null;
-};
-
-export class FinalizationStatusError extends Error {
+export class CurrentFinalizationError extends Error {
   public readonly status: number;
   public readonly responseBody?: unknown;
 
   constructor(message: string, status: number, responseBody?: unknown) {
     super(message);
-    this.name = 'FinalizationStatusError';
+    this.name = 'CurrentFinalizationError';
     this.status = status;
     this.responseBody = responseBody;
   }
 }
 
-export function resolveFinalizationStatusErrorCode(error: unknown): string | null {
-  if (!(error instanceof FinalizationStatusError)) {
+export function resolveCurrentFinalizationErrorCode(error: unknown): string | null {
+  if (!(error instanceof CurrentFinalizationError)) {
     return null;
   }
 
-  return getStringProperty(error.responseBody, 'error') ?? null;
+  return getStringProperty(getRecordProperty(error.responseBody, 'error'), 'code') ?? null;
 }
 
-export function parseFinalizationStatusResponse(input: unknown): FinalizationStatusResponse {
-  const parsed = SessionStatusResponseSchema.safeParse(input);
+export function parseCurrentFinalizationResponse(input: unknown): FinalizationResource | null {
+  const parsed = CurrentFinalizationResponseSchema.safeParse(input);
   if (!parsed.success) {
     const firstIssue = parsed.error.issues[0];
-    throw new Error(`Invalid finalization status payload: ${firstIssue?.message ?? 'schema validation failed'}`);
+    throw new Error(`Invalid current finalization payload: ${firstIssue?.message ?? 'schema validation failed'}`);
   }
-
-  const data = parsed.data;
-  return {
-    sessionId: data.sessionId,
-    finalizationState: data.finalizationState,
-    ...omitUndefinedProperties({ artifactState: data.artifactState }),
-    queue: data.queue ?? null,
-    finalizationResult: data.finalizationResult,
-    stepFunctions: data.stepFunctions ?? null,
-  };
+  return parsed.data.data;
 }
 
-interface FetchStatusOptions {
+interface FetchCurrentFinalizationOptions {
   baseUrl: string;
   signal?: AbortSignal;
   authHeaders?: Record<string, string>;
 }
 
-export async function fetchFinalizationStatus(
+export async function fetchCurrentFinalization(
   sessionId: string,
-  options: FetchStatusOptions,
-): Promise<FinalizationStatusResponse> {
+  options: FetchCurrentFinalizationOptions,
+): Promise<FinalizationResource | null> {
   if (!sessionId) {
     throw new Error('sessionId is required');
   }
-
-  const requestUrl = new URL(`/api/sessions/${sessionId}/status`, options.baseUrl).toString();
+  const path = buildApiRouteUrl(API_ROUTES.currentFinalization, {
+    params: { sessionId },
+  });
+  const requestUrl = new URL(path, options.baseUrl).toString();
   const response = await fetch(requestUrl, {
-    method: 'GET',
+    method: API_ROUTES.currentFinalization.method,
     headers: {
       Accept: 'application/json',
       ...(options.authHeaders ?? {}),
@@ -95,14 +76,18 @@ export async function fetchFinalizationStatus(
       parsedBody = JSON.parse(rawBody);
     } catch {
       if (response.ok) {
-        throw new Error('Failed to parse finalization status response JSON');
+        throw new Error('Failed to parse current finalization response JSON');
       }
     }
   }
 
   if (!response.ok) {
-    throw new FinalizationStatusError(`Status request failed with ${response.status}`, response.status, parsedBody);
+    throw new CurrentFinalizationError(
+      `Current finalization request failed with ${response.status}`,
+      response.status,
+      parsedBody,
+    );
   }
 
-  return parseFinalizationStatusResponse(parsedBody);
+  return parseCurrentFinalizationResponse(parsedBody);
 }

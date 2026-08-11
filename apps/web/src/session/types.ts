@@ -4,16 +4,17 @@ export type VoteChoice = 'A' | 'B' | 'C' | 'D' | 'E';
 
 export type SessionPhase = 'voting' | 'finalizing' | 'verifying';
 
-export interface SessionData {
+export interface ServerIssuedSessionIdentity {
   sessionId: string;
   capabilityToken: string;
-  contractGeneration?: string;
+  electionId: string;
+  electionConfigHash: string;
+  logId: string;
+}
+
+interface BrowserSessionRecordBase extends ServerIssuedSessionIdentity {
   lastActivity: number;
-  expiresAt?: number;
-  phase?: SessionPhase;
-  electionId?: string;
-  electionConfigHash?: string;
-  logId?: string;
+  expiresAt: number;
   myVote?: VoteChoice;
   myCommit?: string;
   myRand?: string;
@@ -23,16 +24,19 @@ export interface SessionData {
   bulletinIndex?: number;
   /** Bulletin root at cast time (hex string) */
   bulletinRootAtCast?: string;
-  /** Timestamp when user triggered STARK verification from result page */
-  verificationRequestedAt?: number;
-  finalizeResult?: ClientFinalizationSnapshot;
 }
 
-export interface SessionManager {
-  generateSessionId(initialSessionId: string | undefined, capabilityToken: string, contractGeneration?: string): string;
-  checkTimeout(): boolean;
-  clearSession(): void;
-  updateLastActivity(): void;
-  getSessionData(): SessionData | null;
-  saveSessionData(data: Partial<SessionData>): void;
+interface ActiveBrowserSessionRecord extends BrowserSessionRecordBase {
+  phase: 'voting' | 'finalizing';
+  finalizeResult?: never;
+  verificationRequestedAt?: never;
 }
+
+interface VerifyingBrowserSessionRecord extends BrowserSessionRecordBase {
+  phase: 'verifying';
+  /** Timestamp when user triggered STARK verification from result page */
+  verificationRequestedAt?: number;
+  finalizeResult: ClientFinalizationSnapshot;
+}
+
+export type SessionData = ActiveBrowserSessionRecord | VerifyingBrowserSessionRecord;

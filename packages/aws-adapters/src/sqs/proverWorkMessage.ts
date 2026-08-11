@@ -1,49 +1,52 @@
-import type { FinalizationScenarioContext } from '@stark-ballot/domain/types/server';
+import type { FinalizationScenarioContext } from '@stark-ballot/application/finalize/finalization-types';
 import type { ElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import type { ZkVMInput, VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { assertZkvmWireNumericPreflight } from '@stark-ballot/zkvm-contract/zkvm/wire-numeric-preflight';
-import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/domain/utils/hex';
+import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { SAFE_VERIFIER_SEGMENT_PATTERN } from '@stark-ballot/validation/safe-verifier-segment';
 
-export const PROVER_WORK_MESSAGE_VERSION = 'v1.1' as const;
+export const PROVER_WORK_RECORD_TYPE = 'prover-work' as const;
 type ScenarioCode = `S${0 | 1 | 2 | 3 | 4 | 5}`;
 
-export type ProverWorkMessage = {
-  messageVersion: typeof PROVER_WORK_MESSAGE_VERSION;
+type ProverWorkMessageCommon = {
+  recordType: typeof PROVER_WORK_RECORD_TYPE;
   sessionId: string;
-  contractGeneration: string;
-  executionId: string;
-  queuedAt: number;
-  zkvmInput?: ZkVMInput;
+  finalizationId: string;
+  queuedAtMs: number;
   expectedImageId: string;
-  zkvmInputCommitment?: string;
-  electionConfig?: ElectionConfig;
-  inputS3Key?: string;
-  outputS3Prefix?: string;
-  bundleS3Key?: string;
   scenarios: ScenarioCode[];
   simulateTampering: boolean;
-  scenarioContext?: FinalizationScenarioContext;
+  scenarioContext: FinalizationScenarioContext;
 };
 
+export type ProverWorkMessage =
+  | (ProverWorkMessageCommon & {
+      inputSource: 'inline';
+      zkvmInput: ZkVMInput;
+      zkvmInputCommitment?: string;
+      electionConfig: ElectionConfig;
+    })
+  | (ProverWorkMessageCommon & {
+      inputSource: 's3';
+      inputS3Key: string;
+      outputS3Prefix: string;
+      bundleS3Key: string;
+    });
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const MESSAGE_KEYS = new Set([
-  'messageVersion',
+const COMMON_MESSAGE_KEYS = [
+  'recordType',
+  'inputSource',
   'sessionId',
-  'contractGeneration',
-  'executionId',
-  'queuedAt',
-  'zkvmInput',
+  'finalizationId',
+  'queuedAtMs',
   'expectedImageId',
-  'zkvmInputCommitment',
-  'electionConfig',
-  'inputS3Key',
-  'outputS3Prefix',
-  'bundleS3Key',
   'scenarios',
   'simulateTampering',
   'scenarioContext',
-]);
+] as const;
+const INLINE_MESSAGE_KEYS = new Set([...COMMON_MESSAGE_KEYS, 'zkvmInput', 'zkvmInputCommitment', 'electionConfig']);
+const S3_MESSAGE_KEYS = new Set([...COMMON_MESSAGE_KEYS, 'inputS3Key', 'outputS3Prefix', 'bundleS3Key']);
 const ZKVM_INPUT_KEYS = new Set([
   'electionId',
   'bulletinRoot',
@@ -86,13 +89,6 @@ function parseNonEmptyString(value: unknown, label: string): string {
   return value;
 }
 
-function parseOptionalNonEmptyString(value: unknown, label: string): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  return parseNonEmptyString(value, label);
-}
-
 function parseInteger(value: unknown, label: string, options: { min?: number; positive?: boolean } = {}): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     throw new Error(`${label} must be an integer`);
@@ -104,10 +100,7 @@ function parseInteger(value: unknown, label: string, options: { min?: number; po
   return value;
 }
 
-function parseBooleanDefault(value: unknown, label: string, defaultValue: boolean): boolean {
-  if (value === undefined) {
-    return defaultValue;
-  }
+function parseBoolean(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') {
     throw new Error(`${label} must be a boolean`);
   }
@@ -152,9 +145,6 @@ function parseScenarioCode(value: unknown, label: string): ScenarioCode {
 }
 
 function parseScenarioCodes(value: unknown): ScenarioCode[] {
-  if (value === undefined) {
-    return [];
-  }
   if (!Array.isArray(value)) {
     throw new Error('scenarios must be an array');
   }
@@ -285,44 +275,52 @@ export const ProverWorkMessageSchema = {
 
 export function parseProverWorkMessage(input: unknown): ProverWorkMessage {
   const record = assertRecord(input, 'Prover work message');
-  assertOnlyKeys(record, MESSAGE_KEYS, 'Prover work message');
-  if (record['messageVersion'] !== PROVER_WORK_MESSAGE_VERSION) {
-    throw new Error('messageVersion must be v1.1');
+  if (record['recordType'] !== PROVER_WORK_RECORD_TYPE) {
+    throw new Error(`recordType must be ${PROVER_WORK_RECORD_TYPE}`);
   }
-
-  const zkvmInput = parseZkvmInput(record['zkvmInput']);
-  const electionConfig = parseElectionConfig(record['electionConfig']);
-  const inputS3Key = parseOptionalNonEmptyString(record['inputS3Key'], 'inputS3Key');
-  const outputS3Prefix = parseOptionalNonEmptyString(record['outputS3Prefix'], 'outputS3Prefix');
-  const bundleS3Key = parseOptionalNonEmptyString(record['bundleS3Key'], 'bundleS3Key');
-  const hasArtifactKeys = Boolean(inputS3Key && outputS3Prefix && bundleS3Key);
-  const hasInlineProverInput = Boolean(zkvmInput && electionConfig);
-
-  if (!hasArtifactKeys && !hasInlineProverInput) {
-    throw new Error('Prover work message must include either target S3 artifact keys or inline prover input.');
+  const inputSource = record['inputSource'];
+  if (inputSource !== 'inline' && inputSource !== 's3') {
+    throw new Error('inputSource must be inline or s3');
   }
-  const zkvmInputCommitment =
-    record['zkvmInputCommitment'] !== undefined
-      ? parseOptionalHexString(record['zkvmInputCommitment'], 32, 'zkvmInputCommitment')
-      : undefined;
-  const scenarioContext =
-    record['scenarioContext'] !== undefined ? parseScenarioContext(record['scenarioContext']) : undefined;
+  assertOnlyKeys(record, inputSource === 'inline' ? INLINE_MESSAGE_KEYS : S3_MESSAGE_KEYS, 'Prover work message');
+
+  const scenarioContext = parseScenarioContext(record['scenarioContext']);
+  if (!scenarioContext) {
+    throw new Error('scenarioContext is required');
+  }
+  const common = {
+    recordType: PROVER_WORK_RECORD_TYPE,
+    inputSource,
+    sessionId: parseSafeSegment(record['sessionId'], 'sessionId', { uuid: true }),
+    finalizationId: parseSafeSegment(record['finalizationId'], 'finalizationId', { minLength: 10 }),
+    queuedAtMs: parseInteger(record['queuedAtMs'], 'queuedAtMs', { min: 0 }),
+    expectedImageId: parseHexString(record['expectedImageId'], 32, 'expectedImageId'),
+    scenarios: parseScenarioCodes(record['scenarios']),
+    simulateTampering: parseBoolean(record['simulateTampering'], 'simulateTampering'),
+    scenarioContext,
+  };
+
+  if (inputSource === 'inline') {
+    const zkvmInput = parseZkvmInput(record['zkvmInput']);
+    const electionConfig = parseElectionConfig(record['electionConfig']);
+    if (!zkvmInput || !electionConfig) {
+      throw new Error('Inline prover input requires zkvmInput and electionConfig');
+    }
+    const zkvmInputCommitment = parseOptionalHexString(record['zkvmInputCommitment'], 32, 'zkvmInputCommitment');
+    return {
+      ...common,
+      inputSource,
+      zkvmInput,
+      ...(zkvmInputCommitment ? { zkvmInputCommitment } : {}),
+      electionConfig,
+    };
+  }
 
   return {
-    messageVersion: PROVER_WORK_MESSAGE_VERSION,
-    sessionId: parseSafeSegment(record['sessionId'], 'sessionId', { uuid: true }),
-    contractGeneration: parseNonEmptyString(record['contractGeneration'], 'contractGeneration'),
-    executionId: parseSafeSegment(record['executionId'], 'executionId', { minLength: 10 }),
-    queuedAt: parseInteger(record['queuedAt'], 'queuedAt', { min: 0 }),
-    ...(zkvmInput ? { zkvmInput } : {}),
-    expectedImageId: parseHexString(record['expectedImageId'], 32, 'expectedImageId'),
-    ...(zkvmInputCommitment ? { zkvmInputCommitment } : {}),
-    ...(electionConfig ? { electionConfig } : {}),
-    ...(inputS3Key ? { inputS3Key } : {}),
-    ...(outputS3Prefix ? { outputS3Prefix } : {}),
-    ...(bundleS3Key ? { bundleS3Key } : {}),
-    scenarios: parseScenarioCodes(record['scenarios']),
-    simulateTampering: parseBooleanDefault(record['simulateTampering'], 'simulateTampering', false),
-    ...(scenarioContext ? { scenarioContext } : {}),
+    ...common,
+    inputSource,
+    inputS3Key: parseNonEmptyString(record['inputS3Key'], 'inputS3Key'),
+    outputS3Prefix: parseNonEmptyString(record['outputS3Prefix'], 'outputS3Prefix'),
+    bundleS3Key: parseNonEmptyString(record['bundleS3Key'], 'bundleS3Key'),
   };
 }

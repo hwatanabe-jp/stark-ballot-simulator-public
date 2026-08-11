@@ -1,10 +1,10 @@
-export interface ConsistencyProofResponse {
-  oldSize: number;
-  newSize: number;
-  rootAtOldSize: string;
-  rootAtNewSize: string;
+export interface AdmittedConsistencyProof {
+  fromTreeSize: number;
+  toTreeSize: number;
+  rootAtFromTreeSize: string;
+  rootAtToTreeSize: string;
   proofNodes: string[];
   oldSubtreeHashes?: string[];
   appendSubtreeHashes?: string[];
-  timestamp: number;
+  generatedAtMs: number;
 }

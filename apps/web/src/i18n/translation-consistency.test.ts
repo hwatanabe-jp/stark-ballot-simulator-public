@@ -21,8 +21,8 @@ const TRANSLATION_FN_NAMES = new Set(['t', 'translate']);
 const NON_TRANSLATION_KEYS = new Set([
   'verification.steps',
   'verification.reportSummary',
-  'verification.bundle.get',
-  'verification.report.get',
+  'sessions.finalizations.artifacts.bundle.get',
+  'sessions.finalizations.artifacts.report.get',
 ]);
 
 type TranslationTree = Record<string, unknown>;

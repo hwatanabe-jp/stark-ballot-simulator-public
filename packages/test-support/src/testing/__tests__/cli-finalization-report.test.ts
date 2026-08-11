@@ -13,35 +13,38 @@ function buildResult(overrides: Partial<TestResult['details']> = {}): TestResult
     {
       state: {
         status: 'pending',
-        executionId: '01HZ3JQ4ABXYZ7890DEF123456',
-        queuedAt: 1_730_000_000_000,
+        finalizationId: '01HZ3JQ4ABXYZ7890DEF123456',
+        queuedAtMs: 1_730_000_000_000,
       },
       receivedAt: 1_730_000_000_100,
-      stepFunctions: null,
+      runtimeDiagnostics: null,
     },
     {
       state: {
         status: 'running',
-        executionId: '01HZ3JQ4ABXYZ7890DEF123456',
-        queuedAt: 1_730_000_000_000,
-        startedAt: 1_730_000_000_500,
+        finalizationId: '01HZ3JQ4ABXYZ7890DEF123456',
+        queuedAtMs: 1_730_000_000_000,
+        startedAtMs: 1_730_000_000_500,
       },
       receivedAt: 1_730_000_000_600,
-      stepFunctions: null,
+      runtimeDiagnostics: null,
     },
     {
       state: {
         status: 'succeeded',
-        executionId: '01HZ3JQ4ABXYZ7890DEF123456',
-        queuedAt: 1_730_000_000_000,
-        startedAt: 1_730_000_000_500,
-        completedAt: 1_730_000_001_000,
+        finalizationId: '01HZ3JQ4ABXYZ7890DEF123456',
+        queuedAtMs: 1_730_000_000_000,
+        startedAtMs: 1_730_000_000_500,
+        completedAtMs: 1_730_000_001_000,
       },
       receivedAt: 1_730_000_001_100,
-      stepFunctions: {
-        status: 'SUCCEEDED',
-        startTime: 1_730_000_000_500,
-        stopTime: 1_730_000_001_000,
+      runtimeDiagnostics: {
+        asyncMode: 'enabled',
+        orchestrator: {
+          status: 'SUCCEEDED',
+          startTimeMs: 1_730_000_000_500,
+          stopTimeMs: 1_730_000_001_000,
+        },
       },
     },
   ];
@@ -53,9 +56,9 @@ function buildResult(overrides: Partial<TestResult['details']> = {}): TestResult
     details: {
       tamperDetected: false,
       finalizationMode: 'async',
-      finalizationExecutionId: '01HZ3JQ4ABXYZ7890DEF123456',
+      finalizationId: '01HZ3JQ4ABXYZ7890DEF123456',
       finalizationHistory: history,
-      finalizationStepFunctions: strictDefined(history[2]).stepFunctions,
+      finalizationRuntimeDiagnostics: strictDefined(strictDefined(history[2]).runtimeDiagnostics),
       ...overrides,
     },
   };
@@ -67,7 +70,7 @@ describe('CLITestHelpers.generateReport', () => {
   it('renders finalization diagnostics in table report', async () => {
     const report = await helpers.generateReport([buildResult()], 'table');
     expect(report).toContain('Finalization mode: ASYNC');
-    expect(report).toContain('executionId=01HZ3JQ4ABXYZ7890DEF123456');
+    expect(report).toContain('finalizationId=01HZ3JQ4ABXYZ7890DEF123456');
     expect(report).toContain('Step Functions: status=SUCCEEDED');
   });
 

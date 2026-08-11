@@ -47,7 +47,7 @@ data "aws_iam_policy_document" "foundation_terraform_smoke" {
     condition {
       test     = "StringEqualsIfExists"
       variable = "s3:prefix"
-      values   = ["channels/develop/foundation/app-networking.json"]
+      values   = [local.deployment_shared_names.foundationAppNetworkingKey]
     }
   }
 
@@ -68,6 +68,7 @@ data "aws_iam_policy_document" "foundation_terraform_smoke" {
     actions = [
       "iam:GetRole",
       "iam:ListAttachedRolePolicies",
+      "iam:SimulatePrincipalPolicy",
     ]
     resources = [
       "arn:aws:iam::${var.aws_account_id}:role/${local.foundation_terraform_apply_role_name}",
@@ -85,6 +86,59 @@ data "aws_iam_policy_document" "foundation_terraform_smoke" {
       local.foundation_apply_deploy_permissions_boundary_policy_arn,
       local.foundation_terraform_apply_workload_policy_arn,
     ]
+  }
+
+  statement {
+    sid    = "ReadFoundationEcrRetentionRoleForSmoke"
+    effect = "Allow"
+    actions = [
+      "iam:GetRole",
+      "iam:GetRolePolicy",
+      "iam:ListRolePolicies",
+      "iam:ListRoleTags",
+    ]
+    resources = [local.foundation_ecr_retention_role_arn]
+  }
+
+  statement {
+    sid    = "ReadFoundationEcrRetentionBoundaryForSmoke"
+    effect = "Allow"
+    actions = [
+      "iam:GetPolicy",
+      "iam:GetPolicyVersion",
+      "iam:ListPolicyVersions",
+    ]
+    resources = [local.foundation_ecr_retention_boundary_policy_arn]
+  }
+
+  statement {
+    sid    = "ReadFoundationEcrRetentionLambdaForSmoke"
+    effect = "Allow"
+    actions = [
+      "lambda:GetFunction",
+      "lambda:GetFunctionConcurrency",
+      "lambda:GetPolicy",
+      "lambda:ListTags",
+    ]
+    resources = [local.foundation_ecr_retention_function_arn]
+  }
+
+  statement {
+    sid    = "ReadFoundationEcrRetentionScheduleForSmoke"
+    effect = "Allow"
+    actions = [
+      "events:DescribeRule",
+      "events:ListTagsForResource",
+      "events:ListTargetsByRule",
+    ]
+    resources = [local.foundation_ecr_retention_schedule_arn]
+  }
+
+  statement {
+    sid       = "ReadFoundationEcrRetentionLogGroupForSmoke"
+    effect    = "Allow"
+    actions   = ["logs:DescribeLogGroups"]
+    resources = ["*"]
   }
 }
 

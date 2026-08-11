@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig/test-node.json",
+  "include": ["workspace/**/*.test.ts", "workspace/**/__tests__/**/*.ts", "vitest/setup-node.ts"]
+}

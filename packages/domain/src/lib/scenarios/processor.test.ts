@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ScenarioProcessor } from './processor';
-import type { VoteData } from '@stark-ballot/domain/types/server';
+import type { VoteData } from '@stark-ballot/domain/types/sessionRecords';
 
 describe('ScenarioProcessor', () => {
   let processor: ScenarioProcessor;

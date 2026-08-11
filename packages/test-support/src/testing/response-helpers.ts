@@ -1,4 +1,4 @@
-import { getRecordProperty, requireRecord } from '@stark-ballot/domain/utils/guards';
+import { getRecordProperty, getStringProperty, requireRecord } from '@stark-ballot/validation/unknown-value-guards';
 
 export interface JsonResponseLike {
   json(): Promise<unknown>;
@@ -15,4 +15,8 @@ export function requireDataRecord(payload: Record<string, unknown>, label = 'dat
     throw new Error(`Expected ${label} to be present`);
   }
   return data;
+}
+
+export function getApiErrorCode(payload: unknown): string | undefined {
+  return getStringProperty(getRecordProperty(payload, 'error'), 'code');
 }

@@ -1,6 +1,6 @@
 import type { ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { isSupportedJournalMethodVersion } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
-import { normalizeHexString } from '@stark-ballot/verification/shared/hex';
+import { normalizeHexString } from '@stark-ballot/crypto-primitives';
 import {
   buildCloseStatement,
   recomputeElectionManifestHash,
@@ -27,13 +27,13 @@ export function resolveConsistentPublicAuditArtifacts(input: {
   publicInputArtifact?: SupportedPublicInputArtifact;
   electionManifest?: ElectionManifest;
   closeStatement?: CloseStatement;
-  verificationExecutionId?: string;
+  finalizationId?: string;
   bundleKey?: string;
   hasLocalPublicInputAuthority?: boolean;
 }): PublicAuditArtifactResolution {
   const publicInputArtifact = resolveConsistentPublicInputArtifact(input.publicInputArtifact, input.journal, {
     ...omitUndefinedProperties({
-      verificationExecutionId: input.verificationExecutionId,
+      finalizationId: input.finalizationId,
       bundleKey: input.bundleKey,
     }),
     hasLocalPublicInputAuthority: Boolean(input.hasLocalPublicInputAuthority),
@@ -63,7 +63,7 @@ function resolveConsistentPublicInputArtifact(
   artifact: SupportedPublicInputArtifact | undefined,
   journal: ZkVMJournal,
   authority: {
-    verificationExecutionId?: string;
+    finalizationId?: string;
     bundleKey?: string;
     hasLocalPublicInputAuthority: boolean;
   },
@@ -214,13 +214,13 @@ function matchesHex(left: string | undefined, right: string | undefined): boolea
 function hasAuthoritativePublicInputContext(
   provenance: SupportedPublicInputArtifact['provenance'],
   authority: {
-    verificationExecutionId?: string;
+    finalizationId?: string;
     bundleKey?: string;
     hasLocalPublicInputAuthority: boolean;
   },
 ): boolean {
   if (authority.hasLocalPublicInputAuthority) {
-    if (authority.verificationExecutionId && provenance.executionId !== authority.verificationExecutionId) {
+    if (authority.finalizationId && provenance.finalizationId !== authority.finalizationId) {
       return false;
     }
     if (authority.bundleKey && provenance.bundleKey !== authority.bundleKey) {
@@ -230,11 +230,11 @@ function hasAuthoritativePublicInputContext(
   }
 
   if (provenance.source === 'generated') {
-    if (authority.verificationExecutionId) {
-      if (provenance.executionId !== authority.verificationExecutionId) {
+    if (authority.finalizationId) {
+      if (provenance.finalizationId !== authority.finalizationId) {
         return false;
       }
-    } else if (provenance.executionId !== undefined) {
+    } else if (provenance.finalizationId !== undefined) {
       return false;
     }
 
@@ -257,9 +257,9 @@ function hasAuthoritativePublicInputContext(
     return false;
   }
 
-  if (!authority.verificationExecutionId) {
+  if (!authority.finalizationId) {
     return true;
   }
 
-  return provenance.executionId === authority.verificationExecutionId;
+  return provenance.finalizationId === authority.finalizationId;
 }

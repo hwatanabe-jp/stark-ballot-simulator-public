@@ -91,9 +91,7 @@ export async function executeMockZkVM(input: ZkVMInput): Promise<ZkVMExecutionRe
     inputCommitmentValue = computeInputCommitment(input);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    if (process.env['NODE_ENV'] !== 'test' && process.env['VITEST'] !== 'true') {
-      logger.warn('[MockZkVM] Failed to compute input commitment:', message);
-    }
+    logger.warn('[MockZkVM] Failed to compute input commitment:', message);
     inputCommitmentValue = '0x' + '0'.repeat(64);
   }
 
@@ -298,11 +296,4 @@ function calculateStatistics(seenIndicesCount: number, treeSize: number, invalid
  */
 async function simulateProcessingDelay(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, MOCK_EXECUTION_TIME_MS));
-}
-
-/**
- * Check if Mock zkVM should be used based on environment
- */
-export function shouldUseMockZkVM(): boolean {
-  return process.env['USE_MOCK_ZKVM'] === 'true' || process.env['NODE_ENV'] === 'test';
 }

@@ -1,18 +1,36 @@
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import type { FinalizationWorkItem } from '@stark-ballot/application/finalize/finalization-work-item';
-import { PROVER_WORK_MESSAGE_VERSION, ProverWorkMessageSchema } from './proverWorkMessage';
+import { PROVER_WORK_RECORD_TYPE, ProverWorkMessageSchema } from './proverWorkMessage';
 import { buildFinalizationArtifactS3Keys } from '@stark-ballot/aws-adapters/finalize/artifact-key-layout';
 import { emitCanonicalEvent } from '@stark-ballot/diagnostics/canonicalEvents';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
+import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 let sqsClient: SQSClient | null = null;
 const SQS_MESSAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
-function getSqsClient(): SQSClient {
+function getSqsClient(region: string): SQSClient {
   if (!sqsClient) {
-    sqsClient = new SQSClient({});
+    sqsClient = new SQSClient({ region });
   }
   return sqsClient;
+}
+
+function buildS3ProverPayload(
+  message: FinalizationWorkItem & { inputSource: 's3' },
+  proofArtifactPrefix: string,
+): {
+  inputS3Key: string;
+  outputS3Prefix: string;
+  bundleS3Key: string;
+} {
+  const { inputS3Key, outputS3Prefix, bundleS3Key } = buildFinalizationArtifactS3Keys(
+    message.sessionId,
+    message.finalizationId,
+    proofArtifactPrefix,
+  );
+  return { inputS3Key, outputS3Prefix, bundleS3Key };
 }
 
 export function setSqsClient(client: SQSClient | null): void {
@@ -23,42 +41,46 @@ export function resetSqsClients(): void {
   sqsClient = null;
 }
 
-export async function publishProverWorkMessage(message: FinalizationWorkItem): Promise<void> {
+export async function publishProverWorkMessage(
+  profile: ResolvedRuntimeProfile,
+  message: FinalizationWorkItem,
+): Promise<void> {
   const correlation = {
     session_id_hash: hashSessionIdForLogging(message.sessionId),
-    execution_id: message.executionId,
+    finalization_id: message.finalizationId,
   } as const;
 
   try {
-    const queueUrl = process.env['PROVER_WORK_QUEUE_URL'];
-    if (!queueUrl) {
-      throw new Error('PROVER_WORK_QUEUE_URL is not configured');
+    if (profile.external.kind !== 'aws') {
+      throw new Error('Prover work publication requires a target AWS runtime profile.');
     }
-    const targetArtifactKeys =
-      message.zkvmInput && message.electionConfig
-        ? undefined
-        : buildFinalizationArtifactS3Keys(message.sessionId, message.executionId, process.env['S3_PROOF_PREFIX']);
-
-    const payload = JSON.stringify(
-      ProverWorkMessageSchema.parse({
-        messageVersion: PROVER_WORK_MESSAGE_VERSION,
-        sessionId: message.sessionId,
-        contractGeneration: message.contractGeneration,
-        executionId: message.executionId,
-        queuedAt: message.queuedAt,
-        expectedImageId: message.expectedImageId,
-        zkvmInput: message.zkvmInput,
-        zkvmInputCommitment: message.zkvmInputCommitment,
-        electionConfig: message.electionConfig,
-        inputS3Key: targetArtifactKeys?.inputS3Key,
-        outputS3Prefix: targetArtifactKeys?.outputS3Prefix,
-        bundleS3Key: targetArtifactKeys?.bundleS3Key,
-        scenarios: message.scenarios,
-        simulateTampering: message.simulateTampering,
-        scenarioContext: message.scenarioContext,
-      }),
-    );
-    const response = await getSqsClient().send(
+    const queueUrl = profile.external.asyncRuntime.proverWorkQueueUrl;
+    const commonPayload = {
+      recordType: PROVER_WORK_RECORD_TYPE,
+      sessionId: message.sessionId,
+      finalizationId: message.finalizationId,
+      queuedAtMs: message.queuedAtMs,
+      expectedImageId: message.expectedImageId,
+      scenarios: message.scenarios,
+      simulateTampering: message.simulateTampering,
+      scenarioContext: message.scenarioContext,
+    };
+    const parsedMessage =
+      message.inputSource === 'inline'
+        ? ProverWorkMessageSchema.parse({
+            ...commonPayload,
+            inputSource: 'inline',
+            zkvmInput: message.zkvmInput,
+            ...omitUndefinedProperties({ zkvmInputCommitment: message.zkvmInputCommitment }),
+            electionConfig: message.electionConfig,
+          })
+        : ProverWorkMessageSchema.parse({
+            ...commonPayload,
+            inputSource: 's3',
+            ...buildS3ProverPayload(message, profile.external.artifactStorage.prefix),
+          });
+    const payload = JSON.stringify(parsedMessage);
+    const response = await getSqsClient(profile.external.region).send(
       new SendMessageCommand({
         QueueUrl: queueUrl,
         MessageBody: payload,

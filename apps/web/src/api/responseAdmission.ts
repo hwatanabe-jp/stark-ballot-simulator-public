@@ -1,4 +1,4 @@
-import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/validation/apiSchemas';
+import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/schemas/errors';
 import type { Schema } from '@stark-ballot/validation/schema';
 
 export type StandardApiErrorPayload = ReturnType<typeof StandardErrorResponseSchema.parse>;
@@ -28,10 +28,10 @@ export async function readStandardApiError(response: Pick<Response, 'json'>): Pr
 
 export function readStandardApiErrorCode(payload: unknown): string | undefined {
   const parsed = StandardErrorResponseSchema.safeParse(payload);
-  return parsed.success && typeof parsed.data['error'] === 'string' ? parsed.data['error'] : undefined;
+  return parsed.success ? parsed.data.error.code : undefined;
 }
 
 export function readStandardApiErrorMessage(payload: unknown): string | undefined {
   const parsed = StandardErrorResponseSchema.safeParse(payload);
-  return parsed.success && typeof parsed.data['message'] === 'string' ? parsed.data['message'] : undefined;
+  return parsed.success ? parsed.data.error.message : undefined;
 }

@@ -51,25 +51,18 @@ function parseAllowedVoteSecretKey(raw: string | undefined): Buffer | null {
   return parsed;
 }
 
-function isTargetNonMockRuntime(): boolean {
-  return process.env['USE_MOCK_STORE']?.trim().toLowerCase() === 'false';
-}
-
-function assertNoTargetRawVoteSecret(rawValue: string | undefined): void {
+function assertNoRawVoteSecretAlongsideReference(rawValue: string | undefined): void {
   if (rawValue?.trim()) {
     throw new Error(
-      'VOTE_SECRET_ENCRYPTION_KEY must not be set directly when USE_MOCK_STORE=false; use VOTE_SECRET_ENCRYPTION_KEY_REF.',
+      'VOTE_SECRET_ENCRYPTION_KEY must not be set directly when VOTE_SECRET_ENCRYPTION_KEY_REF is configured.',
     );
   }
 }
 
 function resolveVoteSecretKey(): Buffer {
-  if (isTargetNonMockRuntime()) {
-    assertNoTargetRawVoteSecret(process.env['VOTE_SECRET_ENCRYPTION_KEY']);
-    const voteSecretRef = process.env['VOTE_SECRET_ENCRYPTION_KEY_REF']?.trim();
-    if (!voteSecretRef) {
-      throw new Error('VOTE_SECRET_ENCRYPTION_KEY_REF must be set before resolving VOTE_SECRET_ENCRYPTION_KEY.');
-    }
+  const voteSecretRef = process.env['VOTE_SECRET_ENCRYPTION_KEY_REF']?.trim();
+  if (voteSecretRef) {
+    assertNoRawVoteSecretAlongsideReference(process.env['VOTE_SECRET_ENCRYPTION_KEY']);
     const resolved = resolveRuntimeConfigReference({
       name: 'VOTE_SECRET_ENCRYPTION_KEY',
       reference: voteSecretRef,
@@ -84,19 +77,6 @@ function resolveVoteSecretKey(): Buffer {
   const parsed = parseAllowedVoteSecretKey(process.env['VOTE_SECRET_ENCRYPTION_KEY']);
   if (parsed) {
     return parsed;
-  }
-
-  const voteSecretRef = process.env['VOTE_SECRET_ENCRYPTION_KEY_REF']?.trim();
-  if (voteSecretRef) {
-    const resolved = resolveRuntimeConfigReference({
-      name: 'VOTE_SECRET_ENCRYPTION_KEY',
-      reference: voteSecretRef,
-    });
-    const resolvedParsed = parseAllowedVoteSecretKey(resolved);
-    if (!resolvedParsed) {
-      throw new Error('VOTE_SECRET_ENCRYPTION_KEY must resolve to a valid 32-byte key.');
-    }
-    return resolvedParsed;
   }
 
   if (process.env['NODE_ENV'] === 'test') {

@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`canonical P2 event contracts > snapshots every closed P2 registry 1`] = `
+exports[`canonical operational event contracts > snapshots every closed operational event registry 1`] = `
 {
   "BUNDLE_DOWNLOAD_ENDPOINTS": [
     "bundle",
@@ -54,9 +54,7 @@ exports[`canonical P2 event contracts > snapshots every closed P2 registry 1`] =
     "IDEMPOTENT_RETRY",
     "EXECUTION_MISMATCH",
     "TERMINAL_STATE_STICKY",
-    "CONTRACT_GENERATION_MISMATCH",
-    "UNSUPPORTED_CURRENT_ARTIFACT",
-    "CORRUPT_OR_UNREADABLE_FINALIZED_STATE",
+    "INVALID_FINALIZATION_ARTIFACT",
     "CONDITIONAL_WRITE_CONFLICT",
     "FINALIZATION_FAILED",
     "FINALIZATION_BUNDLE_KEY_MISSING",

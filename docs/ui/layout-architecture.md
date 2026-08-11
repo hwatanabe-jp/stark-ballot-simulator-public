@@ -426,7 +426,7 @@ const KNOWLEDGE_GROUPS: KnowledgeGroup[] = [
 
 const HIDDEN_KEYS: Array<keyof KnowledgeData> = [
   'sessionId',
-  'user.voteTimestamp',
+  'user.castAtMs',
   'scenarioId',
   'verification.steps',
   'verification.reportSummary',

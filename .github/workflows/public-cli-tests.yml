@@ -40,6 +40,5 @@ jobs:
 
       - name: Run mock CLI flow
         env:
-          TURNSTILE_BYPASS: '1'
           RUNTIME_DEPLOYMENT_ENV: 'develop'
         run: pnpm test:cli:mock

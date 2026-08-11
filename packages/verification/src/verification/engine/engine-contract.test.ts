@@ -12,6 +12,7 @@ import { deriveStepStatusFromChecks } from './derive-stages';
 import { buildVerificationSteps } from '../build-verification-steps';
 import type { BuildVerificationStepsInput } from '../build-verification-steps';
 import type { CheckResult, VerificationContext } from './types';
+import type { BitmapProofResponse } from '../bitmap-proof-types';
 
 vi.mock('@stark-ballot/verification/merkle', () => ({
   verifyCTMerkleInclusion: vi.fn(),
@@ -56,6 +57,10 @@ const createJournal = (overrides: Partial<ZkVMJournal> = {}): ZkVMJournal => ({
 });
 
 const REQUIREMENT_CONTEXT = { sthSourcesConfigured: false } as const;
+const bitmapProof: BitmapProofResponse = {
+  leafChunk: '01' + '00'.repeat(31),
+  auditPath: [],
+};
 
 const createStepGuardContext = (stepId: VerificationStepId): VerificationContext => {
   switch (stepId) {
@@ -82,7 +87,7 @@ describe('verification engine contracts', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(verifyCTMerkleInclusion).mockReturnValue(true);
-    vi.mocked(verifyMyVoteWasCounted).mockResolvedValue({
+    vi.mocked(verifyMyVoteWasCounted).mockReturnValue({
       valid: true,
       included: true,
       leafIndex: 0,
@@ -133,8 +138,20 @@ describe('verification engine contracts', () => {
       verificationReportStatus: 'success',
       allowDevModeVerification: true,
       bitmapProofSource: 'mock',
-      bitmapProofEndpoint: 'https://example.com/api/bitmap-proof',
-      sessionId: 'session-1',
+      includedBitmapProof: { kind: 'admitted', value: bitmapProof },
+      consistencyProof: {
+        kind: 'admitted',
+        value: {
+          fromTreeSize: 1,
+          toTreeSize: journal.treeSize,
+          rootAtFromTreeSize: journal.bulletinRoot,
+          rootAtToTreeSize: journal.bulletinRoot,
+          proofNodes: [],
+          generatedAtMs: Date.now(),
+        },
+      },
+      bulletinRoot: journal.bulletinRoot,
+      treeSize: journal.treeSize,
     };
 
     const [castStep, recordedStep, countedStep, starkStep] = await buildVerificationSteps(input);

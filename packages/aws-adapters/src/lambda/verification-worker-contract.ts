@@ -8,7 +8,7 @@ export interface VerificationWorkerOptions {
 export interface VerificationWorkerS3Payload {
   mode: 's3_bundle';
   sessionId: string;
-  executionId: string;
+  finalizationId: string;
   bundleKey: string;
   expectedImageId: string;
   options?: VerificationWorkerOptions;
@@ -25,13 +25,13 @@ export type VerificationWorkerPayload = VerificationWorkerS3Payload;
 export interface VerificationWorkerSuccess {
   status: 'success';
   sessionId: string;
-  executionId: string;
+  finalizationId: string;
   verifierStatus: string;
   verificationReport: VerificationReport;
   s3?: {
     bundleKey?: string;
     reportKey?: string;
-    uploadedAt?: string;
+    uploadedAtMs?: number;
   };
 }
 
@@ -57,12 +57,12 @@ function parseOptionalS3(value: unknown): VerificationWorkerSuccess['s3'] {
 
   const bundleKey = value['bundleKey'];
   const reportKey = value['reportKey'];
-  const uploadedAt = value['uploadedAt'];
+  const uploadedAtMs = value['uploadedAtMs'];
 
   return {
     ...(bundleKey !== undefined ? { bundleKey: parseString(bundleKey, 's3.bundleKey') } : {}),
     ...(reportKey !== undefined ? { reportKey: parseString(reportKey, 's3.reportKey') } : {}),
-    ...(uploadedAt !== undefined ? { uploadedAt: parseString(uploadedAt, 's3.uploadedAt') } : {}),
+    ...(uploadedAtMs !== undefined ? { uploadedAtMs: parseNumber(uploadedAtMs, 's3.uploadedAtMs') } : {}),
   };
 }
 
@@ -82,7 +82,7 @@ function parseReportStatus(value: unknown): VerificationStatus {
 
 function parseNumber(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw new Error(`verification-worker response verificationReport.${label} is required`);
+    throw new Error(`verification-worker response ${label} is required`);
   }
   return value;
 }
@@ -115,11 +115,13 @@ function rejectReportDeliveryFields(record: Record<string, unknown>): void {
   const forbiddenFields = [
     'bundle_path',
     'receipt_path',
+    'finalizationId',
     'executionId',
     'verificationExecutionId',
     's3BundleKey',
     's3ReportKey',
     's3UploadedAt',
+    's3UploadedAtMs',
     's3BundleUrl',
   ];
   for (const field of forbiddenFields) {
@@ -158,7 +160,7 @@ export function parseVerificationWorkerResponse(input: unknown): VerificationWor
     return {
       status: 'success',
       sessionId: parseString(input['sessionId'], 'sessionId'),
-      executionId: parseString(input['executionId'], 'executionId'),
+      finalizationId: parseString(input['finalizationId'], 'finalizationId'),
       verifierStatus: parseString(input['verifierStatus'], 'verifierStatus'),
       verificationReport: parseVerificationWorkerReport(input['verificationReport']),
       ...(s3 ? { s3 } : {}),

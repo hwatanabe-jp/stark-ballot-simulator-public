@@ -1,13 +1,10 @@
 # STARK Ballot Formalization
 
-Status: Correspondence hardening added for audit, generated vectors,
-bounded count and tally-bucket claims, and CI drift guards
-
 This directory contains the Lean 4 formalization layer for STARK Ballot
-Simulator. The first goal is deliberately small: prove structural invariants
-that support the product rule that the app must never present an overall
-`Verified` result unless all required cryptographic and consistency checks have
-passed.
+Simulator. It proves selected structural invariants that support the product
+rule that the app must never present an overall `Verified` result unless all
+required cryptographic and consistency checks have passed, and it connects those
+models to targeted TypeScript and Rust tests through generated vectors.
 
 Lean is not intended to prove SHA-256 security, RISC Zero soundness, AWS runtime
 behavior, React rendering behavior, or production-election security. Those
@@ -24,16 +21,16 @@ The Lean workspace focuses on:
 - LSB-first bitmap packing
 - an abstract zkVM guest tally model over presented records
 
-The implementation correspondence is expected to come from generated vectors
-consumed by the existing TypeScript and Rust tests.
-
-For the user-facing "never show Verified" claim, summary-model vectors are not
-enough by themselves. The generated cases should also exercise the verify page's
-overall-status gate in `apps/web/src/routes/verify/lib/overall-status.ts`, and
-focused page-level behavior where needed in
-`apps/web/src/routes/verify/page.tsx`, because the page combines summary results
-with explicit proof failures, hard-failure checks, pending state, and render
-timing before passing `verified` to the UI.
+Generated vectors exercise the corresponding TypeScript and Rust behavior for
+verification summaries and display decisions, check definitions, canonical
+input commitment encoding, bitmap packing, and the abstract guest model. For the
+user-facing "never show Verified" claim, the generated display cases exercise
+the shared
+`packages/verification/src/verification/verification-presentation-policy.ts`
+gate alongside focused page-level behavior in
+`apps/web/src/routes/verify/page.tsx`. The shared policy combines summary results
+with explicit proof failures, required-check failures, pending state, and render
+timing before the UI may receive `verified`.
 
 ## Workspace
 
@@ -55,21 +52,9 @@ formal/
     EmitTestVectors.lean
 ```
 
-The Lean workspace now includes journal count semantics, the verification
-summary fail-closed model, input commitment and bitmap models, generated vectors
-consumed by TypeScript and Rust tests, an abstract guest state machine, and a
-stable generated formal report under `docs/formal/formal-report.json`.
-The guest model tracks a candidate-indexed tally, proves the fold preserves
-duplicate-free in-range seen-index invariants and count bounds, and states its
-zero-exclusion completeness theorem directly over `processVotes`. Current
-hardening adds guest-model vectors, a check-definition drift vector, bounded
-count and tally-bucket theorems, proof hygiene audit output, and CI drift guards
-for implementation files covered by formal vectors.
-
-The guest correspondence bounds are explicit: `treeSize <= 1,000,000`,
-presented vote count `<= 1,000,000`, and each candidate tally bucket
-`<= 1,000,000`. Rust rejects inputs beyond those bounds through the same checked
-validation-and-tally entry point used by `guest_main` and the guest-vector tests.
+The workspace builds the formal library, test-vector emitter, and formal-report
+emitter as Lake default targets. Stable reports and generated vectors live under
+`docs/formal/`; the sections below describe their trust boundaries and consumers.
 
 ## Historical Phase Documents
 
@@ -82,7 +67,7 @@ These notes preserve the implementation plan and historical context.
 For the durable current documentation entry point, see
 [`docs/formal/README.md`](../docs/formal/README.md).
 
-## Proof Policy
+## Proof and Trust Policy
 
 Committed formal claims should satisfy:
 
@@ -96,11 +81,8 @@ that the public claim stays inspectable and does not overstate what was proved.
 `pnpm formal:audit` runs the dependency check for the theorem set listed in
 `formal-report.json` and records stable dependency summaries in
 `docs/formal/formal-audit.json`.
-
-## Axiom Dependency Audit
-
-The current theorem dependency set is generated with `#print axioms` by
-`pnpm formal:audit` and recorded in
+That audit invokes `#print axioms` for the current theorem set and records the
+result in
 [`docs/formal/formal-audit.json`](../docs/formal/formal-audit.json).
 Keep that audit artifact as the source of truth instead of hand-maintaining
 per-theorem axiom tables in this README.
@@ -131,6 +113,18 @@ The model retains `rejectedReasons`, so rejection classification is inspectable
 rather than being derived only from a scalar rejected-record count. The stable
 formal report lists the current theorem claims and assumptions.
 
+The guest fold tracks a candidate-indexed tally and preserves duplicate-free,
+in-range seen indices together with `validVotes <= seenIndices.length`. Those
+invariants imply the seen-index count cannot exceed `treeSize`; the
+zero-exclusion completeness theorem is stated directly over `processVotes`.
+
+Guest correspondence uses explicit bounds: `treeSize <= 1,000,000`, presented
+vote count `<= 1,000,000`, and each candidate tally bucket `<= 1,000,000`. Rust
+rejects inputs beyond those bounds through the checked validation-and-tally path
+shared by `guest_main` and the guest-vector tests. Under those accepted-input
+bounds, Lean proves that modeled seen, valid, rejected, and per-candidate tally
+bucket counts remain within the Rust `u32` domain.
+
 ## Generated Artifacts
 
 Stable generated artifacts live under:
@@ -152,13 +146,9 @@ The stable formal artifacts live under the public `docs/formal/` area. Keep
 `docs/README.md`, the emitters, scripts, tests, and workflow filters aligned if
 that contract changes.
 
-CI-only artifacts should remain ephemeral:
-
-```text
-.tmp/formal/
-  formal-run-report.json
-  formal-run-report.sha256
-```
+Freshness checks generate comparison vectors and temporary `#print axioms`
+sources in self-cleaning directories under the operating system's temporary
+directory. They do not create stable repository artifacts.
 
 Generated artifacts must not include private proof inputs, private runtime
 witness artifacts, `input.json`, `verification.json`, `included-bitmap.json`, or
@@ -190,8 +180,8 @@ curl https://elan.lean-lang.org/elan-init.sh -sSf | sh
 source "$HOME/.elan/env"
 ```
 
-The workspace currently pins Lean `v4.29.1`, the latest stable release
-published when this workspace was introduced. Refresh that pin deliberately in a
+The workspace currently pins Lean `v4.32.2`, the latest stable release
+published when this workspace was last refreshed. Refresh that pin deliberately in a
 small change, because Lean does not promise strong backwards compatibility
 between all versions.
 

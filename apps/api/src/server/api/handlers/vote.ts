@@ -1,25 +1,18 @@
 import { choiceToNumber } from '@stark-ballot/domain/crypto/sha256Commitment';
 import { VOTE_CHOICES } from '@stark-ballot/domain/shared/constants';
-import type { ApiResponse } from '@stark-ballot/api-contract';
-import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
-import { errorResponse, jsonResponse } from '../../http/response';
+import { ApiError, ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
+import { errorResponse } from '../../http/response';
 import { BotVoter } from '@stark-ballot/application/bot/botVoter';
 import { generateVoteId } from '@stark-ballot/domain/vote/voteId';
 import type { VoteReceipt } from '@stark-ballot/domain/types/receipt';
 import { DuplicateDetectorCache } from '@stark-ballot/validation/duplicate-detector-cache';
 import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
-import type { ApiContext } from '../context';
-import { consumeVoteRateLimit, enforceVoteRateLimit } from '../middleware/rateLimit';
-import { validateSessionWithCapability } from '../middleware/session';
-import { requireTurnstileToken } from '../middleware/turnstile';
-import { parseVoteRequest } from '../middleware/validation';
-import { VoteResponseSchema } from '@stark-ballot/api-contract/validation/apiSchemas';
-import { respondWithSchema } from '../utils/responseSchema';
+import type { ApiHandlerArguments, ClientRateLimitedContext, SessionAdmittedContext } from '../context';
+import { consumeVoteRateLimit } from '../middleware/rateLimit';
+import { submitVoteRoute } from '@stark-ballot/api-contract/routes';
+import { respondWithRoute } from '../utils/responseSchema';
 import { normalizeHex } from '@stark-ballot/domain/utils/hex';
 import { logger } from '@stark-ballot/diagnostics/logger';
-import { extractTurnstileToken } from '../security/turnstile';
-import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
-import { isOperatorGatedDevelopRequest } from '../security/developOperatorGate';
 
 const DEFAULT_DUPLICATE_DETECTOR_TTL_SECONDS = 30 * 60;
 const DEFAULT_DUPLICATE_DETECTOR_CLEANUP_INTERVAL_SECONDS = 5 * 60;
@@ -36,35 +29,14 @@ const duplicateDetectors = new DuplicateDetectorCache({
 /**
  * Submit a user vote and enqueue bot voting.
  */
-export async function submitVoteHandler({ request, store, clientIp }: ApiContext): Promise<Response> {
-  const rateLimitResult = await enforceVoteRateLimit(clientIp);
-  if (rateLimitResult instanceof Response) {
-    return rateLimitResult;
-  }
-  const resolvedClientIp = rateLimitResult.clientIp;
+type SubmitVoteContext = SessionAdmittedContext & ClientRateLimitedContext;
 
-  const sessionResult = await validateSessionWithCapability(request.headers, store, { updateActivity: false });
-  if (sessionResult instanceof Response) {
-    return sessionResult;
-  }
-  const { session, sessionId } = sessionResult;
-
-  // Parse request body only after cheap request rejection checks.
-  const parsedBody = await parseVoteRequest(request);
-  if (parsedBody instanceof Response) {
-    return parsedBody;
-  }
-
-  const { commitment, vote, rand } = parsedBody.data;
-
-  if (!isOperatorGatedDevelopRequest(request)) {
-    await requireTurnstileToken({
-      payload: parsedBody.data,
-      ...omitUndefinedProperties({ explicitToken: extractTurnstileToken(parsedBody.data) }),
-      clientIp: resolvedClientIp,
-      expectedAction: 'vote',
-    });
-  }
+export async function submitVoteHandler({
+  input,
+  context,
+}: ApiHandlerArguments<typeof submitVoteRoute, SubmitVoteContext>): Promise<Response> {
+  const { session, sessionId, store, rateLimitClientIp, runtimeProfile } = context;
+  const { commitment, vote, rand } = input.body;
 
   // Validate vote choice
   if (!VOTE_CHOICES.includes(vote)) {
@@ -72,23 +44,19 @@ export async function submitVoteHandler({ request, store, clientIp }: ApiContext
   }
 
   // Check if already voted
-  if (session.userVoteIndex !== undefined) {
+  if (session.voting.userParticipation.status === 'cast') {
     return errorResponse(ErrorCode.ALREADY_VOTED);
   }
 
   // Check if session is finalized
-  if (session.finalized) {
+  if (session.finalization !== null) {
     return errorResponse(ErrorCode.SESSION_FINALIZED);
-  }
-
-  if (!session.electionId) {
-    return errorResponse(ErrorCode.INTERNAL_ERROR);
   }
 
   const normalizedRandom = normalizeHex(rand);
   const normalizedCommitment = normalizeHex(commitment);
   const choice = choiceToNumber(vote);
-  const expectedCommitment = computeCommitment(session.electionId, choice, normalizedRandom);
+  const expectedCommitment = computeCommitment(session.identity.electionId, choice, normalizedRandom);
 
   if (expectedCommitment !== normalizedCommitment) {
     return errorResponse(ErrorCode.INVALID_COMMITMENT);
@@ -109,16 +77,10 @@ export async function submitVoteHandler({ request, store, clientIp }: ApiContext
         ? 'Vote ID already exists. This may be a system error. Please try again.'
         : 'This commitment has already been submitted. Please ensure your vote is unique.';
 
-    return jsonResponse<ApiResponse>(
-      {
-        error: ErrorCode.DUPLICATE_VOTE,
-        message: duplicateTypeMessage,
-      },
-      { status: 409 },
-    );
+    return errorResponse(new ApiError(ErrorCode.DUPLICATE_VOTE, 409, duplicateTypeMessage));
   }
 
-  const consumeResult = await consumeVoteRateLimit(resolvedClientIp);
+  const consumeResult = await consumeVoteRateLimit(runtimeProfile, rateLimitClientIp);
   if (consumeResult instanceof Response) {
     return consumeResult;
   }
@@ -134,7 +96,7 @@ export async function submitVoteHandler({ request, store, clientIp }: ApiContext
   });
 
   // Update session activity
-  await store.updateSession(sessionId);
+  await store.touchSession(sessionId);
 
   // Start bot voting after user vote
   const botVoter = new BotVoter(store);
@@ -150,8 +112,18 @@ export async function submitVoteHandler({ request, store, clientIp }: ApiContext
     timestamp,
   };
 
-  return respondWithSchema(VoteResponseSchema, {
-    data: receipt,
+  return respondWithRoute(submitVoteRoute, {
+    status: 200,
+    content: 'json',
+    body: {
+      data: {
+        voteId: receipt.voteId,
+        commitment: receipt.commitment,
+        bulletinIndex: receipt.bulletinIndex,
+        bulletinRootAtCast: receipt.bulletinRootAtCast,
+        castAtMs: receipt.timestamp,
+      },
+    },
   });
 }
 

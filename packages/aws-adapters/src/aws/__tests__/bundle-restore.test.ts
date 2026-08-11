@@ -1,10 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
 import * as yazl from 'yazl';
 import type { RestoredReceipt } from '../bundle-restore';
+import type { Logger } from '@stark-ballot/diagnostics/logger';
 import { createTestPublicInputArtifact } from '@stark-ballot/test-support/testing/public-input-artifact';
 import { buildCloseStatement, buildElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
 import { buildDefaultElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
+import { targetRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+
+const targetProfile = targetRuntimeProfile();
 
 vi.mock('../s3-download', () => ({
   downloadFromS3: vi.fn(),
@@ -14,6 +18,18 @@ describe('restoreReceiptFromS3', () => {
   let restoreReceiptFromS3: (key: string) => Promise<RestoredReceipt>;
   let isTransientBundleRestoreError: (error: unknown) => boolean;
   let mockDownload: ReturnType<typeof vi.fn>;
+  let warnLog: MockInstance<Logger['warn']>;
+  let errorLog: MockInstance<Logger['error']>;
+
+  function consumeWarnCalls(...calls: Array<Parameters<Logger['warn']>>): void {
+    expect(warnLog.mock.calls).toEqual(calls);
+    warnLog.mockClear();
+  }
+
+  function consumeErrorCalls(...calls: Array<Parameters<Logger['error']>>): void {
+    expect(errorLog.mock.calls).toEqual(calls);
+    errorLog.mockClear();
+  }
 
   async function buildZipBuffer(entries: Record<string, string>): Promise<Buffer> {
     return await new Promise((resolve, reject) => {
@@ -54,12 +70,23 @@ describe('restoreReceiptFromS3', () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
+    const { configureLogger, logger } = await import('@stark-ballot/diagnostics/logger');
+    configureLogger({ level: 'warn' });
+    warnLog = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    errorLog = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
     mockDownload = vi.mocked((await import('../s3-download')).downloadFromS3);
-    ({ restoreReceiptFromS3, isTransientBundleRestoreError } = await import('../bundle-restore'));
+    const bundleRestoreModule = await import('../bundle-restore');
+    restoreReceiptFromS3 = (key) => bundleRestoreModule.restoreReceiptFromS3(targetProfile, key);
+    ({ isTransientBundleRestoreError } = bundleRestoreModule);
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    try {
+      expect(warnLog).not.toHaveBeenCalled();
+      expect(errorLog).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it('restores receipt and journal from a valid bundle.zip', async () => {
@@ -80,7 +107,6 @@ describe('restoreReceiptFromS3', () => {
     const publicInputPayload = {
       schema: 'stark-ballot.public_input',
       version: '1.1',
-      contractGeneration: '2026-04-zkvm-current-v2',
       electionId: '550e8400-e29b-41d4-a716-446655440000',
       electionConfigHash: '0x' + '1'.repeat(64),
       bulletinRoot: '0x' + '2'.repeat(64),
@@ -136,9 +162,9 @@ describe('restoreReceiptFromS3', () => {
 
     const result = await restoreReceiptFromS3('sessions/test/bundle.zip');
 
-    expect(mockDownload).toHaveBeenNthCalledWith(1, 'sessions/test/bundle.zip');
-    expect(mockDownload).toHaveBeenNthCalledWith(2, 'sessions/test/included-bitmap.json');
-    expect(mockDownload).toHaveBeenNthCalledWith(3, 'sessions/test/seen-bitmap.json');
+    expect(mockDownload).toHaveBeenNthCalledWith(1, targetProfile, 'sessions/test/bundle.zip');
+    expect(mockDownload).toHaveBeenNthCalledWith(2, targetProfile, 'sessions/test/included-bitmap.json');
+    expect(mockDownload).toHaveBeenNthCalledWith(3, targetProfile, 'sessions/test/seen-bitmap.json');
     expect(result.receipt).toEqual(receiptPayload.receipt);
     expect(result.receiptRaw).toEqual(receiptPayload);
     expect(result.journal).toEqual(journalPayload);
@@ -146,9 +172,8 @@ describe('restoreReceiptFromS3', () => {
 
     expect(result.publicInputArtifact).toEqual(
       createTestPublicInputArtifact({
-        contractGeneration: publicInputPayload.contractGeneration,
         source: 'bundle',
-        executionId: 'test',
+        finalizationId: 'test',
         bundleKey: 'sessions/test/bundle.zip',
         typedAuthority: {
           electionId: publicInputPayload.electionId,
@@ -197,6 +222,10 @@ describe('restoreReceiptFromS3', () => {
     const result = await restoreReceiptFromS3('sessions/mismatched-bitmap/bundle.zip');
 
     expect(result.includedBitmapArtifact).toBeUndefined();
+    consumeWarnCalls(
+      ['[S3 Restore] included-bitmap.json failed validation or did not match journal bitmap metadata'],
+      ['[S3 Restore] Seen bitmap artifact unavailable', { failure_kind: 'definitive' }],
+    );
   });
 
   it('gracefully handles missing journal.json', async () => {
@@ -215,10 +244,13 @@ describe('restoreReceiptFromS3', () => {
     expect(result.publicInputArtifact).toBeUndefined();
     expect(result.electionManifest).toBeUndefined();
     expect(result.closeStatement).toBeUndefined();
+    consumeWarnCalls(
+      ['[S3 Restore] Included bitmap artifact unavailable', { failure_kind: 'definitive' }],
+      ['[S3 Restore] Seen bitmap artifact unavailable', { failure_kind: 'definitive' }],
+    );
   });
 
   it('logs warning when journal.json is invalid JSON but still returns receipt', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const receiptPayload = { receipt: { nested: true } };
     const zipBuffer = await buildZipBuffer({
       'receipt.json': JSON.stringify(receiptPayload),
@@ -229,22 +261,25 @@ describe('restoreReceiptFromS3', () => {
 
     const result = await restoreReceiptFromS3('sessions/invalid-journal/bundle.zip');
 
-    expect(warnSpy).toHaveBeenCalled();
     expect(result.receipt).toEqual(receiptPayload.receipt);
     expect(result.receiptRaw).toEqual(receiptPayload);
     expect(result.journal).toBeUndefined();
     expect(result.publicInputArtifact).toBeUndefined();
     expect(result.electionManifest).toBeUndefined();
     expect(result.closeStatement).toBeUndefined();
+    consumeWarnCalls(
+      ['[S3 Restore] Failed to parse journal.json'],
+      ['[S3 Restore] Included bitmap artifact unavailable', { failure_kind: 'definitive' }],
+      ['[S3 Restore] Seen bitmap artifact unavailable', { failure_kind: 'definitive' }],
+    );
   });
 
   it('keeps raw public-input.json but leaves authority undefined when the readable payload is unsupported', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const receiptPayload = { receipt: { nested: true } };
     const unsupportedPublicInputPayload = {
       schema: 'stark-ballot.public_input',
       version: '1.1',
-      contractGeneration: '',
+      contractGeneration: 'retired-generation',
       electionId: '550e8400-e29b-41d4-a716-446655440000',
       electionConfigHash: '0x' + '1'.repeat(64),
       bulletinRoot: '0x' + '2'.repeat(64),
@@ -270,11 +305,15 @@ describe('restoreReceiptFromS3', () => {
 
     const result = await restoreReceiptFromS3('sessions/unsupported-public-input/bundle.zip');
 
-    expect(warnSpy).toHaveBeenCalled();
     expect(result.receipt).toEqual(receiptPayload.receipt);
     expect(result.receiptRaw).toEqual(receiptPayload);
     expect(result.publicInput).toEqual(unsupportedPublicInputPayload);
     expect(result.publicInputArtifact).toBeUndefined();
+    consumeWarnCalls(
+      ['[S3 Restore] public-input.json was readable but did not match the supported contract'],
+      ['[S3 Restore] Included bitmap artifact unavailable', { failure_kind: 'definitive' }],
+      ['[S3 Restore] Seen bitmap artifact unavailable', { failure_kind: 'definitive' }],
+    );
   });
 
   it('throws when receipt.json entry is missing', async () => {
@@ -286,6 +325,10 @@ describe('restoreReceiptFromS3', () => {
     await expect(restoreReceiptFromS3('sessions/missing-receipt/bundle.zip')).rejects.toThrow(
       'Receipt restoration failed: receipt.json not found in bundle',
     );
+    consumeErrorCalls([
+      '[S3 Restore] Failed to restore receipt',
+      expect.objectContaining({ failure_kind: 'terminal' }),
+    ]);
   });
 
   it.each([
@@ -295,7 +338,6 @@ describe('restoreReceiptFromS3', () => {
     ['socket timeout', { code: 'ETIMEDOUT' }],
   ])('surfaces exhausted transient S3 %s without exposing the raw error', async (_label, properties) => {
     const privateDetail = 's3://private-bucket/sessions/private-session/bundle.zip';
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     mockDownload.mockRejectedValueOnce(Object.assign(new Error(privateDetail), properties));
 
     const restorePromise = restoreReceiptFromS3('sessions/error/bundle.zip');
@@ -307,12 +349,15 @@ describe('restoreReceiptFromS3', () => {
     await restorePromise.catch((error: unknown) => {
       expect(isTransientBundleRestoreError(error)).toBe(true);
     });
-    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateDetail);
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain(privateDetail);
+    consumeErrorCalls([
+      '[S3 Restore] Failed to restore receipt',
+      expect.objectContaining({ failure_kind: 'transient_s3' }),
+    ]);
   });
 
   it('keeps a definitive missing bundle on the terminal restore-failure path', async () => {
     const privateDetail = 's3://private-bucket/sessions/private-session/bundle.zip';
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     mockDownload.mockRejectedValueOnce(
       Object.assign(new Error(privateDetail), {
         name: 'NoSuchKey',
@@ -329,12 +374,15 @@ describe('restoreReceiptFromS3', () => {
     await restorePromise.catch((error: unknown) => {
       expect(isTransientBundleRestoreError(error)).toBe(false);
     });
-    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateDetail);
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain(privateDetail);
+    consumeErrorCalls([
+      '[S3 Restore] Failed to restore receipt',
+      expect.objectContaining({ failure_kind: 'terminal' }),
+    ]);
   });
 
   it('keeps an invalid zip on the terminal restore-failure path without logging its bytes', async () => {
     const privateDetail = 'private-invalid-zip-content';
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     mockDownload.mockResolvedValueOnce(Buffer.from(privateDetail, 'utf8'));
 
     await expect(restoreReceiptFromS3('sessions/invalid-zip/bundle.zip')).rejects.toMatchObject({
@@ -342,12 +390,15 @@ describe('restoreReceiptFromS3', () => {
       message: 'Receipt restoration failed',
     });
 
-    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateDetail);
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain(privateDetail);
+    consumeErrorCalls([
+      '[S3 Restore] Failed to restore receipt',
+      expect.objectContaining({ failure_kind: 'terminal' }),
+    ]);
   });
 
   it('keeps invalid receipt JSON on the terminal restore-failure path without logging its contents', async () => {
     const privateDetail = 'private-invalid-receipt-content';
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const zipBuffer = await buildZipBuffer({
       'receipt.json': `{"private":"${privateDetail}"`,
     });
@@ -358,13 +409,15 @@ describe('restoreReceiptFromS3', () => {
       message: 'Receipt restoration failed',
     });
 
-    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateDetail);
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain(privateDetail);
+    consumeErrorCalls([
+      '[S3 Restore] Failed to restore receipt',
+      expect.objectContaining({ failure_kind: 'terminal' }),
+    ]);
   });
 
   it('surfaces exhausted transient S3 failures while reading a sibling artifact', async () => {
     const privateDetail = 's3://private-bucket/sessions/private-session/included-bitmap.json';
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const zipBuffer = await buildZipBuffer({
       'receipt.json': JSON.stringify({ receipt: { seal: 'base64seal' } }),
     });
@@ -381,7 +434,11 @@ describe('restoreReceiptFromS3', () => {
     });
 
     expect(mockDownload).toHaveBeenCalledTimes(2);
-    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateDetail);
-    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(privateDetail);
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain(privateDetail);
+    expect(JSON.stringify(warnLog.mock.calls)).not.toContain(privateDetail);
+    consumeErrorCalls([
+      '[S3 Restore] Failed to restore receipt',
+      expect.objectContaining({ failure_kind: 'transient_s3' }),
+    ]);
   });
 });

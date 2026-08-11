@@ -2,34 +2,70 @@
 
 ## Overview
 
-The Mock zkVM (`packages/node-adapters/src/zkvm/mock-executor.ts`) is a JavaScript implementation of the tally-side zkVM execution logic for development and testing. It verifies and tallies the supplied zkVM input, but it does not generate an actual STARK proof.
+The mock zkVM (`packages/node-adapters/src/zkvm/mock-executor.ts`) is a
+JavaScript implementation of the tally-side input checks and aggregation used
+for fast development and testing. It verifies and tallies the supplied input,
+but it does not execute the RISC Zero guest or generate a STARK proof.
 
-## Operating Modes
+## Runtime Profiles
 
-### 1. Normal Mode (Default)
+The application does not select the executor from independent environment
+flags. `packages/runtime-config/src/env/runtimeProfile.ts` resolves one
+immutable server profile before adapter construction, and
+`packages/node-adapters/src/zkvm/executor-factory.ts` receives its
+`proof` choice.
 
-**When**: Development and manual testing
+Two profiles select the mock executor:
 
-**Behavior**: Verifies the supplied vote records and generates a tally based on that input
+| Profile           | Session store | Browser API | Intended path                    |
+| ----------------- | ------------- | ----------- | -------------------------------- |
+| `local-demo`      | memory        | mock        | `pnpm dev`                       |
+| `static-mock-e2e` | file          | same-origin | CLI and Playwright mock evidence |
 
 ```bash
-# Development server
-USE_MOCK_ZKVM=true pnpm dev
+# Browser-only development flow
+pnpm dev
 
-# Manual testing
-USE_MOCK_ZKVM=true ALLOW_INSECURE_ZKVM=true pnpm start
+# Browserless session-to-verification smoke
+pnpm test:cli:mock
+
+# Production-built static frontend plus local Hono mock server
+pnpm test:e2e:mock --grep @smoke --reporter=list
 ```
 
-**Characteristics**:
+`scripts/start-test-server.sh` explicitly selects `static-mock-e2e` for its
+owned local server. A manual `pnpm start` instead reads `RUNTIME_PROFILE` from
+`.env.local`; the checked-in template selects `local-demo`.
+
+The adjacent real-host profiles are deliberately distinct:
+
+| Profile                   | Executor         | Evidence meaning                                 |
+| ------------------------- | ---------------- | ------------------------------------------------ |
+| `local-proof-development` | RISC Zero host   | fake development receipt; not a production proof |
+| `local-proof-production`  | RISC Zero host   | genuine production STARK receipt                 |
+| `target-aws-async`        | RISC Zero on ECS | production STARK evidence                        |
+
+The develop-only `target-aws-async-quiesced` server profile has the same
+production proof path as `target-aws-async`, but rejects new public sessions.
+It is an operational admission posture, not another proof mode.
+
+## Mock Behavior
+
+The mock executor:
 
 - Votes are verified according to actual commitment and basic vote-shape rules
 - Commitment checks and included/seen bitmap roots use the same canonical helpers as the production contract
-- Merkle inclusion proof verification is intentionally omitted in mock mode; use real zkVM dev/prod mode for proof-equivalent inclusion checks
+- Merkle inclusion proof verification is intentionally omitted in mock mode; use a real-host profile for proof-equivalent inclusion checks
 - Tally reflects the actual vote distribution
 - Bot votes are generated before finalization by the bot-voting service; the mock zkVM only verifies and tallies the input it receives
-- `pnpm start` does not set production mode by itself; mock E2E uses `scripts/start-test-server.sh`, which sets `NODE_ENV=production` and `ALLOW_INSECURE_ZKVM=true` for the test-only local server
+- The returned JavaScript receipt is an API-shaped test object, not
+  cryptographic proof evidence
 
-### 2. E2E Testing Approach
+Mock execution therefore proves application flow and current TypeScript
+behavior only. It does not prove guest execution, receipt soundness, ImageID
+correctness for a built guest, or production verifier acceptance.
+
+## E2E Testing Approach
 
 Bot votes use a random production-like distribution, so E2E tests avoid fixed per-choice expectations. The result page checks UI tally consistency:
 
@@ -40,52 +76,61 @@ expect(tallySum).toBe(totalVotes);
 
 Verification E2E checks then assert scenario-specific summary, check, and step statuses from the verify page.
 
-## Environment Variables
+## Configuration
 
-| Variable                                          | Values                      | Purpose                                                                                                  |
-| ------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `USE_MOCK_ZKVM`                                   | `true` / `false`            | Select mock or real zkVM executor                                                                        |
-| `NODE_ENV`                                        | `test`                      | Also selects the mock executor for Vitest and test-only paths                                            |
-| `RISC0_DEV_MODE`                                  | `1`                         | RISC Zero/host dev-mode flag; real-host dev receipts are fake, insecure, non-production evidence         |
-| `FORCE_DEV_MODE`                                  | `true`                      | App/CLI/test classification and target-runtime guard signal; not passed to the zkVM host by the executor |
-| `ALLOW_INSECURE_ZKVM`                             | `true`                      | Permit mock/dev zkVM when `NODE_ENV=production` for CI or local testing                                  |
-| `EXPECTED_IMAGE_ID` / `EXPECTED_IMAGE_ID_VARIANT` | explicit ImageID / `x86_64` | Resolve the mock receipt ImageID used by verification flows                                              |
+| Input                                             | Purpose                                                               |
+| ------------------------------------------------- | --------------------------------------------------------------------- |
+| `RUNTIME_PROFILE`                                 | Required server-side semantic profile selector                        |
+| `VITE_RUNTIME_PROFILE`                            | Matching browser projection selected at build/dev startup             |
+| `EXPECTED_IMAGE_ID` / `EXPECTED_IMAGE_ID_VARIANT` | Explicit ImageID or mapping variant used for mock receipt comparisons |
+
+Unknown profiles and replaced selector flags fail closed during runtime-profile
+resolution. The selected profile owns storage, proof evidence, finalization,
+artifacts, rate limiting, runtime adapters, and Turnstile posture together.
+`NODE_ENV` is not an executor selector.
+
+For real local runs, build the binaries that match the intended evidence:
+
+```bash
+# Fake development receipt
+pnpm build:zkvm:dev-mode
+pnpm build:verifier-service:dev-mode
+pnpm test:cli:real-dev
+
+# Production STARK receipt
+pnpm build:zkvm
+pnpm build:verifier-service
+pnpm test:cli:real-prod:s0
+```
+
+The node adapter derives the external RISC Zero host invocation environment
+from the resolved proof profile immediately before spawning the child process.
+That adapter-private translation is not an application runtime selector.
 
 ## Implementation Details
 
-### Console Output
+The executor factory logs the selected mock implementation:
 
 ```text
 [zkVM] Using mock executor for fast testing
 ```
 
-## Usage Examples
-
-### Development
+Unit tests use the normal repository command:
 
 ```bash
-# Start dev server with Mock zkVM
-USE_MOCK_ZKVM=true pnpm dev
-```
-
-### Unit Testing
-
-```bash
-# Vitest tests
-pnpm test
+pnpm test:run
 ```
 
 ## Comparison with Real zkVM
 
-| Feature                    | Mock zkVM                                | Real zkVM             |
-| -------------------------- | ---------------------------------------- | --------------------- |
-| Execution Time             | ~100ms                                   | ~6 minutes (64 votes) |
-| STARK Proofs               | No                                       | Yes                   |
-| Commitment Checks          | Same                                     | Same                  |
-| Included/Seen Bitmap Roots | Same canonical TypeScript implementation | Rust contract-core    |
-| Merkle Inclusion Proofs    | Omitted                                  | Verified              |
-| Receipt Format             | JavaScript object                        | RISC Zero Receipt     |
-| Use Case                   | Development/Testing                      | Production/Audit      |
+| Feature                    | Mock profiles                       | Real development profile | Real production profiles  |
+| -------------------------- | ----------------------------------- | ------------------------ | ------------------------- |
+| Executor                   | JavaScript                          | RISC Zero host           | RISC Zero host            |
+| Receipt evidence           | Mock object; no proof               | Fake development receipt | Production STARK receipt  |
+| Commitment checks          | Canonical TypeScript implementation | Rust contract-core       | Rust contract-core        |
+| Included/seen bitmap roots | Canonical TypeScript implementation | Rust contract-core       | Rust contract-core        |
+| Merkle inclusion proofs    | Omitted                             | Verified in the guest    | Verified in the guest     |
+| Intended claim             | Application-flow behavior           | Cross-implementation run | Production-proof evidence |
 
 ## Related Documentation
 

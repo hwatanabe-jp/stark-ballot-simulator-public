@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { PLAYWRIGHT_RUNTIME_PROFILE } from './tests/e2e/runtime-profile';
 
 if (process.env['FORCE_COLOR'] && process.env['NO_COLOR']) {
   delete process.env['NO_COLOR'];
@@ -86,26 +87,19 @@ export default defineConfig({
 
   /* Run production build for tests - more stable than dev server */
   webServer: {
-    // Dynamic command based on zkVM mode
+    // Dynamic command based on the single resolved runtime profile.
     command: (() => {
-      const useMockZkVM = process.env['USE_REAL_ZKVM'] !== 'true' && process.env['USE_MOCK_ZKVM'] !== 'false';
-
-      if (useMockZkVM) {
+      if (PLAYWRIGHT_RUNTIME_PROFILE.proof.executor === 'mock') {
         // Use test server script for Mock zkVM
         // Script exports env vars before the static Hono/Vite test server starts, overriding .env.local
         return 'bash ./scripts/start-test-server.sh';
-      } else {
-        // Real zkVM mode: pass env vars directly in command
-        const devMode = process.env['RISC0_DEV_MODE'] === '1';
-        const envVars = ['USE_MOCK_ZKVM=false', 'USE_MOCK_STORE=false'];
-
-        if (devMode) {
-          envVars.push('RISC0_DEV_MODE=1');
-        }
-
-        const envString = envVars.join(' ');
-        return `${envString} pnpm build && pnpm start`;
       }
+
+      const profileEnv = [
+        `RUNTIME_PROFILE=${PLAYWRIGHT_RUNTIME_PROFILE.name}`,
+        `VITE_RUNTIME_PROFILE=${PLAYWRIGHT_RUNTIME_PROFILE.name}`,
+      ].join(' ');
+      return `${profileEnv} pnpm build && ${profileEnv} pnpm start`;
     })(),
     url: 'http://localhost:3000',
     reuseExistingServer: !process.env['CI'],
@@ -116,12 +110,9 @@ export default defineConfig({
 
   /* Test timeout based on zkVM mode */
   timeout: (() => {
-    const isRealZkVM = process.env['USE_REAL_ZKVM'] === 'true' || process.env['USE_MOCK_ZKVM'] === 'false';
-    const isProductionMode = isRealZkVM && process.env['RISC0_DEV_MODE'] !== '1';
-
-    if (isProductionMode) {
-      return 420 * 1000; // 420 seconds (7 minutes) for production STARK proofs - Phase 8: ~366s for 64 votes
-    } else if (isRealZkVM) {
+    if (PLAYWRIGHT_RUNTIME_PROFILE.proof.evidence === 'production') {
+      return 420 * 1000; // 420 seconds (7 minutes) for production STARK proofs; observed ~366s for 64 votes
+    } else if (PLAYWRIGHT_RUNTIME_PROFILE.proof.evidence === 'development') {
       return 120 * 1000; // 120 seconds for dev mode
     } else {
       return 90 * 1000; // 90 seconds for mock mode

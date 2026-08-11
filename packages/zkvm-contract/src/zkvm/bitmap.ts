@@ -5,10 +5,26 @@
  * LSB-first encoding with 32-byte chunks and CT-style Merkle tree
  */
 
-import { createHash } from 'crypto';
+import {
+  BITMAP_CHUNK_BITS,
+  BITMAP_CHUNK_BYTES,
+  buildBitmapMerkleTreeByteLevels,
+  calculateBitmapBitOffset as calculateBitmapBitOffsetCore,
+  calculateBitmapLeafIndex as calculateBitmapLeafIndexCore,
+  computeBitmapMerkleRootBytes,
+  computeIncludedBitmapRootHex,
+  extractBitFromBitmapChunkBytes,
+  extractBitFromBitmapChunkHex,
+  getBitmapLeafChunkBytes,
+  getBitmapLeafChunkHex as getBitmapLeafChunkHexCore,
+  hashBitmapInternalNode,
+  hashBitmapLeafChunk,
+  isBitmapChunkHex as isBitmapChunkHexCore,
+  packBitmapBitsToBytes,
+  splitBitmapBytesIntoChunks,
+} from './bitmap-core';
 
-export const BITMAP_CHUNK_BYTES = 32;
-export const BITMAP_CHUNK_BITS = BITMAP_CHUNK_BYTES * 8;
+export { BITMAP_CHUNK_BITS, BITMAP_CHUNK_BYTES };
 
 /**
  * Pack boolean array into bytes using LSB-first encoding
@@ -16,22 +32,7 @@ export const BITMAP_CHUNK_BITS = BITMAP_CHUNK_BYTES * 8;
  * @returns Buffer with packed bytes
  */
 export function packBitsToBytes(bits: boolean[]): Buffer {
-  const numBytes = Math.ceil(bits.length / 8);
-  const bytes = Buffer.alloc(numBytes, 0);
-
-  for (let i = 0; i < bits.length; i++) {
-    if (bits[i]) {
-      const byteIndex = Math.floor(i / 8);
-      const bitIndex = i % 8;
-      const currentByte = bytes[byteIndex];
-      if (currentByte === undefined) {
-        throw new Error('Bitmap byte index out of range');
-      }
-      bytes[byteIndex] = currentByte | (1 << bitIndex); // LSB-first: bit 0 is LSB
-    }
-  }
-
-  return bytes;
+  return Buffer.from(packBitmapBitsToBytes(bits));
 }
 
 /**
@@ -40,22 +41,7 @@ export function packBitsToBytes(bits: boolean[]): Buffer {
  * @returns Array of 32-byte buffers
  */
 export function splitIntoChunks(bytes: Buffer): Buffer[] {
-  const chunks: Buffer[] = [];
-  const chunkSize = BITMAP_CHUNK_BYTES;
-
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const end = Math.min(i + chunkSize, bytes.length);
-    const chunk = Buffer.alloc(chunkSize, 0); // Zero-pad if needed
-    bytes.copy(chunk, 0, i, end);
-    chunks.push(chunk);
-  }
-
-  // If no data, return single zero chunk
-  if (chunks.length === 0) {
-    chunks.push(Buffer.alloc(chunkSize, 0));
-  }
-
-  return chunks;
+  return splitBitmapBytesIntoChunks(bytes).map((chunk) => Buffer.from(chunk));
 }
 
 /**
@@ -63,11 +49,7 @@ export function splitIntoChunks(bytes: Buffer): Buffer[] {
  * SHA256(0x00 || "stark-ballot:leaf|v1" || chunk)
  */
 export function hashLeafChunk(chunk: Buffer): Buffer {
-  const hash = createHash('sha256');
-  hash.update(Buffer.from([0x00])); // Domain separator for leaf
-  hash.update(Buffer.from('stark-ballot:leaf|v1')); // Usage tag
-  hash.update(chunk);
-  return hash.digest();
+  return Buffer.from(hashBitmapLeafChunk(chunk));
 }
 
 /**
@@ -75,11 +57,7 @@ export function hashLeafChunk(chunk: Buffer): Buffer {
  * SHA256(0x01 || left || right)
  */
 export function hashInternalNode(left: Buffer, right: Buffer): Buffer {
-  const hash = createHash('sha256');
-  hash.update(Buffer.from([0x01])); // Domain separator for internal node
-  hash.update(left);
-  hash.update(right);
-  return hash.digest();
+  return Buffer.from(hashBitmapInternalNode(left, right));
 }
 
 /**
@@ -88,50 +66,14 @@ export function hashInternalNode(left: Buffer, right: Buffer): Buffer {
  * @returns Root hash
  */
 export function computeMerkleRoot(leaves: Buffer[]): Buffer {
-  if (leaves.length === 0) {
-    return Buffer.alloc(32, 0);
-  }
-
   if (leaves.length === 1) {
     const leaf = leaves[0];
-    if (!leaf) {
+    if (leaf === undefined) {
       throw new Error('Merkle tree leaf is missing');
     }
     return leaf;
   }
-
-  // Build tree level by level
-  let currentLevel = [...leaves];
-
-  while (currentLevel.length > 1) {
-    const nextLevel: Buffer[] = [];
-
-    for (let i = 0; i < currentLevel.length; i += 2) {
-      const left = currentLevel[i];
-      if (!left) {
-        throw new Error('Merkle tree node is missing');
-      }
-      if (i + 1 < currentLevel.length) {
-        const right = currentLevel[i + 1];
-        if (!right) {
-          throw new Error('Merkle tree right node is missing');
-        }
-        // Hash pair
-        nextLevel.push(hashInternalNode(left, right));
-      } else {
-        // Odd node - promote to next level
-        nextLevel.push(left);
-      }
-    }
-
-    currentLevel = nextLevel;
-  }
-
-  const root = currentLevel[0];
-  if (!root) {
-    throw new Error('Merkle tree root is missing');
-  }
-  return root;
+  return Buffer.from(computeBitmapMerkleRootBytes(leaves));
 }
 
 /**
@@ -142,110 +84,41 @@ export function computeMerkleRoot(leaves: Buffer[]): Buffer {
  * @returns Hex string of the Merkle root
  */
 export function computeIncludedBitmapRoot(bitmap: boolean[]): string {
-  // Step 1: Pack bits to bytes (LSB-first)
-  const bytes = packBitsToBytes(bitmap);
-
-  // Step 2: Split into 32-byte chunks
-  const chunks = splitIntoChunks(bytes);
-
-  // Step 3: Hash each chunk as a leaf
-  const leaves = chunks.map((chunk) => hashLeafChunk(chunk));
-
-  // Step 4: Build Merkle tree and get root
-  const root = computeMerkleRoot(leaves);
-
-  return '0x' + root.toString('hex');
+  return computeIncludedBitmapRootHex(bitmap);
 }
 
 export function calculateBitmapLeafIndex(bitIndex: number): number {
-  return Math.floor(bitIndex / BITMAP_CHUNK_BITS);
+  return calculateBitmapLeafIndexCore(bitIndex);
 }
 
 export function calculateBitmapBitOffset(bitIndex: number): number {
-  return bitIndex % BITMAP_CHUNK_BITS;
+  return calculateBitmapBitOffsetCore(bitIndex);
 }
 
 export function getBitmapLeafChunkBuffer(bitmap: boolean[], leafIndex: number): Buffer {
-  const startBit = leafIndex * BITMAP_CHUNK_BITS;
-  const endBit = Math.min(startBit + BITMAP_CHUNK_BITS, bitmap.length);
-
-  const leafBits: boolean[] = [];
-  for (let index = startBit; index < endBit; index++) {
-    leafBits.push(bitmap[index] || false);
-  }
-
-  while (leafBits.length < BITMAP_CHUNK_BITS) {
-    leafBits.push(false);
-  }
-
-  const bytes = packBitsToBytes(leafBits);
-  const chunk = Buffer.alloc(BITMAP_CHUNK_BYTES, 0);
-  bytes.copy(chunk, 0, 0, Math.min(bytes.length, BITMAP_CHUNK_BYTES));
-  return chunk;
+  return Buffer.from(getBitmapLeafChunkBytes(bitmap, leafIndex));
 }
 
 export function getBitmapLeafChunkHex(bitmap: boolean[], leafIndex: number): string {
-  return getBitmapLeafChunkBuffer(bitmap, leafIndex).toString('hex');
+  return getBitmapLeafChunkHexCore(bitmap, leafIndex);
 }
 
 export function isBitmapChunkHex(chunkHex: string): boolean {
-  return /^[0-9a-fA-F]{64}$/.test(chunkHex);
+  return isBitmapChunkHexCore(chunkHex);
 }
 
 export function extractBitFromChunkBuffer(chunk: Buffer, bitOffset: number): boolean {
-  if (bitOffset < 0 || bitOffset >= BITMAP_CHUNK_BITS) {
-    throw new Error('Bit offset out of range: must be 0-255');
-  }
-
-  const byteIndex = Math.floor(bitOffset / 8);
-  const bitInByte = bitOffset % 8;
-  const byte = chunk[byteIndex];
-  if (byte === undefined) {
-    throw new Error('Bit offset out of range: byte is missing');
-  }
-  return (byte & (1 << bitInByte)) !== 0;
+  return extractBitFromBitmapChunkBytes(chunk, bitOffset);
 }
 
 export function extractBitFromChunkHex(chunkHex: string, bitOffset: number): boolean {
-  if (!isBitmapChunkHex(chunkHex)) {
-    throw new Error('Invalid chunk format: must be 64 hex characters');
-  }
-
-  return extractBitFromChunkBuffer(Buffer.from(chunkHex, 'hex'), bitOffset);
+  return extractBitFromBitmapChunkHex(chunkHex, bitOffset);
 }
 
 export function buildMerkleTreeLevels(leaves: Buffer[]): Buffer[][] {
-  if (leaves.length === 0) {
-    return [[Buffer.alloc(BITMAP_CHUNK_BYTES, 0)]];
-  }
-
-  const levels: Buffer[][] = [[...leaves]];
-  let currentLevel = [...leaves];
-
-  while (currentLevel.length > 1) {
-    const nextLevel: Buffer[] = [];
-
-    for (let index = 0; index < currentLevel.length; index += 2) {
-      const left = currentLevel[index];
-      if (!left) {
-        throw new Error('Merkle tree node is missing');
-      }
-      if (index + 1 < currentLevel.length) {
-        const right = currentLevel[index + 1];
-        if (!right) {
-          throw new Error('Merkle tree right node is missing');
-        }
-        nextLevel.push(hashInternalNode(left, right));
-      } else {
-        nextLevel.push(left);
-      }
-    }
-
-    levels.push(nextLevel);
-    currentLevel = nextLevel;
-  }
-
-  return levels;
+  return buildBitmapMerkleTreeByteLevels(leaves).map((level) =>
+    level.map((node) => (Buffer.isBuffer(node) ? node : Buffer.from(node))),
+  );
 }
 
 /**

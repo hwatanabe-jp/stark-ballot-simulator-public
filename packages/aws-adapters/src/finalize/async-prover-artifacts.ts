@@ -13,10 +13,11 @@ import {
   type FinalizationBitmapData,
   type ProverFailureCategory,
 } from '@stark-ballot/application/finalize/finalization-types';
-import type { AwsPersistedFinalizationResult } from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
-import { getRecordProperty, getStringProperty, isRecord } from '@stark-ballot/domain/utils/guards';
+import type { FinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-types';
+import { getRecordProperty, getStringProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
 import { buildFinalizationArtifactS3Keys } from '@stark-ballot/aws-adapters/finalize/artifact-key-layout';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 export interface AsyncProverArtifactKeys {
   inputS3Key: string;
@@ -29,24 +30,29 @@ export const MAX_PROVER_FAILURE_MARKER_BYTES = 256;
 const PROVER_FAILURE_CATEGORIES = new Set<string>(PROVER_FAILURE_CATEGORY_VALUES);
 
 export interface PersistAsyncProverInputOptions {
+  profile: ResolvedRuntimeProfile;
   sessionId: string;
-  executionId: string;
-  contractGeneration: string;
+  finalizationId: string;
   zkvmInput: ZkVMInput;
   electionConfig: ElectionConfig;
 }
 
 export interface ValidateAsyncProverArtifactKeysOptions {
+  profile: ResolvedRuntimeProfile;
   sessionId: string;
-  executionId: string;
+  finalizationId: string;
   inputS3Key: string;
   outputS3Prefix: string;
   bundleS3Key: string;
 }
 
-export function buildAsyncProverArtifactKeys(sessionId: string, executionId: string): AsyncProverArtifactKeys {
-  const { prefix } = getS3Config();
-  const keys = buildFinalizationArtifactS3Keys(sessionId, executionId, prefix);
+export function buildAsyncProverArtifactKeys(
+  profile: ResolvedRuntimeProfile,
+  sessionId: string,
+  finalizationId: string,
+): AsyncProverArtifactKeys {
+  const { prefix } = getS3Config(profile);
+  const keys = buildFinalizationArtifactS3Keys(sessionId, finalizationId, prefix);
   return {
     inputS3Key: keys.inputS3Key,
     outputS3Prefix: keys.outputS3Prefix,
@@ -54,8 +60,12 @@ export function buildAsyncProverArtifactKeys(sessionId: string, executionId: str
   };
 }
 
-export function buildAsyncProverFailureMarkerKey(sessionId: string, executionId: string): string {
-  const { outputS3Prefix } = buildAsyncProverArtifactKeys(sessionId, executionId);
+export function buildAsyncProverFailureMarkerKey(
+  profile: ResolvedRuntimeProfile,
+  sessionId: string,
+  finalizationId: string,
+): string {
+  const { outputS3Prefix } = buildAsyncProverArtifactKeys(profile, sessionId, finalizationId);
   return `${outputS3Prefix}/${PROVER_FAILURE_MARKER_FILENAME}`;
 }
 
@@ -93,16 +103,17 @@ function isMissingS3Object(error: unknown): boolean {
 }
 
 export async function readAsyncProverFailureCategory(
+  profile: ResolvedRuntimeProfile,
   sessionId: string,
-  executionId: string,
+  finalizationId: string,
 ): Promise<ProverFailureCategory | undefined> {
   try {
-    const markerKey = buildAsyncProverFailureMarkerKey(sessionId, executionId);
-    const { contentLength } = await headS3Object(markerKey);
+    const markerKey = buildAsyncProverFailureMarkerKey(profile, sessionId, finalizationId);
+    const { contentLength } = await headS3Object(profile, markerKey);
     if (contentLength <= 0 || contentLength > MAX_PROVER_FAILURE_MARKER_BYTES) {
       return undefined;
     }
-    const { body } = await downloadRangeFromS3(markerKey, { start: 0, end: contentLength - 1 });
+    const { body } = await downloadRangeFromS3(profile, markerKey, { start: 0, end: contentLength - 1 });
     return parseProverFailureMarker(body);
   } catch (error) {
     if (isMissingS3Object(error)) {
@@ -115,21 +126,26 @@ export async function readAsyncProverFailureCategory(
 export function validateAsyncProverArtifactKeys(
   options: ValidateAsyncProverArtifactKeysOptions,
 ): AsyncProverArtifactKeys {
-  const expected = buildAsyncProverArtifactKeys(options.sessionId, options.executionId);
+  const expected = buildAsyncProverArtifactKeys(options.profile, options.sessionId, options.finalizationId);
   if (
     options.inputS3Key !== expected.inputS3Key ||
     options.outputS3Prefix !== expected.outputS3Prefix ||
     options.bundleS3Key !== expected.bundleS3Key
   ) {
-    throw new Error('Async prover artifact keys must match the canonical session/execution S3 layout');
+    throw new Error('Async prover artifact keys must match the canonical session/finalization S3 layout');
   }
   return expected;
 }
 
-export function validateAsyncProverBundleKey(sessionId: string, executionId: string, bundleS3Key: string): string {
-  const expected = buildAsyncProverArtifactKeys(sessionId, executionId).bundleS3Key;
+export function validateAsyncProverBundleKey(
+  profile: ResolvedRuntimeProfile,
+  sessionId: string,
+  finalizationId: string,
+  bundleS3Key: string,
+): string {
+  const expected = buildAsyncProverArtifactKeys(profile, sessionId, finalizationId).bundleS3Key;
   if (bundleS3Key !== expected) {
-    throw new Error('Async prover bundle key must match the canonical session/execution S3 layout');
+    throw new Error('Async prover bundle key must match the canonical session/finalization S3 layout');
   }
   return expected;
 }
@@ -138,8 +154,6 @@ function buildAsyncProverInputPayload(options: PersistAsyncProverInputOptions): 
   const serializedInput = serializeZkvmAggregatorInput(options.zkvmInput);
   return {
     ...serializedInput,
-    contract_generation: options.contractGeneration,
-    contractGeneration: options.contractGeneration,
     election_config: options.electionConfig,
     electionConfig: options.electionConfig,
   };
@@ -148,9 +162,9 @@ function buildAsyncProverInputPayload(options: PersistAsyncProverInputOptions): 
 export async function persistAsyncProverInputToS3(
   options: PersistAsyncProverInputOptions,
 ): Promise<AsyncProverArtifactKeys> {
-  const { bucket, expectedBucketOwner } = getS3Config();
-  const keys = buildAsyncProverArtifactKeys(options.sessionId, options.executionId);
-  const client = getS3Client();
+  const { bucket, expectedBucketOwner } = getS3Config(options.profile);
+  const keys = buildAsyncProverArtifactKeys(options.profile, options.sessionId, options.finalizationId);
+  const client = getS3Client(options.profile);
 
   await client.send(
     new PutObjectCommand({
@@ -161,8 +175,7 @@ export async function persistAsyncProverInputToS3(
       ExpectedBucketOwner: expectedBucketOwner,
       Metadata: {
         sessionId: options.sessionId,
-        executionId: options.executionId,
-        contractGeneration: options.contractGeneration,
+        finalizationId: options.finalizationId,
       },
     }),
   );
@@ -207,7 +220,7 @@ function resolveImageId(restoredReceipt: unknown, restoredRaw: unknown, journal:
 
 function buildBitmapData(
   restored: Awaited<ReturnType<typeof restoreReceiptFromS3>>,
-  finalizedAt: number,
+  finalizedAtMs: number,
 ): FinalizationBitmapData | undefined {
   const included = restored.includedBitmapArtifact;
   if (!included) {
@@ -224,22 +237,34 @@ function buildBitmapData(
         }
       : {}),
     treeSize: included.treeSize,
-    finalizedAt,
+    finalizedAtMs,
   };
 }
 
 export async function buildFinalizationResultFromS3Bundle(options: {
+  profile: ResolvedRuntimeProfile;
   bundleS3Key: string;
-  verificationExecutionId?: string;
-  s3UploadedAt?: string;
-  finalizedAt?: number;
-}): Promise<AwsPersistedFinalizationResult> {
-  const restored = await restoreReceiptFromS3(options.bundleS3Key);
+  finalizationId: string;
+  finalizedAtMs?: number;
+}): Promise<FinalizationResultAuthority> {
+  const restored = await restoreReceiptFromS3(options.profile, options.bundleS3Key);
   if (!isSupportedZkVMJournal(restored.journal)) {
     throw new Error('Restored bundle journal is missing or unsupported');
   }
+  if (
+    restored.publicInputArtifact?.provenance.finalizationId !== undefined &&
+    restored.publicInputArtifact.provenance.finalizationId !== options.finalizationId
+  ) {
+    throw new Error('Restored bundle finalization identity does not match the requested finalization');
+  }
+  if (
+    restored.publicInputArtifact?.provenance.bundleKey !== undefined &&
+    restored.publicInputArtifact.provenance.bundleKey !== options.bundleS3Key
+  ) {
+    throw new Error('Restored bundle provenance does not match the requested S3 object');
+  }
 
-  const finalizedAt = options.finalizedAt ?? Date.now();
+  const finalizedAtMs = options.finalizedAtMs ?? Date.now();
   const baseResult = buildFinalizationResultFromJournal({
     journal: restored.journal,
     imageId: resolveImageId(restored.receipt, restored.receiptRaw, restored.journal),
@@ -253,13 +278,10 @@ export async function buildFinalizationResultFromS3Bundle(options: {
     ...baseResult,
     ...(isReceiptWithImageId(restored.receipt) ? { receipt: restored.receipt } : {}),
     ...omitUndefinedProperties({ publicInputArtifact: restored.publicInputArtifact }),
-    s3BundleKey: options.bundleS3Key,
-    ...(options.verificationExecutionId ? { verificationExecutionId: options.verificationExecutionId } : {}),
-    ...(options.s3UploadedAt ? { s3UploadedAt: options.s3UploadedAt } : {}),
     ...omitUndefinedProperties({ electionManifest: restored.electionManifest }),
     ...omitUndefinedProperties({
       closeStatement: restored.closeStatement,
-      bitmapData: buildBitmapData(restored, finalizedAt),
+      bitmapData: buildBitmapData(restored, finalizedAtMs),
       bitmapProofSource: restored.includedBitmapArtifact ? 'real' : baseResult.bitmapProofSource,
     }),
   });

@@ -1,10 +1,8 @@
-import { getRecordProperty, isRecord } from '@stark-ballot/verification/shared/guards';
+import { getRecordProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
 import { toCanonicalRfc6962Proof } from '@stark-ballot/merkle/rfc6962-proof';
 import { isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import type { KnowledgeData, InclusionProof } from './types';
 import { KNOWLEDGE_KEYS } from './types';
-
-const BOT_VOTE_CHOICES = new Set(['A', 'B', 'C', 'D', 'E']);
 
 /**
  * Field name mappings from API payloads to knowledge keys.
@@ -17,7 +15,7 @@ const FIELD_MAPPINGS: Record<string, keyof KnowledgeData> = {
   voteId: 'user.voteId',
   bulletinIndex: 'user.bulletinIndex',
   bulletinRootAtCast: 'user.bulletinRootAtCast',
-  timestamp: 'user.voteTimestamp',
+  castAtMs: 'user.castAtMs',
 };
 
 /**
@@ -78,6 +76,28 @@ function normalizeTallyCounts(value: unknown): KnowledgeData['tally.counts'] | u
   }
 
   return counts;
+}
+
+function normalizeVerificationReportSummary(
+  value: Record<string, unknown>,
+): KnowledgeData['verification.reportSummary'] | undefined {
+  const status = value['status'];
+  const durationMs = value['duration_ms'];
+  const errors = value['errors'];
+  if (
+    typeof status !== 'string' ||
+    status.length === 0 ||
+    (durationMs !== undefined &&
+      (typeof durationMs !== 'number' || !Number.isSafeInteger(durationMs) || durationMs < 0)) ||
+    (errors !== undefined && (!Array.isArray(errors) || !errors.every((error) => typeof error === 'string')))
+  ) {
+    return undefined;
+  }
+  return {
+    status,
+    ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
+    ...(errors === undefined ? {} : { errors }),
+  };
 }
 
 function normalizeCanonicalJournalKnowledge(raw: Record<string, unknown>): Partial<KnowledgeData> {
@@ -183,9 +203,10 @@ export function normalizeKnowledgeData(raw: Record<string, unknown>): Partial<Kn
 
     // Special handling for verificationReport
     if (key === 'verificationReport' && isRecord(value)) {
-      normalized['verification.reportSummary'] = value as unknown as NonNullable<
-        KnowledgeData['verification.reportSummary']
-      >;
+      const summary = normalizeVerificationReportSummary(value);
+      if (summary) {
+        normalized['verification.reportSummary'] = summary;
+      }
       continue;
     }
 
@@ -197,7 +218,7 @@ export function normalizeKnowledgeData(raw: Record<string, unknown>): Partial<Kn
       const bulletinIndex = typeof receipt['bulletinIndex'] === 'number' ? receipt['bulletinIndex'] : undefined;
       const bulletinRootAtCast =
         typeof receipt['bulletinRootAtCast'] === 'string' ? receipt['bulletinRootAtCast'] : undefined;
-      const timestamp = typeof receipt['timestamp'] === 'number' ? receipt['timestamp'] : undefined;
+      const castAtMs = typeof receipt['castAtMs'] === 'number' ? receipt['castAtMs'] : undefined;
       const inputCommitment = typeof receipt['inputCommitment'] === 'string' ? receipt['inputCommitment'] : undefined;
 
       if (
@@ -205,14 +226,14 @@ export function normalizeKnowledgeData(raw: Record<string, unknown>): Partial<Kn
         commitment &&
         typeof bulletinIndex === 'number' &&
         bulletinRootAtCast &&
-        typeof timestamp === 'number'
+        typeof castAtMs === 'number'
       ) {
         normalized['user.voteReceipt'] = {
           voteId,
           commitment,
           bulletinIndex,
           bulletinRootAtCast,
-          timestamp,
+          timestamp: castAtMs,
           ...(inputCommitment ? { inputCommitment } : {}),
         } satisfies KnowledgeData['user.voteReceipt'];
       }
@@ -229,46 +250,6 @@ export function normalizeKnowledgeData(raw: Record<string, unknown>): Partial<Kn
     ...normalized,
     ...normalizeCanonicalJournalKnowledge(raw),
   };
-}
-
-/**
- * Normalize bot data from /api/botdata/:id response
- */
-export function normalizeBotData(raw: Record<string, unknown>): Partial<KnowledgeData> {
-  const normalized: Partial<KnowledgeData> = {};
-
-  if (raw['id'] !== undefined) {
-    normalized['bot.id'] = raw['id'] as number;
-    normalized['bot.bulletinIndex'] = raw['id'] as number; // botId === bulletinIndex
-  }
-  if (raw['vote'] !== undefined) {
-    const vote = raw['vote'];
-    if (typeof vote === 'string' && BOT_VOTE_CHOICES.has(vote)) {
-      normalized['bot.choice'] = vote as NonNullable<KnowledgeData['bot.choice']>;
-    }
-  }
-  if (raw['random'] !== undefined) {
-    normalized['bot.random'] = raw['random'] as string;
-  }
-  if (raw['commitment'] !== undefined) {
-    normalized['bot.commitment'] = raw['commitment'] as string;
-  }
-  if (raw['voteId'] !== undefined) {
-    normalized['bot.voteId'] = raw['voteId'] as string;
-  }
-  if (raw['timestamp'] !== undefined) {
-    normalized['bot.voteTimestamp'] = raw['timestamp'] as number;
-  }
-  if (raw['proof'] && typeof raw['proof'] === 'object') {
-    const proof = raw['proof'] as Record<string, unknown>;
-    const normalizedProof = normalizeInclusionProof(proof);
-    if (normalizedProof) {
-      normalized['bot.merklePath'] = normalizedProof;
-      normalized['bot.bulletinRootAtCast'] = normalizedProof.bulletinRootAtCast;
-    }
-  }
-
-  return normalized;
 }
 
 /**

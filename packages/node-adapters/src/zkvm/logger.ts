@@ -3,7 +3,7 @@ import { logger as safeLogger } from '@stark-ballot/diagnostics/logger';
 type LogPayload = Record<string, unknown>;
 
 function emit(level: 'debug' | 'info' | 'warn' | 'error', message: string, payload?: unknown): void {
-  if (level === 'debug' && process.env['NODE_ENV'] !== 'development' && process.env['DEBUG_ZKVM'] !== '1') {
+  if (level === 'debug' && process.env['DEBUG_ZKVM'] !== '1') {
     return;
   }
   const args = payload === undefined ? [message] : [message, payload as LogPayload];

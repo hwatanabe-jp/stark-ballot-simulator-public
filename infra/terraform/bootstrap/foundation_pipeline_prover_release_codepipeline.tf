@@ -60,10 +60,10 @@ resource "aws_codepipeline" "development_prover_release" {
   }
 
   stage {
-    name = "Source"
+    name = local.deployment_target.sourceAction
 
     action {
-      name             = "Source"
+      name             = local.deployment_target.sourceAction
       category         = "Source"
       owner            = "AWS"
       provider         = "CodeStarSourceConnection"
@@ -72,10 +72,10 @@ resource "aws_codepipeline" "development_prover_release" {
       output_artifacts = ["SourceOutput"]
 
       configuration = {
-        BranchName           = var.source_branch
+        BranchName           = local.deployment_target.sourceBranch
         ConnectionArn        = aws_codeconnections_connection.source[0].arn
         DetectChanges        = "false"
-        FullRepositoryId     = var.github_full_repository_id
+        FullRepositoryId     = local.deployment_target.repository
         OutputArtifactFormat = "CODE_ZIP"
       }
     }
@@ -136,7 +136,7 @@ resource "aws_codepipeline" "development_prover_release" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput"]
+      input_artifacts  = ["SourceOutput", "FoundationSigningAuthorityOutput"]
       output_artifacts = ["ToolchainAuthorityOutput"]
 
       configuration = {
@@ -267,7 +267,7 @@ resource "aws_codepipeline" "development_prover_release" {
         EnvironmentVariables = jsonencode([
           {
             name  = "PROVER_ACCEPTED_POINTER_KEY"
-            value = "channels/develop/prover/accepted.json"
+            value = local.deployment_shared_names.proverAcceptedPointerKey
             type  = "PLAINTEXT"
           },
           {

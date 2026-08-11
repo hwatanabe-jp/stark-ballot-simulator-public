@@ -11,7 +11,7 @@ resource "aws_ssm_parameter" "runtime_config_names" {
         image_signature_verifier = aws_iam_role.image_signature_verifier.arn
       },
     ))
-    RATE_LIMIT_STORE                    = "dynamo"
+    RUNTIME_PROFILE                     = "target-aws-async"
     SESSION_LIVE_TTL_SECONDS            = tostring(var.session_live_ttl_seconds)
     VERIFICATION_ARTIFACT_TTL_SECONDS   = tostring(var.verification_artifact_ttl_seconds)
     VOTE_DUPLICATE_DETECTOR_TTL_SECONDS = tostring(var.vote_duplicate_detector_ttl_seconds)
@@ -19,7 +19,7 @@ resource "aws_ssm_parameter" "runtime_config_names" {
     AWS_REGION                          = var.aws_region
   }, local.runtime_reference_names)
 
-  name  = "/${var.project_name}/${var.account_alias}/${var.deployment_environment}/app/${each.key}"
+  name  = "${trimsuffix(local.deployment_shared_names.runtimeConfigReferencePrefix, "/config")}/${each.key}"
   type  = "String"
   value = each.value
 

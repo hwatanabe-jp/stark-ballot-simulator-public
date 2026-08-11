@@ -1,4 +1,4 @@
 export * from './shared/constants';
 export * from './types/identifiers';
-export type * from './types/server';
+export * from './types/sessionRecords';
 export type * from './types/voteStore';

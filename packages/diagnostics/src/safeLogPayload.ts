@@ -178,7 +178,7 @@ function hasSensitiveValueShape(value: string): boolean {
     /https?:\/\/(?:[^/?#\s"'<>]+\.)?s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com(?:\.cn)?\/[^\s"'<>]*/i.test(value) ||
     /(?:^|[\s"'(])sessions\/[^\s"'<>/?#]+\/[^\s"'<>]*/i.test(value) ||
     /\/api\/sessions\/[^/?#\s"'<>]+(?:\/[^?#\s"'<>]*)?/i.test(value) ||
-    /\/api\/verification\/bundles\/[^/?#\s"'<>]+(?:\/[^?#\s"'<>]*)?/i.test(value) ||
+    /\/api\/(?:[^/:?#\s"'<>]+\/){3,}[^/:?#\s"'<>]+/i.test(value) ||
     /\b(?:session(?:[\s_-]?id)?|sid)\b[^\r\n]{0,48}\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(
       value,
     ) ||
@@ -208,13 +208,20 @@ function isCanonicalHttpRouteTemplate(value: string): boolean {
   if (sessionsIndex >= 0 && segments[sessionsIndex + 1] !== ':sessionId') {
     return false;
   }
-  const bundlesIndex = segments.findIndex(
-    (segment, index) => segment === 'bundles' && segments[index - 1] === 'verification',
-  );
+  const sessionIdIndex = segments.indexOf(':sessionId');
+  if (sessionIdIndex >= 0 && segments[sessionIdIndex - 1] !== 'sessions') {
+    return false;
+  }
+  const finalizationsIndex = segments.indexOf('finalizations');
   if (
-    bundlesIndex >= 0 &&
-    (segments[bundlesIndex + 1] !== ':sessionId' || segments[bundlesIndex + 2] !== ':executionId')
+    finalizationsIndex >= 0 &&
+    segments[finalizationsIndex + 1] !== 'current' &&
+    segments[finalizationsIndex + 1] !== ':finalizationId'
   ) {
+    return false;
+  }
+  const finalizationIdIndex = segments.indexOf(':finalizationId');
+  if (finalizationIdIndex >= 0 && segments[finalizationIdIndex - 1] !== 'finalizations') {
     return false;
   }
   return segments.every(

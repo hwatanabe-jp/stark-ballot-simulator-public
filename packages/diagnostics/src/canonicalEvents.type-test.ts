@@ -1,10 +1,31 @@
 import type {
   BundleDownloadFailedEvent,
   CanonicalEvent,
+  FinalizationAdmittedEvent,
   FinalizeTransitionAttemptedEvent,
   QueuePublishEvent,
   VerificationRunSummaryEvent,
 } from '@stark-ballot/diagnostics/canonicalEvents';
+
+const admitted = {
+  event: 'finalization_admitted',
+  finalization_id: 'exec-admitted',
+} satisfies FinalizationAdmittedEvent;
+void admitted;
+
+// @ts-expect-error A durable admission observation requires bounded finalization correlation.
+const admissionWithoutFinalizationId: FinalizationAdmittedEvent = {
+  event: 'finalization_admitted',
+};
+void admissionWithoutFinalizationId;
+
+const admissionWithSessionCorrelation: FinalizationAdmittedEvent = {
+  event: 'finalization_admitted',
+  finalization_id: 'exec-admitted',
+  // @ts-expect-error Admission observations do not retain session correlation.
+  session_id_hash: 'sid_0123456789ab',
+};
+void admissionWithSessionCorrelation;
 
 const attempted = {
   event: 'finalize_transition_attempted',

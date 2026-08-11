@@ -9,6 +9,12 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   return value;
 }
 
+const observedFinalizations = vi.hoisted(() => ({
+  scenarios: [] as string[],
+  tamperOutcomes: [] as boolean[],
+  proofProfiles: [] as unknown[],
+}));
+
 // Mock the CLITestHelpers module
 vi.mock('./cli-test-helpers', () => {
   function resolveFinalizationCountDiagnostics(data: {
@@ -32,11 +38,19 @@ vi.mock('./cli-test-helpers', () => {
   }
 
   class MockCLITestHelpers {
+    constructor(_baseUrl?: string, _operatorAuthHeaders?: Record<string, string>, proofProfile?: unknown) {
+      observedFinalizations.proofProfiles.push(proofProfile);
+    }
+
     createSession = vi.fn().mockResolvedValue('test-session-id');
     submitVote = vi.fn().mockResolvedValue({ leafIndex: 0, merklePath: [], commitment: '0xabc' });
     generateBotVotes = vi.fn().mockResolvedValue(true);
     finalizeWithScenarios = vi.fn().mockImplementation((_sessionId: string, scenarioId: ScenarioResult['scenario']) => {
-      const isTampered = scenarioId !== 'S0';
+      observedFinalizations.scenarios.push(scenarioId);
+      const observedTamper = observedFinalizations.tamperOutcomes.shift();
+      if (observedTamper === undefined) {
+        throw new Error(`Missing independently observed outcome for ${scenarioId}`);
+      }
       return Promise.resolve({
         data: {
           result: {
@@ -45,16 +59,16 @@ vi.mock('./cli-test-helpers', () => {
             bulletinRoot: '0xroot',
           },
           proof: {
-            tamperDetected: isTampered,
+            tamperDetected: observedTamper,
             receipt: '{"mock": true}',
             imageId: 'test-image',
           },
           debug: {
             verifiedTally: [10, 15, 20, 14, 5],
-            missingSlots: isTampered ? 1 : 0,
+            missingSlots: observedTamper ? 1 : 0,
             invalidPresentedSlots: 0,
-            validVotes: isTampered ? 63 : 64,
-            excludedSlots: isTampered ? 1 : 0,
+            validVotes: observedTamper ? 63 : 64,
+            excludedSlots: observedTamper ? 1 : 0,
           },
         },
       });
@@ -64,132 +78,69 @@ vi.mock('./cli-test-helpers', () => {
   return { CLITestHelpers: MockCLITestHelpers, resolveFinalizationCountDiagnostics };
 });
 
+function useObservedTamperOutcomes(...outcomes: readonly boolean[]): void {
+  observedFinalizations.tamperOutcomes.splice(0, observedFinalizations.tamperOutcomes.length, ...outcomes);
+}
+
 describe('ScenarioRunner', () => {
   let runner: ScenarioRunner;
+  const mockProofProfile = {
+    executor: 'mock',
+    evidence: 'mock',
+  } as const;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    runner = new ScenarioRunner();
-    delete process.env['RISC0_DEV_MODE'];
+    observedFinalizations.scenarios.length = 0;
+    observedFinalizations.proofProfiles.length = 0;
+    useObservedTamperOutcomes(false);
+    runner = new ScenarioRunner(mockProofProfile);
   });
 
   describe('runScenario', () => {
-    it('should run S0 (normal case) successfully', async () => {
-      const config: ScenarioConfig = {
-        scenario: 'S0',
-        userChoice: 'A',
-        useRealZkVM: false,
-      };
+    it.each([
+      { scenario: 'S0', observedTamper: false, expectedPassed: true },
+      { scenario: 'S0', observedTamper: true, expectedPassed: false },
+      { scenario: 'S3', observedTamper: true, expectedPassed: true },
+      { scenario: 'S3', observedTamper: false, expectedPassed: false },
+    ])(
+      'compares the independently observed $observedTamper outcome for $scenario',
+      async ({ scenario, observedTamper, expectedPassed }) => {
+        useObservedTamperOutcomes(observedTamper);
+        const config: ScenarioConfig = {
+          scenario,
+          userChoice: 'A',
+        };
 
-      const result = await runner.runScenario(config);
+        const result = await runner.runScenario(config);
 
-      expect(result.scenario).toBe('S0');
-      expect(result.passed).toBe(true);
-      expect(result.tamperDetected).toBe(false);
-      expect(result.errors).toHaveLength(0);
-    });
+        expect(result.scenario).toBe(scenario);
+        expect(result.tamperDetected).toBe(observedTamper);
+        expect(result.passed).toBe(expectedPassed);
+        expect(result.errors).toEqual(
+          expectedPassed ? [] : [`Tamper detection mismatch: expected ${scenario !== 'S0'}, got ${observedTamper}`],
+        );
+      },
+    );
 
-    it('should unset RISC0_DEV_MODE in real mode', async () => {
-      process.env['RISC0_DEV_MODE'] = '1';
-
-      const config: ScenarioConfig = {
-        scenario: 'S0',
-        userChoice: 'A',
-        useRealZkVM: true,
-      };
-
-      await runner.runScenario(config);
-
-      expect(process.env['RISC0_DEV_MODE']).toBeUndefined();
-    });
-
-    it('should detect tampering in S1 (ignore user vote)', async () => {
-      const config: ScenarioConfig = {
-        scenario: 'S1',
-        userChoice: 'B',
-        useRealZkVM: false,
-      };
-
-      const result = await runner.runScenario(config);
-
-      expect(result.scenario).toBe('S1');
-      expect(result.passed).toBe(true);
-      expect(result.tamperDetected).toBe(true);
-      expect(result.errors).toHaveLength(0);
-    });
-
-    it('should detect tampering in S2 (recount user vote)', async () => {
-      const config: ScenarioConfig = {
-        scenario: 'S2',
-        userChoice: 'C',
-        useRealZkVM: false,
-      };
-
-      const result = await runner.runScenario(config);
-
-      expect(result.scenario).toBe('S2');
-      expect(result.passed).toBe(true);
-      expect(result.tamperDetected).toBe(true);
-    });
-
-    it('should detect tampering in S3 (ignore a bot vote)', async () => {
-      const config: ScenarioConfig = {
-        scenario: 'S3',
-        userChoice: 'D',
-        useRealZkVM: false,
-      };
-
-      const result = await runner.runScenario(config);
-
-      expect(result.scenario).toBe('S3');
-      expect(result.passed).toBe(true);
-      expect(result.tamperDetected).toBe(true);
-    });
-
-    it('should detect tampering in S4 (recount a bot vote)', async () => {
-      const config: ScenarioConfig = {
-        scenario: 'S4',
-        userChoice: 'E',
-        useRealZkVM: false,
-      };
-
-      const result = await runner.runScenario(config);
-
-      expect(result.scenario).toBe('S4');
-      expect(result.passed).toBe(true);
-      expect(result.tamperDetected).toBe(true);
-    });
-
-    it('should detect tampering in S5 (random errors)', async () => {
-      const config: ScenarioConfig = {
-        scenario: 'S5',
-        userChoice: 'A',
-        useRealZkVM: false,
-      };
-
-      const result = await runner.runScenario(config);
-
-      expect(result.scenario).toBe('S5');
-      expect(result.passed).toBe(true);
-      expect(result.tamperDetected).toBe(true);
+    it('injects one semantic proof profile before constructing its helper', () => {
+      expect(observedFinalizations.proofProfiles).toEqual([mockProofProfile]);
     });
   });
 
   describe('runAllScenarios', () => {
-    it('should run all scenarios and return results', async () => {
+    it('runs S0-S5 in order while comparing independently supplied observations', async () => {
+      const observedTamperOutcomes = [true, false, true, false, true, false];
+      useObservedTamperOutcomes(...observedTamperOutcomes);
+
       const results = await runner.runAllScenarios({
         userChoice: 'A',
-        useRealZkVM: false,
       });
 
-      expect(results).toHaveLength(6); // S0-S5
-      expect(strictDefined(results[0]).scenario).toBe('S0');
-      expect(strictDefined(results[0]).tamperDetected).toBe(false);
-
-      // S1-S5 should all detect tampering
-      for (let i = 1; i < 6; i++) {
-        expect(strictDefined(results[i]).tamperDetected).toBe(true);
-      }
+      expect(observedFinalizations.scenarios).toEqual(['S0', 'S1', 'S2', 'S3', 'S4', 'S5']);
+      expect(results.map((result) => result.scenario)).toEqual(['S0', 'S1', 'S2', 'S3', 'S4', 'S5']);
+      expect(results.map((result) => result.tamperDetected)).toEqual(observedTamperOutcomes);
+      expect(results.map((result) => result.passed)).toEqual([false, false, true, false, true, false]);
     });
 
     it('should handle errors gracefully', async () => {
@@ -202,11 +153,10 @@ describe('ScenarioRunner', () => {
       };
 
       // Create a new runner with mocked error helpers
-      const errorRunner = new ScenarioRunner('http://localhost:3000', errorHelpers);
+      const errorRunner = new ScenarioRunner(mockProofProfile, 'http://localhost:3000', errorHelpers);
 
       const results = await errorRunner.runAllScenarios({
         userChoice: 'A',
-        useRealZkVM: false,
       });
 
       expect(results).toHaveLength(6);
@@ -281,7 +231,6 @@ describe('ScenarioRunner', () => {
       const config: ScenarioConfig = {
         scenario: 'S99', // Invalid scenario
         userChoice: 'A',
-        useRealZkVM: false,
       };
 
       expect(() => runner.validateConfig(config)).toThrow('Invalid scenario: S99');
@@ -291,7 +240,6 @@ describe('ScenarioRunner', () => {
       const config: ScenarioConfig = {
         scenario: 'S0',
         userChoice: 'Z', // Invalid choice
-        useRealZkVM: false,
       };
 
       expect(() => runner.validateConfig(config)).toThrow('Invalid user choice: Z');

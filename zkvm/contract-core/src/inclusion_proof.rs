@@ -280,6 +280,39 @@ mod tests {
     }
 
     #[test]
+    fn reviewed_fixed_root_vectors_cover_empty_power_of_two_and_odd_trees() {
+        let leaves: Vec<[u8; 32]> = [
+            "4d5a9584d985e8fb44015a8affa9b76f1ff16f65e61df7156d8e8159e1448978",
+            "d103cfb5e499c566904787533afbdec56f95492d67fc00e2c0d0161ba99653f1",
+            "5038da95330ba16edb486954197e37eb777c3047327ca54df4199c35c5edc17a",
+            "f2764fd79fdab5132fc349ba555c9c56ff0c935c889c17ebe3d61315d780934e",
+            "565fb0e0cefe32cf4000e4a67ddec8820111a733aa8ba010d242a5fe477e04c4",
+        ]
+        .iter()
+        .map(|leaf| decode_hex_32(leaf))
+        .collect();
+        let hashed_leaves: Vec<[u8; 32]> = leaves.iter().map(hash_leaf).collect();
+        let empty_root = Impl::hash_bytes(&[]);
+
+        let actual_roots = vec![
+            hex::encode(empty_root.as_bytes()),
+            hex::encode(compute_merkle_root(&hashed_leaves[..1])),
+            hex::encode(compute_merkle_root(&hashed_leaves[..2])),
+            hex::encode(compute_merkle_root(&hashed_leaves[..4])),
+            hex::encode(compute_merkle_root(&hashed_leaves[..5])),
+        ];
+        let expected_roots = vec![
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "b089dd645b2222877852a1873580e50a66fb463fee184dbc734224c4ee1e5d06",
+            "33e32ea1ae0ad2fb4349df42021702b680127fff927526fb41ff3770d7f8dd41",
+            "77eacf9bc18b97c9e11f7131cda0593c707f7d73c77afad01ee83eb708e9105c",
+            "2a278fbb796b135a154966d522a0cd90424cc4cd014c8acc6d9b8a7293a4d365",
+        ];
+
+        assert_eq!(actual_roots, expected_roots);
+    }
+
+    #[test]
     fn ts_generated_rfc6962_golden_vectors_round_trip_in_rust() {
         let vectors = parse_ts_golden_vectors();
         assert_eq!(vectors.schema, "stark-ballot:rfc6962-ts-golden-vectors|v1");

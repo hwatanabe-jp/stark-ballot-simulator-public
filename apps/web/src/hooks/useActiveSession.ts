@@ -12,10 +12,7 @@ interface UseHasActiveSessionOptions {
 function resolveHasActiveSession(fallback: boolean): boolean {
   try {
     const sessionData = getSessionData();
-    return Boolean(
-      sessionData?.sessionId &&
-      (sessionData.phase === 'voting' || sessionData.phase === 'finalizing' || sessionData.phase === 'verifying'),
-    );
+    return Boolean(sessionData?.sessionId);
   } catch {
     // プライベートモードや厳格な設定で localStorage アクセスが失敗した場合
     return fallback;

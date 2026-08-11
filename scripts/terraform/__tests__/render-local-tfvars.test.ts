@@ -1,7 +1,3 @@
-/**
- * @vitest-environment node
- */
-
 import { describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -63,7 +59,7 @@ function terraformTfvarsTestEnv(extra: Record<string, string | undefined> = {}):
   ]) {
     delete env[key];
   }
-  return { ...env, ...extra };
+  return { ...env, TERRAFORM_AWS_REGION: 'ap-northeast-1', ...extra };
 }
 
 function withTempDir(run: (dir: string) => void): void {

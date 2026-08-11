@@ -2,16 +2,21 @@
   "name": "@stark-ballot/node-adapters",
   "private": true,
   "type": "module",
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec eslint packages/node-adapters",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/node-adapters",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
   "exports": {
     ".": "./src/index.ts",
+    "./artifact-reader": "./src/local-artifact-reader.ts",
     "./image-id-mapping": "./src/image-id-mapping.ts",
     "./verifier-service-client": "./src/verifier-service-client.ts",
     "./verification-bundle": "./src/verification-bundle.ts",
     "./zip": "./src/zip.ts",
     "./zkvm/executor": "./src/zkvm/executor.ts",
     "./zkvm/executor-factory": "./src/zkvm/executor-factory.ts",
-    "./zkvm/mock-executor": "./src/zkvm/mock-executor.ts",
-    "./zkvm/zkvm-mode": "./src/zkvm/zkvm-mode.ts"
+    "./zkvm/mock-executor": "./src/zkvm/mock-executor.ts"
   },
   "dependencies": {
     "@stark-ballot/diagnostics": "workspace:*",
@@ -23,7 +28,7 @@
   "devDependencies": {
     "@types/yauzl": "3.4.0",
     "@types/yazl": "3.3.1",
-    "fast-check": "4.9.0",
-    "vitest": "4.1.10"
+    "fast-check": "catalog:crypto-testing",
+    "vitest": "catalog:testing"
   }
 }

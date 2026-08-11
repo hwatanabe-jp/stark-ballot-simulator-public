@@ -7,11 +7,17 @@ export type CheckStatus = 'pending' | 'running' | 'success' | 'failed';
 export type SummaryStatus = 'verified' | 'warning' | 'failed' | 'in_progress' | 'demo_only';
 export type VerificationCheckId =
   | 'recorded_sth_third_party'
+  | 'counted_input_sanity'
+  | 'counted_unique_indices'
+  | 'counted_unique_commitments'
   | 'counted_tally_consistent'
   | 'counted_missing_indices_zero'
   | 'counted_expected_vs_tree_size'
   | 'counted_election_manifest_consistent'
   | 'counted_close_statement_consistent'
+  | 'counted_my_vote_included'
+  | 'counted_input_commitment_match'
+  | 'stark_image_id_match'
   | 'stark_receipt_verify';
 export type VerificationStepId = 'counted_as_recorded' | 'stark_verification';
 

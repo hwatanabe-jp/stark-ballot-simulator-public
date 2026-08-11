@@ -1,14 +1,11 @@
 import type { KnowledgeData, KnowledgeItem, KnowledgePhase, KnowledgeUpdateListener } from './types';
 import { KNOWLEDGE_KEYS } from './types';
-import { normalizeKnowledgeData, normalizeBotData, getPhaseForKey } from './normalizer';
+import { normalizeKnowledgeData, getPhaseForKey } from './normalizer';
 import { toCanonicalRfc6962Proof } from '@stark-ballot/merkle/rfc6962-proof';
+import { isValidHexString } from '@stark-ballot/crypto-primitives';
 import { getSessionData, isSessionReplaced } from '@stark-ballot/web/session';
-import {
-  clearStoredKnowledgeData,
-  ensureClientStorageSchema,
-  KNOWLEDGE_STORAGE_KEY as STORAGE_KEY,
-} from '@stark-ballot/web/session/storageSchema';
-import { isRecord } from '@stark-ballot/verification/shared/guards';
+import { clearStoredKnowledgeData, KNOWLEDGE_STORAGE_KEY as STORAGE_KEY } from '@stark-ballot/web/session/storage';
+import { isRecord } from '@stark-ballot/validation/unknown-value-guards';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -45,50 +42,226 @@ export type KnowledgeDataPatch = {
 type StoredKnowledgeSnapshot = { kind: 'missing' } | { kind: 'corrupt' } | { kind: 'valid'; data: KnowledgeData };
 
 const KNOWLEDGE_KEY_SET = new Set<string>(KNOWLEDGE_KEYS);
-const RETIRED_KNOWLEDGE_KEYS = [
-  'missingIndices',
-  'invalidIndices',
-  'countedIndices',
-  'excludedCount',
-  's3BundleUrl',
-  's3BundleExpiresAt',
-  'proofMode',
-] as const;
+const STRING_KNOWLEDGE_KEYS = new Set<keyof KnowledgeData>([
+  'sessionId',
+  'electionId',
+  'electionConfigHash',
+  'logId',
+  'user.random',
+  'user.commitment',
+  'user.voteId',
+  'user.bulletinRootAtCast',
+  'bulletinRoot',
+  'sthDigest',
+  'seenBitmapRoot',
+  'includedBitmapRoot',
+  'inputCommitment',
+  'imageId',
+  'bot.random',
+  'bot.commitment',
+  'bot.voteId',
+  'bot.bulletinRootAtCast',
+]);
+const COUNT_KNOWLEDGE_KEYS = new Set<keyof KnowledgeData>([
+  'user.bulletinIndex',
+  'user.castAtMs',
+  'tally.totalVotes',
+  'tally.tamperedCount',
+  'missingSlots',
+  'invalidPresentedSlots',
+  'rejectedRecords',
+  'validVotes',
+  'excludedSlots',
+  'totalExpected',
+  'treeSize',
+  'bot.id',
+  'bot.bulletinIndex',
+  'bot.voteTimestamp',
+]);
+const VERIFICATION_STEP_IDS = new Set([
+  'cast_as_intended',
+  'recorded_as_cast',
+  'counted_as_recorded',
+  'stark_verification',
+]);
+const VERIFICATION_STEP_STATUSES = new Set(['pending', 'running', 'success', 'failed', 'not_run']);
 
-function migrateStoredKnowledgeData(data: KnowledgeData): { data: KnowledgeData; changed: boolean } {
-  const migrated = { ...(data as Record<string, unknown>) };
-  let changed = false;
+function hasExactKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): boolean {
+  const keys = Object.keys(value);
+  const allowed = new Set([...required, ...optional]);
+  return required.every((key) => key in value) && keys.every((key) => allowed.has(key));
+}
 
-  for (const key of RETIRED_KNOWLEDGE_KEYS) {
-    if (key in migrated) {
-      delete migrated[key];
-      changed = true;
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isCanonicalInclusionProof(value: unknown): boolean {
+  if (!isRecord(value) || !hasExactKeys(value, ['leafIndex', 'treeSize', 'merklePath', 'bulletinRootAtCast'])) {
+    return false;
+  }
+  const leafIndex = value['leafIndex'];
+  const treeSize = value['treeSize'];
+  const merklePath = value['merklePath'];
+  const bulletinRootAtCast = value['bulletinRootAtCast'];
+  if (
+    !Number.isSafeInteger(leafIndex) ||
+    typeof leafIndex !== 'number' ||
+    leafIndex < 0 ||
+    !Number.isSafeInteger(treeSize) ||
+    typeof treeSize !== 'number' ||
+    treeSize <= 0 ||
+    leafIndex >= treeSize ||
+    !Array.isArray(merklePath) ||
+    !merklePath.every((node) => typeof node === 'string' && isValidHexString(node, 32)) ||
+    typeof bulletinRootAtCast !== 'string' ||
+    !isValidHexString(bulletinRootAtCast, 32)
+  ) {
+    return false;
+  }
+  const proof = toCanonicalRfc6962Proof(value);
+  if (!proof) {
+    return false;
+  }
+  return (
+    proof.leafIndex === value['leafIndex'] &&
+    proof.treeSize === value['treeSize'] &&
+    proof.bulletinRootAtCast === value['bulletinRootAtCast'] &&
+    proof.merklePath.length === merklePath.length &&
+    proof.merklePath.every((node, index) => node === merklePath[index])
+  );
+}
+
+function isVerificationStep(value: unknown): boolean {
+  if (!isRecord(value) || !hasExactKeys(value, ['id', 'status', 'inputs'], ['error'])) {
+    return false;
+  }
+  return (
+    typeof value['id'] === 'string' &&
+    VERIFICATION_STEP_IDS.has(value['id']) &&
+    typeof value['status'] === 'string' &&
+    VERIFICATION_STEP_STATUSES.has(value['status']) &&
+    Array.isArray(value['inputs']) &&
+    value['inputs'].every((input) => typeof input === 'string') &&
+    (value['error'] === undefined || typeof value['error'] === 'string')
+  );
+}
+
+function isCurrentKnowledgeData(value: Record<string, unknown>): value is Record<string, unknown> & KnowledgeData {
+  for (const [rawKey, entry] of Object.entries(value)) {
+    if (!KNOWLEDGE_KEY_SET.has(rawKey) || entry === null || entry === undefined) {
+      return false;
+    }
+    const key = rawKey as keyof KnowledgeData;
+    if (STRING_KNOWLEDGE_KEYS.has(key) && (typeof entry !== 'string' || entry.length === 0)) {
+      return false;
+    }
+    if (COUNT_KNOWLEDGE_KEYS.has(key) && !isNonNegativeSafeInteger(entry)) {
+      return false;
     }
   }
 
+  const choiceValues = [value['user.choice'], value['bot.choice']].filter((entry) => entry !== undefined);
+  if (choiceValues.some((entry) => !['A', 'B', 'C', 'D', 'E'].includes(entry as string))) {
+    return false;
+  }
+  if (
+    value['scenarioId'] !== undefined &&
+    !['S0', 'S1', 'S2', 'S3', 'S4', 'S5'].includes(value['scenarioId'] as string)
+  ) {
+    return false;
+  }
+  if (
+    value['proofBundleStatus'] !== undefined &&
+    !['not_downloaded', 'downloaded'].includes(value['proofBundleStatus'] as string)
+  ) {
+    return false;
+  }
+
+  const botVotesStatus = value['botVotesStatus'];
+  if (
+    botVotesStatus !== undefined &&
+    !(
+      botVotesStatus === 'pending' ||
+      botVotesStatus === 'completed' ||
+      (isRecord(botVotesStatus) &&
+        hasExactKeys(botVotesStatus, ['status'], ['total']) &&
+        (botVotesStatus['status'] === 'pending' || botVotesStatus['status'] === 'completed') &&
+        (botVotesStatus['total'] === undefined || isNonNegativeSafeInteger(botVotesStatus['total'])))
+    )
+  ) {
+    return false;
+  }
+
+  const tally = value['tally.counts'];
+  if (
+    tally !== undefined &&
+    (!isRecord(tally) ||
+      !hasExactKeys(tally, ['A', 'B', 'C', 'D', 'E']) ||
+      Object.values(tally).some((count) => !isNonNegativeSafeInteger(count)))
+  ) {
+    return false;
+  }
   for (const key of ['user.merklePath', 'bot.merklePath'] as const) {
-    const proof = toCanonicalRfc6962Proof(migrated[key] as Record<string, unknown> | undefined);
-    if (proof) {
-      if (JSON.stringify(migrated[key]) !== JSON.stringify(proof)) {
-        migrated[key] = proof;
-        changed = true;
-      }
-      continue;
+    if (value[key] !== undefined && !isCanonicalInclusionProof(value[key])) {
+      return false;
     }
-    if (migrated[key] !== undefined) {
-      delete migrated[key];
-      changed = true;
+  }
+  for (const key of ['verification.steps', 'bot.verification.steps'] as const) {
+    if (value[key] !== undefined && (!Array.isArray(value[key]) || !value[key].every(isVerificationStep))) {
+      return false;
     }
   }
 
-  for (const key of Object.keys(migrated)) {
-    if (!KNOWLEDGE_KEY_SET.has(key)) {
-      delete migrated[key];
-      changed = true;
-    }
+  const receipt = value['user.voteReceipt'];
+  if (
+    receipt !== undefined &&
+    (!isRecord(receipt) ||
+      !hasExactKeys(
+        receipt,
+        ['voteId', 'commitment', 'bulletinIndex', 'bulletinRootAtCast', 'timestamp'],
+        ['inputCommitment'],
+      ) ||
+      !['voteId', 'commitment', 'bulletinRootAtCast'].every((key) => typeof receipt[key] === 'string') ||
+      !isNonNegativeSafeInteger(receipt['bulletinIndex']) ||
+      !isNonNegativeSafeInteger(receipt['timestamp']) ||
+      (receipt['inputCommitment'] !== undefined && typeof receipt['inputCommitment'] !== 'string'))
+  ) {
+    return false;
   }
 
-  return { data: migrated, changed };
+  const publication = value['receiptPublication'];
+  if (
+    publication !== undefined &&
+    (!isRecord(publication) ||
+      !hasExactKeys(publication, ['receiptHash', 'boardIndex'], ['timestamp']) ||
+      typeof publication['receiptHash'] !== 'string' ||
+      !isValidHexString(publication['receiptHash'], 32) ||
+      !isNonNegativeSafeInteger(publication['boardIndex']) ||
+      (publication['timestamp'] !== undefined && !isNonNegativeSafeInteger(publication['timestamp'])))
+  ) {
+    return false;
+  }
+
+  const reportSummary = value['verification.reportSummary'];
+  if (
+    reportSummary !== undefined &&
+    (!isRecord(reportSummary) ||
+      !hasExactKeys(reportSummary, ['status'], ['duration_ms', 'errors']) ||
+      typeof reportSummary['status'] !== 'string' ||
+      reportSummary['status'].length === 0 ||
+      (reportSummary['duration_ms'] !== undefined && !isNonNegativeSafeInteger(reportSummary['duration_ms'])) ||
+      (reportSummary['errors'] !== undefined &&
+        (!Array.isArray(reportSummary['errors']) ||
+          !reportSummary['errors'].every((error) => typeof error === 'string'))))
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function getSessionIdFromKnowledge(data: KnowledgeDataPatch | null | undefined): string | null {
@@ -120,8 +293,6 @@ function readStoredKnowledgeSnapshot(): StoredKnowledgeSnapshot {
     return { kind: 'missing' };
   }
 
-  ensureClientStorageSchema();
-
   const stored = localStorage.getItem(STORAGE_KEY);
   if (!stored) {
     return { kind: 'missing' };
@@ -132,11 +303,10 @@ function readStoredKnowledgeSnapshot(): StoredKnowledgeSnapshot {
     if (!isRecord(parsed)) {
       return { kind: 'corrupt' };
     }
-    const migrated = migrateStoredKnowledgeData(parsed);
-    if (migrated.changed) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated.data));
+    if (!isCurrentKnowledgeData(parsed)) {
+      return { kind: 'corrupt' };
     }
-    return { kind: 'valid', data: migrated.data };
+    return { kind: 'valid', data: parsed };
   } catch {
     return { kind: 'corrupt' };
   }
@@ -188,6 +358,10 @@ function safeParseKnowledge(): KnowledgeData | null {
   if (snapshot.kind === 'missing') {
     return null;
   }
+  if (isSessionReplaced()) {
+    itemTimestamps.clear();
+    return null;
+  }
   if (snapshot.kind === 'corrupt') {
     clearKnowledgeStorageSnapshot();
     return null;
@@ -196,11 +370,6 @@ function safeParseKnowledge(): KnowledgeData | null {
   const knowledgeData = snapshot.data;
   const activeSessionId = getActiveSessionId();
   const storedSessionId = getSessionIdFromKnowledge(knowledgeData);
-
-  if (isSessionReplaced()) {
-    itemTimestamps.clear();
-    return null;
-  }
 
   if (activeSessionId && !storedSessionId) {
     clearKnowledgeStorageSnapshot();
@@ -223,7 +392,6 @@ function writeKnowledgeData(data: KnowledgeData): void {
     return;
   }
 
-  ensureClientStorageSchema();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
@@ -271,6 +439,7 @@ export function saveKnowledgeData(data: KnowledgeDataPatch, options?: MergeKnowl
     boundSessionId && !getSessionIdFromKnowledge(data) ? { sessionId: boundSessionId, ...data } : data;
   const now = Date.now();
   const newItems: KnowledgeItem[] = [];
+  const candidate: Record<string, unknown> = { ...base };
 
   const entries = Object.entries(payload) as Array<
     [keyof KnowledgeData, KnowledgeData[keyof KnowledgeData] | undefined]
@@ -280,13 +449,12 @@ export function saveKnowledgeData(data: KnowledgeDataPatch, options?: MergeKnowl
     if (value === undefined) {
       continue;
     }
-    const existingValue = base[key];
+    const existingValue = candidate[key];
 
     // Check if this is a new or updated value
     const isNewOrUpdated = JSON.stringify(existingValue) !== JSON.stringify(value);
 
     if (isNewOrUpdated) {
-      itemTimestamps.set(key, now);
       newItems.push({
         key,
         value,
@@ -295,10 +463,18 @@ export function saveKnowledgeData(data: KnowledgeDataPatch, options?: MergeKnowl
       });
     }
 
-    (base as Record<string, unknown>)[key] = value;
+    candidate[key] = value;
   }
 
-  writeKnowledgeData(base);
+  if (!isCurrentKnowledgeData(candidate)) {
+    return [];
+  }
+
+  for (const item of newItems) {
+    itemTimestamps.set(item.key, now);
+  }
+
+  writeKnowledgeData(candidate);
 
   // Notify listeners if there are new items
   if (newItems.length > 0) {
@@ -335,14 +511,6 @@ export function mergeKnowledgeFromApi(
   const normalized = normalizeKnowledgeData(apiData);
   const filtered = omitKnowledgeKeys(normalized, options?.omitKeys);
   return saveKnowledgeData(filtered, options);
-}
-
-/**
- * Merge bot data from /api/botdata/:id
- */
-export function mergeBotKnowledge(botData: Record<string, unknown>): KnowledgeItem[] {
-  const normalized = normalizeBotData(botData);
-  return saveKnowledgeData(normalized);
 }
 
 /**
@@ -383,7 +551,6 @@ export function clearKnowledge(): void {
     return;
   }
 
-  ensureClientStorageSchema();
   clearKnowledgeStorageSnapshot();
 }
 
@@ -400,7 +567,6 @@ export function clearKnowledgeForSession(expectedSessionId: string | null | unde
     return;
   }
   if (snapshot.kind === 'corrupt') {
-    clearKnowledgeStorageSnapshot();
     return;
   }
 

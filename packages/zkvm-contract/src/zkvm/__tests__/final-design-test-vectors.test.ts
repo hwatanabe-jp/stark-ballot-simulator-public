@@ -113,9 +113,6 @@ describe('final-design.md Test Vectors', () => {
 
       // Verify the implementation matches manual calculation
       expect(inputCommitment).toBe(expectedCommitment);
-
-      // Log for documentation
-      console.log('Example 1 inputCommitment:', inputCommitment);
     });
 
     it('should verify exact byte encoding matches specification', () => {
@@ -168,8 +165,6 @@ describe('final-design.md Test Vectors', () => {
       // The root should be the hash of single leaf
       const leafHash = hashLeafChunk(strictDefined(chunks[0]));
       expect(bitmapRoot).toBe('0x' + leafHash.toString('hex'));
-
-      console.log('12-vote case includedBitmapRoot:', bitmapRoot);
     });
 
     it('should handle 17-vote case crossing byte boundary', () => {
@@ -189,8 +184,7 @@ describe('final-design.md Test Vectors', () => {
       const chunks = splitIntoChunks(packedBytes);
       expect(chunks.length).toBe(1);
       expect(strictDefined(chunks[0]).toString('hex')).toBe('ffff01' + '00'.repeat(29));
-
-      console.log('17-vote case includedBitmapRoot:', bitmapRoot);
+      expect(bitmapRoot).toMatch(/^0x[0-9a-f]{64}$/);
     });
 
     it('should handle 257-vote case with second chunk', () => {
@@ -218,8 +212,6 @@ describe('final-design.md Test Vectors', () => {
       const leaf1 = hashLeafChunk(strictDefined(chunks[1]));
       const expectedRoot = hashInternalNode(leaf0, leaf1);
       expect(bitmapRoot).toBe('0x' + expectedRoot.toString('hex'));
-
-      console.log('257-vote case includedBitmapRoot:', bitmapRoot);
     });
 
     it('should handle 1025-vote case with fifth chunk', () => {
@@ -244,9 +236,7 @@ describe('final-design.md Test Vectors', () => {
       }
       // Fifth chunk should start with 0x01
       expect(strictDefined(chunks[4]).toString('hex')).toBe('01' + '00'.repeat(31));
-
-      console.log('1025-vote case includedBitmapRoot:', bitmapRoot);
-      console.log('Number of chunks:', chunks.length);
+      expect(bitmapRoot).toMatch(/^0x[0-9a-f]{64}$/);
     });
   });
 
@@ -299,12 +289,6 @@ describe('final-design.md Test Vectors', () => {
 
       // Verify format
       expect(inputCommitment).toMatch(/^0x[0-9a-f]{64}$/);
-
-      // Verify that votes are sorted by index in the commitment
-      // (This is internal to computeInputCommitment but important)
-      console.log('Example 3 inputCommitment:', inputCommitment);
-      console.log('Vote indices:', [vote0.index, vote1.index, vote2.index]);
-      console.log('Path lengths:', [vote0.merklePath.length, vote1.merklePath.length, vote2.merklePath.length]);
     });
 
     it('should verify encoding uniqueness', () => {
@@ -355,7 +339,6 @@ describe('final-design.md Test Vectors', () => {
       const commitment2 = computeInputCommitment(input2);
 
       expect(commitment1).toBe(commitment2);
-      console.log('Commitment (both orders):', commitment1);
     });
 
     it('should verify inputCommitment reproducibility', () => {
@@ -395,9 +378,6 @@ describe('final-design.md Test Vectors', () => {
       const modifiedInput = { ...input, treeSize: 2 };
       const differentCommitment = computeInputCommitment(modifiedInput);
       expect(differentCommitment).not.toBe(commitment1);
-
-      console.log('Original commitment:', commitment1);
-      console.log('Modified commitment:', differentCommitment);
     });
   });
 });

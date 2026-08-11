@@ -5,20 +5,13 @@ import { Button } from '@stark-ballot/web/components/ui/Button';
 import { Badge } from '@stark-ballot/web/components/ui/Badge';
 import { Infographic } from '@stark-ballot/web/components/home';
 import { useTranslation } from '@stark-ballot/web/hooks';
-import { generateSessionId, saveSessionData } from '@stark-ballot/web/session';
+import { initializeSession } from '@stark-ballot/web/session';
 import { clearKnowledge, mergeKnowledgeFromApi } from '@stark-ballot/web/knowledge';
-import { resolveApiUrl } from '@stark-ballot/web/api/apiBaseUrl';
-import { apiFetch } from '@stark-ballot/web/api/apiFetch';
 import { TurnstileWidget } from '@stark-ballot/web/components/security/TurnstileWidget';
 import { isBrowserTurnstileRequiredForAction } from '@stark-ballot/web/components/security/turnstilePolicy';
 import { useAppRouter } from '@stark-ballot/web/navigation/appNavigation';
-import { SessionResponseSchema } from '@stark-ballot/api-contract/validation/apiSchemas';
-import {
-  admitApiResponse,
-  readApiJson,
-  readStandardApiError,
-  readStandardApiErrorCode,
-} from '@stark-ballot/web/api/responseAdmission';
+import { createSession } from '@stark-ballot/web/api/sessions';
+import { resolveApiClientErrorCode } from '@stark-ballot/web/api/client';
 
 export default function HomePage(): React.ReactElement {
   const router = useAppRouter();
@@ -34,17 +27,11 @@ export default function HomePage(): React.ReactElement {
 
     try {
       // Create session on server
-      const response = await apiFetch(resolveApiUrl('/api/session'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(turnstileToken ? { turnstileToken } : {}),
-      });
-
-      if (!response.ok) {
-        const errorPayload = await readStandardApiError(response);
-        const errorCode = readStandardApiErrorCode(errorPayload);
+      let session;
+      try {
+        session = await createSession(turnstileToken ? { turnstileToken } : {});
+      } catch (requestError) {
+        const errorCode = resolveApiClientErrorCode(requestError);
         if (errorCode === 'SESSION_LIMIT_EXCEEDED') {
           setError(t('errors.sessionLimitExceeded'));
           setIsLoading(false);
@@ -56,28 +43,24 @@ export default function HomePage(): React.ReactElement {
           setIsLoading(false);
           return;
         }
-        throw new Error('Failed to create session');
+        throw requestError;
       }
 
-      const payload = admitApiResponse(SessionResponseSchema, await readApiJson(response), 'session create response');
-      const { sessionId, electionId, capabilityToken, contractGeneration, electionConfigHash, logId } = payload.data;
+      const { sessionId, electionId, capabilityToken, electionConfigHash, logId } = session;
 
-      // Generate local session with server-provided ID
-      generateSessionId(sessionId, capabilityToken, contractGeneration);
-      saveSessionData({
+      // Reset stale knowledge artifacts before binding to the new session.
+      clearKnowledge();
+
+      initializeSession({
         sessionId,
         capabilityToken,
-        contractGeneration,
         electionId,
         electionConfigHash,
         logId,
       });
 
-      // Reset stale knowledge artifacts before binding to the new session.
-      clearKnowledge();
-
       // Save session data to the knowledge store.
-      mergeKnowledgeFromApi('session', { ...payload.data });
+      mergeKnowledgeFromApi('session', { ...session });
 
       // Navigate to vote page
       router.push('/vote');

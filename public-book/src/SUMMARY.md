@@ -24,9 +24,9 @@
   - [設計と実行フロー](verification/design-and-flow.md)
   - [4 段階検証モデル](verification/four-stage-model.md)
   - [チェック一覧](verification/checks-catalog.md)
-  - [バンドル構造](verification/bundle-structure.md)
-  - [公開境界](verification/public-boundary.md)
   - [ゲーティングロジック](verification/gating-logic.md)
+  - [公開境界](verification/public-boundary.md)
+  - [バンドル構造](verification/bundle-structure.md)
 
 - [改ざんシナリオ](tamper/index.md)
   - [シナリオ一覧](tamper/scenarios.md)
@@ -38,7 +38,7 @@
   - [Lean による形式化](quality/lean-formalization.md)
 
 - [AWS アーキテクチャ](aws/index.md)
-  - [AWS runtime boundary](aws/runtime-boundary.md)
+  - [AWS runtime 境界](aws/runtime-boundary.md)
   - [現行構成とサービス一覧](aws/design-and-services.md)
   - [トポロジー](aws/topology.md)
   - [非同期プローバー](aws/async-prover.md)
@@ -53,13 +53,8 @@
 - [第三者検証ガイド](reproducibility/index.md)
   - [ZIP ローカル検証（Ubuntu）](reproducibility/audit-bundle.md)
 
-- [設計判断](decisions/index.md)
-  - [PoC の意図的な制約](decisions/poc-relaxations.md)
-  - [設計ふりかえり](decisions/design-retrospective.md)
-
 ---
 
-- [アーキテクチャ語彙マップ（参考）](architecture-map.md)
 - [用語集](appendix/glossary.md)
 - [参考文献](appendix/references.md)
 - [ライセンス](appendix/license.md)

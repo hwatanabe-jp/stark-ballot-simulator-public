@@ -11,7 +11,8 @@ import {
   type VerificationCheckRequirementContext,
 } from '@stark-ballot/verification/checks';
 import type { VerificationResult } from '@stark-ballot/verification/shared/types';
-import { deriveVerificationSummary, type VerificationSummaryContext } from '@stark-ballot/verification/summary';
+import type { VerificationSummaryContext } from '@stark-ballot/verification/summary';
+import { deriveVerificationPresentationPolicy } from '@stark-ballot/verification/presentation-policy';
 
 const SCENARIO_ID_SET = new Set<CanonicalScenarioId>(['S0', 'S1', 'S2', 'S3', 'S4', 'S5']);
 
@@ -22,7 +23,7 @@ export interface VerificationRunSummaryObservationInput {
   verificationResult: VerificationResult | undefined;
   devModeReceipt?: boolean;
   sessionId: string;
-  executionId?: string;
+  finalizationId?: string;
 }
 
 export function countFailedRequiredChecksForObservation(
@@ -71,7 +72,16 @@ export function emitVerificationRunSummaryObservation(input: VerificationRunSumm
     if (!scenarioId) {
       return;
     }
-    const summary = deriveVerificationSummary([...input.checks], input.summaryContext);
+    const policy = deriveVerificationPresentationPolicy({
+      availability: 'available',
+      checks: input.checks,
+      context: input.summaryContext,
+      ...(input.verificationResult?.status ? { verificationStatus: input.verificationResult.status } : {}),
+      ...(input.verificationResult?.report?.status
+        ? { verificationReportStatus: input.verificationResult.report.status }
+        : {}),
+    });
+    const summary = policy.summary;
     if (!summary) {
       return;
     }
@@ -90,7 +100,7 @@ export function emitVerificationRunSummaryObservation(input: VerificationRunSumm
       failed_required_count: failedRequiredCount,
       dev_mode_receipt: input.devModeReceipt ?? input.verificationResult?.report?.dev_mode_receipt === true,
       session_id_hash: hashSessionIdForLogging(input.sessionId),
-      ...(input.executionId ? { execution_id: input.executionId } : {}),
+      ...(input.finalizationId ? { finalization_id: input.finalizationId } : {}),
     });
   } catch {
     // Verification telemetry is strictly observational and must never alter the completed response.

@@ -4,7 +4,7 @@ import {
   getStringArrayProperty,
   getStringProperty,
   isRecord,
-} from '@stark-ballot/domain/utils/guards';
+} from '@stark-ballot/validation/unknown-value-guards';
 import { BasePage } from './BasePage';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
@@ -145,17 +145,16 @@ export class VotePage extends BasePage {
         throw new Error('Session ID missing in localStorage');
       }
       const capabilityToken = getStringProperty(sessionRecord, 'capabilityToken');
+      if (!capabilityToken) {
+        throw new Error('Session capability token missing in localStorage');
+      }
 
       // Fetch progress from API
       const progressData = await this.page.evaluate(
-        async ({ sid, capability }: { sid: string; capability: string | undefined }) => {
+        async ({ sid, capability }: { sid: string; capability: string }) => {
           try {
-            const headers: HeadersInit = { 'X-Session-ID': sid };
-            if (capability) {
-              headers['X-Session-Capability'] = capability;
-            }
-            const response = await fetch('/api/progress', {
-              headers,
+            const response = await fetch(`/api/sessions/${encodeURIComponent(sid)}/progress`, {
+              headers: { 'X-Session-Capability': capability },
             });
             if (response.ok) {
               const payload: unknown = await response.json();
@@ -166,7 +165,7 @@ export class VotePage extends BasePage {
           }
           return null;
         },
-        { sid: sessionId, capability: capabilityToken ?? undefined },
+        { sid: sessionId, capability: capabilityToken },
       );
 
       if (progressData) {

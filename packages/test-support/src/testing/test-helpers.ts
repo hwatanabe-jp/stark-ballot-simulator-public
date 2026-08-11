@@ -12,7 +12,6 @@ import {
   computeCommitment,
   computeSTHDigest,
 } from '@stark-ballot/zkvm-contract/zkvm/types';
-import { deriveLegacyJournalCountCompatibility } from '@stark-ballot/zkvm-contract/zkvm/journal-count-compat';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
@@ -34,55 +33,34 @@ type TestJournalCountInput = Partial<
     | 'rejectedRecords'
     | 'excludedSlots'
   >
-> & {
-  missingIndices?: number;
-  invalidIndices?: number;
-  countedIndices?: number;
-  excludedCount?: number;
-};
+>;
 
-export interface NormalizedTestJournalCounts
-  extends
-    Pick<
-      ZkVMJournal,
-      | 'totalVotes'
-      | 'validVotes'
-      | 'invalidVotes'
-      | 'seenIndicesCount'
-      | 'missingSlots'
-      | 'invalidPresentedSlots'
-      | 'rejectedRecords'
-      | 'excludedSlots'
-    >,
-    ReturnType<typeof deriveLegacyJournalCountCompatibility> {}
+export type NormalizedTestJournalCounts = Pick<
+  ZkVMJournal,
+  | 'totalVotes'
+  | 'validVotes'
+  | 'invalidVotes'
+  | 'seenIndicesCount'
+  | 'missingSlots'
+  | 'invalidPresentedSlots'
+  | 'rejectedRecords'
+  | 'excludedSlots'
+>;
 
 function selectNumber(...values: Array<number | undefined>): number | undefined {
   return values.find((value): value is number => typeof value === 'number');
 }
 
 /**
- * Normalize current-contract count mirrors for tests.
- *
- * `invalidIndices` remains a legacy slot-based alias for
- * `invalidPresentedSlots`. Record-space counts must come from
- * `rejectedRecords` / `invalidVotes`, not from that alias.
+ * Normalize current-contract count fields for tests.
  */
 export function normalizeTestJournalCounts(
   overrides: TestJournalCountInput,
   base: TestJournalCountInput = {},
 ): NormalizedTestJournalCounts {
-  const validVotes =
-    selectNumber(overrides.validVotes, overrides.countedIndices, base.validVotes, base.countedIndices, 0) ?? 0;
-  const missingSlots =
-    selectNumber(overrides.missingSlots, overrides.missingIndices, base.missingSlots, base.missingIndices, 0) ?? 0;
-  const invalidPresentedSlots =
-    selectNumber(
-      overrides.invalidPresentedSlots,
-      overrides.invalidIndices,
-      base.invalidPresentedSlots,
-      base.invalidIndices,
-      0,
-    ) ?? 0;
+  const validVotes = selectNumber(overrides.validVotes, base.validVotes, 0) ?? 0;
+  const missingSlots = selectNumber(overrides.missingSlots, base.missingSlots, 0) ?? 0;
+  const invalidPresentedSlots = selectNumber(overrides.invalidPresentedSlots, base.invalidPresentedSlots, 0) ?? 0;
   const rejectedRecords =
     selectNumber(
       overrides.rejectedRecords,
@@ -95,7 +73,7 @@ export function normalizeTestJournalCounts(
     selectNumber(overrides.invalidVotes, rejectedRecords, base.invalidVotes, rejectedRecords) ?? rejectedRecords;
   const seenIndicesCount = selectNumber(overrides.seenIndicesCount, validVotes + invalidPresentedSlots) ?? 0;
   const excludedSlots =
-    selectNumber(overrides.excludedSlots, overrides.excludedCount, missingSlots + invalidPresentedSlots) ??
+    selectNumber(overrides.excludedSlots, base.excludedSlots, missingSlots + invalidPresentedSlots) ??
     missingSlots + invalidPresentedSlots;
   const totalVotes = selectNumber(overrides.totalVotes, validVotes + rejectedRecords) ?? validVotes + rejectedRecords;
 
@@ -105,15 +83,9 @@ export function normalizeTestJournalCounts(
     missingSlots,
     invalidPresentedSlots,
     rejectedRecords,
-    ...omitUndefinedProperties({ excludedSlots: excludedSlots }),
+    excludedSlots,
     seenIndicesCount,
     totalVotes,
-    ...deriveLegacyJournalCountCompatibility({
-      validVotes,
-      missingSlots,
-      invalidPresentedSlots,
-      ...omitUndefinedProperties({ excludedSlots: excludedSlots }),
-    }),
   };
 }
 
@@ -315,9 +287,7 @@ export function createTestJournal(options?: {
   totalExpected?: number;
   validVotes?: number;
   missingSlots?: number;
-  missingIndices?: number;
   invalidPresentedSlots?: number;
-  invalidIndices?: number;
   rejectedRecords?: number;
   excludedSlots?: number;
   seenIndicesCount?: number;
@@ -325,8 +295,8 @@ export function createTestJournal(options?: {
   const electionId = options?.electionId || generateElectionId();
   const totalExpected = options?.totalExpected ?? 64;
   const validVotes = options?.validVotes ?? totalExpected;
-  const requestedMissingSlots = options?.missingSlots ?? options?.missingIndices;
-  const requestedInvalidPresentedSlots = options?.invalidPresentedSlots ?? options?.invalidIndices;
+  const requestedMissingSlots = options?.missingSlots;
+  const requestedInvalidPresentedSlots = options?.invalidPresentedSlots;
   const requestedSeenIndicesCount = options?.seenIndicesCount;
 
   let seenIndicesCount: number;
@@ -335,11 +305,11 @@ export function createTestJournal(options?: {
   } else if (requestedInvalidPresentedSlots !== undefined) {
     seenIndicesCount = validVotes + requestedInvalidPresentedSlots;
   } else {
-    const missingIndices = requestedMissingSlots ?? 0;
+    const missingSlots = requestedMissingSlots ?? 0;
     // Default helper fixtures still model treeSize === totalExpected. Tests that
     // need a different seen-count relationship should pass seenIndicesCount
     // explicitly instead of relying on this derivation.
-    seenIndicesCount = Math.max(0, totalExpected - missingIndices);
+    seenIndicesCount = Math.max(0, totalExpected - missingSlots);
   }
 
   const missingSlots = totalExpected - seenIndicesCount;
@@ -354,19 +324,19 @@ export function createTestJournal(options?: {
   }
 
   if (requestedInvalidPresentedSlots !== undefined && requestedInvalidPresentedSlots !== invalidPresentedSlots) {
-    throw new Error('createTestJournal invalidIndices must match seenIndicesCount - validVotes');
+    throw new Error('createTestJournal invalidPresentedSlots must match seenIndicesCount - validVotes');
   }
 
   if (requestedMissingSlots !== undefined && requestedMissingSlots !== missingSlots) {
-    throw new Error('createTestJournal slot partition must match missingIndices');
+    throw new Error('createTestJournal slot partition must match missingSlots');
   }
 
   if (validVotes + invalidPresentedSlots + missingSlots !== totalExpected) {
-    throw new Error('createTestJournal slot partition must satisfy validVotes + invalidIndices + missingIndices');
+    throw new Error('createTestJournal slot partition must satisfy validVotes + invalidPresentedSlots + missingSlots');
   }
 
   if (options?.rejectedRecords !== undefined && options.rejectedRecords < invalidPresentedSlots) {
-    throw new Error('createTestJournal rejectedRecords must be >= invalidIndices');
+    throw new Error('createTestJournal rejectedRecords must be >= invalidPresentedSlots');
   }
 
   const normalizedCounts = normalizeTestJournalCounts({

@@ -1,5 +1,8 @@
 version: 0.2
 
+env:
+  shell: bash
+
 # AWS CodeBuild buildspec for ARM64 Fargate prover Docker image
 # This file builds a prover image candidate. It is not release authority by itself.
 #
@@ -9,10 +12,8 @@ version: 0.2
 # - Build time: 5-10 minutes (vs 70-90 minutes without base image)
 # - See: docs/infrastructure/risc0-base-image.md
 
-env:
-  variables:
-    AWS_DEFAULT_REGION: ap-northeast-1
-  # AWS_ACCOUNT_ID is injected via CodeBuild environment variables
+# AWS_ACCOUNT_ID is injected via CodeBuild environment variables; the exact
+# region is loaded from the validated deployment context below.
 
 phases:
   pre_build:
@@ -21,32 +22,36 @@ phases:
       - |
         (
           set -euo pipefail
-          if ! printf '%s' "${REQUESTED_SOURCE_SHA:-}" | grep -Eq '^[0-9a-f]{40}$'; then
-            echo "REQUESTED_SOURCE_SHA must be a full 40-character lowercase Git SHA." >&2
-            exit 1
-          fi
-          if ! printf '%s' "${PIPELINE_SOURCE_SHA:-}" | grep -Eq '^[0-9a-f]{40}$'; then
-            echo "PIPELINE_SOURCE_SHA must be a full 40-character lowercase Git SHA." >&2
-            exit 1
-          fi
-          if ! printf '%s' "${CODEBUILD_RESOLVED_SOURCE_VERSION:-}" | grep -Eq '^[0-9a-f]{40}$'; then
-            echo "CODEBUILD_RESOLVED_SOURCE_VERSION must be a full 40-character lowercase Git SHA." >&2
-            exit 1
-          fi
-          if [ "$REQUESTED_SOURCE_SHA" != "$PIPELINE_SOURCE_SHA" ]; then
-            echo "REQUESTED_SOURCE_SHA must match PIPELINE_SOURCE_SHA for prover release builds." >&2
-            exit 1
-          fi
-          if [ "$REQUESTED_SOURCE_SHA" != "$CODEBUILD_RESOLVED_SOURCE_VERSION" ]; then
-            echo "REQUESTED_SOURCE_SHA must match CODEBUILD_RESOLVED_SOURCE_VERSION for prover release builds." >&2
-            exit 1
-          fi
+          node scripts/aws/assert-deployment-source-pins.js
           printf '%s' "$CODEBUILD_RESOLVED_SOURCE_VERSION" > /tmp/source-sha
         )
+      - |
+        . scripts/aws/load-deployment-context.sh \
+          "$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/deployment-context.json" \
+          "$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/deployment-context.sha256" \
+          prover \
+          proverCandidateRole \
+          proverCandidateProject
+        export AWS_ACCOUNT_ID="$DEPLOYMENT_CONTEXT_TARGET_ACCOUNT_ID"
+        export AWS_REGION="$DEPLOYMENT_CONTEXT_TARGET_REGION"
+        export AWS_DEFAULT_REGION="$DEPLOYMENT_CONTEXT_TARGET_REGION"
+        cmp \
+          "$CODEBUILD_SRC_DIR_FoundationSigningAuthorityOutput/deployment-context.json" \
+          "$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/deployment-context.json"
+        cmp \
+          "$CODEBUILD_SRC_DIR_FoundationSigningAuthorityOutput/deployment-context.sha256" \
+          "$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/deployment-context.sha256"
+        mkdir -p deployment-context
+        cp "$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/deployment-context.json" deployment-context/deployment-context.json
+        cp "$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/deployment-context.sha256" deployment-context/deployment-context.sha256
       - echo "Computing the source zkVM interface hash..."
       - |
         node scripts/aws/compute-zkvm-interface-hash.mjs > /tmp/zkvm-contract-hash
-        if ! grep -Eq '^[0-9a-f]{64}$' /tmp/zkvm-contract-hash; then
+        if ! ZKVM_CONTRACT_HASH="$(cat /tmp/zkvm-contract-hash)" node --input-type=module <<'NODE'
+        import { parseSha256 } from './packages/deployment-authority/src/index.js';
+        parseSha256(process.env.ZKVM_CONTRACT_HASH, 'source zkVM interface hash');
+        NODE
+        then
           echo "Invalid source zkVM interface hash." >&2
           exit 1
         fi
@@ -62,10 +67,37 @@ phases:
           --image-kind prover \
           --repository-output /tmp/foundation-prover-repository \
           --signing-profile-output /tmp/foundation-signing-profile
+        test "$(cat /tmp/foundation-prover-repository)" = "$DEPLOYMENT_CONTEXT_NAMES_PROVER_REPOSITORY"
       - export IMAGE_REPO_NAME="$(cat /tmp/foundation-prover-repository)"
       - export IMAGE_SIGNING_PROFILE_ARN="$(cat /tmp/foundation-signing-profile)"
-      - echo "Logging in to Amazon ECR..."
-      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - |
+        set -euo pipefail
+        echo "Configuring the Amazon ECR credential helper for Prover build mode..."
+        if ! command -v docker-credential-ecr-login >/dev/null 2>&1; then
+          echo "docker-credential-ecr-login is required for Prover build mode." >&2
+          exit 1
+        fi
+        PRIVATE_ECR_REGISTRY="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com"
+        export AWS_ECR_DISABLE_CACHE=true
+        DOCKER_CONFIG="$(mktemp -d /tmp/prover-docker-config.XXXXXX)"
+        export DOCKER_CONFIG
+        export AWS_ECR_CACHE_DIR="$DOCKER_CONFIG/ecr-cache"
+        (
+          umask 077
+          printf '{"credHelpers":{"%s":"ecr-login","public.ecr.aws":"ecr-login"}}\n' \
+            "$PRIVATE_ECR_REGISTRY" >"$DOCKER_CONFIG/config.json"
+        )
+        verify_ecr_helper_access() {
+          local registry="$1"
+          local label="$2"
+          if ! printf '%s' "$registry" | docker-credential-ecr-login get >/dev/null; then
+            echo "Amazon ECR credential helper could not authenticate to $label." >&2
+            return 1
+          fi
+        }
+        verify_ecr_helper_access "$PRIVATE_ECR_REGISTRY" "the target private registry"
+        verify_ecr_helper_access "public.ecr.aws" "Amazon ECR Public"
+        unset -f verify_ecr_helper_access
 
       - echo "Resolving RISC Zero toolchain base image..."
       - |
@@ -79,7 +111,15 @@ phases:
         SELECTED_TOOLCHAIN_ARTIFACT_RECORD_KEY="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["artifactRecordKey"])' "$TOOLCHAIN_AUTHORITY_FILE")"
         SELECTED_TOOLCHAIN_ARTIFACT_RECORD_VERSION_ID="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["artifactRecordVersionId"])' "$TOOLCHAIN_AUTHORITY_FILE")"
         SELECTED_TOOLCHAIN_ARTIFACT_RECORD_SHA256="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["artifactRecordSha256"])' "$TOOLCHAIN_AUTHORITY_FILE")"
-        if ! printf '%s' "$RISC0_TOOLCHAIN_IMAGE" | grep -Eq '@sha256:[0-9a-f]{64}$'; then
+        if ! RISC0_TOOLCHAIN_IMAGE="$RISC0_TOOLCHAIN_IMAGE" node --input-type=module -e '
+          import { parseDigestPinnedImageReference } from "./packages/deployment-authority/src/index.js";
+          parseDigestPinnedImageReference(process.env.RISC0_TOOLCHAIN_IMAGE, {
+            partition: "aws",
+            accountId: process.env.AWS_ACCOUNT_ID,
+            region: process.env.AWS_DEFAULT_REGION,
+            repository: process.env.DEPLOYMENT_CONTEXT_NAMES_TOOLCHAIN_REPOSITORY,
+          });
+        '; then
           echo "RISC0_TOOLCHAIN_IMAGE must be digest-pinned with @sha256:<64 lowercase hex chars>." >&2
           exit 1
         fi
@@ -130,7 +170,11 @@ phases:
       - echo "Smoke-testing the non-root, read-only prover container posture..."
       - |
         FAILURE_MARKER_CONTRACT_SHA256="$(sha256sum infra/docker/prover-failure-marker-contract.json | awk '{print $1}')"
-        if ! printf '%s' "$FAILURE_MARKER_CONTRACT_SHA256" | grep -Eq '^[0-9a-f]{64}$'; then
+        if ! FAILURE_MARKER_CONTRACT_SHA256="$FAILURE_MARKER_CONTRACT_SHA256" node --input-type=module <<'NODE'
+        import { parseSha256 } from './packages/deployment-authority/src/index.js';
+        parseSha256(process.env.FAILURE_MARKER_CONTRACT_SHA256, 'prover failure-marker contract SHA-256');
+        NODE
+        then
           echo "Unable to compute the prover failure-marker contract SHA-256." >&2
           exit 1
         fi
@@ -293,6 +337,8 @@ phases:
 
 artifacts:
   files:
+    - deployment-context/deployment-context.json
+    - deployment-context/deployment-context.sha256
     - image-metadata.json
   name: fargate-prover-image-$(date +%Y%m%d-%H%M%S)
 

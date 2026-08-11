@@ -1,23 +1,240 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 vi.mock('../finalization-status-client', async () => {
   const actual = await vi.importActual<typeof import('../finalization-status-client')>('../finalization-status-client');
   return {
     ...actual,
-    fetchFinalizationStatus: vi.fn(),
+    fetchCurrentFinalization: vi.fn(),
   };
 });
 
-import { fetchFinalizationStatus } from '../finalization-status-client';
+import { fetchCurrentFinalization } from '../finalization-status-client';
 import { CLITestHelpers } from '../cli-test-helpers';
+import { createTestJournal } from '../test-helpers';
+import type { FinalizationResource } from '@stark-ballot/api-contract/schemas/finalizations';
+import type {
+  AvailableVerificationResource,
+  VerificationResource,
+  VerificationStatus,
+} from '@stark-ballot/api-contract/schemas/verification';
+import {
+  getVerificationStepInputs,
+  VERIFICATION_CHECK_DEFINITIONS,
+  type VerificationCheck,
+  type VerificationCheckId,
+} from '@stark-ballot/verification/checks';
+import { deriveVerificationPresentationPolicy } from '@stark-ballot/verification/presentation-policy';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
 
 const baseUrl = 'http://localhost:3000';
+const hash = (character: string): string => `0x${character.repeat(64)}`;
+const verificationUrl = `${baseUrl}/api/sessions/session-123/finalizations/finalization-1/verification?include=journal`;
+
+function buildSucceededFinalizationResource(options?: {
+  finalizationId?: string;
+  counts?: { A: number; B: number; C: number; D: number; E: number };
+  userCommitment?: string;
+}): Extract<FinalizationResource, { status: 'succeeded' }> {
+  const journal = createTestJournal({
+    totalExpected: 1,
+    validVotes: 1,
+    missingSlots: 0,
+    invalidPresentedSlots: 0,
+    seenIndicesCount: 1,
+  });
+  const counts = options?.counts ?? { A: 1, B: 0, C: 0, D: 0, E: 0 };
+  const commitment = options?.userCommitment ?? hash('a');
+  return {
+    finalizationId: options?.finalizationId ?? 'finalization-1',
+    status: 'succeeded',
+    queuedAtMs: 1_700_000_000_000,
+    startedAtMs: 1_700_000_000_100,
+    completedAtMs: 1_700_000_000_200,
+    runtimeDiagnostics: { asyncMode: 'disabled' },
+    result: {
+      authority: {
+        imageId: hash('e'),
+        journal,
+        receipt: {
+          imageId: hash('e'),
+          seal: 'mock-receipt',
+        },
+      },
+      presentation: {
+        tally: {
+          counts,
+          totalVotes: Object.values(counts).reduce((sum, count) => sum + count, 0),
+          tamperedCount: 0,
+        },
+        verifiedTally: [...journal.verifiedTally],
+        bulletinRoot: journal.bulletinRoot,
+        missingSlots: journal.missingSlots,
+        invalidPresentedSlots: journal.invalidPresentedSlots,
+        rejectedRecords: journal.rejectedRecords,
+        totalExpected: journal.totalExpected,
+        treeSize: journal.treeSize,
+        excludedSlots: journal.excludedSlots,
+        sthDigest: journal.sthDigest,
+        seenBitmapRoot: journal.seenBitmapRoot,
+        includedBitmapRoot: journal.includedBitmapRoot,
+        inputCommitment: journal.inputCommitment,
+        seenIndicesCount: journal.seenIndicesCount,
+        verificationStatus: 'not_run',
+      },
+      voterEvidence: {
+        state: 'available',
+        voteReceipt: {
+          voteId: 'vote-1',
+          commitment,
+          bulletinIndex: 0,
+          bulletinRootAtCast: hash('b'),
+          castAtMs: 1_700_000_000_000,
+        },
+        userVote: {
+          commitment,
+          voteId: 'vote-1',
+          proof: {
+            leafIndex: 0,
+            treeSize: 1,
+            merklePath: [],
+            bulletinRootAtCast: hash('b'),
+          },
+        },
+      },
+      artifactAvailability: {
+        bundle: 'available',
+        report: 'available',
+        includedBitmap: 'available',
+        seenBitmap: 'available',
+      },
+    },
+  };
+}
+
+function buildAvailableVerificationResource(options?: {
+  finalizationId?: string;
+  counts?: { A: number; B: number; C: number; D: number; E: number };
+  userCommitment?: string;
+  verificationStatus?: VerificationStatus;
+  checkStatuses?: Partial<Record<VerificationCheckId, VerificationCheck['status']>>;
+}): AvailableVerificationResource {
+  const finalizationId = options?.finalizationId ?? 'finalization-1';
+  const counts = options?.counts ?? { A: 1, B: 0, C: 0, D: 0, E: 0 };
+  const commitment = options?.userCommitment ?? hash('a');
+  const verificationStatus = options?.verificationStatus ?? 'success';
+  const journal = createTestJournal({
+    electionId: 'election-123',
+    totalExpected: 1,
+    validVotes: 1,
+    missingSlots: 0,
+    invalidPresentedSlots: 0,
+    seenIndicesCount: 1,
+  });
+  const checks = VERIFICATION_CHECK_DEFINITIONS.map((definition): VerificationCheck => ({
+    id: definition.id,
+    status:
+      options?.checkStatuses?.[definition.id] ?? (definition.category === 'cast_as_intended' ? 'not_run' : 'success'),
+    evidence: definition.evidence,
+    inputs: [...definition.inputs],
+    ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
+  }));
+  const policy = deriveVerificationPresentationPolicy({
+    availability: 'available',
+    checks,
+    context: {
+      missingSlots: journal.missingSlots,
+      invalidPresentedSlots: journal.invalidPresentedSlots,
+      rejectedRecords: journal.rejectedRecords,
+      excludedSlots: journal.excludedSlots,
+      sthSourcesConfigured: false,
+      devModeEvidence: verificationStatus === 'dev_mode',
+    },
+    verificationStatus,
+    verificationReportStatus: verificationStatus,
+  });
+  const stepIds = ['cast_as_intended', 'recorded_as_cast', 'counted_as_recorded', 'stark_verification'] as const;
+
+  return {
+    availability: 'available',
+    finalizationId,
+    proofAuthority: {
+      electionId: journal.electionId,
+      electionConfigHash: journal.electionConfigHash,
+      logId: hash('9'),
+      bulletinRoot: journal.bulletinRoot,
+      imageId: hash('e'),
+      verifiedTally: [...journal.verifiedTally],
+      missingSlots: journal.missingSlots,
+      invalidPresentedSlots: journal.invalidPresentedSlots,
+      rejectedRecords: journal.rejectedRecords,
+      totalExpected: journal.totalExpected,
+      treeSize: journal.treeSize,
+      excludedSlots: journal.excludedSlots,
+      sthDigest: journal.sthDigest,
+      seenBitmapRoot: journal.seenBitmapRoot,
+      includedBitmapRoot: journal.includedBitmapRoot,
+      inputCommitment: journal.inputCommitment,
+      seenIndicesCount: journal.seenIndicesCount,
+    },
+    presentation: {
+      tally: {
+        counts,
+        totalVotes: Object.values(counts).reduce((sum, count) => sum + count, 0),
+        tamperedCount: 0,
+      },
+      scenarioId: 'S0',
+      tamperDetected: false,
+      policy,
+    },
+    verifierResult: {
+      status: verificationStatus,
+      report: {
+        status: verificationStatus,
+        duration_ms: 1,
+        dev_mode_receipt: verificationStatus === 'dev_mode',
+        errors: [],
+      },
+    },
+    verification: {
+      checks,
+      steps: stepIds.map((id) => ({
+        id,
+        status: policy.stageStatuses[id],
+        inputs: getVerificationStepInputs(id),
+      })),
+    },
+    voterEvidence: {
+      availability: 'available',
+      voteReceipt: {
+        voteId: 'vote-1',
+        commitment,
+        bulletinIndex: 0,
+        bulletinRootAtCast: hash('b'),
+        castAtMs: 1_700_000_000_000,
+      },
+      userVote: {
+        commitment,
+        voteId: 'vote-1',
+        proof: {
+          leafIndex: 0,
+          treeSize: 1,
+          merklePath: [],
+          bulletinRootAtCast: hash('b'),
+        },
+      },
+    },
+    journal: {
+      representation: 'included',
+      value: journal,
+    },
+  };
+}
 
 function buildJsonResponse(payload: unknown, status = 200) {
   return {
     ok: status >= 200 && status < 300,
     status,
+    statusText: status >= 200 && status < 300 ? 'OK' : 'Error',
     json: () => Promise.resolve(payload),
   };
 }
@@ -37,20 +254,33 @@ function extractUrl(input: RequestInfo | URL): string {
 
 describe('CLITestHelpers.finalizeWithScenarios', () => {
   let helpers: CLITestHelpers;
+  let consoleLogSpy: MockInstance<typeof console.log>;
+  let expectedSuccessLogCount: number;
 
   beforeEach(() => {
-    helpers = new CLITestHelpers(baseUrl);
     vi.resetAllMocks();
+    helpers = new CLITestHelpers(baseUrl);
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    expectedSuccessLogCount = 1;
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    try {
+      expect(consoleLogSpy.mock.calls).toEqual(
+        Array.from({ length: expectedSuccessLogCount }, () => [
+          '[CLI] Finalization succeeded at 2023-11-14T22:13:20.200Z (finalizationId=finalization-1)',
+        ]),
+      );
+    } finally {
+      consoleLogSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 
   it('sends scenarioId payload for sync finalization', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = extractUrl(input);
-      if (url === `${baseUrl}/api/session`) {
+      if (url === `${baseUrl}/api/sessions`) {
         return Promise.resolve(
           buildJsonResponse({
             data: {
@@ -58,19 +288,14 @@ describe('CLITestHelpers.finalizeWithScenarios', () => {
               electionId: 'election-123',
               capabilityToken: 'capability-token-123',
             },
+            meta: { requestId: 'request-session' },
           }),
         );
       }
 
-      if (url === `${baseUrl}/api/finalize`) {
+      if (url === `${baseUrl}/api/sessions/session-123/finalizations`) {
         const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : init?.body;
         expect(body).toEqual({ scenarioId: 'S3' });
-
-        const headerValue =
-          init?.headers instanceof Headers
-            ? init.headers.get('X-Session-ID')
-            : (init?.headers as Record<string, string> | undefined)?.['X-Session-ID'];
-        expect(headerValue).toBe('session-123');
 
         const capabilityHeader =
           init?.headers instanceof Headers
@@ -80,80 +305,18 @@ describe('CLITestHelpers.finalizeWithScenarios', () => {
 
         return Promise.resolve(
           buildJsonResponse({
-            data: {
-              result: {
-                counts: { A: 1 },
-                bulletinRoot: '0xroot',
-              },
-              receipt: { seal: 'mock-receipt' },
-            },
+            data: buildSucceededFinalizationResource(),
+            meta: { requestId: 'request-finalize' },
           }),
         );
       }
-      if (url === `${baseUrl}/api/verify?includeJournal=1`) {
+      if (url === verificationUrl) {
+        const headers = new Headers(init?.headers);
+        expect(headers.get('X-Session-Capability')).toBe('capability-token-123');
         return Promise.resolve(
           buildJsonResponse({
-            data: {
-              verificationSteps: [
-                {
-                  id: 'counted_as_recorded',
-                  status: 'success',
-                  inputs: [],
-                },
-                {
-                  id: 'stark_verification',
-                  status: 'success',
-                  inputs: [],
-                },
-              ],
-              verificationChecks: [
-                {
-                  id: 'counted_expected_vs_tree_size',
-                  status: 'success',
-                  evidence: 'public',
-                  inputs: ['totalExpected', 'treeSize'],
-                },
-                {
-                  id: 'counted_election_manifest_consistent',
-                  status: 'success',
-                  evidence: 'public',
-                  inputs: ['electionManifest'],
-                },
-                {
-                  id: 'counted_close_statement_consistent',
-                  status: 'success',
-                  evidence: 'public',
-                  inputs: ['closeStatement'],
-                },
-                {
-                  id: 'stark_receipt_verify',
-                  status: 'success',
-                  evidence: 'zk',
-                  inputs: ['proofBundleStatus'],
-                },
-              ],
-              journal: {
-                electionId: 'election-123',
-                electionConfigHash: '0x' + '1'.repeat(64),
-                bulletinRoot: '0x' + '2'.repeat(64),
-                treeSize: 1,
-                totalExpected: 1,
-                sthDigest: '0x' + '3'.repeat(64),
-                verifiedTally: [1, 0, 0, 0, 0],
-                totalVotes: 1,
-                validVotes: 1,
-                invalidVotes: 0,
-                seenIndicesCount: 1,
-                missingSlots: 0,
-                invalidPresentedSlots: 0,
-                rejectedRecords: 0,
-                seenBitmapRoot: '0x' + '6'.repeat(64),
-                includedBitmapRoot: '0x' + '4'.repeat(64),
-                excludedSlots: 0,
-                inputCommitment: '0x' + '5'.repeat(64),
-                methodVersion: CURRENT_METHOD_VERSION,
-              },
-            },
+            data: buildAvailableVerificationResource(),
+            meta: { requestId: 'request-verify' },
           }),
         );
       }
@@ -166,16 +329,19 @@ describe('CLITestHelpers.finalizeWithScenarios', () => {
     const result = await helpers.finalizeWithScenarios(sessionId, 'S3');
 
     expect(result.meta?.mode).toBe('sync');
-    expect(result.data.result?.counts).toEqual({ A: 1 });
-    expect(result.data.receipt).toEqual({ seal: 'mock-receipt' });
-    expect(result.data.verificationChecks).toHaveLength(4);
+    expect(result.data.result?.counts).toEqual({ A: 1, B: 0, C: 0, D: 0, E: 0 });
+    expect(result.data.receipt).toEqual({
+      imageId: hash('e'),
+      seal: 'mock-receipt',
+    });
+    expect(result.data.verificationChecks).toHaveLength(VERIFICATION_CHECK_DEFINITIONS.length);
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('keeps finalize payload fields while overlaying verification-specific sync fields', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = extractUrl(input);
-      if (url === `${baseUrl}/api/session`) {
+      if (url === `${baseUrl}/api/sessions`) {
         return Promise.resolve(
           buildJsonResponse({
             data: {
@@ -183,96 +349,30 @@ describe('CLITestHelpers.finalizeWithScenarios', () => {
               electionId: 'election-123',
               capabilityToken: 'capability-token-123',
             },
+            meta: { requestId: 'request-session' },
           }),
         );
       }
 
-      if (url === `${baseUrl}/api/finalize`) {
+      if (url === `${baseUrl}/api/sessions/session-123/finalizations`) {
         return Promise.resolve(
           buildJsonResponse({
-            data: {
-              tally: {
-                counts: { A: 1 },
-                bulletinRoot: '0xfinalize-root',
-                totalVotes: 1,
-                tamperedCount: 0,
-              },
-              userVote: {
-                commitment: '0xfinalize-commit',
-                merklePath: ['0xfinalize-path'],
-                leafIndex: 3,
-                treeSize: 7,
-              },
-              treeSize: 7,
-              totalExpected: 7,
-              verificationStatus: 'not_run',
-            },
+            data: buildSucceededFinalizationResource({
+              userCommitment: hash('c'),
+            }),
+            meta: { requestId: 'request-finalize' },
           }),
         );
       }
 
-      if (url === `${baseUrl}/api/verify?includeJournal=1`) {
+      if (url === verificationUrl) {
         return Promise.resolve(
           buildJsonResponse({
-            data: {
-              tally: {
-                counts: { A: 9 },
-                bulletinRoot: '0xverify-root',
-                totalVotes: 9,
-                tamperedCount: 9,
-              },
-              userVote: {
-                commitment: '0xverify-commit',
-                merklePath: ['0xverify-path'],
-                leafIndex: 9,
-                treeSize: 99,
-              },
-              treeSize: 99,
-              totalExpected: 99,
-              verificationStatus: 'success',
-              verificationSteps: [
-                {
-                  id: 'counted_as_recorded',
-                  status: 'success',
-                  inputs: [],
-                },
-                {
-                  id: 'stark_verification',
-                  status: 'success',
-                  inputs: [],
-                },
-              ],
-              verificationChecks: [
-                {
-                  id: 'counted_expected_vs_tree_size',
-                  status: 'success',
-                  evidence: 'public',
-                  inputs: ['totalExpected', 'treeSize'],
-                },
-                {
-                  id: 'counted_election_manifest_consistent',
-                  status: 'success',
-                  evidence: 'public',
-                  inputs: ['electionManifest'],
-                },
-                {
-                  id: 'counted_close_statement_consistent',
-                  status: 'success',
-                  evidence: 'public',
-                  inputs: ['closeStatement'],
-                },
-                {
-                  id: 'stark_receipt_verify',
-                  status: 'success',
-                  evidence: 'zk',
-                  inputs: ['proofBundleStatus'],
-                },
-              ],
-              verificationExecutionId: 'verify-exec-1',
-              journal: {
-                methodVersion: CURRENT_METHOD_VERSION,
-              },
-            },
+            data: buildAvailableVerificationResource({
+              counts: { A: 9, B: 0, C: 0, D: 0, E: 0 },
+              userCommitment: hash('d'),
+            }),
+            meta: { requestId: 'request-verify' },
           }),
         );
       }
@@ -284,39 +384,56 @@ describe('CLITestHelpers.finalizeWithScenarios', () => {
 
     const sessionId = await helpers.createSession();
     const result = await helpers.finalizeWithScenarios(sessionId, 'S0');
+    const tally = result.data.tally;
+    if (!tally || typeof tally['bulletinRoot'] !== 'string') {
+      throw new Error('Expected projected tally with a bulletin root');
+    }
+    expect(tally['bulletinRoot']).toMatch(/^0x[0-9a-f]{64}$/);
 
-    expect(result.data.tally).toEqual({
-      counts: { A: 1 },
-      bulletinRoot: '0xfinalize-root',
+    expect(tally).toEqual({
+      counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
+      bulletinRoot: tally['bulletinRoot'],
       totalVotes: 1,
       tamperedCount: 0,
     });
-    expect(result.data.userVote).toEqual({
-      commitment: '0xfinalize-commit',
-      merklePath: ['0xfinalize-path'],
-      leafIndex: 3,
-      treeSize: 7,
+    expect(result.data.userVote).toMatchObject({
+      commitment: hash('c'),
+      merklePath: [],
+      leafIndex: 0,
+      treeSize: 1,
     });
-    expect(result.data.treeSize).toBe(7);
-    expect(result.data.totalExpected).toBe(7);
+    expect(result.data.treeSize).toBe(1);
+    expect(result.data.totalExpected).toBe(1);
     expect(result.data.verificationStatus).toBe('success');
-    expect(result.data.verificationExecutionId).toBe('verify-exec-1');
-    expect(result.data.verificationChecks).toHaveLength(4);
-    expect(result.data.journal).toEqual({ methodVersion: CURRENT_METHOD_VERSION });
+    expect(result.data.finalizationId).toBe('finalization-1');
+    expect(result.data.verificationChecks).toHaveLength(VERIFICATION_CHECK_DEFINITIONS.length);
+    expect(result.data.verificationSteps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'counted_as_recorded', status: 'success' }),
+        expect.objectContaining({ id: 'stark_verification', status: 'success' }),
+      ]),
+    );
+    expect(result.data.presentationPolicy).toMatchObject({
+      stageStatuses: {
+        cast_as_intended: 'not_run',
+        recorded_as_cast: 'success',
+        counted_as_recorded: 'success',
+        stark_verification: 'success',
+      },
+      fullyVerifiedLabelEligible: false,
+    });
+    expect(result.data.journal).toMatchObject({
+      methodVersion: CURRENT_METHOD_VERSION,
+      electionId: 'election-123',
+    });
   });
 
   it('returns async metadata and refreshes verification for 202 responses', async () => {
-    const asyncState = {
-      status: 'succeeded',
-      executionId: 'exec-1',
-      queuedAt: 1_700_000_000_000,
-      startedAt: 1_700_000_000_100,
-      completedAt: 1_700_000_000_200,
-    };
+    const asyncState = buildSucceededFinalizationResource({ finalizationId: 'finalization-1' });
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = extractUrl(input);
-      if (url === `${baseUrl}/api/session`) {
+      if (url === `${baseUrl}/api/sessions`) {
         return Promise.resolve(
           buildJsonResponse({
             data: {
@@ -324,11 +441,12 @@ describe('CLITestHelpers.finalizeWithScenarios', () => {
               electionId: 'election-123',
               capabilityToken: 'capability-token-123',
             },
+            meta: { requestId: 'request-session' },
           }),
         );
       }
 
-      if (url === `${baseUrl}/api/finalize`) {
+      if (url === `${baseUrl}/api/sessions/session-123/finalizations`) {
         const capabilityHeader =
           init?.headers instanceof Headers
             ? init.headers.get('X-Session-Capability')
@@ -338,21 +456,15 @@ describe('CLITestHelpers.finalizeWithScenarios', () => {
         return Promise.resolve(
           buildJsonResponse(
             {
-              executionId: 'exec-1',
-              state: asyncState,
+              data: asyncState,
+              meta: { requestId: 'request-finalize' },
             },
             202,
           ),
         );
       }
 
-      if (url === `${baseUrl}/api/verify?includeJournal=1`) {
-        const sessionHeader =
-          init?.headers instanceof Headers
-            ? init.headers.get('X-Session-ID')
-            : (init?.headers as Record<string, string> | undefined)?.['X-Session-ID'];
-        expect(sessionHeader).toBe('session-123');
-
+      if (url === verificationUrl) {
         const capabilityHeader =
           init?.headers instanceof Headers
             ? init.headers.get('X-Session-Capability')
@@ -361,15 +473,8 @@ describe('CLITestHelpers.finalizeWithScenarios', () => {
 
         return Promise.resolve(
           buildJsonResponse({
-            data: {
-              result: {
-                counts: { A: 2 },
-                bulletinRoot: '0xroot',
-              },
-              journal: {
-                methodVersion: CURRENT_METHOD_VERSION,
-              },
-            },
+            data: buildAvailableVerificationResource(),
+            meta: { requestId: 'request-verify' },
           }),
         );
       }
@@ -383,10 +488,141 @@ describe('CLITestHelpers.finalizeWithScenarios', () => {
     const result = await helpers.finalizeWithScenarios(sessionId, 'S0');
 
     expect(result.meta?.mode).toBe('async');
-    expect(result.meta?.executionId).toBe('exec-1');
-    expect(result.meta?.finalizationState?.status).toBe('succeeded');
+    expect(result.meta?.finalizationId).toBe('finalization-1');
+    expect(result.meta?.finalizationState.status).toBe('succeeded');
     expect(result.meta?.finalizationHistory?.length).toBe(1);
-    expect(fetchFinalizationStatus).not.toHaveBeenCalled();
+    expect(fetchCurrentFinalization).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    {
+      name: 'unavailable',
+      resource: {
+        availability: 'unavailable',
+        finalizationId: 'finalization-1',
+        reason: 'finalization_not_current',
+        message: 'Finalization is not current',
+      } satisfies VerificationResource,
+      expectedError: /verification result is unavailable/i,
+    },
+    {
+      name: 'corrupt',
+      resource: {
+        availability: 'corrupt',
+        finalizationId: 'finalization-1',
+        reason: 'invalid_artifact',
+        message: 'Invalid finalization artifact',
+      } satisfies VerificationResource,
+      expectedError: /verification result is corrupt/i,
+    },
+    {
+      name: 'malformed',
+      resource: {
+        availability: 'available',
+        finalizationId: 'finalization-1',
+        verificationStatus: 'success',
+      },
+      expectedError: /invalid verification result response/i,
+    },
+    {
+      name: 'finalization-mismatched',
+      resource: buildAvailableVerificationResource({
+        finalizationId: 'different-finalization',
+      }),
+      expectedError: /verification finalization identity mismatch/i,
+    },
+  ])('rejects a $name verification resource', async ({ resource, expectedError }) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = extractUrl(input);
+      if (url === `${baseUrl}/api/sessions`) {
+        return Promise.resolve(
+          buildJsonResponse({
+            data: {
+              sessionId: 'session-123',
+              electionId: 'election-123',
+              capabilityToken: 'capability-token-123',
+            },
+            meta: { requestId: 'request-session' },
+          }),
+        );
+      }
+      if (url === `${baseUrl}/api/sessions/session-123/finalizations`) {
+        return Promise.resolve(
+          buildJsonResponse({
+            data: buildSucceededFinalizationResource(),
+            meta: { requestId: 'request-finalize' },
+          }),
+        );
+      }
+      if (url === verificationUrl) {
+        return Promise.resolve(
+          buildJsonResponse({
+            data: resource,
+            meta: { requestId: 'request-verify' },
+          }),
+        );
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const sessionId = await helpers.createSession();
+
+    await expect(helpers.finalizeWithScenarios(sessionId, 'S0')).rejects.toThrow(expectedError);
+  });
+
+  it('does not retain a prior available payload when a later read is unavailable', async () => {
+    expectedSuccessLogCount = 2;
+    let verificationReads = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = extractUrl(input);
+      if (url === `${baseUrl}/api/sessions`) {
+        return Promise.resolve(
+          buildJsonResponse({
+            data: {
+              sessionId: 'session-123',
+              electionId: 'election-123',
+              capabilityToken: 'capability-token-123',
+            },
+            meta: { requestId: 'request-session' },
+          }),
+        );
+      }
+      if (url === `${baseUrl}/api/sessions/session-123/finalizations`) {
+        return Promise.resolve(
+          buildJsonResponse({
+            data: buildSucceededFinalizationResource(),
+            meta: { requestId: 'request-finalize' },
+          }),
+        );
+      }
+      if (url === verificationUrl) {
+        verificationReads += 1;
+        const resource: VerificationResource =
+          verificationReads === 1
+            ? buildAvailableVerificationResource()
+            : {
+                availability: 'unavailable',
+                finalizationId: 'finalization-1',
+                reason: 'finalization_not_current',
+                message: 'Finalization is not current',
+              };
+        return Promise.resolve(
+          buildJsonResponse({
+            data: resource,
+            meta: { requestId: `request-verify-${verificationReads}` },
+          }),
+        );
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const sessionId = await helpers.createSession();
+    const firstResult = await helpers.finalizeWithScenarios(sessionId, 'S0');
+    expect(firstResult.data.verificationStatus).toBe('success');
+
+    await expect(helpers.finalizeWithScenarios(sessionId, 'S0')).rejects.toThrow(/verification result is unavailable/i);
   });
 });

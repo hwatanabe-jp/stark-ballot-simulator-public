@@ -1,14 +1,26 @@
 # Third-Party Notices
 
-Last updated: 2026-07-29
+Last updated: 2026-08-09
 
-This repository is published as source. The notices below summarize known
-third-party licenses used by this codebase and by vendored documentation assets.
-Update this file when dependencies or vendored assets change.
+The public application repository is published as a sanitized source snapshot.
+The notices below summarize known third-party licenses for that snapshot,
+vendored documentation assets, and separately identified private source tooling.
+Update this file when covered dependencies, assets, or tooling change.
 
-## Scope (public repo)
+## Scope
 
-This summary assumes the public repository includes the full codebase, including:
+This summary distinguishes two source boundaries:
+
+- The public application repository is a sanitized, allowlist-generated snapshot.
+  It contains the publishable application, proof, formal-model, infrastructure,
+  documentation, script, and test sources described below; it does not contain
+  every file from the private source repository.
+- Private development and reusable-IaC tooling is outside that public snapshot.
+  When such a tool is relevant to source-repository development or CI, this file
+  identifies it separately rather than treating it as a public application
+  dependency.
+
+The public application snapshot includes:
 
 - Vite / React Router app and shared libraries in the repository root
 - zkVM workspace under `zkvm/`
@@ -16,8 +28,10 @@ This summary assumes the public repository includes the full codebase, including
 - Target Lambdas under `infra/lambdas/`: `public-api`, `finalization-writer`,
   `proof-dispatcher`, `verification-worker`, `image-signature-verifier`, and
   `semaphore-janitor`
+- The separate Foundation-owned `ecr-retention` Lambda under
+  `infra/lambdas/ecr-retention/`
 - Lean formal models under `formal/` (current Lake metadata lists no external packages)
-- Docs, scripts, and tests
+- Allowlisted docs, scripts, and tests
 
 ## How to regenerate
 
@@ -62,6 +76,20 @@ The pinned source revisions, download URLs, checksums, and license metadata are
 recorded in `infra/image-signature-verifier/asset-manifest.json`. The package
 installer copies the corresponding LICENSE and NOTICE files into its
 `licenses/` directory.
+
+## Private source tooling: independent secret scanner
+
+The private reusable-IaC safety gate downloads and executes one
+checksum-pinned developer/CI tool without committing its binary. This tooling
+is outside the public application snapshot:
+
+- Gitleaks 8.30.1 — MIT
+- Source: <https://github.com/gitleaks/gitleaks>
+- Reviewed Linux archive names and SHA-256 checksums:
+  `scripts/security/gitleaks/release-manifest.json`
+
+Review the upstream license again before any separately authorized framework
+publication or binary redistribution.
 
 ## Vendored public-book browser assets
 

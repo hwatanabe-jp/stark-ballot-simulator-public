@@ -21,7 +21,7 @@ data "aws_iam_policy_document" "app_deployment_record" {
       "logs:PutLogEvents",
     ]
     resources = [
-      "${aws_cloudwatch_log_group.app_pipeline_codebuild[local.app_deployment_record_project_name].arn}:*",
+      "${module.app_pipeline_codebuild_log_groups.log_groups[local.app_deployment_record_project_name].arn}:*",
     ]
   }
 
@@ -36,8 +36,8 @@ data "aws_iam_policy_document" "app_deployment_record" {
       "s3:PutObject",
     ]
     resources = [
-      aws_s3_bucket.app_pipeline_artifacts[0].arn,
-      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/*",
+      aws_s3_bucket.app_pipeline_execution_artifacts[0].arn,
+      "${aws_s3_bucket.app_pipeline_execution_artifacts[0].arn}/*",
     ]
   }
 
@@ -71,6 +71,22 @@ data "aws_iam_policy_document" "app_deployment_record" {
       local.app_toolchain_artifact_records_objects_arn,
       local.app_prover_release_records_objects_arn,
       local.app_deployment_record_objects_arn,
+    ]
+  }
+
+  statement {
+    sid    = "ReadRetainedAppDeploymentAuthority"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+    ]
+    resources = [
+      local.app_retained_accepted_deployment_pointer_object_arn,
+      local.app_retained_authoritative_deployment_manifest_objects_arn,
+      local.app_retained_approval_evidence_objects_arn,
+      local.app_retained_image_signature_verifier_package_objects_arn,
+      local.app_retained_signature_preflight_objects_arn,
     ]
   }
 
@@ -118,7 +134,7 @@ data "aws_iam_policy_document" "app_codebuild_common" {
       "logs:PutLogEvents",
     ]
     resources = [
-      for log_group in aws_cloudwatch_log_group.app_pipeline_codebuild :
+      for log_group in module.app_pipeline_codebuild_log_groups.log_groups :
       "${log_group.arn}:*"
     ]
   }
@@ -134,8 +150,8 @@ data "aws_iam_policy_document" "app_codebuild_common" {
       "s3:PutObject",
     ]
     resources = [
-      aws_s3_bucket.app_pipeline_artifacts[0].arn,
-      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/*",
+      aws_s3_bucket.app_pipeline_execution_artifacts[0].arn,
+      "${aws_s3_bucket.app_pipeline_execution_artifacts[0].arn}/*",
     ]
   }
 
@@ -157,6 +173,58 @@ data "aws_iam_policy_document" "app_codebuild_common" {
 
 data "aws_iam_policy_document" "app_terraform_plan" {
   count = local.app_pipeline_enabled ? 1 : 0
+
+  statement {
+    sid    = "UseRetainedLambdaArtifactsForAppPlan"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+      "s3:PutObject",
+    ]
+    resources = [local.app_retained_lambda_artifact_objects_arn]
+  }
+
+  statement {
+    sid    = "ReadRetainedAppPlanAuthority"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+    ]
+    resources = [
+      local.app_retained_accepted_deployment_pointer_object_arn,
+      local.app_retained_recovery_manifest_objects_arn,
+      local.app_retained_signature_preflight_objects_arn,
+    ]
+  }
+
+  statement {
+    sid    = "UseExactAppPlanCodeBuildCaches"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+      "s3:PutObject",
+    ]
+    resources = local.app_plan_codebuild_cache_object_arns
+  }
+
+  statement {
+    sid       = "ListExactAppPlanCodeBuildCaches"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [local.app_retained_artifact_bucket_arn]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values = concat(
+        local.app_plan_codebuild_cache_prefixes,
+        [for prefix in local.app_plan_codebuild_cache_prefixes : "${prefix}/*"],
+      )
+    }
+  }
 
   statement {
     sid    = "ReadImmutableReleaseAuthority"
@@ -212,8 +280,8 @@ data "aws_iam_policy_document" "app_terraform_plan" {
       test     = "StringLike"
       variable = "s3:prefix"
       values = [
-        "stark-ballot-simulator/stark-dev/develop/app/",
-        "stark-ballot-simulator/stark-dev/develop/app/*",
+        "${dirname(local.app_state_backend_key)}/",
+        "${dirname(local.app_state_backend_key)}/*",
       ]
     }
   }
@@ -512,7 +580,7 @@ data "aws_iam_policy_document" "app_terraform_plan_runtime" {
   }
 
   statement {
-    sid    = "ReadTargetInvariantNotificationTopic"
+    sid    = "ReadTargetObservabilityNotificationTopics"
     effect = "Allow"
 
     actions = [
@@ -520,11 +588,11 @@ data "aws_iam_policy_document" "app_terraform_plan_runtime" {
       "sns:ListSubscriptionsByTopic",
       "sns:ListTagsForResource",
     ]
-    resources = [local.app_invariant_sns_topic_arn]
+    resources = local.app_observability_sns_topic_arns
   }
 
   statement {
-    sid    = "ReadTargetInvariantEmailSubscription"
+    sid    = "ReadTargetObservabilityEmailSubscriptions"
     effect = "Allow"
 
     actions = [
@@ -535,14 +603,14 @@ data "aws_iam_policy_document" "app_terraform_plan_runtime" {
   }
 
   statement {
-    sid    = "ReadTargetInvariantEmailParameter"
+    sid    = "ReadTargetObservabilityEmailParameters"
     effect = "Allow"
 
     actions = ["ssm:GetParametersByPath"]
-    resources = [
-      local.app_invariant_email_parameter_path_arn,
-      local.app_invariant_email_parameter_children_arn,
-    ]
+    resources = concat(
+      local.app_observability_email_parameter_path_arns,
+      local.app_observability_email_parameter_children_arns,
+    )
 
     condition {
       test     = "StringEquals"
@@ -552,7 +620,7 @@ data "aws_iam_policy_document" "app_terraform_plan_runtime" {
   }
 
   statement {
-    sid    = "DecryptTargetInvariantEmailParameter"
+    sid    = "DecryptTargetObservabilityEmailParameters"
     effect = "Allow"
 
     actions   = ["kms:Decrypt"]
@@ -561,7 +629,7 @@ data "aws_iam_policy_document" "app_terraform_plan_runtime" {
     condition {
       test     = "StringEquals"
       variable = "kms:EncryptionContext:PARAMETER_ARN"
-      values   = [local.app_invariant_email_parameter_arn]
+      values   = local.app_observability_email_parameter_arns
     }
 
     condition {
@@ -579,7 +647,7 @@ data "aws_iam_policy_document" "app_terraform_plan_runtime" {
   }
 
   statement {
-    sid    = "ReadTargetSemaphoreJanitorEvents"
+    sid    = "ReadTargetAppEventRules"
     effect = "Allow"
 
     actions = [

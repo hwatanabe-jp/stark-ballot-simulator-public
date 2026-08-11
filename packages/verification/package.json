@@ -2,6 +2,11 @@
   "name": "@stark-ballot/verification",
   "private": true,
   "type": "module",
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec eslint packages/verification",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/verification",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./bitmap-proof-types": "./src/verification/bitmap-proof-types.ts",
@@ -14,37 +19,40 @@
     "./engine-types": "./src/verification/engine/types.ts",
     "./excluded-count": "./src/verification/excluded-count.ts",
     "./fail-closed-status": "./src/verification/fail-closed-status.ts",
+    "./finalization-tamper": "./src/verification/finalization-tamper.ts",
     "./image-id": "./src/verification/expected-image-id.ts",
-    "./image-id-policy": "./src/verification/image-id-policy.js",
     "./image-id-types": "./src/verification/image-id-types.ts",
     "./included-bitmap-artifact": "./src/verification/included-bitmap-artifact.ts",
+    "./local-cast-checks": "./src/verification/local-cast-checks.ts",
     "./merkle": "./src/verification/merkle.ts",
     "./merkle/*": "./src/merkle/*",
     "./public-audit-artifacts": "./src/verification/public-audit-artifacts.ts",
     "./public-audit-artifact-consistency": "./src/verification/public-audit-artifact-consistency.ts",
     "./public-input": "./src/verification/public-input-contract.ts",
     "./public-result": "./src/verification/public-verification-result.ts",
+    "./presentation-policy": "./src/verification/verification-presentation-policy.ts",
+    "./public-bundle-manifest": "./src/verification/public-bundle-manifest.ts",
     "./receipt-normalizer": "./src/verification/receipt-normalizer.ts",
     "./seen-bitmap-artifact": "./src/verification/seen-bitmap-artifact.ts",
-    "./shared/*": "./src/shared/*",
-    "./stage-evaluators": "./src/verification/engine/stage-evaluators.ts",
+    "./shared/constants": "./src/shared/constants.ts",
+    "./shared/logger": "./src/shared/logger.ts",
+    "./shared/types": "./src/shared/types.ts",
     "./stage-status": "./src/verification/engine/derive-stages.ts",
     "./steps": "./src/verification/build-verification-steps.ts",
     "./sth-verifier": "./src/verification/sth-verifier.ts",
     "./summary": "./src/verification/verification-summary.ts",
     "./tamper-detection": "./src/verification/tamperDetection.ts",
-    "./three-stage": "./src/verification/three-stage.ts",
     "./types": "./src/verification/types.ts"
   },
   "dependencies": {
-    "@noble/hashes": "2.2.0",
+    "@stark-ballot/crypto-primitives": "workspace:*",
     "@stark-ballot/merkle": "workspace:*",
     "@stark-ballot/validation": "workspace:*",
     "@stark-ballot/zkvm-contract": "workspace:*"
   },
   "devDependencies": {
     "@stark-ballot/node-adapters": "workspace:*",
-    "fast-check": "4.9.0",
-    "vitest": "4.1.10"
+    "fast-check": "catalog:crypto-testing",
+    "vitest": "catalog:testing"
   }
 }

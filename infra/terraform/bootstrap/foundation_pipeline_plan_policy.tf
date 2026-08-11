@@ -2,6 +2,13 @@ data "aws_iam_policy_document" "foundation_codebuild_common" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
   statement {
+    sid       = "ReadFoundationCallerIdentity"
+    effect    = "Allow"
+    actions   = ["sts:GetCallerIdentity"]
+    resources = ["*"]
+  }
+
+  statement {
     sid    = "WriteFoundationCodeBuildLogs"
     effect = "Allow"
 
@@ -10,7 +17,7 @@ data "aws_iam_policy_document" "foundation_codebuild_common" {
       "logs:PutLogEvents",
     ]
     resources = [
-      for log_group in aws_cloudwatch_log_group.foundation_pipeline_codebuild :
+      for log_group in module.foundation_pipeline_codebuild_log_groups.log_groups :
       "${log_group.arn}:*"
     ]
   }
@@ -80,8 +87,8 @@ data "aws_iam_policy_document" "foundation_terraform_plan" {
       test     = "StringLike"
       variable = "s3:prefix"
       values = [
-        "stark-ballot-simulator/stark-dev/develop/foundation/",
-        "stark-ballot-simulator/stark-dev/develop/foundation/*",
+        "${dirname(local.foundation_state_backend_key)}/",
+        "${dirname(local.foundation_state_backend_key)}/*",
       ]
     }
   }
@@ -148,6 +155,67 @@ data "aws_iam_policy_document" "foundation_terraform_plan" {
       "ssm:GetParameter",
       "ssm:GetParameters",
       "ssm:ListTagsForResource",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ReadFoundationEcrRetentionRole"
+    effect = "Allow"
+    actions = [
+      "iam:GetRole",
+      "iam:GetRolePolicy",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListInstanceProfilesForRole",
+      "iam:ListRolePolicies",
+      "iam:ListRoleTags",
+    ]
+    resources = [local.foundation_ecr_retention_role_arn]
+  }
+
+  statement {
+    sid    = "ReadFoundationEcrRetentionBoundary"
+    effect = "Allow"
+    actions = [
+      "iam:GetPolicy",
+      "iam:GetPolicyVersion",
+      "iam:ListPolicyVersions",
+    ]
+    resources = [local.foundation_ecr_retention_boundary_policy_arn]
+  }
+
+  statement {
+    sid    = "ReadFoundationEcrRetentionLambda"
+    effect = "Allow"
+    actions = [
+      "lambda:GetFunction",
+      "lambda:GetFunctionCodeSigningConfig",
+      "lambda:GetFunctionConcurrency",
+      "lambda:GetPolicy",
+      "lambda:GetRuntimeManagementConfig",
+      "lambda:ListTags",
+      "lambda:ListVersionsByFunction",
+    ]
+    resources = [local.foundation_ecr_retention_function_arn]
+  }
+
+  statement {
+    sid    = "ReadFoundationEcrRetentionSchedule"
+    effect = "Allow"
+    actions = [
+      "events:DescribeRule",
+      "events:ListTagsForResource",
+      "events:ListTargetsByRule",
+    ]
+    resources = [local.foundation_ecr_retention_schedule_arn]
+  }
+
+  statement {
+    sid    = "ReadFoundationEcrRetentionLogGroup"
+    effect = "Allow"
+    actions = [
+      "logs:DescribeLogGroups",
+      "logs:ListTagsForResource",
     ]
     resources = ["*"]
   }

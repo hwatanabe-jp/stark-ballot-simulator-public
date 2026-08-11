@@ -10,8 +10,9 @@
  */
 
 import { readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
-import { isNumberArray, isRecord } from '@stark-ballot/domain/utils/guards';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'node:url';
+import { isNumberArray, isRecord } from '@stark-ballot/validation/unknown-value-guards';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -20,8 +21,9 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   return value;
 }
 
-const VALID_RECEIPT = join(__dirname, '../../zkvm/test-data/test-fixture-valid-receipt.json');
-const TAMPERED_RECEIPT = join(__dirname, '../../zkvm/test-data/test-fixture-tampered-stark-receipt.json');
+const scriptDirectory = dirname(fileURLToPath(import.meta.url));
+const VALID_RECEIPT = join(scriptDirectory, '../../zkvm/test-data/test-fixture-valid-receipt.json');
+const TAMPERED_RECEIPT = join(scriptDirectory, '../../zkvm/test-data/test-fixture-tampered-stark-receipt.json');
 
 enum TamperType {
   SINGLE_BIT_FLIP = 'SINGLE_BIT_FLIP', // Flip 1 bit (minimal change)

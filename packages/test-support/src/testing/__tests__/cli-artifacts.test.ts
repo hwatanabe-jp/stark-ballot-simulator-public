@@ -11,7 +11,7 @@ import {
   getRecordProperty,
   getStringProperty,
   isRecord,
-} from '@stark-ballot/domain/utils/guards';
+} from '@stark-ballot/validation/unknown-value-guards';
 
 const cleanupPaths: string[] = [];
 
@@ -35,7 +35,7 @@ describe('persistCliReport', () => {
         duration: 1200,
         details: {
           verificationStatus: 'success',
-          verificationExecutionId: 'exec-1',
+          finalizationId: 'finalization-1',
           verificationBundleDelivery: 'authenticated-endpoint',
         },
       },
@@ -115,7 +115,7 @@ describe('extractBundleArchive', () => {
       sessionId: 'session-456',
       bundlePath: zipPath,
       delivery: 'authenticated-endpoint',
-      executionId: 'exec-1',
+      finalizationId: 'finalization-1',
       outputDir: baseDir,
     });
 

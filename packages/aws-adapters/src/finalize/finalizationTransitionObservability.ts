@@ -10,12 +10,12 @@ import type { FinalizationState } from '@stark-ballot/application/finalize/final
 
 export interface ObservedFinalizationState {
   status: FinalizationEventState;
-  executionId: string;
+  finalizationId: string;
 }
 
 export interface FinalizationPersistenceOutcome {
   sessionId: string;
-  requestedExecutionId: string;
+  requestedFinalizationId: string;
   requestedTo: FinalizationEventState;
   before?: ObservedFinalizationState;
   actual: ObservedFinalizationState;
@@ -26,10 +26,11 @@ export interface FinalizationPersistenceOutcome {
 
 export interface FinalizationStorePersistenceOutcome {
   sessionId: string;
-  requestedExecutionId: string;
+  requestedFinalizationId: string;
   requestedTo: FinalizationEventState;
   before?: ObservedFinalizationState;
   actual: FinalizationState;
+  semanticReason?: FinalizationEventReason;
   authoritativeWrite: boolean;
   metadata?: FinalizationTransitionMetadata;
 }
@@ -52,16 +53,16 @@ function resolveDefaultMetadata(requestedTo: FinalizationEventState): Finalizati
 }
 
 function hasSameState(left: ObservedFinalizationState | undefined, right: ObservedFinalizationState): boolean {
-  return left?.status === right.status && left.executionId === right.executionId;
+  return left?.status === right.status && left.finalizationId === right.finalizationId;
 }
 
 function resolveRejectionReason({
-  requestedExecutionId,
+  requestedFinalizationId,
   actual,
   actualReason,
   authoritativeWrite,
 }: FinalizationPersistenceOutcome): FinalizationEventReason {
-  if (actual.executionId !== requestedExecutionId) {
+  if (actual.finalizationId !== requestedFinalizationId) {
     return 'EXECUTION_MISMATCH';
   }
   if (TERMINAL_FINALIZATION_STATES.has(actual.status)) {
@@ -78,19 +79,26 @@ export function recordFinalizationPersistenceOutcome(outcome: FinalizationPersis
     const metadata = outcome.metadata ?? resolveDefaultMetadata(outcome.requestedTo);
     const sessionIdHash = hashSessionIdForLogging(outcome.sessionId);
     const requestWasAdmitted =
-      outcome.actual.status === outcome.requestedTo && outcome.actual.executionId === outcome.requestedExecutionId;
+      outcome.actual.status === outcome.requestedTo &&
+      outcome.actual.finalizationId === outcome.requestedFinalizationId;
 
     if (requestWasAdmitted) {
       const changed = outcome.authoritativeWrite && !hasSameState(outcome.before, outcome.actual);
+      if (changed && outcome.before === undefined && outcome.actual.status === 'pending') {
+        emitCanonicalEvent({
+          event: 'finalization_admitted',
+          finalization_id: outcome.actual.finalizationId,
+        });
+      }
       emitCanonicalEvent({
         event: 'finalize_state_transition',
         from: changed ? (outcome.before?.status ?? 'none') : outcome.actual.status,
         to: outcome.actual.status,
         source: metadata.source,
-        reason: changed ? metadata.reason : 'IDEMPOTENT_RETRY',
+        reason: changed ? (outcome.actualReason ?? metadata.reason) : 'IDEMPOTENT_RETRY',
         changed,
         session_id_hash: sessionIdHash,
-        execution_id: outcome.actual.executionId,
+        finalization_id: outcome.actual.finalizationId,
       });
       return;
     }
@@ -104,7 +112,7 @@ export function recordFinalizationPersistenceOutcome(outcome: FinalizationPersis
         reason: outcome.actualReason ?? metadata.reason,
         changed: true,
         session_id_hash: sessionIdHash,
-        execution_id: outcome.actual.executionId,
+        finalization_id: outcome.actual.finalizationId,
       });
     }
 
@@ -114,7 +122,7 @@ export function recordFinalizationPersistenceOutcome(outcome: FinalizationPersis
       source: metadata.source,
       reason: resolveRejectionReason(outcome),
       session_id_hash: sessionIdHash,
-      execution_id: outcome.requestedExecutionId,
+      finalization_id: outcome.requestedFinalizationId,
     });
   } catch {
     // Observability is downstream of persistence and must never alter its result.
@@ -122,25 +130,26 @@ export function recordFinalizationPersistenceOutcome(outcome: FinalizationPersis
 }
 
 export function recordFinalizationStorePersistenceOutcome(outcome: FinalizationStorePersistenceOutcome): void {
-  const actualReason =
+  const stateReason =
     outcome.actual.status === 'failed' && isFinalizationEventReason(outcome.actual.error.code)
       ? outcome.actual.error.code
       : undefined;
+  const actualReason = outcome.semanticReason ?? stateReason;
   recordFinalizationPersistenceOutcome({
     sessionId: outcome.sessionId,
-    requestedExecutionId: outcome.requestedExecutionId,
+    requestedFinalizationId: outcome.requestedFinalizationId,
     requestedTo: outcome.requestedTo,
     ...(outcome.before
       ? {
           before: {
             status: outcome.before.status,
-            executionId: outcome.before.executionId,
+            finalizationId: outcome.before.finalizationId,
           },
         }
       : {}),
     actual: {
       status: outcome.actual.status,
-      executionId: outcome.actual.executionId,
+      finalizationId: outcome.actual.finalizationId,
     },
     ...(actualReason ? { actualReason } : {}),
     authoritativeWrite: outcome.authoritativeWrite,

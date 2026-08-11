@@ -5,6 +5,7 @@ import {
   QueryCommand as BaseQueryCommand,
 } from '@aws-sdk/client-dynamodb';
 import {
+  DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
   QueryCommand,
@@ -16,12 +17,16 @@ import type { StartedTestContainer } from 'testcontainers';
 import { DynamoRateLimitStore } from '@stark-ballot/aws-adapters/rate-limit/dynamoRateLimitStore';
 import { DynamoSessionStore } from '@stark-ballot/aws-adapters/store/dynamoSessionStore';
 import { generateVoteId } from '@stark-ballot/domain/vote/voteId';
-import type { VoteData } from '@stark-ballot/domain/types/server';
+import type { VoteData } from '@stark-ballot/domain/types/sessionRecords';
 import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
-import { parseAwsPersistedFinalizationResult } from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
+import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
+import type {
+  FinalizationResultAuthority,
+  FinalizationScenarioContext,
+} from '@stark-ballot/application/finalize/finalization-types';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
-import { createTestPublicInputArtifact } from '@stark-ballot/test-support/testing/public-input-artifact';
+import { defineSessionStoreContract } from './support/sessionStoreContract';
 
 // Keep Docker-backed evidence opt-in so default Vitest runs never pull images implicitly.
 const shouldRunDynamoDbLocalTests = process.env['RUN_DYNAMODB_LOCAL_TESTS'] === '1';
@@ -30,6 +35,18 @@ const VALID_VOTE_SECRET_ENCRYPTION_KEY = 'abcdef0123456789abcdef0123456789abcdef
 const VoteChoice = {
   A: 'A' as const,
   B: 'B' as const,
+};
+
+const scenarioContext: FinalizationScenarioContext = {
+  scenarios: [],
+  tamperMode: 'none',
+  claimedCounts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
+  claimedTotalVotes: 1,
+  summary: {
+    ignoredCount: 0,
+    recountedCount: 0,
+    userRecountChoice: null,
+  },
 };
 
 function buildVote(voteId: string, vote: 'A' | 'B', randNibble: string): VoteData {
@@ -43,27 +60,33 @@ function buildVote(voteId: string, vote: 'A' | 'B', randNibble: string): VoteDat
   };
 }
 
-function buildFinalizationResult(executionId: string, journal = createTestJournal()) {
-  const result = buildFinalizationResultFromJournal({
+function buildFinalizationResult(journal = createTestJournal()): FinalizationResultAuthority {
+  return buildFinalizationResultFromJournal({
     journal,
     imageId: `0x${'1'.repeat(64)}`,
   });
+}
+
+function buildSucceededRecord(
+  sessionId: string,
+  finalizationId: string,
+  result = buildFinalizationResult(),
+): Extract<FinalizationRecord, { state: { status: 'succeeded' } }> {
   return {
-    ...result,
-    verificationExecutionId: executionId,
-    publicInputArtifact: createTestPublicInputArtifact({
-      executionId,
-      typedAuthority: {
-        electionId: journal.electionId,
-        electionConfigHash: journal.electionConfigHash,
-        methodVersion: journal.methodVersion,
-        bulletinRoot: journal.bulletinRoot,
-        treeSize: journal.treeSize,
-        totalExpected: journal.totalExpected,
-        votesCount: journal.validVotes,
-        recomputedInputCommitment: journal.inputCommitment,
-      },
-    }),
+    sessionId,
+    finalizationId,
+    scenarioContext,
+    state: {
+      status: 'succeeded',
+      finalizationId,
+      queuedAtMs: 1,
+      startedAtMs: 2,
+      completedAtMs: 3,
+    },
+    finalizationResult: {
+      finalizationId,
+      ...result,
+    },
   };
 }
 
@@ -178,10 +201,16 @@ describe.skipIf(!shouldRunDynamoDbLocalTests)('DynamoSessionStore DynamoDB Local
     await container.stop();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env['SESSION_LIVE_TTL_SECONDS'] = '300';
     process.env['VERIFICATION_ARTIFACT_TTL_SECONDS'] = '7200';
     process.env['VOTE_SECRET_ENCRYPTION_KEY'] = VALID_VOTE_SECRET_ENCRYPTION_KEY;
+    await documentClient.send(
+      new DeleteCommand({
+        TableName: sessionsTableName,
+        Key: { sessionId: 'RECEIPT_BOARD_COUNTER' },
+      }),
+    );
   });
 
   function createStore(): DynamoSessionStore {
@@ -191,6 +220,18 @@ describe.skipIf(!shouldRunDynamoDbLocalTests)('DynamoSessionStore DynamoDB Local
       documentClient,
     });
   }
+
+  defineSessionStoreContract({
+    name: 'DynamoSessionStore DynamoDB Local',
+    capabilities: {
+      durableReload: true,
+    },
+    createHarness: () =>
+      Promise.resolve({
+        store: createStore(),
+        reload: () => Promise.resolve(createStore()),
+      }),
+  });
 
   it('persists and queries session-scoped votes through DynamoDB-compatible tables and GSI', async () => {
     const store = createStore();
@@ -262,34 +303,17 @@ describe.skipIf(!shouldRunDynamoDbLocalTests)('DynamoSessionStore DynamoDB Local
     const voteId = generateVoteId();
     await seedStore.addVote(session.sessionId, buildVote(voteId, VoteChoice.A, '3'));
 
-    let mutatedBeforeTransaction = false;
-    const originalSend = documentClient.send.bind(documentClient) as (command: object) => Promise<unknown>;
-    const hookedDocumentClient = Object.create(documentClient) as DynamoDBDocumentClient;
-    hookedDocumentClient.send = (async (command: object): Promise<unknown> => {
-      if (command instanceof TransactWriteCommand && !mutatedBeforeTransaction) {
-        mutatedBeforeTransaction = true;
-        await documentClient.send(
-          new UpdateCommand({
-            TableName: votesTableName,
-            Key: { sessionId: session.sessionId, voteIndex: 0 },
-            UpdateExpression: 'SET #commit = :commit',
-            ExpressionAttributeNames: { '#commit': 'commit' },
-            ExpressionAttributeValues: { ':commit': `0x${'f'.repeat(64)}` },
-          }),
-        );
-      }
-      return await originalSend(command);
-    }) as DynamoDBDocumentClient['send'];
-
-    const staleWriter = new DynamoSessionStore({
-      sessionsTableName,
-      votesTableName,
-      documentClient: hookedDocumentClient,
-    });
-
-    await expect(staleWriter.updateSession(session.sessionId, { electionId: 'updated-election' })).rejects.toThrow(
-      'CT_PROOF_UNAVAILABLE',
+    await documentClient.send(
+      new UpdateCommand({
+        TableName: votesTableName,
+        Key: { sessionId: session.sessionId, voteIndex: 0 },
+        UpdateExpression: 'SET #commit = :commit',
+        ExpressionAttributeNames: { '#commit': 'commit' },
+        ExpressionAttributeValues: { ':commit': `0x${'f'.repeat(64)}` },
+      }),
     );
+
+    await expect(createStore().getVotingRecord(session.sessionId)).rejects.toThrow('CT_PROOF_UNAVAILABLE');
 
     const voteRow = await documentClient.send(
       new GetCommand({
@@ -308,15 +332,15 @@ describe.skipIf(!shouldRunDynamoDbLocalTests)('DynamoSessionStore DynamoDB Local
         ConsistentRead: true,
       }),
     );
-    expect(sessionRow.Item?.['session']).toMatchObject({ electionId: session.electionId });
+    expect(sessionRow.Item?.['identity']).toMatchObject({ electionId: session.electionId });
   });
 
   it('saves and validates bitmap sidecars through DynamoDB-compatible reads', async () => {
     const store = createStore();
     const session = await store.createSession();
     await store.addVote(session.sessionId, buildVote(generateVoteId(), VoteChoice.A, 'a'));
-    const votedSession = await store.getSession(session.sessionId);
-    const bulletinRoot = votedSession?.bulletinRootHistory?.at(-1)?.root;
+    const votedSession = await store.getVotingRecord(session.sessionId);
+    const bulletinRoot = votedSession?.bulletinRootHistory.at(-1)?.root;
     if (!bulletinRoot) {
       throw new Error('Expected bulletin root after vote');
     }
@@ -327,87 +351,67 @@ describe.skipIf(!shouldRunDynamoDbLocalTests)('DynamoSessionStore DynamoDB Local
     const journal = {
       ...createTestJournal({ totalExpected: 1, validVotes: 1, seenIndicesCount: 1 }),
       bulletinRoot,
-      treeSize: 1,
-      totalExpected: 1,
       includedBitmapRoot,
       seenBitmapRoot,
     };
 
-    await store.finalizeSession(
-      session.sessionId,
-      buildFinalizationResult('exec-bitmap-local', journal),
-      session.contractGeneration ?? 'current',
-      'exec-bitmap-local',
-    );
-    await store.saveBitmapData(session.sessionId, {
-      includedBitmap,
-      includedBitmapRoot,
-      seenBitmap,
-      seenBitmapRoot,
-      treeSize: 1,
-      finalizedAt: 123,
+    await store.commitSuccessfulFinalization({
+      record: buildSucceededRecord(session.sessionId, 'exec-bitmap-local', buildFinalizationResult(journal)),
+      bitmap: {
+        availability: 'available',
+        data: { includedBitmap, includedBitmapRoot, seenBitmap, seenBitmapRoot, treeSize: 1, finalizedAtMs: 123 },
+      },
     });
 
-    await expect(store.getBitmapData(session.sessionId)).resolves.toEqual({
+    await expect(store.getBitmapData(session.sessionId, 'exec-bitmap-local')).resolves.toEqual({
       sessionId: session.sessionId,
+      finalizationId: 'exec-bitmap-local',
       includedBitmap,
       includedBitmapRoot,
       seenBitmap,
       seenBitmapRoot,
       treeSize: 1,
-      finalizedAt: 123,
+      finalizedAtMs: 123,
     });
 
     await documentClient.send(
       new UpdateCommand({
         TableName: sessionsTableName,
-        Key: { sessionId: `BITMAP#${session.sessionId}` },
-        UpdateExpression: 'SET bitmapData.includedBitmapRoot = :root',
+        Key: { sessionId: `BITMAP#${session.sessionId}#exec-bitmap-local` },
+        UpdateExpression: 'SET bitmap.includedBitmapRoot = :root',
         ExpressionAttributeValues: {
           ':root': `0x${'f'.repeat(64)}`,
         },
       }),
     );
 
-    await expect(store.getBitmapData(session.sessionId)).resolves.toBeNull();
+    await expect(store.getBitmapData(session.sessionId, 'exec-bitmap-local')).resolves.toBeNull();
   });
 
   it('publishes one receipt sidecar for competing atomic finalizations without advancing stale board indices', async () => {
     const firstWriter = createStore();
     const secondWriter = createStore();
     const session = await firstWriter.createSession();
-    const contractGeneration = session.contractGeneration ?? 'current';
 
     const results = await Promise.allSettled([
-      firstWriter.finalizeSessionWithReceiptPublication(
-        session.sessionId,
-        buildFinalizationResult('exec-local-first'),
-        contractGeneration,
-        {
-          receipt: '{"receipt":"first"}',
-          timestamp: 1001,
-        },
-        'exec-local-first',
-      ),
-      secondWriter.finalizeSessionWithReceiptPublication(
-        session.sessionId,
-        buildFinalizationResult('exec-local-second'),
-        contractGeneration,
-        {
-          receipt: '{"receipt":"second"}',
-          timestamp: 1002,
-        },
-        'exec-local-second',
-      ),
+      firstWriter.commitSuccessfulFinalization({
+        record: buildSucceededRecord(session.sessionId, 'exec-local-first'),
+        receipt: { receipt: '{"receipt":"first"}', timestamp: 1001 },
+        bitmap: { availability: 'unavailable' },
+      }),
+      secondWriter.commitSuccessfulFinalization({
+        record: buildSucceededRecord(session.sessionId, 'exec-local-second'),
+        receipt: { receipt: '{"receipt":"second"}', timestamp: 1002 },
+        bitmap: { availability: 'unavailable' },
+      }),
     ]);
 
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
 
-    const persisted = await createStore().getSession(session.sessionId);
-    const persistedResult = parseAwsPersistedFinalizationResult(persisted?.finalizationResult);
-    expect(persisted?.finalized).toBe(true);
-    expect(persistedResult?.receiptPublication).toMatchObject({ boardIndex: 100 });
+    const persisted = await createStore().getCurrentFinalizationRecord(session.sessionId);
+    expect(persisted?.state.status).toBe('succeeded');
+    expect(persisted?.finalizationResult?.receiptPublication).toMatchObject({ boardIndex: 100 });
 
     const counterRow = await documentClient.send(
       new GetCommand({
@@ -416,18 +420,18 @@ describe.skipIf(!shouldRunDynamoDbLocalTests)('DynamoSessionStore DynamoDB Local
         ConsistentRead: true,
       }),
     );
-    expect(counterRow.Item?.['value']).toBe(100);
+    expect(counterRow.Item?.['nextBoardIndex']).toBe(101);
 
     const receiptRow = await documentClient.send(
       new GetCommand({
         TableName: sessionsTableName,
-        Key: { sessionId: `RECEIPT#${session.sessionId}` },
+        Key: { sessionId: `RECEIPT#${session.sessionId}#${persisted?.finalizationId}` },
         ConsistentRead: true,
       }),
     );
-    expect(receiptRow.Item?.['receiptEntry']).toMatchObject({
+    expect(receiptRow.Item).toMatchObject({
       boardIndex: 100,
-      receiptHash: persistedResult?.receiptPublication?.receiptHash,
+      receiptHash: persisted?.finalizationResult?.receiptPublication?.receiptHash,
     });
   });
 
@@ -438,26 +442,16 @@ describe.skipIf(!shouldRunDynamoDbLocalTests)('DynamoSessionStore DynamoDB Local
     const secondSession = await secondWriter.createSession();
 
     const results = await Promise.allSettled([
-      firstWriter.finalizeSessionWithReceiptPublication(
-        firstSession.sessionId,
-        buildFinalizationResult('exec-local-cross-session-first'),
-        firstSession.contractGeneration ?? 'current',
-        {
-          receipt: '{"receipt":"cross-session-first"}',
-          timestamp: 2001,
-        },
-        'exec-local-cross-session-first',
-      ),
-      secondWriter.finalizeSessionWithReceiptPublication(
-        secondSession.sessionId,
-        buildFinalizationResult('exec-local-cross-session-second'),
-        secondSession.contractGeneration ?? 'current',
-        {
-          receipt: '{"receipt":"cross-session-second"}',
-          timestamp: 2002,
-        },
-        'exec-local-cross-session-second',
-      ),
+      firstWriter.commitSuccessfulFinalization({
+        record: buildSucceededRecord(firstSession.sessionId, 'exec-local-cross-session-first'),
+        receipt: { receipt: '{"receipt":"cross-session-first"}', timestamp: 2001 },
+        bitmap: { availability: 'unavailable' },
+      }),
+      secondWriter.commitSuccessfulFinalization({
+        record: buildSucceededRecord(secondSession.sessionId, 'exec-local-cross-session-second'),
+        receipt: { receipt: '{"receipt":"cross-session-second"}', timestamp: 2002 },
+        bitmap: { availability: 'unavailable' },
+      }),
     ]);
 
     expect(results.every((result) => result.status === 'fulfilled')).toBe(true);
@@ -467,18 +461,16 @@ describe.skipIf(!shouldRunDynamoDbLocalTests)('DynamoSessionStore DynamoDB Local
       }
       return result.value;
     });
-    expect(new Set(publications.map((publication) => publication.boardIndex)).size).toBe(2);
+    expect(new Set(publications.map((publication) => publication.receiptPublication?.boardIndex)).size).toBe(2);
 
-    const firstPersisted = await createStore().getSession(firstSession.sessionId);
-    const secondPersisted = await createStore().getSession(secondSession.sessionId);
-    const firstPersistedResult = parseAwsPersistedFinalizationResult(firstPersisted?.finalizationResult);
-    const secondPersistedResult = parseAwsPersistedFinalizationResult(secondPersisted?.finalizationResult);
+    const firstPersisted = await createStore().getCurrentFinalizationRecord(firstSession.sessionId);
+    const secondPersisted = await createStore().getCurrentFinalizationRecord(secondSession.sessionId);
     const persistedBoardIndices = [
-      firstPersistedResult?.receiptPublication?.boardIndex,
-      secondPersistedResult?.receiptPublication?.boardIndex,
+      firstPersisted?.finalizationResult?.receiptPublication?.boardIndex,
+      secondPersisted?.finalizationResult?.receiptPublication?.boardIndex,
     ];
     expect(persistedBoardIndices).toEqual(
-      expect.arrayContaining(publications.map((publication) => publication.boardIndex)),
+      expect.arrayContaining(publications.map((publication) => publication.receiptPublication?.boardIndex)),
     );
 
     const counterRow = await documentClient.send(
@@ -488,7 +480,9 @@ describe.skipIf(!shouldRunDynamoDbLocalTests)('DynamoSessionStore DynamoDB Local
         ConsistentRead: true,
       }),
     );
-    expect(counterRow.Item?.['value']).toBe(Math.max(...publications.map((publication) => publication.boardIndex)));
+    expect(counterRow.Item?.['nextBoardIndex']).toBe(
+      Math.max(...publications.map((publication) => publication.receiptPublication?.boardIndex ?? -1)) + 1,
+    );
   });
 
   it('rolls back all writes when a DynamoDB transaction condition fails', async () => {
@@ -572,7 +566,7 @@ describe.skipIf(!shouldRunDynamoDbLocalTests)('DynamoSessionStore DynamoDB Local
     );
 
     const reader = createStore();
-    await expect(reader.getSession(session.sessionId)).resolves.toBeNull();
+    await expect(reader.getSessionIdentity(session.sessionId)).resolves.toBeNull();
     await expect(reader.getVoteById(session.sessionId, voteId)).resolves.toBeNull();
   });
 

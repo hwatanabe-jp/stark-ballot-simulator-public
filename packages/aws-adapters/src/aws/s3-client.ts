@@ -1,6 +1,6 @@
 import { S3Client } from '@aws-sdk/client-s3';
 import { validateTargetS3ProofReferences } from '@stark-ballot/runtime-config/env/targetRuntimeReferences';
-import { isTargetAwsRuntime } from '@stark-ballot/runtime-config/env/targetRuntime';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 /**
  * S3 client configuration
@@ -23,34 +23,12 @@ export interface S3Config {
 /**
  * Load S3 configuration from environment variables
  */
-export function getS3Config(): S3Config {
-  const targetAwsRuntime = isTargetAwsRuntime();
-  const region = process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'];
-  const expectedBucketOwner = process.env['AWS_ACCOUNT_ID'];
-  const bucket = process.env['S3_PROOF_BUCKET'];
-  const prefix = process.env['S3_PROOF_PREFIX'];
-
-  if (!targetAwsRuntime) {
-    throw new Error('TARGET_AWS_RUNTIME=1 is required for S3 proof storage');
+export function getS3Config(profile: ResolvedRuntimeProfile): S3Config {
+  if (profile.target.kind !== 'aws' || profile.artifacts.kind !== 's3' || profile.external.kind !== 'aws') {
+    throw new Error('The selected runtime profile does not permit S3 proof storage');
   }
-  if (process.env['USE_S3'] !== 'true') {
-    throw new Error('USE_S3=true is required for S3 proof storage');
-  }
-  if (!region) {
-    throw new Error('AWS_REGION or AWS_DEFAULT_REGION is required for target AWS runtime');
-  }
-  if (!bucket) {
-    throw new Error('S3_PROOF_BUCKET is required for target AWS runtime');
-  }
-  if (!prefix) {
-    throw new Error('S3_PROOF_PREFIX is required for target AWS runtime');
-  }
-  if (!expectedBucketOwner) {
-    throw new Error('AWS_ACCOUNT_ID is required for target AWS runtime S3 owner protection');
-  }
-  if (!/^[0-9]{12}$/.test(expectedBucketOwner)) {
-    throw new Error('AWS_ACCOUNT_ID must be a 12-digit AWS account ID for target AWS runtime S3 owner protection');
-  }
+  const { region, accountId: expectedBucketOwner } = profile.external;
+  const { bucket, prefix } = profile.external.artifactStorage;
   validateTargetS3ProofReferences({
     s3ProofBucket: bucket,
     s3ProofPrefix: prefix,
@@ -72,8 +50,8 @@ export function getS3Config(): S3Config {
  * 2. AWS CLI profile (AWS_PROFILE environment variable)
  * 3. IAM role credentials (Lambda/EC2)
  */
-export function createS3Client(): S3Client {
-  const config = getS3Config();
+export function createS3Client(profile: ResolvedRuntimeProfile): S3Client {
+  const config = getS3Config(profile);
 
   return new S3Client({
     region: config.region,
@@ -90,9 +68,9 @@ let s3ClientInstance: S3Client | null = null;
 /**
  * Get or create S3 client instance
  */
-export function getS3Client(): S3Client {
+export function getS3Client(profile: ResolvedRuntimeProfile): S3Client {
   if (!s3ClientInstance) {
-    s3ClientInstance = createS3Client();
+    s3ClientInstance = createS3Client(profile);
   }
   return s3ClientInstance;
 }

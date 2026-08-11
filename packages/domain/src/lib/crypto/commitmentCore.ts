@@ -1,6 +1,6 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
-import { hexToBytesStrict } from '@stark-ballot/domain/crypto/sha256';
+import { hexToBytesStrict } from '@stark-ballot/crypto-primitives';
 
 const COMMIT_DOMAIN_TAG = utf8ToBytes('stark-ballot:commit|v1.0');
 

@@ -22,6 +22,7 @@ interface TargetS3ProofReferenceValues {
 
 export interface TargetRuntimeReferenceValues extends TargetS3ProofReferenceValues {
   proverWorkQueueUrl: string;
+  verificationWorkQueueUrl: string;
   proverStateMachineArn: string;
   verificationWorkerFunctionName: string;
 }
@@ -32,7 +33,7 @@ function targetReferenceError(name: RuntimeConfigName, message: string): Runtime
 
 function assertPresent(name: RuntimeConfigName, value: string): void {
   if (value.trim().length === 0) {
-    throw targetReferenceError(name, `${name} must be set when TARGET_AWS_RUNTIME=1.`);
+    throw targetReferenceError(name, `${name} must be set for the target AWS runtime profile.`);
   }
 }
 
@@ -78,63 +79,54 @@ function isTargetResourceName(name: string, suffix: string): boolean {
   return TARGET_NAME_PREFIXES.some((prefix) => name === `${prefix}-${suffix}`);
 }
 
-function validateQueueUrl(value: string, options: TargetReferenceValidationOptions): void {
-  assertPresent('PROVER_WORK_QUEUE_URL', value);
-  assertNoLegacyMarker('PROVER_WORK_QUEUE_URL', value);
+function validateQueueUrl(
+  name: 'PROVER_WORK_QUEUE_URL' | 'VERIFICATION_WORK_QUEUE_URL',
+  value: string,
+  targetSuffix: 'prover-work' | 'verification-work',
+  targetDescription: 'prover work queue' | 'verification work queue',
+  options: TargetReferenceValidationOptions,
+): void {
+  assertPresent(name, value);
+  assertNoLegacyMarker(name, value);
 
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch (cause) {
-    throw new RuntimeConfigValidationError(
-      ['PROVER_WORK_QUEUE_URL'],
-      cause,
-      'PROVER_WORK_QUEUE_URL must be a valid SQS queue URL.',
-    );
+    throw new RuntimeConfigValidationError([name], cause, `${name} must be a valid SQS queue URL.`);
   }
 
   if (parsed.protocol !== 'https:' || parsed.search || parsed.hash) {
-    throw targetReferenceError('PROVER_WORK_QUEUE_URL', 'PROVER_WORK_QUEUE_URL must be a valid SQS queue URL.');
+    throw targetReferenceError(name, `${name} must be a valid SQS queue URL.`);
   }
 
   const sqsMatch = /^sqs\.([a-z]{2}-[a-z]+-[0-9])\.amazonaws\.com$/.exec(parsed.hostname);
   if (!sqsMatch) {
-    throw targetReferenceError('PROVER_WORK_QUEUE_URL', 'PROVER_WORK_QUEUE_URL must reference an AWS SQS endpoint.');
+    throw targetReferenceError(name, `${name} must reference an AWS SQS endpoint.`);
   }
-  const region = requiredMatchGroup(
-    'PROVER_WORK_QUEUE_URL',
-    sqsMatch,
-    1,
-    'PROVER_WORK_QUEUE_URL must reference an AWS SQS endpoint.',
-  );
-  assertRegion('PROVER_WORK_QUEUE_URL', region, options.expectedRegion);
+  const region = requiredMatchGroup(name, sqsMatch, 1, `${name} must reference an AWS SQS endpoint.`);
+  assertRegion(name, region, options.expectedRegion);
 
   const pathMatch = /^\/([0-9]{12})\/([A-Za-z0-9_-]{1,80})$/.exec(parsed.pathname);
   if (!pathMatch) {
-    throw targetReferenceError(
-      'PROVER_WORK_QUEUE_URL',
-      'PROVER_WORK_QUEUE_URL must include a 12-digit account ID and queue name.',
-    );
+    throw targetReferenceError(name, `${name} must include a 12-digit account ID and queue name.`);
   }
   const accountId = requiredMatchGroup(
-    'PROVER_WORK_QUEUE_URL',
+    name,
     pathMatch,
     1,
-    'PROVER_WORK_QUEUE_URL must include a 12-digit account ID and queue name.',
+    `${name} must include a 12-digit account ID and queue name.`,
   );
   const queueName = requiredMatchGroup(
-    'PROVER_WORK_QUEUE_URL',
+    name,
     pathMatch,
     2,
-    'PROVER_WORK_QUEUE_URL must include a 12-digit account ID and queue name.',
+    `${name} must include a 12-digit account ID and queue name.`,
   );
-  assertAccount('PROVER_WORK_QUEUE_URL', accountId, options.expectedAccountId);
+  assertAccount(name, accountId, options.expectedAccountId);
 
-  if (!isTargetResourceName(queueName, 'prover-work')) {
-    throw targetReferenceError(
-      'PROVER_WORK_QUEUE_URL',
-      'PROVER_WORK_QUEUE_URL must reference the Terraform-managed target prover work queue.',
-    );
+  if (!isTargetResourceName(queueName, targetSuffix)) {
+    throw targetReferenceError(name, `${name} must reference the Terraform-managed target ${targetDescription}.`);
   }
 }
 
@@ -255,7 +247,14 @@ export function validateTargetRuntimeReferences(
   values: TargetRuntimeReferenceValues,
   options: TargetReferenceValidationOptions = {},
 ): void {
-  validateQueueUrl(values.proverWorkQueueUrl, options);
+  validateQueueUrl('PROVER_WORK_QUEUE_URL', values.proverWorkQueueUrl, 'prover-work', 'prover work queue', options);
+  validateQueueUrl(
+    'VERIFICATION_WORK_QUEUE_URL',
+    values.verificationWorkQueueUrl,
+    'verification-work',
+    'verification work queue',
+    options,
+  );
   validateStateMachineArn(values.proverStateMachineArn, options);
   validateVerifierFunctionName(values.verificationWorkerFunctionName, options);
   validateTargetS3ProofReferences(values);

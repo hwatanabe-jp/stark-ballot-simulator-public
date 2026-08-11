@@ -4,12 +4,7 @@ import {
   type VerificationCheckId,
 } from '@stark-ballot/verification/checks';
 import { evaluateChecks, type EvaluateChecksOptions } from '@stark-ballot/verification/check-evaluator';
-import type {
-  CheckResult,
-  VerificationStatus,
-  BulletinConsistencyProvider,
-  VerificationContext,
-} from '@stark-ballot/verification/engine-types';
+import type { CheckResult, VerificationStatus, VerificationContext } from '@stark-ballot/verification/engine-types';
 import type { BitmapProofSource } from '@stark-ballot/verification/shared/types';
 
 type CastSource = 'server' | 'client';
@@ -35,12 +30,11 @@ export interface BuildVerificationChecksInput extends VerificationContext {
   verificationReportStatus?: VerificationStatus;
   allowDevModeVerification?: boolean;
   bitmapProofSource?: BitmapProofSource;
-  bulletin?: BulletinConsistencyProvider;
   castSource?: CastSource;
 }
 
 /**
- * Build detailed verification checks for /api/verify responses.
+ * Build detailed checks for a verification resource.
  */
 export async function evaluateVerificationCheckResults(
   input: BuildVerificationChecksInput,
@@ -89,7 +83,7 @@ export function buildVerificationChecksFromResults(
 }
 
 /**
- * Build detailed verification checks for /api/verify responses.
+ * Build detailed checks for a verification resource.
  */
 export async function buildVerificationChecks(input: BuildVerificationChecksInput): Promise<VerificationCheck[]> {
   const checks = await evaluateVerificationCheckResults(input);

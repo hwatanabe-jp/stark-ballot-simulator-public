@@ -1,6 +1,6 @@
 locals {
-  expected_state_backend_key = "${var.project_name}/${var.account_alias}/${var.deployment_environment}/${var.state_scope}/terraform.tfstate"
-  name_prefix                = "${var.project_name}-${var.account_alias}-${var.deployment_environment}"
+  expected_state_backend_key = local.app_lane_authority.backendKey
+  name_prefix                = local.deployment_shared_names.runtimeNamePrefix
 
   common_tags = {
     Project      = var.project_name
@@ -64,13 +64,13 @@ locals {
   ])
 
   runtime_reference_names = {
-    SESSION_CAPABILITY_SECRET_REF      = "/${var.project_name}/${var.account_alias}/${var.deployment_environment}/app/secrets/session-capability-secret"
-    VOTE_SECRET_ENCRYPTION_KEY_REF     = "/${var.project_name}/${var.account_alias}/${var.deployment_environment}/app/secrets/vote-secret-encryption-key"
-    SESSION_CAPABILITY_TTL_SECONDS_REF = "/${var.project_name}/${var.account_alias}/${var.deployment_environment}/app/config/session-capability-ttl-seconds"
-    TURNSTILE_SECRET_KEY_REF           = "/${var.project_name}/${var.account_alias}/${var.deployment_environment}/app/secrets/turnstile-secret-key"
-    LOG_IP_HASH_SALT_REF               = "/${var.project_name}/${var.account_alias}/${var.deployment_environment}/app/secrets/log-ip-hash-salt"
-    EXPECTED_ORIGIN_VERIFY_HEADER_REF  = "/${var.project_name}/${var.account_alias}/${var.deployment_environment}/app/secrets/expected-origin-verify-header"
-    VITE_TURNSTILE_SITE_KEY_REF        = "/${var.project_name}/${var.account_alias}/${var.deployment_environment}/app/config/vite-turnstile-site-key"
+    SESSION_CAPABILITY_SECRET_REF      = "${local.deployment_shared_names.runtimeSecretReferencePrefix}/session-capability-secret"
+    VOTE_SECRET_ENCRYPTION_KEY_REF     = "${local.deployment_shared_names.runtimeSecretReferencePrefix}/vote-secret-encryption-key"
+    SESSION_CAPABILITY_TTL_SECONDS_REF = "${local.deployment_shared_names.runtimeConfigReferencePrefix}/session-capability-ttl-seconds"
+    TURNSTILE_SECRET_KEY_REF           = "${local.deployment_shared_names.runtimeSecretReferencePrefix}/turnstile-secret-key"
+    LOG_IP_HASH_SALT_REF               = "${local.deployment_shared_names.runtimeSecretReferencePrefix}/log-ip-hash-salt"
+    EXPECTED_ORIGIN_VERIFY_HEADER_REF  = "${local.deployment_shared_names.runtimeSecretReferencePrefix}/expected-origin-verify-header"
+    VITE_TURNSTILE_SITE_KEY_REF        = "${local.deployment_shared_names.runtimeConfigReferencePrefix}/vite-turnstile-site-key"
   }
 
   runtime_secret_reference_paths = [
@@ -105,11 +105,11 @@ locals {
   ])
 
   target_application_lambda_names = {
-    public_api          = "${local.name_prefix}-public-api"
-    finalization_writer = "${local.name_prefix}-finalization-writer"
-    proof_dispatcher    = "${local.name_prefix}-proof-dispatcher"
-    verification_worker = "${local.name_prefix}-verification-worker"
-    semaphore_janitor   = "${local.name_prefix}-semaphore-janitor"
+    public_api          = local.deployment_shared_names.targetLambdaFunctions.publicApi
+    finalization_writer = local.deployment_shared_names.targetLambdaFunctions.finalizationWriter
+    proof_dispatcher    = local.deployment_shared_names.targetLambdaFunctions.proofDispatcher
+    verification_worker = local.deployment_shared_names.targetLambdaFunctions.verificationWorker
+    semaphore_janitor   = local.deployment_shared_names.targetLambdaFunctions.semaphoreJanitor
   }
   target_application_lambda_role_names = {
     public_api          = "${local.name_prefix}-api-role"
@@ -118,8 +118,8 @@ locals {
     verification_worker = "${local.name_prefix}-verifier-role"
     semaphore_janitor   = "${local.name_prefix}-janitor-role"
   }
-  image_signature_name_prefix        = "stark-ballot-sim-${var.account_alias}-${var.deployment_environment}"
-  image_signature_verifier_name      = "${local.image_signature_name_prefix}-image-signature-verifier"
+  image_signature_name_prefix        = local.deployment_shared_names.signatureRuntimeNamePrefix
+  image_signature_verifier_name      = local.deployment_shared_names.targetLambdaFunctions.imageSignatureVerifier
   image_signature_verifier_role_name = "${local.image_signature_name_prefix}-image-signature-verifier-role"
   target_lambda_names = merge(local.target_application_lambda_names, {
     image_signature_verifier = local.image_signature_verifier_name
@@ -128,8 +128,8 @@ locals {
     image_signature_verifier = local.image_signature_verifier_role_name
   })
 
-  proof_artifact_bucket_name             = "${local.name_prefix}-proof-artifacts"
-  frontend_bucket_name                   = "${local.name_prefix}-static-frontend"
+  proof_artifact_bucket_name             = local.deployment_shared_names.proofBucket
+  frontend_bucket_name                   = local.deployment_shared_names.frontendBucket
   frontend_distribution_comment          = "${local.name_prefix} static frontend"
   proof_artifact_prefix                  = "sessions/"
   prover_work_queue_name                 = "${local.name_prefix}-prover-work"
@@ -166,7 +166,7 @@ locals {
   prover_image_repository              = join("/", slice(local.prover_image_repo_parts, 1, length(local.prover_image_repo_parts)))
   prover_image_digest                  = split("@", var.prover_image_uri)[1]
   prover_image_repository_arn          = "arn:aws:ecr:${var.aws_region}:${var.aws_account_id}:repository/${local.prover_image_repository}"
-  image_signature_signing_profile_name = "${replace(local.name_prefix, "-", "_")}_ecr"
+  image_signature_signing_profile_name = local.deployment_shared_names.signerProfile
   image_signature_signing_profile_arn  = "arn:aws:signer:${var.aws_region}:${var.aws_account_id}:/signing-profiles/${local.image_signature_signing_profile_name}"
   image_signature_signing_job_arn_pattern = (
     "arn:aws:signer:${var.aws_region}:${var.aws_account_id}:/signing-jobs/*"

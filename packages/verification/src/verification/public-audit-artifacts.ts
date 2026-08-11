@@ -5,8 +5,8 @@ import {
   type ElectionConfig,
 } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import { asUnixTimestampMillis, computeSTHDigest } from '@stark-ballot/zkvm-contract/zkvm/types';
-import { getNumberProperty, getStringProperty, isRecord } from '@stark-ballot/verification/shared/guards';
-import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/verification/shared/hex';
+import { getNumberProperty, getStringProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 
 export interface ElectionManifest {
   electionId: string;

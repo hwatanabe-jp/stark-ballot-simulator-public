@@ -2,36 +2,45 @@ import { DescribeExecutionCommand, SFNClient, StartExecutionCommand, type Execut
 import { getGlobalStore } from '@stark-ballot/aws-adapters/store/storeInstance';
 import { parseProverWorkMessage } from '@stark-ballot/aws-adapters/sqs/proverWorkMessage';
 import { validateAsyncProverArtifactKeys } from '@stark-ballot/aws-adapters/finalize/async-prover-artifacts';
-import { parseAwsFinalizationRuntimeState } from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
+import type { FinalizationState } from '@stark-ballot/application/finalize/finalization-types';
 import { ensureAwsRuntimeConfigReferencesLoaded } from '@stark-ballot/aws-adapters/config/awsRuntimeConfigReferenceResolver';
 import { validateEnv } from '@stark-ballot/runtime-config/env/validate';
 import { validateTargetObservabilityEnv } from '@stark-ballot/runtime-config/env/observability';
+import {
+  resolveRuntimeProfile,
+  type ResolvedRuntimeProfile,
+  validateRuntimeProfileSelection,
+} from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { emitCanonicalEvent, type DispatchDropReason } from '@stark-ballot/diagnostics/canonicalEvents';
-import { RuntimeConfigValidationError, bootstrapLambdaRuntime, type RuntimeConfigName } from '../runtimeBootstrap.js';
+import { RuntimeConfigValidationError, bootstrapLambdaRuntime } from '../runtimeBootstrap.js';
 
-const sfnClient = new SFNClient({});
 type ParsedProverWorkMessage = ReturnType<typeof parseProverWorkMessage>;
-type AwsFinalizationRuntimeState = ReturnType<typeof parseAwsFinalizationRuntimeState>;
 type SqsEvent = { Records: Array<{ body: string }> };
+let resolvedRuntimeProfile: ResolvedRuntimeProfile | undefined;
+let sfnClient: SFNClient | undefined;
 
 export const PROVER_STATE_MACHINE_INPUT_JSONPATHS = {
   inputS3Key: '$.inputS3Key',
   outputS3Prefix: '$.outputS3Prefix',
 } as const;
 
-function resolveTargetArtifactKeys(message: ParsedProverWorkMessage): {
+function resolveTargetArtifactKeys(
+  profile: ResolvedRuntimeProfile,
+  message: ParsedProverWorkMessage,
+): {
   inputS3Key: string;
   outputS3Prefix: string;
   bundleS3Key: string;
 } {
-  if (!message.inputS3Key || !message.outputS3Prefix || !message.bundleS3Key) {
-    throw new Error('Target prover work message requires inputS3Key, outputS3Prefix, and bundleS3Key');
+  if (message.inputSource !== 's3') {
+    throw new Error('Target prover work message requires the s3 input source');
   }
   return validateAsyncProverArtifactKeys({
+    profile,
     sessionId: message.sessionId,
-    executionId: message.executionId,
+    finalizationId: message.finalizationId,
     inputS3Key: message.inputS3Key,
     outputS3Prefix: message.outputS3Prefix,
     bundleS3Key: message.bundleS3Key,
@@ -47,11 +56,11 @@ function buildStepFunctionsInput(
   },
 ): Record<string, unknown> {
   return {
-    messageVersion: message.messageVersion,
+    recordType: message.recordType,
+    inputSource: 's3',
     sessionId: message.sessionId,
-    contractGeneration: message.contractGeneration,
-    executionId: message.executionId,
-    queuedAt: message.queuedAt,
+    finalizationId: message.finalizationId,
+    queuedAtMs: message.queuedAtMs,
     expectedImageId: message.expectedImageId,
     inputS3Key: artifactKeys.inputS3Key,
     outputS3Prefix: artifactKeys.outputS3Prefix,
@@ -62,19 +71,13 @@ function buildStepFunctionsInput(
   };
 }
 
-function validateProofDispatcherConfig(): void {
-  const invalidNames: RuntimeConfigName[] = [];
-  if (process.env['TARGET_AWS_RUNTIME'] !== '1') {
-    invalidNames.push('TARGET_AWS_RUNTIME');
-  }
-  if (!process.env['PROVER_STATE_MACHINE_ARN']?.trim()) {
-    invalidNames.push('PROVER_STATE_MACHINE_ARN');
-  }
-  if (invalidNames.length > 0) {
-    const message = invalidNames.includes('TARGET_AWS_RUNTIME')
-      ? 'TARGET_AWS_RUNTIME=1 is required for target prover dispatch'
-      : 'PROVER_STATE_MACHINE_ARN is required for target prover dispatch';
-    throw new RuntimeConfigValidationError(invalidNames, undefined, message);
+function validateProofDispatcherConfig(profile: ResolvedRuntimeProfile): void {
+  if (profile.name !== 'target-aws-async') {
+    throw new RuntimeConfigValidationError(
+      ['RUNTIME_PROFILE'],
+      undefined,
+      'RUNTIME_PROFILE=target-aws-async is required for target prover dispatch',
+    );
   }
 }
 
@@ -105,20 +108,20 @@ function emitDispatchDropped(reason: DispatchDropReason, message?: ParsedProverW
     ...(message
       ? {
           session_id_hash: hashSessionIdForLogging(message.sessionId),
-          execution_id: message.executionId,
+          finalization_id: message.finalizationId,
         }
       : {}),
   });
 }
 
 function resolveStateDropReason(
-  finalizationState: AwsFinalizationRuntimeState,
-  executionId: string,
+  finalizationState: FinalizationState | null,
+  finalizationId: string,
 ): DispatchDropReason {
   if (!finalizationState) {
     return 'not_pending';
   }
-  if (finalizationState.executionId !== executionId) {
+  if (finalizationState.finalizationId !== finalizationId) {
     return 'already_processed';
   }
   if (finalizationState.status === 'running') {
@@ -140,24 +143,21 @@ function buildExecutionArn(stateMachineArn: string, executionName: string): stri
 }
 
 function shouldDispatchFinalizationWork(
-  state: AwsFinalizationRuntimeState,
-  executionId: string,
-): state is NonNullable<AwsFinalizationRuntimeState> & { status: 'pending'; executionId: string } {
-  return state?.status === 'pending' && state.executionId === executionId;
-}
-
-function hasFinalizationState(value: unknown): boolean {
-  return value !== undefined;
+  state: FinalizationState | null,
+  finalizationId: string,
+): state is Extract<FinalizationState, { status: 'pending' }> {
+  return state?.status === 'pending' && state.finalizationId === finalizationId;
 }
 
 async function describeExistingExecutionStatus(
+  client: SFNClient,
   stateMachineArn: string,
-  executionId: string,
+  finalizationId: string,
 ): Promise<ExecutionStatus | 'NOT_FOUND' | 'UNKNOWN'> {
   try {
-    const response = await sfnClient.send(
+    const response = await client.send(
       new DescribeExecutionCommand({
-        executionArn: buildExecutionArn(stateMachineArn, executionId),
+        executionArn: buildExecutionArn(stateMachineArn, finalizationId),
       }),
     );
     return response.status ?? 'UNKNOWN';
@@ -170,23 +170,39 @@ async function describeExistingExecutionStatus(
 }
 
 export const handler = async (rawEvent: unknown): Promise<{ batchItemFailures: [] }> => {
+  const env = process.env;
+  const runtimeProfile = (resolvedRuntimeProfile ??= resolveRuntimeProfile(env));
   await bootstrapLambdaRuntime({
     serviceName: 'proof-dispatcher',
+    runtimeProfile,
     resolveRuntimeReferences: async (invalidNameCollector) => {
-      await ensureAwsRuntimeConfigReferencesLoaded('proof_dispatcher', { invalidNameCollector });
+      await ensureAwsRuntimeConfigReferencesLoaded('proof_dispatcher', {
+        profile: runtimeProfile,
+        invalidNameCollector,
+        env,
+      });
     },
     validationSteps: [
       {
-        validate: validateTargetObservabilityEnv,
+        validate: () => validateRuntimeProfileSelection(runtimeProfile, env),
       },
       {
-        validate: validateProofDispatcherConfig,
+        validate: () => validateTargetObservabilityEnv(runtimeProfile, env),
       },
       {
-        validate: validateEnv,
+        validate: () => validateProofDispatcherConfig(runtimeProfile),
+      },
+      {
+        validate: () => validateEnv(runtimeProfile, env),
       },
     ],
+    env,
   });
+
+  if (runtimeProfile.name !== 'target-aws-async') {
+    throw new Error('Target proof-dispatcher runtime profile was not resolved');
+  }
+  const stepFunctionsClient = (sfnClient ??= new SFNClient({ region: runtimeProfile.external.region }));
 
   if (!isSqsEvent(rawEvent)) {
     logInvalidSqsInvocation('event_shape_invalid');
@@ -194,10 +210,9 @@ export const handler = async (rawEvent: unknown): Promise<{ batchItemFailures: [
     throw new Error('Invalid SQS invocation');
   }
 
-  const stateMachineArn = process.env['PROVER_STATE_MACHINE_ARN'];
-  if (!stateMachineArn) throw new Error('PROVER_STATE_MACHINE_ARN is required for target prover dispatch');
+  const stateMachineArn = runtimeProfile.external.asyncRuntime.proverStateMachineArn;
 
-  const store = getGlobalStore();
+  const store = getGlobalStore(runtimeProfile);
 
   for (const record of rawEvent.Records) {
     let message: ParsedProverWorkMessage;
@@ -211,36 +226,25 @@ export const handler = async (rawEvent: unknown): Promise<{ batchItemFailures: [
 
     let artifactKeys: ReturnType<typeof resolveTargetArtifactKeys>;
     try {
-      artifactKeys = resolveTargetArtifactKeys(message);
+      artifactKeys = resolveTargetArtifactKeys(runtimeProfile, message);
     } catch (error) {
       logInvalidSqsInvocation('record_body_invalid');
       emitDispatchDropped('malformed', message);
       throw error;
     }
-    const session = await store.getSession(message.sessionId);
-    const rawFinalizationState = session?.finalizationState;
-    const finalizationState = parseAwsFinalizationRuntimeState(rawFinalizationState);
+    const currentRecord = await store.getCurrentFinalizationRecord(message.sessionId);
+    const finalizationState = currentRecord?.state ?? null;
 
-    if (session && !finalizationState && hasFinalizationState(rawFinalizationState)) {
-      logger.warn('[ProofDispatcher] Dropping finalization work item with unparsable finalization state', {
-        session_id_hash: hashSessionIdForLogging(message.sessionId),
-        executionId: message.executionId,
-        reason: 'finalization_state_unparsable',
-      });
-      emitDispatchDropped('malformed', message);
-      continue;
-    }
-
-    if (!session || !shouldDispatchFinalizationWork(finalizationState, message.executionId)) {
+    if (!currentRecord || !shouldDispatchFinalizationWork(finalizationState, message.finalizationId)) {
       logger.info('[ProofDispatcher] Dropping stale finalization work item', {
         session_id_hash: hashSessionIdForLogging(message.sessionId),
-        executionId: message.executionId,
-        currentExecutionId: finalizationState?.executionId,
+        finalizationId: message.finalizationId,
+        currentFinalizationId: finalizationState?.finalizationId,
         currentStatus: finalizationState?.status,
-        reason: session ? 'finalization_state_not_pending_for_execution' : 'session_not_found',
+        reason: currentRecord ? 'finalization_state_not_pending_for_execution' : 'finalization_record_not_found',
       });
       emitDispatchDropped(
-        session ? resolveStateDropReason(finalizationState, message.executionId) : 'session_missing',
+        currentRecord ? resolveStateDropReason(finalizationState, message.finalizationId) : 'session_missing',
         message,
       );
       continue;
@@ -252,36 +256,40 @@ export const handler = async (rawEvent: unknown): Promise<{ batchItemFailures: [
       source: 'proof_dispatcher',
       reason: 'DISPATCH_REQUESTED',
       session_id_hash: hashSessionIdForLogging(message.sessionId),
-      execution_id: message.executionId,
+      finalization_id: message.finalizationId,
     });
     try {
-      await sfnClient.send(
+      await stepFunctionsClient.send(
         new StartExecutionCommand({
           stateMachineArn,
-          name: message.executionId,
+          name: message.finalizationId,
           input: JSON.stringify(buildStepFunctionsInput(message, artifactKeys)),
         }),
       );
     } catch (error) {
       if (isExecutionAlreadyExists(error)) {
-        const freshSession = await store.getSession(message.sessionId);
-        const freshFinalizationState = parseAwsFinalizationRuntimeState(freshSession?.finalizationState);
-        if (!shouldDispatchFinalizationWork(freshFinalizationState, message.executionId)) {
+        const freshRecord = await store.getCurrentFinalizationRecord(message.sessionId);
+        const freshFinalizationState = freshRecord?.state ?? null;
+        if (!shouldDispatchFinalizationWork(freshFinalizationState, message.finalizationId)) {
           logger.info('[ProofDispatcher] Treating existing Step Functions execution as processed after state re-read', {
             session_id_hash: hashSessionIdForLogging(message.sessionId),
-            executionId: message.executionId,
-            currentExecutionId: freshFinalizationState?.executionId,
+            finalizationId: message.finalizationId,
+            currentFinalizationId: freshFinalizationState?.finalizationId,
             currentStatus: freshFinalizationState?.status,
-            reason: freshSession ? 'finalization_state_not_pending_for_execution' : 'session_not_found',
+            reason: freshRecord ? 'finalization_state_not_pending_for_execution' : 'finalization_record_not_found',
           });
-          emitDispatchDropped(freshSession ? 'already_processed' : 'session_missing', message);
+          emitDispatchDropped(freshRecord ? 'already_processed' : 'session_missing', message);
           continue;
         }
-        const executionStatus = await describeExistingExecutionStatus(stateMachineArn, message.executionId);
+        const executionStatus = await describeExistingExecutionStatus(
+          stepFunctionsClient,
+          stateMachineArn,
+          message.finalizationId,
+        );
         if (executionStatus === 'RUNNING') {
           logger.info('[ProofDispatcher] Treating existing open Step Functions execution as already dispatched', {
             session_id_hash: hashSessionIdForLogging(message.sessionId),
-            executionId: message.executionId,
+            finalizationId: message.finalizationId,
             currentStatus: freshFinalizationState.status,
             executionStatus,
           });
@@ -292,7 +300,7 @@ export const handler = async (rawEvent: unknown): Promise<{ batchItemFailures: [
           '[ProofDispatcher] Step Functions execution already exists but finalization is still pending and execution is closed',
           {
             session_id_hash: hashSessionIdForLogging(message.sessionId),
-            executionId: message.executionId,
+            finalizationId: message.finalizationId,
             currentStatus: freshFinalizationState.status,
             executionStatus,
           },
@@ -303,7 +311,7 @@ export const handler = async (rawEvent: unknown): Promise<{ batchItemFailures: [
           source: 'proof_dispatcher',
           reason: 'STEP_FUNCTIONS_EXECUTION_CLOSED',
           session_id_hash: hashSessionIdForLogging(message.sessionId),
-          execution_id: message.executionId,
+          finalization_id: message.finalizationId,
         });
       }
       throw error;

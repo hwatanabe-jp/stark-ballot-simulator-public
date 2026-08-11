@@ -26,7 +26,7 @@ data "aws_iam_policy_document" "app_pipeline" {
       "codebuild:BatchGetBuilds",
       "codebuild:StartBuild",
     ]
-    resources = local.app_codebuild_project_arns
+    resources = local.app_full_pipeline_codebuild_project_arns
   }
 
   statement {
@@ -40,8 +40,8 @@ data "aws_iam_policy_document" "app_pipeline" {
       "s3:PutObject",
     ]
     resources = [
-      aws_s3_bucket.app_pipeline_artifacts[0].arn,
-      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/*",
+      aws_s3_bucket.app_pipeline_execution_artifacts[0].arn,
+      "${aws_s3_bucket.app_pipeline_execution_artifacts[0].arn}/*",
     ]
   }
 

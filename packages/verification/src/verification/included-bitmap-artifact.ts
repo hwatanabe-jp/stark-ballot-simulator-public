@@ -1,6 +1,6 @@
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
-import { isValidHexString, normalizeHexString } from '@stark-ballot/verification/shared/hex';
-import { isRecord } from '@stark-ballot/verification/shared/guards';
+import { isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
+import { isRecord } from '@stark-ballot/validation/unknown-value-guards';
 import { normalizeBitmapRoot } from '@stark-ballot/verification/bitmap-root';
 
 export const INCLUDED_BITMAP_ARTIFACT_SCHEMA = 'stark-ballot.included_bitmap';

@@ -27,8 +27,8 @@ describe('buildFinalizationQueueInfo', () => {
   it('returns null when queueUrl is missing', async () => {
     const state: FinalizationState = {
       status: 'pending',
-      executionId: 'exec',
-      queuedAt: 1_730_000_000_000,
+      finalizationId: 'exec',
+      queuedAtMs: 1_730_000_000_000,
     };
 
     const queueInfo = await buildFinalizationQueueInfo({ state });
@@ -39,8 +39,8 @@ describe('buildFinalizationQueueInfo', () => {
   it('returns the static queue estimate for pending state without reading SQS attributes', async () => {
     const state: FinalizationState = {
       status: 'pending',
-      executionId: 'exec',
-      queuedAt: 1_730_000_000_000,
+      finalizationId: 'exec',
+      queuedAtMs: 1_730_000_000_000,
     };
 
     const queueInfo = await buildFinalizationQueueInfo({ queueUrl: 'https://example.com/queue', state });
@@ -53,12 +53,12 @@ describe('buildFinalizationQueueInfo', () => {
   });
 
   it('returns the same static queue estimate for running state without positional claims', async () => {
-    const queuedAt = 1_730_000_000_000;
+    const queuedAtMs = 1_730_000_000_000;
     const state: FinalizationState = {
       status: 'running',
-      executionId: 'exec',
-      queuedAt,
-      startedAt: queuedAt + 1500,
+      finalizationId: 'exec',
+      queuedAtMs,
+      startedAtMs: queuedAtMs + 1500,
     };
 
     const queueInfo = await buildFinalizationQueueInfo({ queueUrl: 'https://example.com/queue', state });
@@ -73,14 +73,14 @@ describe('buildFinalizationQueueInfo', () => {
     expect(queueInfo).not.toHaveProperty('estimatedCompletionAt');
   });
 
-  it('uses PROVER_MAX_CONCURRENT_PROVERS before the legacy lambda concurrency value', async () => {
+  it('uses PROVER_MAX_CONCURRENT_PROVERS when a retired concurrency variable is also present', async () => {
     process.env['PROVER_MAX_CONCURRENT_PROVERS'] = '5';
     process.env['PROVER_LAMBDA_CONCURRENCY'] = '9';
 
     const state: FinalizationState = {
       status: 'pending',
-      executionId: 'exec',
-      queuedAt: 1_730_000_000_000,
+      finalizationId: 'exec',
+      queuedAtMs: 1_730_000_000_000,
     };
 
     const queueInfo = await buildFinalizationQueueInfo({ queueUrl: 'https://example.com/queue', state });
@@ -91,19 +91,19 @@ describe('buildFinalizationQueueInfo', () => {
     });
   });
 
-  it('falls back to legacy PROVER_LAMBDA_CONCURRENCY when the max-slots value is not configured', async () => {
+  it('ignores the retired PROVER_LAMBDA_CONCURRENCY variable', async () => {
     process.env['PROVER_LAMBDA_CONCURRENCY'] = '4';
 
     const state: FinalizationState = {
       status: 'pending',
-      executionId: 'exec',
-      queuedAt: 1_730_000_000_000,
+      finalizationId: 'exec',
+      queuedAtMs: 1_730_000_000_000,
     };
 
     const queueInfo = await buildFinalizationQueueInfo({ queueUrl: 'https://example.com/queue', state });
 
     expect(queueInfo).toEqual({
-      concurrencyLimit: 4,
+      concurrencyLimit: 2,
       estimatedDurationMs: 360000,
     });
   });

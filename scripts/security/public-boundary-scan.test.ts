@@ -74,8 +74,8 @@ describe('public boundary scanner', () => {
     expect(
       collectPublicBoundaryViolationPaths({
         data: {
-          bundleUrl: '/api/verification/bundles/session-1/exec-1',
-          reportUrl: '/api/verification/bundles/session-1/exec-1/report',
+          bundleUrl: '/api/sessions/session-1/finalizations/finalization-1/artifacts/bundle',
+          reportUrl: '/api/sessions/session-1/finalizations/finalization-1/artifacts/report',
           bundleMetadata: {
             uploadedAt: '2026-01-01T00:00:00.000Z',
           },

@@ -4,6 +4,12 @@ import {
   resolveRuntimeConfigReference,
 } from '@stark-ballot/runtime-config/env/runtimeConfigReferences';
 import {
+  localRuntimeProfile,
+  targetRuntimeProfile,
+  targetRuntimeProfileEnv,
+} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { resolveRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
+import {
   ensureAwsRuntimeConfigReferencesLoaded,
   loadAwsRuntimeConfigReferences,
   loadAwsRuntimeConfigReferencesForEntrypoint,
@@ -27,6 +33,12 @@ const VOTE_SECRET = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234
 const LOG_IP_HASH_SALT = 'resolved-log-ip-hash-salt';
 const ORIGIN_VERIFY_HEADER = 'resolved-origin-verify-header-0123456789abcdef';
 const originalEnv = { ...process.env };
+const activeTargetProfile = targetRuntimeProfile();
+const quiescedTargetProfile = resolveRuntimeProfile({
+  ...targetRuntimeProfileEnv(),
+  RUNTIME_PROFILE: 'target-aws-async-quiesced',
+});
+const localProfile = localRuntimeProfile();
 const nonTurnstileEntrypoints = [
   'finalization_writer',
   'proof_dispatcher',
@@ -45,7 +57,7 @@ function restoreEnv(): void {
 function targetEnv(): NodeJS.ProcessEnv {
   return {
     ...process.env,
-    USE_MOCK_STORE: 'false',
+    RUNTIME_PROFILE: 'target-aws-async',
     AWS_ACCOUNT_ID: '123456789012',
     AWS_REGION: 'ap-northeast-1',
     SESSION_CAPABILITY_SECRET_REF: SESSION_SECRET_REF,
@@ -58,7 +70,7 @@ function targetEnv(): NodeJS.ProcessEnv {
 }
 
 function applyTargetProcessEnv(): void {
-  process.env['USE_MOCK_STORE'] = 'false';
+  process.env['RUNTIME_PROFILE'] = 'target-aws-async';
   process.env['AWS_ACCOUNT_ID'] = '123456789012';
   process.env['AWS_REGION'] = 'ap-northeast-1';
   process.env['SESSION_CAPABILITY_SECRET_REF'] = SESSION_SECRET_REF;
@@ -113,6 +125,7 @@ describe('awsRuntimeConfigReferenceResolver', () => {
 
     const env = targetEnv();
     await loadAwsRuntimeConfigReferences({
+      profile: activeTargetProfile,
       env,
       ssmClient: { send },
       secretsManagerClient: { send },
@@ -138,6 +151,30 @@ describe('awsRuntimeConfigReferenceResolver', () => {
     ).toBe('turnstile-secret-value');
     expect(env['EXPECTED_ORIGIN_VERIFY_HEADER']).toBe(ORIGIN_VERIFY_HEADER);
     expect(env['LOG_IP_HASH_SALT']).toBe(LOG_IP_HASH_SALT);
+  });
+
+  it('rejects a reference changed after profile resolution before reading from AWS', async () => {
+    const env = targetEnv();
+    env['SESSION_CAPABILITY_SECRET_REF'] =
+      '/stark-ballot-simulator/stark-dev/develop/app/secrets/replaced-session-capability-secret';
+    const send = vi.fn();
+    const invalidNameCollector = {
+      add: vi.fn(),
+    };
+
+    await expect(
+      loadAwsRuntimeConfigReferences({
+        profile: activeTargetProfile,
+        env,
+        ssmClient: { send },
+        secretsManagerClient: { send },
+        invalidNameCollector,
+      }),
+    ).rejects.toThrow('SESSION_CAPABILITY_SECRET_REF must match the reference captured by the runtime profile');
+
+    expect(invalidNameCollector.add).toHaveBeenCalledTimes(1);
+    expect(invalidNameCollector.add).toHaveBeenCalledWith('SESSION_CAPABILITY_SECRET_REF');
+    expect(send).not.toHaveBeenCalled();
   });
 
   it('supports capability-token and vote-secret resolution in target non-mock mode after AWS preload', async () => {
@@ -177,6 +214,7 @@ describe('awsRuntimeConfigReferenceResolver', () => {
     });
 
     await loadAwsRuntimeConfigReferences({
+      profile: activeTargetProfile,
       env: targetEnv(),
       ssmClient: { send: ssmSend },
       secretsManagerClient: { send: secretsSend },
@@ -232,6 +270,7 @@ describe('awsRuntimeConfigReferenceResolver', () => {
 
     await expect(
       loadAwsRuntimeConfigReferences({
+        profile: activeTargetProfile,
         env: targetEnv(),
         ssmClient: { send: ssmSend },
         secretsManagerClient: { send: secretsSend },
@@ -248,7 +287,6 @@ describe('awsRuntimeConfigReferenceResolver', () => {
     async (entrypoint) => {
       const env: NodeJS.ProcessEnv = {
         ...targetEnv(),
-        TARGET_AWS_RUNTIME: '1',
         TURNSTILE_SECRET_KEY_REF: '/stark-ballot-simulator/stark-dev/develop/app/secrets/missing-turnstile-secret',
       };
       const send = vi.fn(async (command: { input?: { Name?: string; SecretId?: string } }) => {
@@ -274,6 +312,7 @@ describe('awsRuntimeConfigReferenceResolver', () => {
 
       await expect(
         ensureAwsRuntimeConfigReferencesLoaded(entrypoint, {
+          profile: activeTargetProfile,
           env,
           ssmClient: { send },
           secretsManagerClient: { send },
@@ -290,7 +329,6 @@ describe('awsRuntimeConfigReferenceResolver', () => {
   it('loads only the observability salt for semaphore_janitor', async () => {
     const env: NodeJS.ProcessEnv = {
       ...targetEnv(),
-      TARGET_AWS_RUNTIME: '1',
       TURNSTILE_SECRET_KEY_REF: '/stark-ballot-simulator/stark-dev/develop/app/secrets/missing-turnstile-secret',
     };
     const send = vi.fn(async (command: { input?: { SecretId?: string } }) => {
@@ -303,6 +341,7 @@ describe('awsRuntimeConfigReferenceResolver', () => {
 
     await expect(
       loadAwsRuntimeConfigReferencesForEntrypoint('semaphore_janitor', {
+        profile: activeTargetProfile,
         env,
         ssmClient: { send },
         secretsManagerClient: { send },
@@ -313,10 +352,9 @@ describe('awsRuntimeConfigReferenceResolver', () => {
     expect(env['LOG_IP_HASH_SALT']).toBe(LOG_IP_HASH_SALT);
   });
 
-  it('still fails closed when public API Turnstile config is configured but missing', async () => {
+  it('rejects a public API Turnstile reference changed after profile resolution', async () => {
     const env: NodeJS.ProcessEnv = {
       ...targetEnv(),
-      TARGET_AWS_RUNTIME: '1',
       TURNSTILE_SECRET_KEY_REF: '/stark-ballot-simulator/stark-dev/develop/app/secrets/missing-turnstile-secret',
     };
     const send = vi.fn(async (command: { input?: { Name?: string; SecretId?: string } }) => {
@@ -344,6 +382,7 @@ describe('awsRuntimeConfigReferenceResolver', () => {
       add: vi.fn(),
     };
     const resolutionError = await ensureAwsRuntimeConfigReferencesLoaded('public_api', {
+      profile: activeTargetProfile,
       env,
       ssmClient: { send },
       secretsManagerClient: { send },
@@ -351,10 +390,60 @@ describe('awsRuntimeConfigReferenceResolver', () => {
     }).catch((error: unknown) => error);
 
     expect(resolutionError).toBeInstanceOf(Error);
-    expect((resolutionError as Error).message).toContain(
-      '/stark-ballot-simulator/stark-dev/develop/app/secrets/missing-turnstile-secret was not found',
+    expect((resolutionError as Error).message).toBe(
+      'TURNSTILE_SECRET_KEY_REF must match the reference captured by the runtime profile.',
     );
     expect(invalidNameCollector.add).toHaveBeenCalledTimes(1);
     expect(invalidNameCollector.add).toHaveBeenCalledWith('TURNSTILE_SECRET_KEY_REF');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['active', activeTargetProfile],
+    ['quiesced', quiescedTargetProfile],
+  ] as const)('preloads references for the injected %s target profile', async (_name, profile) => {
+    const env: NodeJS.ProcessEnv = {
+      ...targetEnv(),
+      RUNTIME_PROFILE: 'local-demo',
+    };
+    const send = vi.fn(async (command: { input?: { SecretId?: string } }) => {
+      await Promise.resolve();
+      if (command.input?.SecretId === LOG_IP_HASH_SALT_REF) {
+        return { SecretString: LOG_IP_HASH_SALT };
+      }
+      throw Object.assign(new Error('not found'), { name: 'ResourceNotFoundException' });
+    });
+
+    await ensureAwsRuntimeConfigReferencesLoaded('semaphore_janitor', {
+      profile,
+      env,
+      ssmClient: { send },
+      secretsManagerClient: { send },
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(env['LOG_IP_HASH_SALT']).toBe(LOG_IP_HASH_SALT);
+  });
+
+  it('skips reference preloading for an injected local profile even when the environment names a target profile', async () => {
+    const send = vi.fn();
+
+    await ensureAwsRuntimeConfigReferencesLoaded('semaphore_janitor', {
+      profile: localProfile,
+      env: targetEnv(),
+      ssmClient: { send },
+      secretsManagerClient: { send },
+    });
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('rejects direct AWS reference loading for a local runtime profile', async () => {
+    await expect(
+      loadAwsRuntimeConfigReferences({
+        profile: localProfile,
+        env: targetEnv(),
+      }),
+    ).rejects.toThrow('AWS runtime config references require a target AWS runtime profile');
   });
 });

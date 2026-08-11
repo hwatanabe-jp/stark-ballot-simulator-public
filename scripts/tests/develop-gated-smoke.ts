@@ -2,28 +2,39 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
+import { parseContentRange, type SatisfiedContentRange } from '@stark-ballot/api-contract/http/content-range';
+import { API_ROUTES, buildApiRouteUrl } from '@stark-ballot/api-contract/routes';
+import {
+  VerificationResourceResponseSchema,
+  VerificationRunResponseSchema,
+  type AvailableVerificationResource,
+  type VerificationResource,
+} from '@stark-ballot/api-contract/schemas/verification';
 import {
   CLITestHelpers,
   type FinalizeScenarioData,
   type FinalizeWithScenariosResult,
   type VoteResult,
 } from '@stark-ballot/test-support/testing/cli-test-helpers';
-import { SESSION_CAPABILITY_HEADER, SESSION_ID_HEADER } from '@stark-ballot/domain/session/capability';
-import { isRecord, getNumberProperty, getRecordProperty, getStringProperty } from '@stark-ballot/domain/utils/guards';
+import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
+import { isRecord, getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 import { listZipEntryNamesFromBuffer, readZipEntriesFromBuffer } from '@stark-ballot/node-adapters/zip';
-import { resolveExpectedImageIdFromMapping } from '@stark-ballot/verification/image-id-policy';
-import type { ImageIdMapping } from '@stark-ballot/verification/image-id-types';
+import { resolveExpectedImageIdFromMapping, type ImageIdMapping } from '@stark-ballot/validation/image-id-policy';
 import {
   VERIFICATION_CHECK_DEFINITIONS,
   type VerificationCheck,
   type VerificationCheckDefinition,
   type VerificationCheckId,
 } from '@stark-ballot/verification/checks';
-import { deriveVerificationSummary, type VerificationSummaryContext } from '@stark-ballot/verification/summary';
-import { evaluateChecks } from '@stark-ballot/verification/check-evaluator';
-import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
+import {
+  evaluateLocalCastChecks,
+  LOCAL_CAST_CHECK_IDS,
+  overlayLocalCastChecks,
+} from '@stark-ballot/verification/local-cast-checks';
+import { deriveVerificationPresentationPolicy } from '@stark-ballot/verification/presentation-policy';
 import imageIdMappingJson from '../../public/imageId-mapping.json';
 import { CLIVotingTest, type CLITestConfig } from './cli-e2e-voting-flow';
+import { pollUntil } from '@stark-ballot/test-support/testing/poll';
 
 const imageIdMapping = imageIdMappingJson as ImageIdMapping;
 
@@ -58,17 +69,12 @@ interface GatedSmokeScenarioExpectation {
 interface VerificationAcceptanceOptions {
   baseUrl: string;
   sessionId: string;
+  finalizationId: string;
   expectedImageId: string;
   expectedTerminalVerificationStatus: ExpectedTerminalVerificationStatus;
   authHeaders: Record<string, string>;
   pollDelayMs?: number;
   maxPollAttempts?: number;
-}
-
-interface ParsedContentRange {
-  start: number;
-  end: number;
-  total: number;
 }
 
 interface BundleDownloadOptions {
@@ -82,13 +88,14 @@ interface BundleRepresentationIdentity {
 
 interface AuthenticatedVerificationReportOptions {
   expectedImageId: string;
-  expectedExecutionId: string;
+  expectedFinalizationId: string;
   expectedStatus: ExpectedTerminalVerificationStatus;
 }
 
 interface FinalizedVerificationAcceptanceOptions {
   baseUrl: string;
   sessionId: string;
+  finalizationId: string;
   expectedImageId: string;
   expectedTerminalVerificationStatus: ExpectedTerminalVerificationStatus;
   expectedOverallVerdict: ExpectedOverallVerdict;
@@ -97,7 +104,19 @@ interface FinalizedVerificationAcceptanceOptions {
   localVote: VoteResult;
 }
 
-type VerificationAcceptanceRunner = (options: VerificationAcceptanceOptions) => Promise<Record<string, unknown>>;
+type IncludedVerificationJournal = Extract<AvailableVerificationResource['journal'], { representation: 'included' }>;
+type AvailableVoterEvidence = Extract<AvailableVerificationResource['voterEvidence'], { availability: 'available' }>;
+type CompleteAvailableVerificationResource = Omit<AvailableVerificationResource, 'journal' | 'voterEvidence'> & {
+  journal: IncludedVerificationJournal;
+  voterEvidence: AvailableVoterEvidence;
+};
+
+interface VerificationAcceptanceResult {
+  resource: CompleteAvailableVerificationResource;
+  publicReceipt?: unknown;
+}
+
+type VerificationAcceptanceRunner = (options: VerificationAcceptanceOptions) => Promise<VerificationAcceptanceResult>;
 
 const VERIFICATION_CHECK_DEFINITION_BY_ID = new Map<string, VerificationCheckDefinition>(
   VERIFICATION_CHECK_DEFINITIONS.map((definition): [string, VerificationCheckDefinition] => [
@@ -106,9 +125,7 @@ const VERIFICATION_CHECK_DEFINITION_BY_ID = new Map<string, VerificationCheckDef
   ]),
 );
 
-const CAST_CHECK_IDS = VERIFICATION_CHECK_DEFINITIONS.filter(
-  (definition) => definition.category === 'cast_as_intended',
-).map((definition) => definition.id);
+const LOCAL_CAST_CHECK_ID_SET = new Set<VerificationCheckId>(LOCAL_CAST_CHECK_IDS);
 
 const EXPECTED_FAILED_CHECKS_BY_SCENARIO: Record<GatedSmokeScenario, readonly VerificationCheckId[]> = {
   S0: [],
@@ -166,57 +183,51 @@ function requireFreshVerificationChecks(data: Record<string, unknown>): Verifica
   return checks;
 }
 
-async function mergeLocallyVerifiedCastChecks(
-  data: Record<string, unknown>,
-  serverChecks: VerificationCheck[],
+function projectVerificationChecks(resource: AvailableVerificationResource): VerificationCheck[] {
+  return resource.verification.checks.map((check) => ({
+    id: check.id,
+    status: check.status,
+    evidence: check.evidence,
+    inputs: [...check.inputs],
+    ...(check.noteKey ? { noteKey: check.noteKey } : {}),
+    ...(check.derivedFrom ? { derivedFrom: check.derivedFrom } : {}),
+  }));
+}
+
+function mergeLocallyVerifiedCastChecks(
+  resource: AvailableVerificationResource,
   localVote: VoteResult,
-): Promise<VerificationCheck[]> {
+): VerificationCheck[] {
+  const serverChecks = projectVerificationChecks(resource);
   for (const check of serverChecks) {
-    const definition = VERIFICATION_CHECK_DEFINITION_BY_ID.get(check.id);
-    if (definition?.category === 'cast_as_intended' && check.status !== 'not_run') {
+    if (LOCAL_CAST_CHECK_ID_SET.has(check.id) && check.status !== 'not_run') {
       throw new Error(`Server-projected ${check.id} must remain not_run, received ${check.status}.`);
     }
   }
 
-  const electionId = getStringProperty(data, 'electionId');
-  const receipt = getRecordProperty(data, 'voteReceipt');
-  const voteId = getStringProperty(receipt, 'voteId');
-  const commitment = getStringProperty(receipt, 'commitment');
-  const bulletinIndex = getNumberProperty(receipt, 'bulletinIndex');
-  const bulletinRootAtCast = getStringProperty(receipt, 'bulletinRootAtCast');
-  const timestamp = getNumberProperty(receipt, 'timestamp');
-  if (
-    !electionId ||
-    !voteId ||
-    !commitment ||
-    bulletinIndex === undefined ||
-    !bulletinRootAtCast ||
-    timestamp === undefined
-  ) {
-    throw new Error('Fresh verifier result is missing the receipt fields required for local cast verification.');
+  if (resource.voterEvidence.availability !== 'available') {
+    throw new Error('Fresh verifier result is missing exact voter evidence required for local cast verification.');
   }
 
-  const results = await evaluateChecks(
-    {
-      electionId,
-      voteReceipt: { voteId, commitment, bulletinIndex, bulletinRootAtCast, timestamp },
-      userVote: {
-        vote: localVote.choice,
-        random: localVote.random,
-        commitment: localVote.commitment,
-      },
+  const receipt = resource.voterEvidence.voteReceipt;
+  const localResults = evaluateLocalCastChecks({
+    electionId: resource.proofAuthority.electionId,
+    voteReceipt: {
+      voteId: receipt.voteId,
+      commitment: receipt.commitment,
+      bulletinIndex: receipt.bulletinIndex,
+      bulletinRootAtCast: receipt.bulletinRootAtCast,
+      timestamp: receipt.castAtMs,
+      ...(receipt.inputCommitment ? { inputCommitment: receipt.inputCommitment } : {}),
     },
-    CAST_CHECK_IDS,
-    { applyZkGate: false },
-  );
-
-  return serverChecks.map((check) => {
-    const definition = VERIFICATION_CHECK_DEFINITION_BY_ID.get(check.id);
-    if (definition?.category !== 'cast_as_intended') {
-      return check;
-    }
-    return { ...check, status: results.get(check.id)?.status ?? 'not_run' };
+    choice: localVote.choice,
+    random: localVote.random,
   });
+  const overlaid = overlayLocalCastChecks(serverChecks, localResults);
+  if (!overlaid) {
+    throw new Error('Fresh verifier result has an incomplete or duplicate verification check inventory.');
+  }
+  return overlaid;
 }
 
 function requireScenarioCount(
@@ -247,10 +258,10 @@ export function assertAuthenticatedVerificationReport(
   if (!contentType.includes('application/json')) {
     throw new Error('Authenticated verification report returned an invalid Content-Type.');
   }
-  const expectedDisposition = `inline; filename="${options.expectedExecutionId}-verification.json"`;
+  const expectedDisposition = `inline; filename="${options.expectedFinalizationId}-verification.json"`;
   if (headers.get('content-disposition') !== expectedDisposition) {
     throw new Error(
-      `Authenticated verification report Content-Disposition did not bind execution ${options.expectedExecutionId}.`,
+      `Authenticated verification report Content-Disposition did not bind finalization ${options.expectedFinalizationId}.`,
     );
   }
 
@@ -315,25 +326,41 @@ export function assertExpectedOverallVerdict(
   data: FinalizeScenarioData,
   expectedVerdict: ExpectedOverallVerdict,
 ): void {
-  const context: VerificationSummaryContext = { sthSourcesConfigured: true };
+  const context = { sthSourcesConfigured: true } as {
+    sthSourcesConfigured: boolean;
+    missingSlots?: number;
+    invalidPresentedSlots?: number;
+    rejectedRecords?: number;
+    excludedSlots?: number;
+  };
   for (const field of ['missingSlots', 'invalidPresentedSlots', 'rejectedRecords', 'excludedSlots'] as const) {
     const value = data[field];
     if (typeof value === 'number') {
       context[field] = value;
     }
   }
-  const summary = deriveVerificationSummary(data.verificationChecks, context);
-  if (!summary) {
+  const policy = deriveVerificationPresentationPolicy({
+    availability: 'available',
+    ...(data.verificationChecks ? { checks: data.verificationChecks } : {}),
+    context,
+    ...(data.verificationStatus ? { verificationStatus: data.verificationStatus } : {}),
+    ...(data.verificationReport?.status ? { verificationReportStatus: data.verificationReport.status } : {}),
+  });
+  if (!policy.summary) {
     throw new Error('Verification payload is missing the checks required to derive an overall verdict.');
   }
   if (expectedVerdict === 'fully_verified') {
-    if (summary.status !== 'fully_verified' || summary.tone !== 'verified') {
-      throw new Error(`Expected a fully verified overall verdict, received ${summary.status}/${summary.tone}.`);
+    if (!policy.fullyVerifiedLabelEligible) {
+      throw new Error(
+        `Expected a fully verified overall verdict, received ${policy.summary.status}/${policy.summary.tone}.`,
+      );
     }
     return;
   }
-  if (summary.tone !== 'failed') {
-    throw new Error(`Tamper scenario expected a failed overall verdict, received ${summary.status}/${summary.tone}.`);
+  if (policy.display.renderedStatus !== 'failed') {
+    throw new Error(
+      `Tamper scenario expected a failed overall verdict, received ${policy.summary.status}/${policy.summary.tone}.`,
+    );
   }
 }
 
@@ -459,33 +486,51 @@ async function parseErrorCode(response: Response): Promise<string | null> {
   if (!isRecord(payload)) {
     return null;
   }
-  return getStringProperty(payload, 'error') ?? null;
+  return getStringProperty(getRecordProperty(payload, 'error'), 'code') ?? null;
 }
 
 async function readJsonRecord(response: Response, label: string): Promise<Record<string, unknown>> {
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    throw new Error(`${label} returned invalid JSON.`);
-  }
+  const payload = await readJsonValue(response, label);
   if (!isRecord(payload)) {
     throw new Error(`${label} returned a non-object JSON payload.`);
   }
   return payload;
 }
 
-function requireVerificationExecutionId(
-  data: Record<string, unknown>,
-  expectedExecutionId: string,
+async function readJsonValue(response: Response, label: string): Promise<unknown> {
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`${label} returned invalid JSON.`);
+  }
+  return payload;
+}
+
+function firstSchemaIssue(parsed: { success: false; error: { issues: ReadonlyArray<{ message: string }> } }): string {
+  return parsed.error.issues[0]?.message ?? 'schema validation failed';
+}
+
+function requireAvailableVerificationResource(
+  resource: VerificationResource,
+  expectedFinalizationId: string,
   label: string,
-): void {
-  const actualExecutionId = getStringProperty(data, 'verificationExecutionId');
-  if (actualExecutionId !== expectedExecutionId) {
+): CompleteAvailableVerificationResource {
+  if (resource.finalizationId !== expectedFinalizationId) {
     throw new Error(
-      `${label} verificationExecutionId mismatch: expected ${expectedExecutionId}, received ${actualExecutionId ?? '<none>'}.`,
+      `${label} finalizationId mismatch: expected ${expectedFinalizationId}, received ${resource.finalizationId}.`,
     );
   }
+  if (resource.availability !== 'available') {
+    throw new Error(`${label} returned fail-closed verification availability ${resource.availability}.`);
+  }
+  if (resource.journal.representation !== 'included') {
+    throw new Error(`${label} omitted the requested verification journal representation.`);
+  }
+  if (resource.voterEvidence.availability !== 'available') {
+    throw new Error(`${label} omitted exact voter evidence.`);
+  }
+  return resource as CompleteAvailableVerificationResource;
 }
 
 function requireIndependentImageId(data: Record<string, unknown>, expectedImageId: string, label: string): void {
@@ -495,10 +540,95 @@ function requireIndependentImageId(data: Record<string, unknown>, expectedImageI
   }
 }
 
-function buildVerificationArtifactUrl(baseUrl: string, sessionId: string, executionId: string, report = false): string {
-  const suffix = report ? '/report' : '';
+function requireIndependentVerificationResourceImageId(
+  resource: AvailableVerificationResource,
+  expectedImageId: string,
+  label: string,
+): void {
+  const actualImageId = resource.proofAuthority.imageId;
+  if (actualImageId !== expectedImageId) {
+    throw new Error(`${label} ImageID mismatch: expected ${expectedImageId}, received ${actualImageId}.`);
+  }
+}
+
+function projectAcceptedVerificationData(
+  result: VerificationAcceptanceResult,
+  verificationChecks: VerificationCheck[],
+): FinalizeScenarioData {
+  const resource = result.resource;
+  const authority = resource.proofAuthority;
+  const presentation = resource.presentation;
+  const journal = resource.journal.value;
+  const voterEvidence = resource.voterEvidence;
+  return {
+    finalizationId: resource.finalizationId,
+    electionId: authority.electionId,
+    electionConfigHash: authority.electionConfigHash,
+    imageId: authority.imageId,
+    bulletinRoot: authority.bulletinRoot,
+    tally: {
+      counts: { ...presentation.tally.counts },
+      bulletinRoot: authority.bulletinRoot,
+      totalVotes: presentation.tally.totalVotes,
+      tamperedCount: presentation.tally.tamperedCount ?? 0,
+    },
+    totalVotes: presentation.tally.totalVotes,
+    scenarioId: presentation.scenarioId,
+    ...('tamperDetected' in presentation ? { tamperDetected: presentation.tamperDetected } : {}),
+    verificationStatus: resource.verifierResult.status,
+    ...(resource.verifierResult.report ? { verificationReport: resource.verifierResult.report } : {}),
+    verificationSteps: resource.verification.steps.map((step) => ({
+      id: step.id,
+      status: step.status,
+    })),
+    verificationChecks,
+    journal,
+    voteReceipt: {
+      voteId: voterEvidence.voteReceipt.voteId,
+      commitment: voterEvidence.voteReceipt.commitment,
+      bulletinIndex: voterEvidence.voteReceipt.bulletinIndex,
+      bulletinRootAtCast: voterEvidence.voteReceipt.bulletinRootAtCast,
+      timestamp: voterEvidence.voteReceipt.castAtMs,
+      ...(voterEvidence.voteReceipt.inputCommitment
+        ? { inputCommitment: voterEvidence.voteReceipt.inputCommitment }
+        : {}),
+    },
+    userVote: {
+      commitment: voterEvidence.userVote.commitment,
+      voteId: voterEvidence.userVote.voteId,
+      proof: {
+        leafIndex: voterEvidence.userVote.proof.leafIndex,
+        merklePath: [...voterEvidence.userVote.proof.merklePath],
+        treeSize: voterEvidence.userVote.proof.treeSize,
+        bulletinRootAtCast: voterEvidence.userVote.proof.bulletinRootAtCast,
+      },
+    },
+    missingSlots: authority.missingSlots,
+    invalidPresentedSlots: authority.invalidPresentedSlots,
+    rejectedRecords: authority.rejectedRecords,
+    validVotes: journal.validVotes,
+    totalExpected: authority.totalExpected,
+    treeSize: authority.treeSize,
+    excludedSlots: authority.excludedSlots,
+    verifiedTally: [...authority.verifiedTally],
+    sthDigest: authority.sthDigest,
+    seenBitmapRoot: authority.seenBitmapRoot,
+    includedBitmapRoot: authority.includedBitmapRoot,
+    inputCommitment: authority.inputCommitment,
+    seenIndicesCount: authority.seenIndicesCount,
+    ...(result.publicReceipt === undefined ? {} : { receipt: result.publicReceipt }),
+  };
+}
+
+function buildVerificationArtifactUrl(
+  baseUrl: string,
+  sessionId: string,
+  finalizationId: string,
+  report = false,
+): string {
+  const artifact = report ? 'report' : 'bundle';
   return new URL(
-    `/api/verification/bundles/${encodeURIComponent(sessionId)}/${encodeURIComponent(executionId)}${suffix}`,
+    `/api/sessions/${encodeURIComponent(sessionId)}/finalizations/${encodeURIComponent(finalizationId)}/artifacts/${artifact}`,
     baseUrl,
   ).toString();
 }
@@ -513,27 +643,6 @@ async function fetchAuthenticatedArtifact(
     throw new Error(`${label} returned HTTP ${response.status}.`);
   }
   return response;
-}
-
-function parseContentRange(value: string | null): ParsedContentRange | null {
-  const match = value ? /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value) : null;
-  if (!match) {
-    return null;
-  }
-  const start = Number(match[1]);
-  const end = Number(match[2]);
-  const total = Number(match[3]);
-  if (
-    !Number.isSafeInteger(start) ||
-    !Number.isSafeInteger(end) ||
-    !Number.isSafeInteger(total) ||
-    start < 0 ||
-    end < start ||
-    total <= end
-  ) {
-    return null;
-  }
-  return { start, end, total };
 }
 
 function resolveBundleChunkSize(value: string | null): number {
@@ -553,9 +662,15 @@ function resolveMaxBundleDownloadBytes(options: BundleDownloadOptions): number {
 
 function readBundleRepresentationIdentity(headers: Headers): BundleRepresentationIdentity {
   return {
-    etag: headers.get('etag'),
-    versionId: headers.get('x-amz-version-id'),
+    etag: headers.get('etag')?.trim() || null,
+    versionId: headers.get('x-amz-version-id')?.trim() || null,
   };
+}
+
+function assertPresentBundleRepresentationIdentity(identity: BundleRepresentationIdentity): void {
+  if (!identity.etag && !identity.versionId) {
+    throw new Error('verification bundle range response has no representation identity.');
+  }
 }
 
 function assertBundleRepresentationIdentity(
@@ -570,9 +685,9 @@ function assertBundleRepresentationIdentity(
   }
 }
 
-async function readBundleRangeBody(response: Response, range: ParsedContentRange): Promise<Buffer> {
+async function readBundleRangeBody(response: Response, range: SatisfiedContentRange): Promise<Buffer> {
   const body = Buffer.from(await response.arrayBuffer());
-  const expectedLength = range.end - range.start + 1;
+  const expectedLength = range.advertisedLength;
   if (body.byteLength !== expectedLength) {
     throw new Error(
       `verification bundle range body length mismatch: expected ${expectedLength}, received ${body.byteLength}.`,
@@ -664,7 +779,7 @@ export async function downloadAuthenticatedBundle(
   }
 
   const firstRange = parseContentRange(firstResponse.headers.get('content-range'));
-  if (!firstRange || firstRange.start !== 0) {
+  if (firstRange?.kind !== 'satisfied' || firstRange.start !== 0) {
     throw new Error('verification bundle returned an invalid initial Content-Range.');
   }
   if (firstRange.end >= BUNDLE_RANGE_CHUNK_BYTES) {
@@ -674,6 +789,7 @@ export async function downloadAuthenticatedBundle(
     throw new Error(`verification bundle exceeds the ${maxTotalBytes}-byte download limit.`);
   }
   const representationIdentity = readBundleRepresentationIdentity(firstResponse.headers);
+  assertPresentBundleRepresentationIdentity(representationIdentity);
   const chunks = [await readBundleRangeBody(firstResponse, firstRange)];
   const chunkSize = resolveBundleChunkSize(firstResponse.headers.get(BUNDLE_RANGE_CHUNK_HEADER));
   let nextStart = firstRange.end + 1;
@@ -685,10 +801,17 @@ export async function downloadAuthenticatedBundle(
       throw new Error(`verification bundle range ${nextStart}-${nextEnd} returned HTTP ${response.status}.`);
     }
     const range = parseContentRange(response.headers.get('content-range'));
-    if (!range || range.start !== nextStart || range.end !== nextEnd || range.total !== firstRange.total) {
+    if (
+      range?.kind !== 'satisfied' ||
+      range.start !== nextStart ||
+      range.end !== nextEnd ||
+      range.total !== firstRange.total
+    ) {
       throw new Error(`verification bundle returned a non-contiguous Content-Range at byte ${nextStart}.`);
     }
-    assertBundleRepresentationIdentity(representationIdentity, readBundleRepresentationIdentity(response.headers));
+    const nextRepresentationIdentity = readBundleRepresentationIdentity(response.headers);
+    assertPresentBundleRepresentationIdentity(nextRepresentationIdentity);
+    assertBundleRepresentationIdentity(representationIdentity, nextRepresentationIdentity);
     chunks.push(await readBundleRangeBody(response, range));
     nextStart = range.end + 1;
   }
@@ -705,69 +828,97 @@ async function delay(ms: number): Promise<void> {
 
 export async function runVerificationAcceptance(
   options: VerificationAcceptanceOptions,
-): Promise<Record<string, unknown>> {
-  const runResponse = await fetch(new URL('/api/verification/run', options.baseUrl), {
+): Promise<VerificationAcceptanceResult> {
+  const verificationPath = buildApiRouteUrl(API_ROUTES.runVerification, {
+    params: {
+      sessionId: options.sessionId,
+      finalizationId: options.finalizationId,
+    },
+  });
+  const runResponse = await fetch(new URL(verificationPath, options.baseUrl), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...options.authHeaders },
     body: '{}',
     redirect: 'manual',
   });
   if (!runResponse.ok) {
-    throw new Error(`POST /api/verification/run returned HTTP ${runResponse.status}.`);
+    throw new Error(`POST ${verificationPath} returned HTTP ${runResponse.status}.`);
   }
-  const runPayload = await readJsonRecord(runResponse, 'POST /api/verification/run');
-  const runData = getRecordProperty(runPayload, 'data');
-  if (!runData) {
-    throw new Error('POST /api/verification/run response is missing data.');
+  const runPayload = await readJsonValue(runResponse, `POST ${verificationPath}`);
+  const parsedRun = VerificationRunResponseSchema.safeParse(runPayload);
+  if (!parsedRun.success) {
+    throw new Error(`POST ${verificationPath} returned an invalid response: ${firstSchemaIssue(parsedRun)}.`);
   }
-  const executionId = getStringProperty(runData, 'verificationExecutionId');
-  if (!executionId || !isSafeVerifierSegment(executionId)) {
-    throw new Error('POST /api/verification/run returned an invalid verificationExecutionId.');
+  const runData = parsedRun.data.data;
+  if (runData.finalizationId !== options.finalizationId) {
+    throw new Error(
+      `POST ${verificationPath} finalizationId mismatch: expected ${options.finalizationId}, received ${runData.finalizationId}.`,
+    );
   }
-  if (getStringProperty(runData, 'verificationStatus') !== 'running' || runData['idempotent'] !== false) {
-    throw new Error('POST /api/verification/run did not start new durable verification queue work.');
+  if (runData.verificationStatus !== 'running' || runData.idempotent !== false) {
+    throw new Error(`POST ${verificationPath} did not start new durable verification queue work.`);
   }
 
-  const pollUrl = new URL('/api/verify?includeJournal=1', options.baseUrl).toString();
+  const pollPath = buildApiRouteUrl(API_ROUTES.verification, {
+    params: {
+      sessionId: options.sessionId,
+      finalizationId: options.finalizationId,
+    },
+    query: { include: 'journal' },
+  });
+  const pollUrl = new URL(pollPath, options.baseUrl).toString();
   const maxPollAttempts = options.maxPollAttempts ?? VERIFICATION_POLL_ATTEMPTS;
   const pollDelayMs = options.pollDelayMs ?? VERIFICATION_POLL_DELAY_MS;
-  let verifiedData: Record<string, unknown> | undefined;
-
-  for (let attempt = 0; attempt < maxPollAttempts; attempt += 1) {
-    const response = await fetch(pollUrl, { method: 'GET', headers: options.authHeaders, redirect: 'manual' });
-    if (!response.ok) {
-      throw new Error(`GET /api/verify polling returned HTTP ${response.status}.`);
-    }
-    const payload = await readJsonRecord(response, 'GET /api/verify polling');
-    const data = getRecordProperty(payload, 'data');
-    if (!data) {
-      throw new Error('GET /api/verify polling response is missing data.');
-    }
-    requireVerificationExecutionId(data, executionId, 'GET /api/verify polling');
-    const status = getStringProperty(data, 'verificationStatus');
-    if (status === options.expectedTerminalVerificationStatus) {
-      requireIndependentImageId(data, options.expectedImageId, 'GET /api/verify polling');
-      const verificationChecks = requireFreshVerificationChecks(data);
-      verifiedData = { ...data, verificationChecks };
-      break;
-    }
-    if (status !== 'running' && status !== 'not_run') {
-      throw new Error(
-        `GET /api/verify polling reached ${status ?? '<none>'}; expected ${options.expectedTerminalVerificationStatus}.`,
+  const limit =
+    maxPollAttempts === Number.POSITIVE_INFINITY
+      ? { deadlineMs: Number.POSITIVE_INFINITY, clock: Date.now }
+      : { maxAttempts: Number.isNaN(maxPollAttempts) ? 0 : Math.max(0, Math.ceil(maxPollAttempts)) };
+  const verifiedResource = await pollUntil({
+    ...limit,
+    operation: async () => {
+      const response = await fetch(pollUrl, { method: 'GET', headers: options.authHeaders, redirect: 'manual' });
+      if (!response.ok) {
+        throw new Error(`GET ${pollPath} polling returned HTTP ${response.status}.`);
+      }
+      const payload = await readJsonValue(response, `GET ${pollPath} polling`);
+      const parsedResource = VerificationResourceResponseSchema.safeParse(payload);
+      if (!parsedResource.success) {
+        throw new Error(`GET ${pollPath} polling returned an invalid response: ${firstSchemaIssue(parsedResource)}.`);
+      }
+      const resource = requireAvailableVerificationResource(
+        parsedResource.data.data,
+        options.finalizationId,
+        `GET ${pollPath} polling`,
       );
-    }
-    await delay(pollDelayMs);
+      const status = resource.verifierResult.status;
+      if (status === options.expectedTerminalVerificationStatus) {
+        requireIndependentVerificationResourceImageId(resource, options.expectedImageId, `GET ${pollPath} polling`);
+        requireFreshVerificationChecks({
+          verificationChecks: projectVerificationChecks(resource),
+        });
+        return resource;
+      }
+      if (status !== 'running' && status !== 'not_run') {
+        throw new Error(
+          `GET ${pollPath} polling reached ${status}; expected ${options.expectedTerminalVerificationStatus}.`,
+        );
+      }
+      return null;
+    },
+    isTerminal: (resource): resource is CompleteAvailableVerificationResource => resource !== null,
+    delay: async () => delay(pollDelayMs),
+    createTimeoutError: () =>
+      new Error(`GET ${pollPath} polling did not reach success after ${maxPollAttempts} attempts.`),
+  });
+  if (!verifiedResource) {
+    throw new Error(`GET ${pollPath} polling did not reach success after ${maxPollAttempts} attempts.`);
   }
 
-  if (!verifiedData) {
-    throw new Error(`GET /api/verify polling did not reach success after ${maxPollAttempts} attempts.`);
-  }
-
-  const bundleUrl = buildVerificationArtifactUrl(options.baseUrl, options.sessionId, executionId);
-  const reportUrl = buildVerificationArtifactUrl(options.baseUrl, options.sessionId, executionId, true);
+  const bundleUrl = buildVerificationArtifactUrl(options.baseUrl, options.sessionId, options.finalizationId);
+  const reportUrl = buildVerificationArtifactUrl(options.baseUrl, options.sessionId, options.finalizationId, true);
+  const artifactAuthHeaders = options.authHeaders;
   const wrongCapabilityHeaders = {
-    ...options.authHeaders,
-    [SESSION_ID_HEADER]: options.sessionId,
+    ...artifactAuthHeaders,
     [SESSION_CAPABILITY_HEADER]: 'wrong-capability-token',
   };
   await expectJsonErrorCodeRejected(
@@ -783,7 +934,7 @@ export async function runVerificationAcceptance(
     { method: 'GET', headers: wrongCapabilityHeaders },
   );
 
-  const bundle = await downloadAuthenticatedBundle(bundleUrl, options.authHeaders);
+  const bundle = await downloadAuthenticatedBundle(bundleUrl, artifactAuthHeaders);
   const privateBundleFilenames = new Set<string>(PRIVATE_BUNDLE_FILENAMES);
   const privateEntries = (await listZipEntryNamesFromBuffer(bundle)).filter((entryName) =>
     privateBundleFilenames.has(path.posix.basename(entryName)),
@@ -806,17 +957,17 @@ export async function runVerificationAcceptance(
     }
   }
 
-  const reportResponse = await fetchAuthenticatedArtifact('verification report', reportUrl, options.authHeaders);
+  const reportResponse = await fetchAuthenticatedArtifact('verification report', reportUrl, artifactAuthHeaders);
   const report = await readJsonRecord(reportResponse, 'verification report');
   assertAuthenticatedVerificationReport(report, reportResponse.headers, {
     expectedImageId: options.expectedImageId,
-    expectedExecutionId: executionId,
+    expectedFinalizationId: options.finalizationId,
     expectedStatus: options.expectedTerminalVerificationStatus,
   });
 
   return {
-    ...verifiedData,
-    ...(publicReceipt === undefined ? {} : { receipt: publicReceipt }),
+    resource: verifiedResource,
+    ...(publicReceipt === undefined ? {} : { publicReceipt }),
   };
 }
 
@@ -826,22 +977,23 @@ export async function completeFinalizedVerificationAcceptance(
   runAcceptance: VerificationAcceptanceRunner = runVerificationAcceptance,
 ): Promise<FinalizeWithScenariosResult> {
   assertIndependentFinalizationImageId(result.data, options.expectedImageId);
-  const verifiedData = await runAcceptance({
+  const acceptance = await runAcceptance({
     baseUrl: options.baseUrl,
     sessionId: options.sessionId,
+    finalizationId: options.finalizationId,
     expectedImageId: options.expectedImageId,
     expectedTerminalVerificationStatus: options.expectedTerminalVerificationStatus,
     authHeaders: options.authHeaders,
   });
-  requireIndependentImageId(verifiedData, options.expectedImageId, 'fresh verifier result');
-  const freshStatus = getStringProperty(verifiedData, 'verificationStatus');
+  requireIndependentVerificationResourceImageId(acceptance.resource, options.expectedImageId, 'fresh verifier result');
+  const freshStatus = acceptance.resource.verifierResult.status;
   if (freshStatus !== options.expectedTerminalVerificationStatus) {
     throw new Error(
-      `Fresh verifier result status mismatch: expected ${options.expectedTerminalVerificationStatus}, received ${freshStatus ?? '<none>'}.`,
+      `Fresh verifier result status mismatch: expected ${options.expectedTerminalVerificationStatus}, received ${freshStatus}.`,
     );
   }
-  const serverChecks = requireFreshVerificationChecks(verifiedData);
-  const verificationChecks = await mergeLocallyVerifiedCastChecks(verifiedData, serverChecks, options.localVote);
+  const verificationChecks = mergeLocallyVerifiedCastChecks(acceptance.resource, options.localVote);
+  const verifiedData = projectAcceptedVerificationData(acceptance, verificationChecks);
   const completedResult = {
     ...result,
     data: {
@@ -900,26 +1052,31 @@ export async function expectJsonErrorCodeRejected(
 
 export async function runNegativeGateChecks(baseUrl: string): Promise<void> {
   await expectCloudFrontGateRejected('unauthenticated GET /', `${baseUrl}/`);
-  await expectCloudFrontGateRejected('unauthenticated POST /api/session', `${baseUrl}/api/session`, {
+  await expectCloudFrontGateRejected('unauthenticated POST /api/sessions', `${baseUrl}/api/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
   });
-  await expectCloudFrontGateRejected('unauthenticated GET /api/verify', `${baseUrl}/api/verify`);
+  const verificationPath = buildApiRouteUrl(API_ROUTES.verification, {
+    params: { sessionId: 'gate-probe', finalizationId: 'gate-probe' },
+  });
+  await expectCloudFrontGateRejected(
+    `unauthenticated GET ${verificationPath}`,
+    new URL(verificationPath, baseUrl).toString(),
+  );
 }
 
 export async function runWrongCapabilityCheck(baseUrl: string, headers: Record<string, string>): Promise<void> {
   const helper = new CLITestHelpers(baseUrl, headers);
   const sessionId = await helper.createSession();
   await expectJsonErrorCodeRejected(
-    'wrong capability GET /api/progress',
-    `${baseUrl}/api/progress`,
+    'wrong capability GET /api/sessions/:sessionId/progress',
+    `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/progress`,
     ErrorCode.SESSION_CAPABILITY_INVALID,
     {
       method: 'GET',
       headers: {
         ...headers,
-        [SESSION_ID_HEADER]: sessionId,
         [SESSION_CAPABILITY_HEADER]: 'wrong-capability-token',
       },
     },
@@ -945,8 +1102,8 @@ export async function runDirectOriginCheck(headers: Record<string, string>, base
   }
   const origin = new URL(directOrigin).origin;
   await expectJsonErrorCodeRejected(
-    'direct-origin POST /api/session',
-    `${origin}/api/session`,
+    'direct-origin POST /api/sessions',
+    `${origin}/api/sessions`,
     ErrorCode.SAME_ORIGIN_REQUIRED,
     {
       method: 'POST',
@@ -1002,14 +1159,19 @@ class GatedSmokeCLITestHelpers extends CLITestHelpers {
     this.localVotes.delete(sessionId);
     const expectation = resolveGatedSmokeScenarioExpectation(scenarioId);
     const result = await super.finalizeWithScenarios(sessionId, scenarioId);
+    const finalizationId = result.meta?.finalizationId;
+    if (!finalizationId) {
+      throw new Error('Finalization result is missing finalizationId authority.');
+    }
     return await completeFinalizedVerificationAcceptance(result, {
       baseUrl: resolveBaseUrl(),
       sessionId,
+      finalizationId,
       expectedImageId: this.expectedImageId,
       expectedTerminalVerificationStatus: expectation.terminalVerificationStatus,
       expectedOverallVerdict: expectation.overallVerdict,
       scenario: scenarioId,
-      authHeaders: this.getSensitiveAuthHeaders(sessionId),
+      authHeaders: this.getPathSessionAuthHeaders(),
       localVote,
     });
   }

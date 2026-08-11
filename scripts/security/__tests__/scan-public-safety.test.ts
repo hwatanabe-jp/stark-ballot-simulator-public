@@ -1,14 +1,22 @@
-/**
- * @vitest-environment node
- */
-
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const SCRIPT_PATH = path.resolve(process.cwd(), 'scripts/security/scan-public-safety.sh');
+const FRAMEWORK_SCANNER_PATH = path.resolve(process.cwd(), 'scripts/security/framework-template-safety.ts');
+const TSX_PATH = path.resolve(process.cwd(), 'node_modules/.bin/tsx');
+const FRAMEWORK_SCANNER_AVAILABLE = existsSync(FRAMEWORK_SCANNER_PATH);
 
 function s3ObjectUrl(hostParts: string[], objectPath: string): string {
   return `https://${hostParts.join('.')}/${objectPath}`;
@@ -45,7 +53,181 @@ function runScanRoot(root: string) {
   });
 }
 
+function runFrameworkScan(root: string, env: NodeJS.ProcessEnv = process.env) {
+  return spawnSync('bash', [SCRIPT_PATH, '--framework', '--root', root, '--all'], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    env,
+  });
+}
+
+function runFrameworkCli(entrypoint: string, root: string) {
+  return spawnSync(TSX_PATH, [entrypoint, '--root', root], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+  });
+}
+
 describe('scan-public-safety.sh', () => {
+  it.runIf(FRAMEWORK_SCANNER_AVAILABLE)(
+    'runs the framework policy as an explicit extension of the central scanner',
+    () => {
+      const root = mkdtempSync(path.join(tmpdir(), 'public-safety-framework-mode-'));
+      try {
+        writeFileSync(path.join(root, 'safe.txt'), 'image = "fixture.invalid/service@sha256:' + 'a'.repeat(64) + '"\n');
+
+        const result = runFrameworkScan(root);
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('Public safety scan passed (all, framework).');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(FRAMEWORK_SCANNER_AVAILABLE)('rejects framework-only leak classes without printing matched material', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'public-safety-framework-leak-'));
+    const accountId = ['5555', '4444', '3333'].join('');
+    try {
+      writeFileSync(
+        path.join(root, 'unsafe.txt'),
+        `account = "${accountId}"\nimage = "fixture.invalid/service:latest"\n`,
+      );
+
+      const result = runFrameworkScan(root);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('framework_concrete_account_id');
+      expect(result.stderr).toContain('framework_mutable_image_reference');
+      expect(result.stderr).not.toContain(accountId);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(FRAMEWORK_SCANNER_AVAILABLE)(
+    'keeps package-manager diagnostics outside the framework scanner protocol',
+    () => {
+      const tempRoot = mkdtempSync(path.join(tmpdir(), 'public-safety-framework-package-manager-'));
+      const scanRoot = path.join(tempRoot, 'scan-root');
+      const fakeBin = path.join(tempRoot, 'bin');
+      const fakePnpm = path.join(fakeBin, 'pnpm');
+      try {
+        mkdirSync(scanRoot);
+        mkdirSync(fakeBin);
+        writeFileSync(path.join(scanRoot, 'safe.txt'), 'safe fixture\n');
+        writeFileSync(fakePnpm, '#!/usr/bin/env bash\necho "package-manager diagnostic" >&2\nexit 42\n');
+        chmodSync(fakePnpm, 0o755);
+
+        const result = runFrameworkScan(scanRoot, {
+          ...process.env,
+          CI: 'true',
+          PATH: `${fakeBin}:${process.env['PATH'] ?? ''}`,
+        });
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('Public safety scan passed (all, framework).');
+        expect(result.stderr).toBe('');
+      } finally {
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(FRAMEWORK_SCANNER_AVAILABLE)('runs the framework CLI through a symlinked entrypoint', () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), 'public-safety-framework-entrypoint-'));
+    const scanRoot = path.join(tempRoot, 'scan-root');
+    const scannerSymlink = path.join(tempRoot, 'framework-template-safety.ts');
+    const accountId = ['5555', '4444', '3333'].join('');
+    try {
+      mkdirSync(scanRoot);
+      symlinkSync(FRAMEWORK_SCANNER_PATH, scannerSymlink);
+      writeFileSync(path.join(scanRoot, 'unsafe.txt'), `account = "${accountId}"\n`);
+
+      const result = runFrameworkCli(scannerSymlink, scanRoot);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('framework_concrete_account_id');
+      expect(result.stdout).not.toContain(accountId);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['successful status without the completion marker', 0, '', ''],
+    ['successful status with contradictory output', 0, 'Framework template safety scan passed.\nunexpected\n', ''],
+    ['successful status with child stderr', 0, 'Framework template safety scan passed.\n', 'untrusted child stderr\n'],
+    ['finding status without redacted findings', 1, '', ''],
+    ['finding status with malformed output', 1, 'unredacted child output\n', ''],
+    ['finding status with child stderr', 1, 'unsafe.txt:1 framework_secret_material\n', 'untrusted child stderr\n'],
+    ['internal-error status', 2, '', 'untrusted child stderr\n'],
+    ['unexpected nonzero status', 42, '', 'untrusted child stderr\n'],
+  ] as const)(
+    'fails closed when the framework CLI returns %s',
+    (_label, frameworkStatus, frameworkOutput, frameworkError) => {
+      const repositoryRoot = mkdtempSync(path.join(tmpdir(), 'public-safety-framework-cli-contract-'));
+      const scriptPath = path.join(repositoryRoot, 'scripts/security/scan-public-safety.sh');
+      const frameworkScannerPath = path.join(repositoryRoot, 'scripts/security/framework-template-safety.ts');
+      const fakeTsx = path.join(repositoryRoot, 'node_modules/.bin/tsx');
+      const scanRoot = path.join(repositoryRoot, 'snapshot');
+      try {
+        mkdirSync(path.dirname(scriptPath), { recursive: true });
+        mkdirSync(path.dirname(fakeTsx), { recursive: true });
+        mkdirSync(scanRoot);
+        copyFileSync(SCRIPT_PATH, scriptPath);
+        writeFileSync(frameworkScannerPath, '// fixture scanner boundary\n');
+        writeFileSync(
+          fakeTsx,
+          '#!/usr/bin/env bash\nprintf \'%s\' "$FAKE_FRAMEWORK_STDOUT"\nprintf \'%s\' "$FAKE_FRAMEWORK_STDERR" >&2\nexit "$FAKE_FRAMEWORK_STATUS"\n',
+        );
+        chmodSync(fakeTsx, 0o755);
+        writeFileSync(path.join(scanRoot, 'safe.txt'), 'safe fixture\n');
+
+        const result = spawnSync('bash', [scriptPath, '--framework', '--root', scanRoot, '--all'], {
+          cwd: repositoryRoot,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            FAKE_FRAMEWORK_STATUS: String(frameworkStatus),
+            FAKE_FRAMEWORK_STDERR: frameworkError,
+            FAKE_FRAMEWORK_STDOUT: frameworkOutput,
+          },
+        });
+
+        expect(result.status).toBe(2);
+        expect(result.stderr).toContain('Framework template safety scan could not complete.');
+        expect(result.stderr).not.toContain('unredacted child output');
+        expect(result.stderr).not.toContain('untrusted child stderr');
+      } finally {
+        rmSync(repositoryRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('reports that framework mode is private when its scanner is not present', () => {
+    const repositoryRoot = mkdtempSync(path.join(tmpdir(), 'public-safety-without-framework-'));
+    const scriptPath = path.join(repositoryRoot, 'scripts/security/scan-public-safety.sh');
+    const scanRoot = path.join(repositoryRoot, 'snapshot');
+    try {
+      mkdirSync(path.dirname(scriptPath), { recursive: true });
+      mkdirSync(scanRoot);
+      copyFileSync(SCRIPT_PATH, scriptPath);
+      writeFileSync(path.join(scanRoot, 'safe.txt'), 'safe fixture\n');
+
+      const result = spawnSync('bash', [scriptPath, '--framework', '--root', scanRoot, '--all'], {
+        cwd: repositoryRoot,
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('Framework mode is available only in the private source repository.');
+    } finally {
+      rmSync(repositoryRoot, { recursive: true, force: true });
+    }
+  });
+
   it('allows placeholder AWS account IDs', () => {
     withTempFile(
       [
@@ -182,6 +364,187 @@ describe('scan-public-safety.sh', () => {
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('Public safety scan passed');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('allows a concrete account ID only at the private source deployment-target configuration path', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'public-safety-scan-private-target-config-'));
+    const accountId = ['9672', '8327', '8943'].join('');
+    const configurationPath = path.join(dir, 'packages/deployment-authority/deployment-targets.json');
+    const adjacentPath = path.join(dir, 'packages/deployment-authority/copied-targets.json');
+    try {
+      mkdirSync(path.dirname(configurationPath), { recursive: true });
+      writeFileSync(configurationPath, `${JSON.stringify({ accountId }, null, 2)}\n`);
+
+      const privateSourceResult = runScanRoot(dir);
+      expect(privateSourceResult.status).toBe(0);
+      expect(privateSourceResult.stdout).toContain('Public safety scan passed');
+
+      writeFileSync(adjacentPath, `${JSON.stringify({ accountId }, null, 2)}\n`);
+      const adjacentResult = runScanRoot(dir);
+      expect(adjacentResult.status).toBe(1);
+      expect(adjacentResult.stderr).toContain('packages/deployment-authority/copied-targets.json');
+      expect(adjacentResult.stderr).toContain('aws_account_id_label');
+      expect(adjacentResult.stderr).not.toContain(accountId);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an unsanitized account ID at the deployment-target path in a generated snapshot', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'public-safety-scan-generated-target-config-'));
+    const accountId = ['9672', '8327', '8943'].join('');
+    const configurationPath = path.join(dir, 'packages/deployment-authority/deployment-targets.json');
+    try {
+      mkdirSync(path.dirname(configurationPath), { recursive: true });
+      writeFileSync(path.join(dir, '.public-repository'), 'PUBLIC_REPOSITORY_SNAPSHOT=1\n');
+      writeFileSync(configurationPath, `${JSON.stringify({ accountId }, null, 2)}\n`);
+
+      const result = runScanRoot(dir);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('packages/deployment-authority/deployment-targets.json');
+      expect(result.stderr).toContain('aws_account_id_label');
+      expect(result.stderr).not.toContain(accountId);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects concrete Terraform backend bucket identifiers only in publishable source documentation', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'public-safety-scan-terraform-backend-source-'));
+    const backendBucket = ['example', 'terraform', 'state', 'a7c9'].join('-');
+    const publicDocPath = path.join(dir, 'docs/infrastructure/terraform.md');
+    const privateDocPath = path.join(dir, 'docs/internal/deployment/terraform.md');
+
+    try {
+      for (const filePath of [publicDocPath, privateDocPath]) {
+        mkdirSync(path.dirname(filePath), { recursive: true });
+        writeFileSync(
+          filePath,
+          ['```hcl', 'terraform {', '  backend "s3" {', `    bucket = "${backendBucket}"`, '  }', '}', '```', ''].join(
+            '\n',
+          ),
+        );
+      }
+
+      const publicResult = runScanRoot(dir);
+      expect(publicResult.status).toBe(1);
+      expect(publicResult.stderr).toContain('docs/infrastructure/terraform.md:4');
+      expect(publicResult.stderr).toContain('terraform_backend_bucket_identifier');
+      expect(publicResult.stderr).not.toContain('docs/internal/deployment/terraform.md');
+      expect(publicResult.stderr).not.toContain(backendBucket);
+
+      rmSync(publicDocPath);
+      const privateOnlyResult = runScanRoot(dir);
+      expect(privateOnlyResult.status).toBe(0);
+      expect(privateOnlyResult.stdout).toContain('Public safety scan passed');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a concrete Terraform backend bucket passed through the standard CLI option', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'public-safety-scan-terraform-backend-cli-'));
+    const backendBucket = ['example', 'terraform', 'state', 'c9e1'].join('-');
+    const publicDocPath = path.join(dir, 'docs/infrastructure/terraform.md');
+
+    try {
+      mkdirSync(path.dirname(publicDocPath), { recursive: true });
+      writeFileSync(publicDocPath, `terraform init -backend-config="bucket=${backendBucket}"\n`);
+
+      const result = runScanRoot(dir);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('docs/infrastructure/terraform.md:1');
+      expect(result.stderr).toContain('terraform_backend_bucket_identifier');
+      expect(result.stderr).not.toContain(backendBucket);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('allows an ordinary aws_s3_bucket assignment outside a Terraform backend block', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'public-safety-scan-ordinary-s3-bucket-'));
+    const ordinaryBucket = ['example', 'public', 'artifacts', 'd2f4'].join('-');
+    const publicDocPath = path.join(dir, 'docs/infrastructure/storage.md');
+
+    try {
+      mkdirSync(path.dirname(publicDocPath), { recursive: true });
+      writeFileSync(
+        publicDocPath,
+        [
+          '```hcl',
+          'terraform {',
+          '  backend "s3" {',
+          '    bucket = "<TERRAFORM_STATE_BUCKET>"',
+          '  }',
+          '}',
+          '',
+          'resource "aws_s3_bucket" "artifacts" {',
+          `  bucket = "${ordinaryBucket}"`,
+          '}',
+          '```',
+          '',
+        ].join('\n'),
+      );
+
+      const result = runScanRoot(dir);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Public safety scan passed');
+      expect(result.stderr).not.toContain('terraform_backend_bucket_identifier');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('allows Terraform backend placeholders and generic backend-bucket prose', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'public-safety-scan-terraform-backend-placeholder-'));
+    const publicDocPath = path.join(dir, 'docs/infrastructure/terraform.md');
+
+    try {
+      mkdirSync(path.dirname(publicDocPath), { recursive: true });
+      writeFileSync(
+        publicDocPath,
+        [
+          '```hcl',
+          'terraform {',
+          '  backend "s3" {',
+          '    bucket = "<TERRAFORM_STATE_BUCKET>"',
+          '  }',
+          '}',
+          '```',
+          '',
+          'TERRAFORM_STATE_BUCKET="${TERRAFORM_STATE_BUCKET}"',
+          '',
+          'The Terraform backend bucket is supplied through backend.local.hcl.',
+          '',
+        ].join('\n'),
+      );
+
+      const result = runScanRoot(dir);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Public safety scan passed');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects concrete Terraform backend bucket identifiers in a generated public snapshot', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'public-safety-scan-terraform-backend-snapshot-'));
+    const backendBucket = ['generated', 'terraform', 'state', 'b8d2'].join('-');
+    const generatedDocPath = path.join(dir, 'docs/PUBLIC_REPOSITORY.md');
+
+    try {
+      mkdirSync(path.dirname(generatedDocPath), { recursive: true });
+      writeFileSync(path.join(dir, '.public-repository'), 'PUBLIC_REPOSITORY_SNAPSHOT=1\n');
+      writeFileSync(generatedDocPath, `Terraform backend bucket: \`${backendBucket}\`\n`);
+
+      const result = runScanRoot(dir);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('docs/PUBLIC_REPOSITORY.md:1');
+      expect(result.stderr).toContain('terraform_backend_bucket_identifier');
+      expect(result.stderr).not.toContain(backendBucket);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

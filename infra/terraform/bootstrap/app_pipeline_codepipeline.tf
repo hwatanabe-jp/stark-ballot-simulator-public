@@ -6,7 +6,7 @@ resource "aws_codepipeline" "development_app" {
   role_arn      = aws_iam_role.app_pipeline[0].arn
 
   artifact_store {
-    location = aws_s3_bucket.app_pipeline_artifacts[0].bucket
+    location = aws_s3_bucket.app_pipeline_execution_artifacts[0].bucket
     type     = "S3"
 
     encryption_key {
@@ -19,6 +19,11 @@ resource "aws_codepipeline" "development_app" {
     name          = "DeploymentMode"
     default_value = "normal"
     description   = "Explicit app deployment mode: normal or rollback."
+  }
+
+  variable {
+    name        = "SelectedApplicationSourceSha"
+    description = "Required exact selected application source SHA; normal uses the control source and rollback uses the validated historical deployment source."
   }
 
   variable {
@@ -82,10 +87,10 @@ resource "aws_codepipeline" "development_app" {
   }
 
   stage {
-    name = "Source"
+    name = local.deployment_target.sourceAction
 
     action {
-      name             = "Source"
+      name             = local.deployment_target.sourceAction
       category         = "Source"
       owner            = "AWS"
       provider         = "CodeStarSourceConnection"
@@ -94,10 +99,10 @@ resource "aws_codepipeline" "development_app" {
       output_artifacts = ["SourceOutput"]
 
       configuration = {
-        BranchName           = var.source_branch
+        BranchName           = local.deployment_target.sourceBranch
         ConnectionArn        = aws_codeconnections_connection.source[0].arn
         DetectChanges        = "false"
-        FullRepositoryId     = var.github_full_repository_id
+        FullRepositoryId     = local.deployment_target.repository
         OutputArtifactFormat = "CODEBUILD_CLONE_REF"
       }
     }
@@ -158,7 +163,7 @@ resource "aws_codepipeline" "development_app" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve only after reviewing VerifierStateRefreshPlanOutput/infra/terraform/app/tfplan.txt, tfplan.sha256, and image-signature-state-refresh-plan.json. This saved refresh-only plan may update Terraform state only for the exact reviewed interrupted verifier publish/alias metadata and provider projections; it may not perform remote resource actions. Approval summary must be exact JSON: {\"sourceSha\":\"#{AppSource.CommitId}\",\"accountId\":\"${var.aws_account_id}\",\"deploymentEnvironment\":\"develop\",\"reviewedPlanChecksum\":\"<tfplan sha256>\",\"stateRefreshDisposition\":\"reviewed-state-refresh\"}."
+        CustomData = "Approve only after reviewing VerifierStateRefreshPlanOutput/infra/terraform/app/tfplan.txt, tfplan.sha256, and image-signature-state-refresh-plan.json. This saved refresh-only plan may update Terraform state only for the exact reviewed interrupted verifier publish/alias metadata and provider projections; it may not perform remote resource actions. Approval summary must be exact JSON: {\"sourceSha\":\"#{AppSource.CommitId}\",\"accountId\":\"${local.deployment_target.accountId}\",\"deploymentEnvironment\":\"${local.deployment_target.environmentId}\",\"reviewedPlanChecksum\":\"<tfplan sha256>\",\"stateRefreshDisposition\":\"reviewed-state-refresh\"}."
       }
     }
   }
@@ -216,7 +221,7 @@ resource "aws_codepipeline" "development_app" {
       provider         = "CodeBuild"
       version          = "1"
       namespace        = "VerifierPreflightPlan"
-      input_artifacts  = ["SourceOutput"]
+      input_artifacts  = ["SourceOutput", "VerifierStateRefreshPlanOutput"]
       output_artifacts = ["VerifierPreflightPlanOutput"]
 
       configuration = {
@@ -263,7 +268,7 @@ resource "aws_codepipeline" "development_app" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve only after reviewing VerifierPreflightPlanOutput/infra/terraform/app/tfplan.txt, tfplan.sha256, image-signature-preflight-plan.json, and image-signature-verifier-package.json. Confirm that the plan binds this execution's exact source SHA to the accepted digest-pinned Prover image. The allowlist permits only the cryptographic verifier log group, execution role and policy, immutable Lambda version, and preflight alias. After apply, the preflight alias must cryptographically verify that Prover image before the App lane can continue. Approval summary must be exact JSON: {\"sourceSha\":\"#{AppSource.CommitId}\",\"accountId\":\"${var.aws_account_id}\",\"deploymentEnvironment\":\"develop\",\"reviewedPlanChecksum\":\"<tfplan sha256>\"}."
+        CustomData = "Approve only after reviewing VerifierPreflightPlanOutput/infra/terraform/app/tfplan.txt, tfplan.sha256, image-signature-preflight-plan.json, and image-signature-verifier-package.json. Confirm that the plan binds this execution's exact source SHA to the accepted digest-pinned Prover image. The allowlist permits only the cryptographic verifier log group, execution role and policy, immutable Lambda version, and preflight alias. After apply, the preflight alias must cryptographically verify that Prover image before the App lane can continue. Approval summary must be exact JSON: {\"sourceSha\":\"#{AppSource.CommitId}\",\"accountId\":\"${local.deployment_target.accountId}\",\"deploymentEnvironment\":\"${local.deployment_target.environmentId}\",\"reviewedPlanChecksum\":\"<tfplan sha256>\"}."
       }
     }
   }
@@ -278,7 +283,7 @@ resource "aws_codepipeline" "development_app" {
       provider         = "CodeBuild"
       version          = "1"
       namespace        = "VerifierPreflightApply"
-      input_artifacts  = ["SourceOutput", "VerifierPreflightPlanOutput"]
+      input_artifacts  = ["SourceOutput", "VerifierPreflightPlanOutput", "VerifierStateRefreshPlanOutput"]
       output_artifacts = ["SigApply"]
 
       configuration = {
@@ -298,7 +303,7 @@ resource "aws_codepipeline" "development_app" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "SigApply"]
+      input_artifacts  = ["SourceOutput", "SigApply", "VerifierStateRefreshPlanOutput"]
       output_artifacts = ["VerifierPreflightVerifyOutput"]
 
       configuration = {
@@ -319,7 +324,7 @@ resource "aws_codepipeline" "development_app" {
       provider         = "CodeBuild"
       version          = "1"
       namespace        = "AppDeploymentRecord"
-      input_artifacts  = ["SourceOutput", "VerifierPreflightVerifyOutput"]
+      input_artifacts  = ["SourceOutput", "VerifierPreflightVerifyOutput", "VerifierStateRefreshPlanOutput"]
       output_artifacts = ["AppDeploymentRecordOutput"]
 
       configuration = {
@@ -339,7 +344,7 @@ resource "aws_codepipeline" "development_app" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "AppDeploymentRecordOutput"]
+      input_artifacts  = ["SourceOutput", "AppDeploymentRecordOutput", "VerifierStateRefreshPlanOutput"]
       output_artifacts = ["ValidateOutput"]
 
       configuration = {
@@ -360,7 +365,7 @@ resource "aws_codepipeline" "development_app" {
       provider         = "CodeBuild"
       version          = "1"
       namespace        = "PlanAppState"
-      input_artifacts  = ["SourceOutput", "ValidateOutput"]
+      input_artifacts  = ["SourceOutput", "ValidateOutput", "VerifierStateRefreshPlanOutput"]
       output_artifacts = ["PlanOutput"]
 
       configuration = {
@@ -407,7 +412,7 @@ resource "aws_codepipeline" "development_app" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/app/tfplan.txt, infra/terraform/app/tfplan.sha256, and infra/terraform/app/evidence/target-lambda-artifacts.json for stark-dev/develop/app. Rollback always requires approval even when Terraform is empty. Approval summary must be JSON: {\"deploymentMode\":\"normal|rollback\",\"controlSourceSha\":\"<current pipeline source sha>\",\"selectedSourceSha\":\"<selected deployment sha>\",\"accountId\":\"${var.aws_account_id}\",\"deploymentEnvironment\":\"develop\",\"reviewedPlanChecksum\":\"<tfplan sha256>\"}."
+        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/app/tfplan.txt, infra/terraform/app/tfplan.sha256, and infra/terraform/app/evidence/target-lambda-artifacts.json for ${local.app_lane_authority.stateIdentity}. Rollback always requires approval even when Terraform is empty. Approval summary must be JSON: {\"deploymentMode\":\"normal|rollback\",\"controlSourceSha\":\"<current pipeline source sha>\",\"selectedSourceSha\":\"<selected deployment sha>\",\"accountId\":\"${local.deployment_target.accountId}\",\"deploymentEnvironment\":\"${local.deployment_target.environmentId}\",\"reviewedPlanChecksum\":\"<tfplan sha256>\"}."
       }
     }
   }
@@ -421,7 +426,7 @@ resource "aws_codepipeline" "development_app" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "PlanOutput"]
+      input_artifacts  = ["SourceOutput", "PlanOutput", "VerifierStateRefreshPlanOutput"]
       output_artifacts = ["ApplyOutput"]
 
       configuration = {
@@ -441,7 +446,7 @@ resource "aws_codepipeline" "development_app" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "ApplyOutput"]
+      input_artifacts  = ["SourceOutput", "ApplyOutput", "VerifierStateRefreshPlanOutput"]
       output_artifacts = ["StaticDeployOutput"]
 
       configuration = {

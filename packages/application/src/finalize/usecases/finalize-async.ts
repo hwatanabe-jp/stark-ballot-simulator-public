@@ -1,5 +1,4 @@
 import type { FinalizationQueue } from '@stark-ballot/application/finalize/finalization-queue';
-import { generateExecutionId } from '@stark-ballot/application/finalize/execution-id';
 import {
   createFinalizationWorkItem,
   type FinalizationScenarioCode,
@@ -7,8 +6,8 @@ import {
 import { computeInputCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
 import type { ElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import { ApplicationErrorCode } from '@stark-ballot/application/finalize/finalization-types';
-import type { SessionData } from '@stark-ballot/domain/types/server';
 import type {
+  FinalizationId,
   FinalizationScenarioContext,
   FinalizationState,
 } from '@stark-ballot/application/finalize/finalization-types';
@@ -18,9 +17,7 @@ import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { emitCanonicalEvent } from '@stark-ballot/diagnostics/canonicalEvents';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
-import { isCurrentArtifactBoundaryError } from '@stark-ballot/domain/contract';
 import type { FinalizeAcceptedPayload, FinalizeSessionError, Result } from './types';
-import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 function toScenarioCode(value: string): FinalizationScenarioCode {
   if (value !== 'S0' && value !== 'S1' && value !== 'S2' && value !== 'S3' && value !== 'S4' && value !== 'S5') {
@@ -31,24 +28,22 @@ function toScenarioCode(value: string): FinalizationScenarioCode {
 
 export type PersistAsyncProverInput = (input: {
   sessionId: string;
-  executionId: string;
-  contractGeneration: string;
+  finalizationId: FinalizationId;
   zkvmInput: ZkVMInput;
   electionConfig: ElectionConfig;
 }) => Promise<unknown>;
 
 export interface FinalizeAsyncInput {
   sessionId: string;
-  session: SessionData;
-  contractGeneration: string;
+  finalizationId: FinalizationId;
+  queuedAtMs: number;
   zkvmInput: ZkVMInput;
   electionConfig: ElectionConfig;
   expectedImageId: string;
   scenarios: string[];
-  scenarioContext?: FinalizationScenarioContext;
-  queueUrl: string;
+  scenarioContext: FinalizationScenarioContext;
   publishMaxAttempts: number;
-  targetAwsRuntime?: boolean;
+  inputSource: 'inline' | 's3';
 }
 
 export interface FinalizeAsyncDependencies {
@@ -63,9 +58,6 @@ export async function finalizeAsync(
   input: FinalizeAsyncInput,
   deps: FinalizeAsyncDependencies,
 ): Promise<Result<{ payload: FinalizeAcceptedPayload; state: FinalizationState }, FinalizeSessionError>> {
-  const queuedAt = (deps.now ?? Date.now)();
-  const executionId = generateExecutionId(queuedAt);
-
   if (typeof deps.store.markFinalizationQueued !== 'function') {
     return {
       ok: false,
@@ -79,7 +71,7 @@ export async function finalizeAsync(
 
   const correlation = {
     session_id_hash: hashSessionIdForLogging(input.sessionId),
-    execution_id: executionId,
+    finalization_id: input.finalizationId,
   } as const;
   emitCanonicalEvent({
     event: 'finalize_transition_attempted',
@@ -91,35 +83,18 @@ export async function finalizeAsync(
 
   let finalizationState: FinalizationState;
   try {
-    finalizationState = await deps.store.markFinalizationQueued(input.sessionId, {
-      executionId,
-      queuedAt,
-      contractGeneration: input.contractGeneration,
+    const finalizationRecord = await deps.store.markFinalizationQueued(input.sessionId, {
+      finalizationId: input.finalizationId,
+      queuedAtMs: input.queuedAtMs,
       scenarioContext: input.scenarioContext,
       observability: {
         source: 'finalize',
         reason: 'FINALIZE_REQUESTED',
       },
     });
-  } catch (error) {
-    if (isCurrentArtifactBoundaryError(error)) {
-      return {
-        ok: false,
-        error: {
-          kind: 'api',
-          code:
-            error.code === 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE'
-              ? ApplicationErrorCode.CORRUPT_OR_UNREADABLE_FINALIZED_STATE
-              : ApplicationErrorCode.UNSUPPORTED_CURRENT_ARTIFACT,
-          details: {
-            details: error.message,
-            artifactState: error.artifactState,
-            ...error.details,
-          },
-        },
-      };
-    }
-    logger.error('[API] Failed to mark session as queued', error);
+    finalizationState = finalizationRecord.state;
+  } catch {
+    logger.error('[API] Failed to mark session as queued');
     return {
       ok: false,
       error: {
@@ -130,12 +105,12 @@ export async function finalizeAsync(
     };
   }
 
-  if (finalizationState.status !== 'pending' || finalizationState.executionId !== executionId) {
+  if (finalizationState.status !== 'pending' || finalizationState.finalizationId !== input.finalizationId) {
     return {
       ok: true,
       value: {
         payload: {
-          executionId: finalizationState.executionId,
+          finalizationId: finalizationState.finalizationId,
           state: finalizationState,
         },
         state: finalizationState,
@@ -144,7 +119,7 @@ export async function finalizeAsync(
   }
 
   const zkvmInputCommitment = (deps.computeCommitment ?? computeInputCommitment)(input.zkvmInput);
-  if (input.targetAwsRuntime ?? false) {
+  if (input.inputSource === 's3') {
     if (!deps.persistAsyncProverInput) {
       emitCanonicalEvent({
         event: 'finalize_transition_attempted',
@@ -156,10 +131,9 @@ export async function finalizeAsync(
       if (typeof deps.store.markFinalizationFailed === 'function') {
         try {
           await deps.store.markFinalizationFailed(input.sessionId, {
-            executionId,
-            queuedAt,
-            contractGeneration: input.contractGeneration,
-            failedAt: (deps.now ?? Date.now)(),
+            finalizationId: input.finalizationId,
+            queuedAtMs: input.queuedAtMs,
+            failedAtMs: (deps.now ?? Date.now)(),
             error: {
               code: 'PROVER_INPUT_PERSISTENCE_UNAVAILABLE',
               message: 'Target async prover input persistence is unavailable',
@@ -169,8 +143,8 @@ export async function finalizeAsync(
               reason: 'PROVER_INPUT_PERSISTENCE_UNAVAILABLE',
             },
           });
-        } catch (markError) {
-          logger.error('[API] Failed to mark finalization as failed after missing input persistence', markError);
+        } catch {
+          logger.error('[API] Failed to mark finalization as failed after missing input persistence');
         }
       }
       return {
@@ -185,13 +159,12 @@ export async function finalizeAsync(
     try {
       await deps.persistAsyncProverInput({
         sessionId: input.sessionId,
-        executionId,
-        contractGeneration: input.contractGeneration,
-        ...omitUndefinedProperties({ zkvmInput: input.zkvmInput }),
+        finalizationId: input.finalizationId,
+        zkvmInput: input.zkvmInput,
         electionConfig: input.electionConfig,
       });
-    } catch (error) {
-      logger.error('[API] Failed to persist target async prover input', error);
+    } catch {
+      logger.error('[API] Failed to persist target async prover input');
 
       if (typeof deps.store.markFinalizationFailed === 'function') {
         emitCanonicalEvent({
@@ -203,21 +176,20 @@ export async function finalizeAsync(
         });
         try {
           await deps.store.markFinalizationFailed(input.sessionId, {
-            executionId,
-            queuedAt,
-            contractGeneration: input.contractGeneration,
-            failedAt: (deps.now ?? Date.now)(),
+            finalizationId: input.finalizationId,
+            queuedAtMs: input.queuedAtMs,
+            failedAtMs: (deps.now ?? Date.now)(),
             error: {
               code: 'PROVER_INPUT_UPLOAD_FAILED',
-              message: error instanceof Error ? error.message : 'Failed to persist target async prover input',
+              message: 'Failed to persist target async prover input',
             },
             observability: {
               source: 'finalize',
               reason: 'PROVER_INPUT_UPLOAD_FAILED',
             },
           });
-        } catch (markError) {
-          logger.error('[API] Failed to mark finalization as failed after input upload error', markError);
+        } catch {
+          logger.error('[API] Failed to mark finalization as failed after input upload error');
         }
       }
 
@@ -232,26 +204,34 @@ export async function finalizeAsync(
     }
   }
 
-  const message = createFinalizationWorkItem({
+  const workItemCommon = {
     sessionId: input.sessionId,
-    contractGeneration: input.contractGeneration,
-    executionId,
-    queuedAt,
+    finalizationId: input.finalizationId,
+    queuedAtMs: input.queuedAtMs,
     expectedImageId: input.expectedImageId,
-    ...omitUndefinedProperties({ zkvmInput: (input.targetAwsRuntime ?? false) ? undefined : input.zkvmInput }),
-    ...omitUndefinedProperties({
-      zkvmInputCommitment: (input.targetAwsRuntime ?? false) ? undefined : zkvmInputCommitment,
-      electionConfig: (input.targetAwsRuntime ?? false) ? undefined : input.electionConfig,
-    }),
     scenarios: input.scenarios.map(toScenarioCode),
     simulateTampering: false,
-    ...omitUndefinedProperties({ scenarioContext: input.scenarioContext }),
-  });
+    scenarioContext: input.scenarioContext,
+  };
+  const message = createFinalizationWorkItem(
+    input.inputSource === 's3'
+      ? {
+          ...workItemCommon,
+          inputSource: 's3',
+        }
+      : {
+          ...workItemCommon,
+          inputSource: 'inline',
+          zkvmInput: input.zkvmInput,
+          zkvmInputCommitment,
+          electionConfig: input.electionConfig,
+        },
+  );
 
   try {
     await deps.finalizationQueue.publish(message, input.publishMaxAttempts);
-  } catch (error) {
-    logger.error('[API] Failed to publish finalize job', error);
+  } catch {
+    logger.error('[API] Failed to publish finalize job');
 
     if (typeof deps.store.markFinalizationFailed === 'function') {
       emitCanonicalEvent({
@@ -263,21 +243,20 @@ export async function finalizeAsync(
       });
       try {
         await deps.store.markFinalizationFailed(input.sessionId, {
-          executionId,
-          queuedAt,
-          contractGeneration: input.contractGeneration,
-          failedAt: (deps.now ?? Date.now)(),
+          finalizationId: input.finalizationId,
+          queuedAtMs: input.queuedAtMs,
+          failedAtMs: (deps.now ?? Date.now)(),
           error: {
             code: 'SQS_PUBLISH_FAILED',
-            message: error instanceof Error ? error.message : 'Failed to enqueue finalization job',
+            message: 'Failed to enqueue finalization job',
           },
           observability: {
             source: 'finalize',
             reason: 'SQS_PUBLISH_FAILED',
           },
         });
-      } catch (markError) {
-        logger.error('[API] Failed to mark finalization as failed after publish error', markError);
+      } catch {
+        logger.error('[API] Failed to mark finalization as failed after publish error');
       }
     }
 
@@ -295,7 +274,7 @@ export async function finalizeAsync(
     ok: true,
     value: {
       payload: {
-        executionId,
+        finalizationId: input.finalizationId,
         state: finalizationState,
       },
       state: finalizationState,

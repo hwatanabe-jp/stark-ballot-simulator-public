@@ -1,6 +1,6 @@
 import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
 import { VOTE_CHOICES } from '@stark-ballot/domain/shared/constants';
-import type { VoteData } from '@stark-ballot/domain/types/server';
+import type { VoteData } from '@stark-ballot/domain/types/sessionRecords';
 import { createSHA256Commitment, choiceToNumber } from '@stark-ballot/domain/crypto/sha256Commitment';
 import crypto from 'crypto';
 

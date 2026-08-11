@@ -2,13 +2,21 @@
   "name": "@stark-ballot/application",
   "private": true,
   "type": "module",
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec eslint packages/application",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/application",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./bot/*": "./src/bot/*",
     "./finalize/*": "./src/finalize/*",
+    "./session/*": "./src/session/*",
+    "./verification/*": "./src/verification/*",
     "./zkvm-input/*": "./src/zkvm-input/*"
   },
   "dependencies": {
+    "@stark-ballot/crypto-primitives": "workspace:*",
     "@stark-ballot/diagnostics": "workspace:*",
     "@stark-ballot/domain": "workspace:*",
     "@stark-ballot/validation": "workspace:*",
@@ -17,6 +25,6 @@
   },
   "devDependencies": {
     "@stark-ballot/test-support": "workspace:*",
-    "vitest": "4.1.10"
+    "vitest": "catalog:testing"
   }
 }

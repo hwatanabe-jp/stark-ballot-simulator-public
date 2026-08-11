@@ -13,6 +13,9 @@ import { resolveExpectedImageId } from '@stark-ballot/verification/image-id';
 import { CLITestHelpers } from '../cli-test-helpers';
 
 const helpers = new CLITestHelpers('http://localhost:3000');
+const MOCK_PROOF_PROFILE = { executor: 'mock', evidence: 'mock' } as const;
+const DEVELOPMENT_PROOF_PROFILE = { executor: 'risc0', evidence: 'development' } as const;
+const PRODUCTION_PROOF_PROFILE = { executor: 'risc0', evidence: 'production' } as const;
 
 const modernReceipt = JSON.stringify({
   seal: Buffer.from('seal').toString('base64'),
@@ -35,30 +38,45 @@ const legacyCompositeReceiptObject = {
 
 const legacyCompositeReceipt = JSON.stringify(legacyCompositeReceiptObject);
 
+type ConsoleSpy =
+  MockInstance<typeof console.log> | MockInstance<typeof console.warn> | MockInstance<typeof console.error>;
+
+function expectSingleConsoleCall(spy: ConsoleSpy, ...expectedArgs: unknown[]): void {
+  expect(spy.mock.calls).toEqual([expectedArgs]);
+  spy.mockClear();
+}
+
 describe('CLITestHelpers.verifySTARK', () => {
+  let consoleLogSpy: MockInstance<typeof console.log>;
   let consoleWarnSpy: MockInstance<typeof console.warn>;
   let consoleErrorSpy: MockInstance<typeof console.error>;
 
   beforeEach(() => {
     vi.resetAllMocks();
-    delete process.env['RISC0_DEV_MODE'];
-    delete process.env['FORCE_DEV_MODE'];
     delete process.env['EXPECTED_IMAGE_ID'];
     delete process.env['EXPECTED_IMAGEID_POC'];
     vi.mocked(resolveExpectedImageId).mockResolvedValue('0xresolved-image-id');
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
-    consoleWarnSpy.mockRestore();
-    consoleErrorSpy.mockRestore();
+    try {
+      expect(consoleLogSpy).not.toHaveBeenCalled();
+      expect(consoleWarnSpy).not.toHaveBeenCalled();
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleLogSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   describe('verificationStatus-based verification (restored from deleted test)', () => {
     it('returns true when verificationStatus is success', async () => {
       const result = await helpers.verifySTARK(modernReceipt, {
-        useRealZkVM: true,
+        proofProfile: PRODUCTION_PROOF_PROFILE,
         imageId: '0xreal',
         verificationStatus: 'success',
       });
@@ -69,7 +87,7 @@ describe('CLITestHelpers.verifySTARK', () => {
 
     it('returns false when verificationStatus is failed', async () => {
       const result = await helpers.verifySTARK(modernReceipt, {
-        useRealZkVM: true,
+        proofProfile: PRODUCTION_PROOF_PROFILE,
         imageId: '0xreal',
         verificationStatus: 'failed',
       });
@@ -80,29 +98,33 @@ describe('CLITestHelpers.verifySTARK', () => {
 
     it('returns false when verificationStatus is dev_mode without allowance', async () => {
       const result = await helpers.verifySTARK(modernReceipt, {
-        useRealZkVM: true,
+        proofProfile: PRODUCTION_PROOF_PROFILE,
         imageId: '0xreal',
         verificationStatus: 'dev_mode',
       });
 
       expect(result).toBe(false);
       expect(invokeVerifierService).not.toHaveBeenCalled();
+      expectSingleConsoleCall(consoleWarnSpy, '[STARK Verifier] Dev mode receipt detected by verifier-service');
     });
 
-    it('returns true when verificationStatus is dev_mode and allowDevMode is set', async () => {
+    it('returns true when verificationStatus is dev_mode for a development proof profile', async () => {
       const result = await helpers.verifySTARK(modernReceipt, {
-        useRealZkVM: true,
+        proofProfile: DEVELOPMENT_PROOF_PROFILE,
         imageId: '0xreal',
         verificationStatus: 'dev_mode',
-        allowDevMode: true,
       });
 
       expect(result).toBe(true);
       expect(invokeVerifierService).not.toHaveBeenCalled();
+      expectSingleConsoleCall(
+        consoleWarnSpy,
+        '[STARK Verifier] Dev mode receipt detected by verifier-service (accepted)',
+      );
     });
 
     it('falls back to structural checks when verification status is absent', async () => {
-      const result = await helpers.verifySTARK(modernReceipt, { useRealZkVM: false });
+      const result = await helpers.verifySTARK(modernReceipt, { proofProfile: MOCK_PROOF_PROFILE });
 
       expect(result).toBe(true);
       expect(invokeVerifierService).not.toHaveBeenCalled();
@@ -127,7 +149,7 @@ describe('CLITestHelpers.verifySTARK', () => {
       });
 
       const result = await helpers.verifySTARK('receipt', {
-        useRealZkVM: true,
+        proofProfile: PRODUCTION_PROOF_PROFILE,
         imageId: '0xexplicit',
         verificationBundlePath: '/tmp/bundle.zip',
       });
@@ -159,7 +181,7 @@ describe('CLITestHelpers.verifySTARK', () => {
       });
 
       const result = await helpers.verifySTARK('receipt', {
-        useRealZkVM: true,
+        proofProfile: PRODUCTION_PROOF_PROFILE,
         verificationBundlePath: '/tmp/bundle.zip',
       });
 
@@ -188,14 +210,15 @@ describe('CLITestHelpers.verifySTARK', () => {
       });
 
       const result = await helpers.verifySTARK('receipt', {
-        useRealZkVM: true,
+        proofProfile: PRODUCTION_PROOF_PROFILE,
         verificationBundlePath: '/tmp/bundle.zip',
       });
 
       expect(result).toBe(false);
+      expectSingleConsoleCall(consoleErrorSpy, '[STARK Verifier] verifier-service reported failed');
     });
 
-    it('treats dev mode status as failure when allowDevMode is false', async () => {
+    it('treats dev mode status as failure for a production proof profile', async () => {
       vi.mocked(invokeVerifierService).mockResolvedValue({
         status: 'dev_mode',
         bundlePath: '/tmp/bundle.zip',
@@ -212,14 +235,15 @@ describe('CLITestHelpers.verifySTARK', () => {
       });
 
       const result = await helpers.verifySTARK('receipt', {
-        useRealZkVM: true,
+        proofProfile: PRODUCTION_PROOF_PROFILE,
         verificationBundlePath: '/tmp/bundle.zip',
       });
 
       expect(result).toBe(false);
+      expectSingleConsoleCall(consoleWarnSpy, '[STARK Verifier] verifier-service reported dev mode receipt');
     });
 
-    it('accepts dev mode status when allowDevMode is true', async () => {
+    it('accepts dev mode status for a development proof profile', async () => {
       vi.mocked(invokeVerifierService).mockResolvedValue({
         status: 'dev_mode',
         bundlePath: '/tmp/bundle.zip',
@@ -236,37 +260,44 @@ describe('CLITestHelpers.verifySTARK', () => {
       });
 
       const result = await helpers.verifySTARK('receipt', {
-        useRealZkVM: true,
+        proofProfile: DEVELOPMENT_PROOF_PROFILE,
         verificationBundlePath: '/tmp/bundle.zip',
-        allowDevMode: true,
       });
 
       expect(result).toBe(true);
+      expectSingleConsoleCall(consoleWarnSpy, '[STARK Verifier] verifier-service reported dev mode receipt (accepted)');
     });
 
     it('handles verifier-service invocation errors gracefully', async () => {
       vi.mocked(invokeVerifierService).mockRejectedValue(new Error('verifier-service binary not found'));
 
       const result = await helpers.verifySTARK('receipt', {
-        useRealZkVM: true,
+        proofProfile: PRODUCTION_PROOF_PROFILE,
         verificationBundlePath: '/tmp/bundle.zip',
       });
 
       expect(result).toBe(false);
+      expectSingleConsoleCall(
+        consoleErrorSpy,
+        '[STARK Verifier] verifier-service invocation failed: verifier-service binary not found',
+      );
     });
   });
 
   describe('fallback behavior', () => {
     it('skips verifier-service in mock mode', async () => {
-      const result = await helpers.verifySTARK(JSON.stringify({ mock: true }), { useRealZkVM: false });
+      const result = await helpers.verifySTARK(JSON.stringify({ mock: true }), {
+        proofProfile: MOCK_PROOF_PROFILE,
+      });
 
       expect(result).toBe(true);
       expect(invokeVerifierService).not.toHaveBeenCalled();
+      expectSingleConsoleCall(consoleLogSpy, '[STARK Verifier] Mock receipt detected');
     });
 
     it('uses provided verificationStatus when bundle path missing', async () => {
       const result = await helpers.verifySTARK('receipt', {
-        useRealZkVM: true,
+        proofProfile: PRODUCTION_PROOF_PROFILE,
         verificationStatus: 'failed',
       });
 
@@ -276,7 +307,7 @@ describe('CLITestHelpers.verifySTARK', () => {
 
     it('falls back to structural checks when both bundlePath and status are absent', async () => {
       const result = await helpers.verifySTARK(modernReceipt, {
-        useRealZkVM: true,
+        proofProfile: PRODUCTION_PROOF_PROFILE,
       });
 
       expect(result).toBe(true);
@@ -293,10 +324,11 @@ describe('CLITestHelpers.verifySTARK', () => {
 
     it('fails structural verification for legacy composite receipts', async () => {
       const result = await helpers.verifySTARK(legacyCompositeReceipt, {
-        useRealZkVM: true,
+        proofProfile: PRODUCTION_PROOF_PROFILE,
       });
 
       expect(result).toBe(false);
+      expectSingleConsoleCall(consoleErrorSpy, '[STARK Verifier] Unknown receipt format');
     });
   });
 });

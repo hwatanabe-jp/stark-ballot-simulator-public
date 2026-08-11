@@ -2,17 +2,26 @@
   "name": "@stark-ballot/api-contract",
   "private": true,
   "type": "module",
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec eslint packages/api-contract",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/api-contract",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
   "exports": {
     ".": "./src/index.ts",
-    "./api-contract/*": "./src/api-contract/*",
     "./errors/*": "./src/errors/*",
-    "./types/api/*": "./src/types/api/*",
-    "./validation/*": "./src/validation/*"
+    "./http/*": "./src/http/*",
+    "./routes": "./src/routes/index.ts",
+    "./routes/*": "./src/routes/*",
+    "./schemas": "./src/schemas/index.ts",
+    "./schemas/*": "./src/schemas/*"
   },
   "dependencies": {
-    "@stark-ballot/validation": "workspace:*"
+    "@stark-ballot/validation": "workspace:*",
+    "@stark-ballot/verification": "workspace:*",
+    "@stark-ballot/zkvm-contract": "workspace:*"
   },
   "devDependencies": {
-    "vitest": "4.1.10"
+    "vitest": "catalog:testing"
   }
 }

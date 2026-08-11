@@ -4,10 +4,9 @@
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { verifyConsistencyProof, checkCompleteness, validateVotingIntegrity } from '../consistency-verifier';
-import type { ConsistencyProofResponse } from '../consistency-proof-types';
+import { verifyConsistencyProof, checkCompleteness } from '../consistency-verifier';
+import type { AdmittedConsistencyProof } from '../consistency-proof-types';
 import type { ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
-import type { VoteReceipt } from '@stark-ballot/verification/shared/types';
 import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { createTestJournal } from './test-helpers';
@@ -16,26 +15,11 @@ const verifyConsistencyProofMock = vi
   .spyOn(RFC6962MerkleTree.prototype, 'verifyConsistencyProof')
   .mockReturnValue(true);
 
-function createConsistencyProofProvider(response: ConsistencyProofResponse) {
-  return vi.fn(() => Promise.resolve(response));
-}
-
 describe('consistency-verifier', () => {
-  type JournalOverrides = Partial<ZkVMJournal> & {
-    missingIndices?: number;
-    invalidIndices?: number;
-    countedIndices?: number;
-    excludedCount?: number;
-  };
+  type JournalOverrides = Partial<ZkVMJournal>;
 
   const createJournal = (overrides: JournalOverrides = {}): ZkVMJournal => ({
     ...(() => {
-      const canonicalOverrides: Partial<ZkVMJournal> = { ...overrides };
-      delete (canonicalOverrides as Record<string, unknown>)['missingIndices'];
-      delete (canonicalOverrides as Record<string, unknown>)['invalidIndices'];
-      delete (canonicalOverrides as Record<string, unknown>)['countedIndices'];
-      delete (canonicalOverrides as Record<string, unknown>)['excludedCount'];
-
       const baseJournal: ZkVMJournal = {
         ...createTestJournal({
           totalExpected: 100,
@@ -62,45 +46,22 @@ describe('consistency-verifier', () => {
         excludedSlots: 0,
         inputCommitment: '0xinput',
         methodVersion: CURRENT_METHOD_VERSION,
-        ...canonicalOverrides,
+        ...overrides,
       };
 
-      const validVotes =
-        typeof overrides.validVotes === 'number'
-          ? overrides.validVotes
-          : typeof overrides.countedIndices === 'number'
-            ? overrides.countedIndices
-            : baseJournal.validVotes;
+      const validVotes = typeof overrides.validVotes === 'number' ? overrides.validVotes : baseJournal.validVotes;
       const invalidVotes =
-        typeof overrides.invalidVotes === 'number'
-          ? overrides.invalidVotes
-          : typeof overrides.invalidIndices === 'number'
-            ? overrides.invalidIndices
-            : baseJournal.invalidVotes;
+        typeof overrides.invalidVotes === 'number' ? overrides.invalidVotes : baseJournal.invalidVotes;
       const missingSlots =
-        typeof overrides.missingSlots === 'number'
-          ? overrides.missingSlots
-          : typeof overrides.missingIndices === 'number'
-            ? overrides.missingIndices
-            : baseJournal.missingSlots;
+        typeof overrides.missingSlots === 'number' ? overrides.missingSlots : baseJournal.missingSlots;
       const invalidPresentedSlots =
         typeof overrides.invalidPresentedSlots === 'number'
           ? overrides.invalidPresentedSlots
-          : typeof overrides.invalidIndices === 'number'
-            ? overrides.invalidIndices
-            : baseJournal.invalidPresentedSlots;
+          : baseJournal.invalidPresentedSlots;
       const rejectedRecords =
-        typeof overrides.rejectedRecords === 'number'
-          ? overrides.rejectedRecords
-          : typeof overrides.invalidIndices === 'number'
-            ? overrides.invalidIndices
-            : baseJournal.rejectedRecords;
+        typeof overrides.rejectedRecords === 'number' ? overrides.rejectedRecords : baseJournal.rejectedRecords;
       const excludedSlots =
-        typeof overrides.excludedSlots === 'number'
-          ? overrides.excludedSlots
-          : typeof overrides.excludedCount === 'number'
-            ? overrides.excludedCount
-            : missingSlots + invalidPresentedSlots;
+        typeof overrides.excludedSlots === 'number' ? overrides.excludedSlots : missingSlots + invalidPresentedSlots;
       const seenIndicesCount =
         typeof overrides.seenIndicesCount === 'number'
           ? overrides.seenIndicesCount
@@ -130,65 +91,80 @@ describe('consistency-verifier', () => {
   });
 
   describe('verifyConsistencyProof', () => {
-    const mockSessionId = 'test-session-123';
     const mockOldSize = 10;
     const mockNewSize = 20;
 
-    it('should verify valid consistency proof', async () => {
+    it('should verify valid consistency proof', () => {
       // Arrange
-      const mockResponse: ConsistencyProofResponse = {
-        oldSize: mockOldSize,
-        newSize: mockNewSize,
-        rootAtOldSize: '0xabc123',
-        rootAtNewSize: '0xdef456',
+      const mockResponse: AdmittedConsistencyProof = {
+        fromTreeSize: mockOldSize,
+        toTreeSize: mockNewSize,
+        rootAtFromTreeSize: '0xabc123',
+        rootAtToTreeSize: '0xdef456',
         proofNodes: ['0x111', '0x222', '0x333'],
-        timestamp: Date.now(),
+        generatedAtMs: Date.now(),
       };
 
-      const proofProvider = createConsistencyProofProvider(mockResponse);
-
       // Act
-      const result = await verifyConsistencyProof(
-        mockSessionId,
-        mockOldSize,
-        mockNewSize,
-        mockResponse.rootAtOldSize,
-        mockResponse.rootAtNewSize,
-        { proofProvider },
-      );
+      const result = verifyConsistencyProof(mockResponse, {
+        fromTreeSize: mockOldSize,
+        toTreeSize: mockNewSize,
+        rootAtFromTreeSize: mockResponse.rootAtFromTreeSize,
+        rootAtToTreeSize: mockResponse.rootAtToTreeSize,
+      });
 
       // Assert
       expect(result.isValid).toBe(true);
       expect(result.error).toBeUndefined();
-      expect(proofProvider).toHaveBeenCalledWith({
-        sessionId: mockSessionId,
+      expect(verifyConsistencyProofMock).toHaveBeenCalledWith('abc123', 'def456', {
         oldSize: mockOldSize,
         newSize: mockNewSize,
+        proofNodes: ['111', '222', '333'],
       });
     });
 
-    it('should detect root mismatch (split-view attack)', async () => {
-      // Arrange
-      const mockResponse: ConsistencyProofResponse = {
-        oldSize: mockOldSize,
-        newSize: mockNewSize,
-        rootAtOldSize: '0xabc123',
-        rootAtNewSize: '0xdef456',
-        proofNodes: ['0x111', '0x222'],
-        timestamp: Date.now(),
+    it('passes the admitted tree sizes to the RFC 6962 verifier', () => {
+      const mockResponse: AdmittedConsistencyProof = {
+        fromTreeSize: mockOldSize,
+        toTreeSize: mockNewSize,
+        rootAtFromTreeSize: '0xabc123',
+        rootAtToTreeSize: '0xdef456',
+        proofNodes: ['0x111'],
+        generatedAtMs: Date.now(),
       };
 
-      const proofProvider = createConsistencyProofProvider(mockResponse);
+      verifyConsistencyProof(mockResponse, {
+        fromTreeSize: mockOldSize,
+        toTreeSize: mockNewSize,
+        rootAtFromTreeSize: mockResponse.rootAtFromTreeSize,
+        rootAtToTreeSize: mockResponse.rootAtToTreeSize,
+      });
+
+      expect(verifyConsistencyProofMock).toHaveBeenCalledWith('abc123', 'def456', {
+        oldSize: mockOldSize,
+        newSize: mockNewSize,
+        proofNodes: ['111'],
+      });
+    });
+
+    it('should detect root mismatch (split-view attack)', () => {
+      // Arrange
+      const mockResponse: AdmittedConsistencyProof = {
+        fromTreeSize: mockOldSize,
+        toTreeSize: mockNewSize,
+        rootAtFromTreeSize: '0xabc123',
+        rootAtToTreeSize: '0xdef456',
+        proofNodes: ['0x111', '0x222'],
+        generatedAtMs: Date.now(),
+      };
 
       // Act - providing different expected roots
-      const result = await verifyConsistencyProof(
-        mockSessionId,
-        mockOldSize,
-        mockNewSize,
-        '0xwrong123', // Wrong old root
-        mockResponse.rootAtNewSize,
-        { proofProvider },
-      );
+      const result = verifyConsistencyProof(mockResponse, {
+        fromTreeSize: mockOldSize,
+        toTreeSize: mockNewSize,
+        rootAtFromTreeSize: '0xwrong123',
+        rootAtToTreeSize: mockResponse.rootAtToTreeSize,
+      });
 
       // Assert
       expect(result.isValid).toBe(false);
@@ -196,47 +172,51 @@ describe('consistency-verifier', () => {
       expect(result.details?.type).toBe('split-view-attack');
     });
 
-    it('should handle proof provider errors gracefully', async () => {
-      const proofProvider = vi.fn(() => Promise.reject(new Error('provider unavailable')));
-
-      // Act
-      const result = await verifyConsistencyProof(mockSessionId, mockOldSize, mockNewSize, '0xabc123', '0xdef456', {
-        proofProvider,
-      });
-
-      // Assert
-      expect(result.isValid).toBe(false);
-      expect(result.error).toContain('provider unavailable');
-    });
-
-    it('passes session and tree sizes to the proof provider', async () => {
-      const mockResponse: ConsistencyProofResponse = {
-        oldSize: mockOldSize,
-        newSize: mockNewSize,
-        rootAtOldSize: '0xabc123',
-        rootAtNewSize: '0xdef456',
-        proofNodes: ['0x111'],
-        timestamp: Date.now(),
+    it('rejects a proof response whose tree-size range differs from the expected range', () => {
+      const mockResponse: AdmittedConsistencyProof = {
+        fromTreeSize: mockOldSize - 1,
+        toTreeSize: mockNewSize + 1,
+        rootAtFromTreeSize: '0xabc123',
+        rootAtToTreeSize: '0xdef456',
+        proofNodes: ['0x111', '0x222'],
+        generatedAtMs: Date.now(),
       };
 
-      const proofProvider = createConsistencyProofProvider(mockResponse);
-
-      await verifyConsistencyProof(
-        mockSessionId,
-        mockOldSize,
-        mockNewSize,
-        mockResponse.rootAtOldSize,
-        mockResponse.rootAtNewSize,
-        {
-          proofProvider,
-        },
-      );
-
-      expect(proofProvider).toHaveBeenCalledWith({
-        sessionId: mockSessionId,
-        oldSize: mockOldSize,
-        newSize: mockNewSize,
+      const result = verifyConsistencyProof(mockResponse, {
+        fromTreeSize: mockOldSize,
+        toTreeSize: mockNewSize,
+        rootAtFromTreeSize: mockResponse.rootAtFromTreeSize,
+        rootAtToTreeSize: mockResponse.rootAtToTreeSize,
       });
+
+      expect(result.isValid).toBe(false);
+      expect(result.error).toContain('tree-size range');
+      expect(result.details?.type).toBe('proof-invalid');
+    });
+
+    it('should handle RFC 6962 verifier errors gracefully', () => {
+      verifyConsistencyProofMock.mockImplementationOnce(() => {
+        throw new Error('verifier unavailable');
+      });
+
+      const proof: AdmittedConsistencyProof = {
+        fromTreeSize: mockOldSize,
+        toTreeSize: mockNewSize,
+        rootAtFromTreeSize: '0xabc123',
+        rootAtToTreeSize: '0xdef456',
+        proofNodes: ['0x111'],
+        generatedAtMs: Date.now(),
+      };
+
+      const result = verifyConsistencyProof(proof, {
+        fromTreeSize: mockOldSize,
+        toTreeSize: mockNewSize,
+        rootAtFromTreeSize: proof.rootAtFromTreeSize,
+        rootAtToTreeSize: proof.rootAtToTreeSize,
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.error).toContain('verifier unavailable');
     });
   });
 
@@ -322,205 +302,6 @@ describe('consistency-verifier', () => {
       expect(result.isComplete).toBe(false);
       expect(result.error).toContain('Expected 100 votes but tree only has 90');
       expect(result.severity).toBe('critical');
-    });
-  });
-
-  describe('validateVotingIntegrity', () => {
-    const STH_SOURCES = ['https://auditor1.example/sth', 'https://auditor2.example/sth'];
-
-    const mockReceipt: VoteReceipt = {
-      voteId: 'vote-123',
-      commitment: '0xcommit123',
-      bulletinIndex: 5,
-      bulletinRootAtCast: '0xoldroot',
-      inputCommitment: '0xinputcommit',
-      timestamp: Date.now(),
-    };
-
-    const mockJournal = createJournal({ bulletinRoot: '0xnewroot' });
-
-    it('should validate complete voting integrity', async () => {
-      // Arrange
-      const mockConsistencyProof: ConsistencyProofResponse = {
-        oldSize: 10,
-        newSize: 100,
-        rootAtOldSize: mockReceipt.bulletinRootAtCast,
-        rootAtNewSize: mockJournal.bulletinRoot,
-        proofNodes: ['0x111', '0x222'],
-        timestamp: Date.now(),
-      };
-
-      // Act
-      const result = await validateVotingIntegrity('session-123', mockReceipt, mockJournal, {
-        consistencyProofProvider: createConsistencyProofProvider(mockConsistencyProof),
-        sthSources: STH_SOURCES,
-        sthVerification: {
-          verified: true,
-          consensus: true,
-          sourcesChecked: 2,
-          matchingSources: 2,
-          errors: [],
-        },
-      });
-
-      // Assert
-      expect(result.isValid).toBe(true);
-      expect(result.consistencyProofValid).toBe(true);
-      expect(result.completenessValid).toBe(true);
-      expect(result.canShowVerified).toBe(true);
-      expect(result.sthVerified).toBe(true);
-      expect(result.sthConsensus).toBe(true);
-    });
-
-    it('should not show verified when consistency proof fails', async () => {
-      const proofProvider = vi.fn(() => Promise.reject(new Error('proof unavailable')));
-
-      // Act
-      const result = await validateVotingIntegrity('session-123', mockReceipt, mockJournal, {
-        consistencyProofProvider: proofProvider,
-      });
-
-      // Assert
-      expect(result.isValid).toBe(false);
-      expect(result.consistencyProofValid).toBe(false);
-      expect(result.canShowVerified).toBe(false);
-      expect(result.error).toContain('Consistency proof verification failed');
-    });
-
-    it('should not show verified when missingSlots > 0', async () => {
-      // Arrange
-      const incompleteJournal: ZkVMJournal = {
-        ...mockJournal,
-        missingSlots: 10,
-        excludedSlots: 10,
-        seenIndicesCount: 90,
-        totalVotes: 90,
-      };
-
-      const mockConsistencyProof: ConsistencyProofResponse = {
-        oldSize: 10,
-        newSize: 100,
-        rootAtOldSize: mockReceipt.bulletinRootAtCast,
-        rootAtNewSize: incompleteJournal.bulletinRoot,
-        proofNodes: ['0x111'],
-        timestamp: Date.now(),
-      };
-
-      // Act
-      const result = await validateVotingIntegrity('session-123', mockReceipt, incompleteJournal, {
-        consistencyProofProvider: createConsistencyProofProvider(mockConsistencyProof),
-      });
-
-      // Assert
-      expect(result.isValid).toBe(false);
-      expect(result.consistencyProofValid).toBe(true);
-      expect(result.completenessValid).toBe(false);
-      expect(result.canShowVerified).toBe(false);
-      expect(result.error).toContain('Conservative exclusion signal detected');
-    });
-
-    it('should fail when invalidPresentedSlots > 0 even if missingSlots is 0', async () => {
-      const invalidJournal: ZkVMJournal = {
-        ...mockJournal,
-        invalidPresentedSlots: 4,
-        rejectedRecords: 4,
-        excludedSlots: 4,
-        validVotes: 96,
-        totalVotes: 100,
-      };
-
-      const mockConsistencyProof: ConsistencyProofResponse = {
-        oldSize: 10,
-        newSize: 100,
-        rootAtOldSize: mockReceipt.bulletinRootAtCast,
-        rootAtNewSize: invalidJournal.bulletinRoot,
-        proofNodes: ['0xabc'],
-        timestamp: Date.now(),
-      };
-
-      const result = await validateVotingIntegrity('session-123', mockReceipt, invalidJournal, {
-        consistencyProofProvider: createConsistencyProofProvider(mockConsistencyProof),
-      });
-
-      expect(result.isValid).toBe(false);
-      expect(result.canShowVerified).toBe(false);
-      expect(result.error).toContain('Conservative exclusion signal detected');
-      expect(result.error).toContain('4 presented slots failed counting');
-    });
-
-    it('should fail when STH verification lacks consensus', async () => {
-      const mockConsistencyProof: ConsistencyProofResponse = {
-        oldSize: 10,
-        newSize: 100,
-        rootAtOldSize: mockReceipt.bulletinRootAtCast,
-        rootAtNewSize: mockJournal.bulletinRoot,
-        proofNodes: ['0x111', '0x222'],
-        timestamp: Date.now(),
-      };
-
-      const result = await validateVotingIntegrity('session-123', mockReceipt, mockJournal, {
-        consistencyProofProvider: createConsistencyProofProvider(mockConsistencyProof),
-        sthSources: STH_SOURCES,
-        sthVerification: {
-          verified: false,
-          consensus: false,
-          sourcesChecked: 2,
-          matchingSources: 1,
-          errors: ['STH mismatch from https://auditor1.example/sth (digest mismatch)'],
-        },
-      });
-
-      expect(result.isValid).toBe(false);
-      expect(result.sthVerified).toBe(false);
-      expect(result.canShowVerified).toBe(false);
-      expect(result.error?.toLowerCase()).toContain('sth');
-    });
-
-    it('should allow single STH source when min matches is set to 1', async () => {
-      const mockConsistencyProof: ConsistencyProofResponse = {
-        oldSize: 10,
-        newSize: 100,
-        rootAtOldSize: mockReceipt.bulletinRootAtCast,
-        rootAtNewSize: mockJournal.bulletinRoot,
-        proofNodes: ['0x111', '0x222'],
-        timestamp: Date.now(),
-      };
-
-      const result = await validateVotingIntegrity('session-123', mockReceipt, mockJournal, {
-        consistencyProofProvider: createConsistencyProofProvider(mockConsistencyProof),
-        sthSources: ['https://auditor1.example/sth'],
-        sthVerification: {
-          verified: true,
-          consensus: true,
-          sourcesChecked: 1,
-          matchingSources: 1,
-          errors: [],
-        },
-      });
-
-      expect(result.isValid).toBe(true);
-      expect(result.sthVerified).toBe(true);
-      expect(result.canShowVerified).toBe(true);
-    });
-
-    it('should skip STH verification when no sources are configured', async () => {
-      const mockConsistencyProof: ConsistencyProofResponse = {
-        oldSize: 10,
-        newSize: 100,
-        rootAtOldSize: mockReceipt.bulletinRootAtCast,
-        rootAtNewSize: mockJournal.bulletinRoot,
-        proofNodes: ['0x111', '0x222'],
-        timestamp: Date.now(),
-      };
-
-      const result = await validateVotingIntegrity('session-123', mockReceipt, mockJournal, {
-        consistencyProofProvider: createConsistencyProofProvider(mockConsistencyProof),
-      });
-
-      expect(result.isValid).toBe(true);
-      expect(result.canShowVerified).toBe(true);
-      expect(result.sthVerified).toBeUndefined();
-      expect(result.sthConsensus).toBeUndefined();
     });
   });
 });

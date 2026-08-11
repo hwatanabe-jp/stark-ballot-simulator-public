@@ -392,7 +392,7 @@ resource "aws_sfn_state_machine" "target_finalization" {
             status           = "RUNNING"
             "payload.$"      = "$"
             "executionArn.$" = "$$.Execution.Id"
-            "startedAt.$"    = "$$.State.EnteredTime"
+            "startedAtIso.$" = "$$.State.EnteredTime"
           }
         }
         ResultPath = "$.markStarted"
@@ -456,7 +456,7 @@ resource "aws_sfn_state_machine" "target_finalization" {
                     "Value.$" = "$.outputS3Prefix"
                   },
                   {
-                    Name      = "EXECUTION_ID"
+                    Name      = "FINALIZATION_ID"
                     "Value.$" = "$$.Execution.Name"
                   },
                   {
@@ -550,9 +550,10 @@ resource "aws_sfn_state_machine" "target_finalization" {
         Parameters = {
           FunctionName = aws_lambda_function.target["finalization_writer"].arn
           Payload = {
-            status           = "SUCCEEDED"
-            "payload.$"      = "$"
-            "executionArn.$" = "$$.Execution.Id"
+            status             = "SUCCEEDED"
+            "payload.$"        = "$"
+            "executionArn.$"   = "$$.Execution.Id"
+            "completedAtIso.$" = "$$.State.EnteredTime"
           }
         }
         Retry = local.callback_delivery_retry
@@ -616,7 +617,7 @@ resource "aws_sfn_state_machine" "target_finalization" {
             status           = "TIMED_OUT"
             "payload.$"      = "$"
             "executionArn.$" = "$$.Execution.Id"
-            "timeoutAt.$"    = "$$.State.EnteredTime"
+            "timeoutAtIso.$" = "$$.State.EnteredTime"
           }
         }
         Retry = local.callback_delivery_retry
@@ -680,6 +681,7 @@ resource "aws_sfn_state_machine" "target_finalization" {
             status           = "FAILED"
             "payload.$"      = "$"
             "executionArn.$" = "$$.Execution.Id"
+            "failedAtIso.$"  = "$$.State.EnteredTime"
             error = {
               code    = "PROVER_IMAGE_SIGNATURE_FAILED"
               message = "Target prover image signature verification failed"
@@ -699,6 +701,7 @@ resource "aws_sfn_state_machine" "target_finalization" {
             status           = "FAILED"
             "payload.$"      = "$"
             "executionArn.$" = "$$.Execution.Id"
+            "failedAtIso.$"  = "$$.State.EnteredTime"
             error = {
               code        = "PROVER_TASK_FAILED"
               message     = "Target prover task failed"
@@ -719,6 +722,7 @@ resource "aws_sfn_state_machine" "target_finalization" {
             status           = "FAILED"
             "payload.$"      = "$"
             "executionArn.$" = "$$.Execution.Id"
+            "failedAtIso.$"  = "$$.State.EnteredTime"
             error = {
               code    = "PROVER_CAPACITY_WAIT_TIMEOUT"
               message = "Timed out waiting for target prover capacity"

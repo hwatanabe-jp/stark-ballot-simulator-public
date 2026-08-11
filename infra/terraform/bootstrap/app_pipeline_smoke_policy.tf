@@ -4,6 +4,37 @@ data "aws_iam_policy_document" "app_terraform_smoke" {
   source_policy_documents = [data.aws_iam_policy_document.app_codebuild_common[0].json]
 
   statement {
+    sid    = "UseRetainedAcceptanceAuthority"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+      "s3:PutObject",
+    ]
+    resources = [local.app_retained_accepted_deployment_objects_arn]
+  }
+
+  statement {
+    sid       = "ReadRetainedApprovalEvidenceForSmoke"
+    effect    = "Allow"
+    actions   = ["s3:GetObjectVersion"]
+    resources = [local.app_retained_approval_evidence_objects_arn]
+  }
+
+  statement {
+    sid    = "ReadRetainedSignaturePreflightAndVerifierPackageForSmoke"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+    ]
+    resources = [
+      local.app_retained_signature_preflight_objects_arn,
+      local.app_retained_image_signature_verifier_package_objects_arn,
+    ]
+  }
+
+  statement {
     sid    = "ReadImmutableReleaseAuthority"
     effect = "Allow"
     actions = [

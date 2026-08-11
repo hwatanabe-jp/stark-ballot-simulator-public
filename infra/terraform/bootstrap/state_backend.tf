@@ -1,13 +1,14 @@
 locals {
-  expected_state_backend_key = "${var.project_name}/${var.account_alias}/${var.deployment_environment}/${var.state_scope}/terraform.tfstate"
-  state_backend_prefix       = "${var.project_name}/${var.account_alias}/${var.deployment_environment}/${var.state_scope}/"
-  state_lockfile_key         = "${var.state_backend_key}.tflock"
-  app_state_backend_key      = "stark-ballot-simulator/stark-dev/develop/app/terraform.tfstate"
-  app_state_backend_prefix   = "stark-ballot-simulator/stark-dev/develop/app/"
+  expected_state_backend_key = local.bootstrap_lane_authority.backendKey
+  state_backend_prefix       = trimsuffix(local.bootstrap_lane_authority.backendKey, "terraform.tfstate")
+  state_lockfile_key         = "${local.bootstrap_lane_authority.backendKey}.tflock"
+  app_state_backend_key      = local.app_lane_authority.backendKey
+  app_state_backend_prefix   = trimsuffix(local.app_lane_authority.backendKey, "terraform.tfstate")
   app_state_lockfile_key     = "${local.app_state_backend_key}.tflock"
   pipeline_role_arns = var.enable_development_pipeline ? [
     aws_iam_role.terraform_plan[0].arn,
     aws_iam_role.terraform_apply[0].arn,
+    aws_iam_role.terraform_smoke[0].arn,
   ] : []
   pipeline_state_write_role_arns = var.enable_development_pipeline ? [
     aws_iam_role.terraform_apply[0].arn,
@@ -92,7 +93,20 @@ data "aws_iam_policy_document" "state_kms_key" {
   }
 
   statement {
-    sid    = "AllowBootstrapBackendStateKeyUse"
+    sid    = "AllowBootstrapBackendStateKeyDescription"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = local.bootstrap_backend_key_use_principal_arns
+    }
+
+    actions   = ["kms:DescribeKey"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "AllowBootstrapBackendStateKeyUseThroughStateBucket"
     effect = "Allow"
 
     principals {
@@ -102,16 +116,35 @@ data "aws_iam_policy_document" "state_kms_key" {
 
     actions = [
       "kms:Decrypt",
-      "kms:DescribeKey",
       "kms:Encrypt",
       "kms:GenerateDataKey",
       "kms:GenerateDataKeyWithoutPlaintext",
     ]
     resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [var.aws_account_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${var.aws_region}.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:aws:s3:arn"
+      values   = [aws_s3_bucket.state.arn]
+    }
   }
 }
 
 resource "aws_kms_key" "state" {
+  depends_on = [terraform_data.bootstrap_apply_authorization_propagation]
+
   description             = "STARK Ballot Simulator Terraform state key for ${var.account_alias}/${var.deployment_environment}/${var.state_scope}"
   deletion_window_in_days = 30
   key_usage               = "ENCRYPT_DECRYPT"

@@ -1,36 +1,34 @@
 export interface VerificationObservation {
-  executionId: string;
+  finalizationId: string;
   fingerprint: string;
   observedAt: number;
 }
+
+export type VerificationObservationWrite = Omit<VerificationObservation, 'finalizationId'>;
 
 export type RecordVerificationObservationResult =
   | { status: 'recorded' }
   | { status: 'idempotent' }
   | {
       status: 'conflict';
-      reason: 'execution_mismatch' | 'fingerprint_mismatch';
+      reason: 'finalization_mismatch' | 'fingerprint_mismatch';
     };
 
-const EXECUTION_ID_PATTERN = /^[A-Za-z0-9-]+$/;
+const FINALIZATION_ID_PATTERN = /^[A-Za-z0-9-]+$/;
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 
-export function parseVerificationObservation(value: unknown): VerificationObservation | undefined {
+export function parseVerificationObservationWrite(value: unknown): VerificationObservationWrite | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return undefined;
   }
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== 'executionId' && key !== 'fingerprint' && key !== 'observedAt')) {
+  const keys = Object.keys(record);
+  if (keys.length !== 2 || keys.some((key) => key !== 'fingerprint' && key !== 'observedAt')) {
     return undefined;
   }
-  const executionId = record['executionId'];
   const fingerprint = record['fingerprint'];
   const observedAt = record['observedAt'];
   if (
-    typeof executionId !== 'string' ||
-    executionId.length === 0 ||
-    executionId.length > 256 ||
-    !EXECUTION_ID_PATTERN.test(executionId) ||
     typeof fingerprint !== 'string' ||
     !SHA256_HEX_PATTERN.test(fingerprint) ||
     typeof observedAt !== 'number' ||
@@ -39,7 +37,34 @@ export function parseVerificationObservation(value: unknown): VerificationObserv
   ) {
     return undefined;
   }
-  return { executionId, fingerprint, observedAt };
+  return { fingerprint, observedAt };
+}
+
+export function parseVerificationObservation(value: unknown): VerificationObservation | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== 'finalizationId' && key !== 'fingerprint' && key !== 'observedAt')) {
+    return undefined;
+  }
+  const finalizationId = record['finalizationId'];
+  const fingerprint = record['fingerprint'];
+  const observedAt = record['observedAt'];
+  if (
+    typeof finalizationId !== 'string' ||
+    finalizationId.length === 0 ||
+    finalizationId.length > 256 ||
+    !FINALIZATION_ID_PATTERN.test(finalizationId) ||
+    typeof fingerprint !== 'string' ||
+    !SHA256_HEX_PATTERN.test(fingerprint) ||
+    typeof observedAt !== 'number' ||
+    !Number.isSafeInteger(observedAt) ||
+    observedAt < 0
+  ) {
+    return undefined;
+  }
+  return { finalizationId, fingerprint, observedAt };
 }
 
 export function requireVerificationObservation(value: unknown): VerificationObservation {
@@ -51,14 +76,14 @@ export function requireVerificationObservation(value: unknown): VerificationObse
 }
 
 export function resolveVerificationObservationRecord(
-  currentExecutionId: string | undefined,
+  currentFinalizationId: string | undefined,
   existing: VerificationObservation | undefined,
   requested: VerificationObservation,
 ): RecordVerificationObservationResult {
-  if (currentExecutionId !== requested.executionId) {
-    return { status: 'conflict', reason: 'execution_mismatch' };
+  if (currentFinalizationId !== requested.finalizationId) {
+    return { status: 'conflict', reason: 'finalization_mismatch' };
   }
-  if (!existing || existing.executionId !== requested.executionId) {
+  if (!existing || existing.finalizationId !== requested.finalizationId) {
     return { status: 'recorded' };
   }
   return existing.fingerprint === requested.fingerprint

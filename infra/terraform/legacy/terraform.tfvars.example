@@ -8,7 +8,7 @@
 #   aws-vault exec terraform-admin -- ./scripts/terraform/terraform-guarded.sh develop plan -var-file=develop.local.tfvars
 #
 # Note:
-#   Legacy workspace tfvars/plan/apply package scripts are intentionally omitted during Phase 04.
+#   Legacy workspace tfvars/plan/apply package scripts are intentionally omitted from the current workflow.
 #   Environment-specific concrete tfvars are generated as infra/terraform/legacy/*.local.tfvars and are not tracked in the public snapshot.
 #   concrete な account ID / ARN / domain / digest は tracked ファイルに戻さないでください。
 

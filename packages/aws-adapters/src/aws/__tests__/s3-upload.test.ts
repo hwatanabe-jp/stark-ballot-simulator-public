@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock, type MockInstance } from 'vitest';
 import { promises as fs } from 'fs';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
+import {
+  localRuntimeProfile,
+  targetRuntimeProfile,
+} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+
+const targetProfile = targetRuntimeProfile();
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -63,8 +69,9 @@ describe('uploadFileToS3', () => {
     sendMock.mockResolvedValueOnce({});
 
     const result = await uploadFileToS3({
+      profile: targetProfile,
       sessionId: 'session-123',
-      executionId: 'exec-456',
+      finalizationId: 'exec-456',
       filePath: '/tmp/bundle.zip',
       contentType: 'application/zip',
     });
@@ -78,24 +85,25 @@ describe('uploadFileToS3', () => {
     expect(command.input.ExpectedBucketOwner).toBe('123456789012');
     expect(command.input.Metadata).toMatchObject({
       sessionId: 'session-123',
-      executionId: 'exec-456',
+      finalizationId: 'exec-456',
     });
     expect(result.success).toBe(true);
     expect(result.bucket).toBe('test-bucket');
     expect(result.key).toBe('sessions/session-123/exec-456/bundle.zip');
-    expect(result.uploadedAt).toEqual(expect.any(String));
+    expect(result.uploadedAtMs).toEqual(expect.any(Number));
   });
 
   it.each([
     ['sessionId', 'session/123', 'exec-456'],
-    ['executionId with slash', 'session-123', 'bad/segment-123'],
-    ['executionId with dot', 'session-123', 'bad.segment-123'],
-    ['executionId as URL', 'session-123', 'https://example.invalid/execution'],
-  ])('rejects unsafe %s before reading or uploading', async (_label, sessionId, executionId) => {
+    ['finalizationId with slash', 'session-123', 'bad/segment-123'],
+    ['finalizationId with dot', 'session-123', 'bad.segment-123'],
+    ['finalizationId as URL', 'session-123', 'https://example.invalid/execution'],
+  ])('rejects unsafe %s before reading or uploading', async (_label, sessionId, finalizationId) => {
     await expect(
       uploadFileToS3({
+        profile: targetProfile,
         sessionId,
-        executionId,
+        finalizationId,
         filePath: '/tmp/bundle.zip',
         contentType: 'application/zip',
       }),
@@ -112,8 +120,9 @@ describe('uploadFileToS3', () => {
     const setTimeoutSpy = vi.spyOn(global, 'setTimeout');
 
     const promise = uploadFileToS3({
+      profile: targetProfile,
       sessionId: 'session-123',
-      executionId: 'exec-456',
+      finalizationId: 'exec-456',
       filePath: '/tmp/bundle.zip',
       contentType: 'application/zip',
       maxRetries: 3,
@@ -129,34 +138,21 @@ describe('uploadFileToS3', () => {
     expect(result.error).toBe('network error');
   });
 
-  it.each([
-    ['legacy Amplify Lambda name', 'amplify-starkballotsimulator-dev-honoapi-lambda'],
-    ['arbitrary Lambda name', 'custom-prod-worker'],
-    ['target-like Lambda name', 'stark-ballot-simulator-stark-dev-develop-public-api'],
-  ])('does not enable S3 from %s without target runtime config', (_label, functionName) => {
-    process.env['USE_S3'] = 'true';
-    delete process.env['TARGET_AWS_RUNTIME'];
-    process.env['AWS_LAMBDA_FUNCTION_NAME'] = functionName;
-
-    expect(isS3UploadEnabled()).toBe(false);
+  it('does not enable S3 for a local runtime profile', () => {
+    expect(isS3UploadEnabled(localRuntimeProfile())).toBe(false);
     expect(getS3Config).not.toHaveBeenCalled();
   });
 
-  it('enables S3 only when target runtime config validates', () => {
-    process.env['USE_S3'] = 'true';
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-
-    expect(isS3UploadEnabled()).toBe(true);
+  it('enables S3 only when the target runtime profile config validates', () => {
+    expect(isS3UploadEnabled(targetProfile)).toBe(true);
     expect(getS3Config).toHaveBeenCalledTimes(1);
   });
 
-  it('does not enable S3 when target runtime config validation fails', () => {
-    process.env['USE_S3'] = 'true';
-    process.env['TARGET_AWS_RUNTIME'] = '1';
+  it('does not enable S3 when target profile config validation fails', () => {
     getS3Config.mockImplementationOnce(() => {
       throw new Error('S3_PROOF_BUCKET is required for target AWS runtime');
     });
 
-    expect(isS3UploadEnabled()).toBe(false);
+    expect(isS3UploadEnabled(targetProfile)).toBe(false);
   });
 });

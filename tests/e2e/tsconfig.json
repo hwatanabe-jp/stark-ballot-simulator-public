@@ -1,0 +1,5 @@
+{
+  "extends": "../../tooling/tsconfig/playwright.json",
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules", "**/node_modules/**"]
+}

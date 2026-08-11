@@ -8,22 +8,27 @@ import {
 } from '@stark-ballot/verification/checks';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
-export type VerificationSummaryStatus =
-  | 'fully_verified'
-  | 'demo_only'
-  | 'in_progress'
-  | 'missing_evidence'
-  | 'verified_with_limitations'
-  | 'user_vote_excluded'
-  | 'votes_excluded'
-  | 'votes_excluded_unknown'
-  | 'recorded_integrity_failed'
-  | 'published_tally_mismatch'
-  | 'counted_integrity_failed'
-  | 'cast_integrity_failed'
-  | 'proof_verification_failed';
+export const VERIFICATION_SUMMARY_STATUS_VALUES = [
+  'fully_verified',
+  'demo_only',
+  'in_progress',
+  'missing_evidence',
+  'verified_with_limitations',
+  'user_vote_excluded',
+  'votes_excluded',
+  'votes_excluded_unknown',
+  'recorded_integrity_failed',
+  'published_tally_mismatch',
+  'counted_integrity_failed',
+  'cast_integrity_failed',
+  'proof_verification_failed',
+] as const;
 
-export type VerificationSummaryTone = 'verified' | 'demo' | 'warning' | 'failed';
+export type VerificationSummaryStatus = (typeof VERIFICATION_SUMMARY_STATUS_VALUES)[number];
+
+export const VERIFICATION_SUMMARY_TONE_VALUES = ['verified', 'demo', 'warning', 'failed'] as const;
+
+export type VerificationSummaryTone = (typeof VERIFICATION_SUMMARY_TONE_VALUES)[number];
 
 export interface VerificationSummaryContext {
   /** Slot-based count of bulletin indices not presented to the guest. */

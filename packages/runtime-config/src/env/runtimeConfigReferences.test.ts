@@ -11,12 +11,19 @@ const PROD_SESSION_SECRET_REF = '/stark-ballot-simulator/stark-prod/main/app/sec
 const TURNSTILE_SECRET_REF = '/stark-ballot-simulator/stark-dev/develop/app/secrets/turnstile-secret-key';
 const ORIGIN_VERIFY_HEADER_REF = '/stark-ballot-simulator/stark-dev/develop/app/secrets/expected-origin-verify-header';
 const SESSION_SECRET = 'resolved-session-capability-secret-0123456789abcdef';
+const DEVELOP_REFERENCE_AUTHORITY = { expectedDeploymentEnvironment: 'develop' } as const;
+const MAIN_REFERENCE_AUTHORITY = { expectedDeploymentEnvironment: 'main' } as const;
+const DEVELOP_ARN_REFERENCE_AUTHORITY = {
+  expectedAccountId: '123456789012',
+  expectedDeploymentEnvironment: 'develop',
+  expectedRegion: 'ap-northeast-1',
+} as const;
 const EXPECTED_SESSION_SECRET_REF_MESSAGE =
-  'SESSION_CAPABILITY_SECRET_REF must reference one of /stark-ballot-simulator/stark-dev/develop/app/secrets/session-capability-secret, /stark-ballot-simulator/stark-prod/main/app/secrets/session-capability-secret';
+  'SESSION_CAPABILITY_SECRET_REF must reference /stark-ballot-simulator/stark-dev/develop/app/secrets/session-capability-secret';
 const EXPECTED_SESSION_TTL_REF_MESSAGE =
-  'SESSION_CAPABILITY_TTL_SECONDS_REF must reference one of /stark-ballot-simulator/stark-dev/develop/app/config/session-capability-ttl-seconds, /stark-ballot-simulator/stark-prod/main/app/config/session-capability-ttl-seconds';
+  'SESSION_CAPABILITY_TTL_SECONDS_REF must reference /stark-ballot-simulator/stark-dev/develop/app/config/session-capability-ttl-seconds';
 const EXPECTED_VOTE_SECRET_REF_MESSAGE =
-  'VOTE_SECRET_ENCRYPTION_KEY_REF must reference one of /stark-ballot-simulator/stark-dev/develop/app/secrets/vote-secret-encryption-key, /stark-ballot-simulator/stark-prod/main/app/secrets/vote-secret-encryption-key';
+  'VOTE_SECRET_ENCRYPTION_KEY_REF must reference /stark-ballot-simulator/stark-dev/develop/app/secrets/vote-secret-encryption-key';
 
 describe('runtimeConfigReferences', () => {
   afterEach(() => {
@@ -25,7 +32,10 @@ describe('runtimeConfigReferences', () => {
   });
 
   it('resolves approved non-secret references through an injected static boundary', () => {
-    installStaticRuntimeConfigReferenceResolver(new Map([[SESSION_SECRET_REF, SESSION_SECRET]]));
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[SESSION_SECRET_REF, SESSION_SECRET]]),
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
 
     expect(
       resolveRuntimeConfigReference({
@@ -35,9 +45,47 @@ describe('runtimeConfigReferences', () => {
     ).toBe(SESSION_SECRET);
   });
 
+  it('binds an installed resolver to its immutable deployment lane authority', () => {
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[SESSION_SECRET_REF, SESSION_SECRET]]),
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
+    vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', 'main');
+
+    expect(
+      resolveRuntimeConfigReference({
+        name: 'SESSION_CAPABILITY_SECRET',
+        reference: SESSION_SECRET_REF,
+      }),
+    ).toBe(SESSION_SECRET);
+  });
+
+  it('does not widen an explicitly bound resolver when the process lane is absent', () => {
+    setRuntimeConfigReferenceResolver(
+      {
+        resolve() {
+          return SESSION_SECRET;
+        },
+      },
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
+
+    expect(() =>
+      resolveRuntimeConfigReference({
+        name: 'SESSION_CAPABILITY_SECRET',
+        reference: PROD_SESSION_SECRET_REF,
+      }),
+    ).toThrow(
+      'SESSION_CAPABILITY_SECRET_REF must reference /stark-ballot-simulator/stark-dev/develop/app/secrets/session-capability-secret',
+    );
+  });
+
   it('resolves the protected-production target reference path when the runtime lane is main', () => {
     vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', 'main');
-    installStaticRuntimeConfigReferenceResolver(new Map([[PROD_SESSION_SECRET_REF, SESSION_SECRET]]));
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[PROD_SESSION_SECRET_REF, SESSION_SECRET]]),
+      MAIN_REFERENCE_AUTHORITY,
+    );
 
     expect(
       resolveRuntimeConfigReference({
@@ -49,7 +97,10 @@ describe('runtimeConfigReferences', () => {
 
   it('rejects develop references when the runtime lane is protected production', () => {
     vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', 'main');
-    installStaticRuntimeConfigReferenceResolver(new Map([[SESSION_SECRET_REF, SESSION_SECRET]]));
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[SESSION_SECRET_REF, SESSION_SECRET]]),
+      MAIN_REFERENCE_AUTHORITY,
+    );
 
     expect(() =>
       resolveRuntimeConfigReference({
@@ -62,7 +113,10 @@ describe('runtimeConfigReferences', () => {
   });
 
   it('accepts the approved target Turnstile secret reference path', () => {
-    installStaticRuntimeConfigReferenceResolver(new Map([[TURNSTILE_SECRET_REF, 'turnstile-secret-value']]));
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[TURNSTILE_SECRET_REF, 'turnstile-secret-value']]),
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
 
     expect(
       resolveRuntimeConfigReference({
@@ -73,7 +127,10 @@ describe('runtimeConfigReferences', () => {
   });
 
   it('accepts the approved target origin verify header reference path', () => {
-    installStaticRuntimeConfigReferenceResolver(new Map([[ORIGIN_VERIFY_HEADER_REF, 'origin-header-secret-value']]));
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[ORIGIN_VERIFY_HEADER_REF, 'origin-header-secret-value']]),
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
 
     expect(
       resolveRuntimeConfigReference({
@@ -93,11 +150,14 @@ describe('runtimeConfigReferences', () => {
   });
 
   it('rejects unresolved or invalid reference values from the resolver', () => {
-    setRuntimeConfigReferenceResolver({
-      resolve(reference) {
-        return reference.reference;
+    setRuntimeConfigReferenceResolver(
+      {
+        resolve(reference) {
+          return reference.reference;
+        },
       },
-    });
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
 
     expect(() =>
       resolveRuntimeConfigReference({
@@ -108,11 +168,14 @@ describe('runtimeConfigReferences', () => {
   });
 
   it('rejects unapproved reference locations before invoking the resolver', () => {
-    setRuntimeConfigReferenceResolver({
-      resolve() {
-        throw new Error('resolver should not run');
+    setRuntimeConfigReferenceResolver(
+      {
+        resolve() {
+          throw new Error('resolver should not run');
+        },
       },
-    });
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
 
     expect(() =>
       resolveRuntimeConfigReference({
@@ -123,11 +186,14 @@ describe('runtimeConfigReferences', () => {
   });
 
   it('rejects wrong-category absolute paths before invoking the resolver', () => {
-    setRuntimeConfigReferenceResolver({
-      resolve() {
-        throw new Error('resolver should not run');
+    setRuntimeConfigReferenceResolver(
+      {
+        resolve() {
+          throw new Error('resolver should not run');
+        },
       },
-    });
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
 
     expect(() =>
       resolveRuntimeConfigReference({
@@ -140,11 +206,14 @@ describe('runtimeConfigReferences', () => {
   it('rejects correct-account ARN references with the wrong parameter path before invoking the resolver', () => {
     vi.stubEnv('AWS_ACCOUNT_ID', '123456789012');
     vi.stubEnv('AWS_REGION', 'ap-northeast-1');
-    setRuntimeConfigReferenceResolver({
-      resolve() {
-        throw new Error('resolver should not run');
+    setRuntimeConfigReferenceResolver(
+      {
+        resolve() {
+          throw new Error('resolver should not run');
+        },
       },
-    });
+      DEVELOP_ARN_REFERENCE_AUTHORITY,
+    );
 
     expect(() =>
       resolveRuntimeConfigReference({
@@ -158,11 +227,14 @@ describe('runtimeConfigReferences', () => {
   it('rejects correct-account ARN references with the wrong secret path before invoking the resolver', () => {
     vi.stubEnv('AWS_ACCOUNT_ID', '123456789012');
     vi.stubEnv('AWS_REGION', 'ap-northeast-1');
-    setRuntimeConfigReferenceResolver({
-      resolve() {
-        throw new Error('resolver should not run');
+    setRuntimeConfigReferenceResolver(
+      {
+        resolve() {
+          throw new Error('resolver should not run');
+        },
       },
-    });
+      DEVELOP_ARN_REFERENCE_AUTHORITY,
+    );
 
     expect(() =>
       resolveRuntimeConfigReference({
@@ -176,11 +248,14 @@ describe('runtimeConfigReferences', () => {
   it('rejects direct ARN resolution for the wrong target account before invoking the resolver', () => {
     vi.stubEnv('AWS_ACCOUNT_ID', '123456789012');
     vi.stubEnv('AWS_REGION', 'ap-northeast-1');
-    setRuntimeConfigReferenceResolver({
-      resolve() {
-        throw new Error('resolver should not run');
+    setRuntimeConfigReferenceResolver(
+      {
+        resolve() {
+          throw new Error('resolver should not run');
+        },
       },
-    });
+      DEVELOP_ARN_REFERENCE_AUTHORITY,
+    );
 
     expect(() =>
       resolveRuntimeConfigReference({
@@ -194,11 +269,14 @@ describe('runtimeConfigReferences', () => {
   it('rejects direct ARN resolution for the wrong target region before invoking the resolver', () => {
     vi.stubEnv('AWS_ACCOUNT_ID', '123456789012');
     vi.stubEnv('AWS_REGION', 'ap-northeast-1');
-    setRuntimeConfigReferenceResolver({
-      resolve() {
-        throw new Error('resolver should not run');
+    setRuntimeConfigReferenceResolver(
+      {
+        resolve() {
+          throw new Error('resolver should not run');
+        },
       },
-    });
+      DEVELOP_ARN_REFERENCE_AUTHORITY,
+    );
 
     expect(() =>
       resolveRuntimeConfigReference({

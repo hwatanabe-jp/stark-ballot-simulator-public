@@ -24,15 +24,15 @@ Lean が扱わない範囲は末尾の [証明していないこと](#証明し�
 
 ## Lean で証明していること
 
-| 領域                 | 代表 theorem                                                                                                                               | 主張                                                                                     |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| Journal count        | `excluded_zero_implies_no_slot_loss`, `slot_partition_total`                                                                               | `excludedSlots = 0` なら missing / invalid presented が 0 になり、slot loss がない       |
-| Verification summary | `fully_verified_implies_all_required_success`, `fully_verified_implies_no_unknown_checks`, `fully_verified_implies_required_roles_success` | `fully_verified` は required check 成功、unknown check 不在、重要 role 成功を要求する    |
-| Input commitment     | `canonical_vote_order_total`, `canonical_encoding_permutation_invariant`                                                                   | vote の入力順序に依存しない canonical encoding が定義されている                          |
-| Bitmap               | `pack_bits_length`, `pack_bits_get_bit`                                                                                                    | LSB-first packing の byte 数と bit 取得がモデル通りになる                                |
-| Guest model          | `accepted_votes_count_tally`, `valid_votes_count_accepted`, `processVotes_fold_invariant`                                                  | 抽象 guest fold が tally / validVotes / seen index の不変条件を保つ                      |
-| Guest completeness   | `zero_exclusion_guest_model_complete`                                                                                                      | `excludedSlots = 0` が guest model 上で missing / invalid presented の不存在につながる   |
-| Bounded counts       | `no_overflow_under_guest_bounds`                                                                                                           | 明示した guest bounds 内で seen / valid / rejected / tally bucket が Rust `u32` に収まる |
+| 領域                 | 代表 theorem                                                                                                                               | 主張                                                                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Journal count        | `excluded_zero_implies_no_slot_loss`, `slot_partition_total`                                                                               | `excludedSlots = 0` なら missing / invalid presented が 0 になり、slot loss がない                                                                   |
+| Verification summary | `fully_verified_implies_all_required_success`, `fully_verified_implies_no_unknown_checks`, `fully_verified_implies_required_roles_success` | `fully_verified` は required check 成功、unknown check 不在、重要 role 成功を要求する                                                                |
+| Input commitment     | `canonical_vote_order_total`, `canonical_encoding_permutation_invariant`                                                                   | vote の入力順序に依存しない canonical encoding が定義されている                                                                                      |
+| Bitmap               | `pack_bits_length`, `pack_bits_get_bit`                                                                                                    | LSB-first packing の byte 数と bit 取得がモデル通りになる                                                                                            |
+| Guest model          | `accepted_votes_count_tally`, `valid_votes_count_accepted`, `processVotes_fold_invariant`                                                  | 抽象 guest fold が tally / validVotes / seen index の不変条件を保つ                                                                                  |
+| Guest completeness   | `zero_exclusion_guest_model_complete`                                                                                                      | `excludedSlots = 0` が guest model 上で missing / invalid presented の不存在につながる                                                               |
+| Bounded counts       | `no_overflow_under_guest_bounds`                                                                                                           | `treeSize` と vote count の上限から seen / valid / rejected / tally bucket が Rust `u32` に収まり、各 tally bucket が 1,000,000 以下になることを導く |
 
 これらは抽象モデル上の主張であり、実装との対応は次節の generated vectors とテストで検査します。
 
@@ -66,7 +66,7 @@ flowchart LR
 | generated vector                  | 消費先                           | 目的                                                                   |
 | --------------------------------- | -------------------------------- | ---------------------------------------------------------------------- |
 | `verification-summary-cases.json` | TypeScript summary tests         | Lean summary model と `deriveVerificationSummary` の対応               |
-| `verification-display-cases.json` | verify page overall-status tests | UI が `verified` を誤表示しないことの drift guard                      |
+| `verification-display-cases.json` | shared presentation-policy test  | UI が `verified` を誤表示しないことの drift guard                      |
 | `check-definitions.json`          | TypeScript check-definition test | check ID / category / role / criticality / required 条件の drift guard |
 | `input-commitment-cases.json`     | TypeScript / Rust tests          | canonical order と pre-hash bytes の対応                               |
 | `bitmap-cases.json`               | TypeScript / Rust tests          | LSB-first packing と bitmap behavior の対応                            |
@@ -86,7 +86,7 @@ Rust 側の vector-consuming tests は `docs/formal/generated-vectors/**` の変
 - theorem statement hash と generated-vector hash
 - `#print axioms` に基づく theorem dependency audit
 - proof hygiene scan
-- explicit guest bounds
+- `treeSize <= 1,000,000` と vote count `<= 1,000,000` の explicit guest input bounds、およびそこから導く candidate tally bucket `<= 1,000,000`
 
 ## 実行コマンド
 

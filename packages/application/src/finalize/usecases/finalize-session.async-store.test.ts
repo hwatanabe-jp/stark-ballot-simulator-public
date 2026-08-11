@@ -1,15 +1,27 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BOT_COUNT } from '@stark-ballot/domain/shared/constants';
 import {
   buildDefaultElectionConfig,
   getDefaultElectionConfigHash,
 } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
-import { resolveCurrentContractGeneration } from '@stark-ballot/domain/contract';
-import type { SessionData, VoteData } from '@stark-ballot/domain/types/server';
-import type { FinalizationState } from '@stark-ballot/application/finalize/finalization-types';
+import type {
+  SessionIdentityRecord,
+  SessionVotingRecord,
+  StoredVoteRecord,
+} from '@stark-ballot/domain/types/sessionRecords';
+import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import { ApplicationErrorCode } from '@stark-ballot/application/finalize/finalization-types';
-import { createMockVoteStore, type MockVoteStore } from '@stark-ballot/test-support/testing/mockVoteStore';
+import { createMockVoteStore, type MockVoteStore } from '../__tests__/support/mockVoteStore';
+
+const buildZkVMInputFromSessionMock = vi.hoisted(() => vi.fn());
+
+vi.mock('@stark-ballot/application/zkvm-input/input-builder', () => ({
+  buildZkVMInputFromSession: buildZkVMInputFromSessionMock,
+  CtProofUnavailableError: class CtProofUnavailableError extends Error {},
+}));
+
+import { finalizeSessionUsecase } from '@stark-ballot/application/finalize/usecases/finalize-session';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -20,93 +32,81 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
 
 type MarkQueuedPayload = Parameters<MockVoteStore['markFinalizationQueued']>[1];
 
-const createVote = (vote: VoteData['vote']): VoteData => ({
+const createVote = (index: number, vote: StoredVoteRecord['vote']): StoredVoteRecord => ({
+  voteId: `00000000-0000-4000-8000-${index.toString().padStart(12, '0')}`,
   vote,
   rand: '0x' + '1'.repeat(64),
-  commit: '0x' + '2'.repeat(64),
-  path: [],
+  commit: '0x' + (index + 2).toString(16).repeat(64),
+  timestamp: 1_730_000_000_000 + index,
+  rootAtCast: '0x' + 'a'.repeat(64),
 });
 
-function createSession(votes = new Map<number, VoteData>()): SessionData {
+function createSession(votes = new Map<number, StoredVoteRecord>()): {
+  identity: SessionIdentityRecord;
+  voting: SessionVotingRecord;
+} {
+  const sessionId = '11111111-1111-4111-8111-111111111111';
   return {
-    sessionId: '11111111-1111-4111-8111-111111111111',
-    contractGeneration: resolveCurrentContractGeneration(),
-    electionId: '550e8400-e29b-41d4-a716-446655440000',
-    electionConfigHash: getDefaultElectionConfigHash(),
-    electionConfig: buildDefaultElectionConfig(),
-    votes,
-    userVoteIndex: 0,
-    botCount: BOT_COUNT,
-    finalized: false,
-    createdAt: 1730000000000,
-    lastActivity: 1730000000000,
+    identity: {
+      sessionId,
+      electionId: '550e8400-e29b-41d4-a716-446655440000',
+      electionConfigHash: getDefaultElectionConfigHash(),
+      electionConfig: buildDefaultElectionConfig(),
+      logId: '0x' + '2'.repeat(64),
+      createdAtMs: 1_730_000_000_000,
+    },
+    voting: {
+      sessionId,
+      votes,
+      bulletin: new SimpleBulletinBoard('0x' + '2'.repeat(64)),
+      bulletinRootHistory: [],
+      userParticipation: { status: 'cast', voteIndex: 0 },
+      botCount: BOT_COUNT,
+      lastActivityMs: 1_730_000_000_000,
+    },
   };
 }
 
-function createInMemoryStore(session: SessionData) {
-  const updateSession = vi.fn((sessionId: string, data?: Partial<SessionData>): Promise<void> => {
-    if (sessionId === session.sessionId && data) {
-      Object.assign(session, data);
-    }
-    return Promise.resolve();
-  });
-  const markFinalizationQueued = vi.fn((_sessionId: string, payload: MarkQueuedPayload): Promise<FinalizationState> => {
-    const state: FinalizationState = {
-      status: 'pending',
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-    };
-    session.finalizationState = state as unknown as NonNullable<SessionData['finalizationState']>;
-    session.finalizationContractGeneration = payload.contractGeneration;
-    if (payload.scenarioContext) {
-      session.finalizationScenarioContext = payload.scenarioContext;
-    } else {
-      delete session.finalizationScenarioContext;
-    }
-    return Promise.resolve(state);
-  });
+function createInMemoryStore() {
+  const store = createMockVoteStore();
+  const applyQueued = store.markFinalizationQueued.bind(store);
+  const markFinalizationQueued = vi.fn((sessionId: string, payload: MarkQueuedPayload) =>
+    applyQueued(sessionId, payload),
+  );
+  store.markFinalizationQueued = markFinalizationQueued;
 
   return {
-    store: createMockVoteStore({
-      getSession: (sessionId) => Promise.resolve(sessionId === session.sessionId ? session : null),
-      updateSession,
-      markFinalizationQueued,
-    }),
-    updateSession,
+    store,
     markFinalizationQueued,
   };
 }
 
+beforeEach(() => {
+  vi.resetAllMocks();
+});
+
 afterEach(() => {
-  delete process.env['TARGET_AWS_RUNTIME'];
-  vi.resetModules();
   vi.restoreAllMocks();
 });
 
 describe('finalizeSessionUsecase async store boundary', () => {
   it('queues async finalization after persisting scenario context in the mock store', async () => {
     vi.spyOn(Math, 'random').mockReturnValue(0);
-    const buildZkVMInputFromSessionMock = vi.fn();
-    vi.doMock('@stark-ballot/application/zkvm-input/input-builder', () => ({
-      buildZkVMInputFromSession: buildZkVMInputFromSessionMock,
-      CtProofUnavailableError: class CtProofUnavailableError extends Error {},
-    }));
-    const { finalizeSessionUsecase } = await import('@stark-ballot/application/finalize/usecases/finalize-session');
-    const votes = new Map<number, VoteData>([
-      [0, createVote('A')],
-      [1, createVote('B')],
-      [2, createVote('C')],
+    const votes = new Map<number, StoredVoteRecord>([
+      [0, createVote(0, 'A')],
+      [1, createVote(1, 'B')],
+      [2, createVote(2, 'C')],
     ]);
     const session = createSession(votes);
-    const { store, markFinalizationQueued } = createInMemoryStore(session);
+    const { store, markFinalizationQueued } = createInMemoryStore();
 
     const dummyInput: ZkVMInput = {
-      electionId: session.electionId ?? 'election-1',
-      electionConfigHash: session.electionConfigHash ?? getDefaultElectionConfigHash(),
+      electionId: session.identity.electionId,
+      electionConfigHash: session.identity.electionConfigHash,
       bulletinRoot: '0x' + '1'.repeat(64),
       treeSize: votes.size,
       totalExpected: BOT_COUNT + 1,
-      logId: session.logId ?? '0x' + '2'.repeat(64),
+      logId: session.identity.logId,
       timestamp: 1730000000000,
       votes: [
         {
@@ -125,12 +125,13 @@ describe('finalizeSessionUsecase async store boundary', () => {
 
     const result = await finalizeSessionUsecase(
       {
-        sessionId: session.sessionId,
-        session,
+        sessionId: session.identity.sessionId,
+        identity: session.identity,
+        voting: session.voting,
+        currentFinalization: null,
         scenarioId: 'S2',
         expectedImageId: '0x' + '3'.repeat(64),
-        asyncMode: true,
-        queueUrl: 'https://queue.example.com',
+        finalizationMode: { kind: 'async', inputSource: 'inline' },
         publishMaxAttempts: 1,
         allowDevMode: true,
         debugFinalize: false,
@@ -148,19 +149,25 @@ describe('finalizeSessionUsecase async store boundary', () => {
     expect(publish).toHaveBeenCalledTimes(1);
     expect(markFinalizationQueued).toHaveBeenCalledTimes(1);
     const [queuedSessionId, queuedPayload] = strictDefined(markFinalizationQueued.mock.calls[0]);
-    expect(queuedSessionId).toBe(session.sessionId);
-    expect(queuedPayload.contractGeneration).toBe(resolveCurrentContractGeneration());
+    expect(queuedSessionId).toBe(session.identity.sessionId);
+    expect(queuedPayload).not.toHaveProperty('contractGeneration');
     expect(queuedPayload.scenarioContext).toMatchObject({
       scenarios: ['S2'],
       tamperMode: 'claim',
     });
 
-    const stored = await store.getSession(session.sessionId);
-    expect(stored?.finalizationContractGeneration).toBe(resolveCurrentContractGeneration());
-    expect(stored?.finalizationState).toMatchObject({
-      status: 'pending',
+    const stored = await store.getCurrentFinalizationRecord(session.identity.sessionId);
+    expect(stored).toMatchObject({
+      sessionId: session.identity.sessionId,
+      scenarioContext: {
+        scenarios: ['S2'],
+        tamperMode: 'claim',
+      },
+      state: {
+        status: 'pending',
+      },
     });
-    expect(stored?.finalizationScenarioContext).toEqual({
+    expect(stored?.scenarioContext).toEqual({
       scenarios: ['S2'],
       tamperMode: 'claim',
       claimedCounts: {
@@ -182,34 +189,27 @@ describe('finalizeSessionUsecase async store boundary', () => {
   });
 
   it('persists target async prover input before publishing the queue message', async () => {
-    process.env['TARGET_AWS_RUNTIME'] = '1';
     vi.spyOn(Math, 'random').mockReturnValue(0);
-    const buildZkVMInputFromSessionMock = vi.fn();
     const persistAsyncProverInputToS3 = vi.fn().mockResolvedValue({
       inputS3Key: 'sessions/session-1/exec-1/input.json',
       outputS3Prefix: 'sessions/session-1/exec-1',
       bundleS3Key: 'sessions/session-1/exec-1/bundle.zip',
     });
-    vi.doMock('@stark-ballot/application/zkvm-input/input-builder', () => ({
-      buildZkVMInputFromSession: buildZkVMInputFromSessionMock,
-      CtProofUnavailableError: class CtProofUnavailableError extends Error {},
-    }));
-    const { finalizeSessionUsecase } = await import('@stark-ballot/application/finalize/usecases/finalize-session');
-    const votes = new Map<number, VoteData>([
-      [0, createVote('A')],
-      [1, createVote('B')],
-      [2, createVote('C')],
+    const votes = new Map<number, StoredVoteRecord>([
+      [0, createVote(0, 'A')],
+      [1, createVote(1, 'B')],
+      [2, createVote(2, 'C')],
     ]);
     const session = createSession(votes);
-    const { store } = createInMemoryStore(session);
+    const { store } = createInMemoryStore();
 
     const dummyInput: ZkVMInput = {
-      electionId: session.electionId ?? 'election-1',
-      electionConfigHash: session.electionConfigHash ?? getDefaultElectionConfigHash(),
+      electionId: session.identity.electionId,
+      electionConfigHash: session.identity.electionConfigHash,
       bulletinRoot: '0x' + '1'.repeat(64),
       treeSize: votes.size,
       totalExpected: BOT_COUNT + 1,
-      logId: session.logId ?? '0x' + '2'.repeat(64),
+      logId: session.identity.logId,
       timestamp: 1730000000000,
       votes: [
         {
@@ -226,16 +226,16 @@ describe('finalizeSessionUsecase async store boundary', () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     const result = await finalizeSessionUsecase(
       {
-        sessionId: session.sessionId,
-        session,
+        sessionId: session.identity.sessionId,
+        identity: session.identity,
+        voting: session.voting,
+        currentFinalization: null,
         scenarioId: 'S0',
         expectedImageId: '0x' + '3'.repeat(64),
-        asyncMode: true,
-        queueUrl: 'https://queue.example.com',
+        finalizationMode: { kind: 'async', inputSource: 's3' },
         publishMaxAttempts: 1,
         allowDevMode: true,
         debugFinalize: false,
-        targetAwsRuntime: true,
       },
       {
         store,
@@ -250,18 +250,18 @@ describe('finalizeSessionUsecase async store boundary', () => {
     expect(result.ok).toBe(true);
     expect(persistAsyncProverInputToS3).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionId: session.sessionId,
-        contractGeneration: resolveCurrentContractGeneration(),
+        sessionId: session.identity.sessionId,
         zkvmInput: dummyInput,
       }),
     );
-    const persistedInput = persistAsyncProverInputToS3.mock.calls[0]?.[0] as { executionId?: string } | undefined;
-    const executionId = persistedInput?.executionId;
-    expect(executionId).toBeDefined();
+    const persistedInput = persistAsyncProverInputToS3.mock.calls[0]?.[0] as { finalizationId?: string } | undefined;
+    const finalizationId = persistedInput?.finalizationId;
+    expect(finalizationId).toBeDefined();
     expect(publish).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionId: session.sessionId,
-        executionId,
+        sessionId: session.identity.sessionId,
+        finalizationId,
+        inputSource: 's3',
       }),
       1,
     );
@@ -276,33 +276,28 @@ describe('finalizeSessionUsecase async store boundary', () => {
     expect(publishedMessage['requestMeta']).toBeUndefined();
   });
 
-  it('fails closed instead of minting a missing session contractGeneration', async () => {
+  it('fails closed instead of minting missing session identity', async () => {
     vi.spyOn(Math, 'random').mockReturnValue(0);
-    const buildZkVMInputFromSessionMock = vi.fn();
-    vi.doMock('@stark-ballot/application/zkvm-input/input-builder', () => ({
-      buildZkVMInputFromSession: buildZkVMInputFromSessionMock,
-      CtProofUnavailableError: class CtProofUnavailableError extends Error {},
-    }));
-    const { finalizeSessionUsecase } = await import('@stark-ballot/application/finalize/usecases/finalize-session');
     const session = createSession(
-      new Map<number, VoteData>([
-        [0, createVote('A')],
-        [1, createVote('B')],
-        [2, createVote('C')],
+      new Map<number, StoredVoteRecord>([
+        [0, createVote(0, 'A')],
+        [1, createVote(1, 'B')],
+        [2, createVote(2, 'C')],
       ]),
     );
-    const { store } = createInMemoryStore(session);
-
-    delete session.contractGeneration;
+    const { store } = createInMemoryStore();
+    const incompleteIdentity = { ...session.identity } as Partial<SessionIdentityRecord>;
+    delete incompleteIdentity.electionId;
 
     const result = await finalizeSessionUsecase(
       {
-        sessionId: session.sessionId,
-        session,
+        sessionId: session.identity.sessionId,
+        identity: incompleteIdentity as SessionIdentityRecord,
+        voting: session.voting,
+        currentFinalization: null,
         scenarioId: 'S0',
         expectedImageId: '0x' + '3'.repeat(64),
-        asyncMode: true,
-        queueUrl: 'https://queue.example.com',
+        finalizationMode: { kind: 'async', inputSource: 'inline' },
         publishMaxAttempts: 1,
         allowDevMode: true,
         debugFinalize: false,
@@ -319,11 +314,9 @@ describe('finalizeSessionUsecase async store boundary', () => {
       ok: false,
       error: {
         kind: 'api',
-        code: ApplicationErrorCode.UNSUPPORTED_CURRENT_ARTIFACT,
+        code: ApplicationErrorCode.INTERNAL_ERROR,
         details: {
-          artifactState: 'unsupported_current_artifact',
-          persistedContractGeneration: null,
-          carriedContractGeneration: null,
+          details: 'Session identity is missing or invalid',
         },
       },
     });

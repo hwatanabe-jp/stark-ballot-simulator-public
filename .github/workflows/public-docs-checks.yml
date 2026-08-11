@@ -51,7 +51,7 @@ jobs:
         run: cargo install --locked mdbook-mermaid --version 0.17.0
 
       - name: Build public book
-        run: mdbook build public-book
+        run: ./scripts/docs/build-mdbook.sh public-book
 
       - name: Create README.html aliases
         run: ./scripts/docs/create-mdbook-readme-aliases.sh

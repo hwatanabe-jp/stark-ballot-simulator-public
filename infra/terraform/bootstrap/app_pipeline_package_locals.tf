@@ -75,6 +75,11 @@ locals {
       type  = "PLAINTEXT"
     },
     {
+      name  = "APP_SELECTED_APPLICATION_SOURCE_SHA"
+      value = "#{variables.SelectedApplicationSourceSha}"
+      type  = "PLAINTEXT"
+    },
+    {
       name  = "APP_STATE_REFRESH_PIPELINE_EXECUTION_ID"
       value = "#{codepipeline.PipelineExecutionId}"
       type  = "PLAINTEXT"
@@ -211,9 +216,4 @@ locals {
       },
     ],
   ))
-  app_source_preflight_command                 = "APP_DEPLOYMENT_RECORD_PATH=app-deployment-record.json APP_AWS_ACCOUNT_ID=${var.aws_account_id} APP_AWS_REGION=${var.aws_region} APP_SOURCE_BRANCH=${var.source_branch} APP_SOURCE_REPOSITORY=${var.github_full_repository_id} APP_PIPELINE_NAME=${local.app_pipeline_name} node scripts/aws/write-app-source-preflight.mjs"
-  app_signature_authority_revalidation_command = "APP_PIPELINE_ARTIFACT_BUCKET=${local.app_pipeline_artifact_bucket_name} APP_RELEASE_MANIFEST_BUCKET=${local.app_release_manifest_bucket_name} APP_EXPECTED_AWS_ACCOUNT_ID=${var.aws_account_id} APP_EXPECTED_AWS_REGION=${var.aws_region} APP_SOURCE_SHA=\"$APP_SOURCE_SHA\" infra/terraform/bootstrap/app-pipeline-scripts/revalidate-app-signature-authority.sh"
-  app_recovery_prepare_command                 = "APP_ACCOUNT_ALIAS=${var.account_alias} APP_DEPLOYMENT_ENVIRONMENT=${var.deployment_environment} APP_EXPECTED_AWS_ACCOUNT_ID=${var.aws_account_id} APP_EXPECTED_AWS_REGION=${var.aws_region} APP_PIPELINE_ARTIFACT_BUCKET=${local.app_pipeline_artifact_bucket_name} bash infra/terraform/bootstrap/app-pipeline-scripts/app-prepare-dynamodb-recovery.sh"
-  app_target_lambda_artifacts_command          = "APP_EXPECTED_AWS_ACCOUNT_ID=${var.aws_account_id} APP_EXPECTED_AWS_REGION=${var.aws_region} APP_PIPELINE_ARTIFACT_BUCKET=${local.app_pipeline_artifact_bucket_name} bash infra/terraform/bootstrap/app-pipeline-scripts/app-prepare-target-lambda-artifacts.sh"
-
 }

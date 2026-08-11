@@ -1,5 +1,6 @@
 import { configureLogger, logger, parseLogFormat, parseLogLevel } from '@stark-ballot/diagnostics/logger';
 import { RuntimeConfigValidationError } from '@stark-ballot/runtime-config/env/configValidationError';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 export type RuntimeConfigName = Uppercase<string>;
 export { RuntimeConfigValidationError };
@@ -14,6 +15,7 @@ interface RuntimeValidationStep {
 
 interface LambdaRuntimeBootstrapOptions {
   readonly serviceName: string;
+  readonly runtimeProfile: ResolvedRuntimeProfile;
   readonly resolveRuntimeReferences: (invalidNames: RuntimeConfigInvalidNameCollector) => Promise<void>;
   readonly validationSteps: readonly RuntimeValidationStep[];
   readonly env?: NodeJS.ProcessEnv;
@@ -36,8 +38,12 @@ function createInvalidNameCollector(): {
   };
 }
 
-function configureSecretFreeLogger(serviceName: string, env: NodeJS.ProcessEnv): void {
-  const targetRuntime = env['TARGET_AWS_RUNTIME'] === '1';
+function configureSecretFreeLogger(
+  serviceName: string,
+  runtimeProfile: ResolvedRuntimeProfile,
+  env: NodeJS.ProcessEnv,
+): void {
+  const targetRuntime = runtimeProfile.target.kind === 'aws';
   const deploymentId = env['DEPLOYMENT_ID']?.trim();
   const appSourceSha = env['APP_SOURCE_SHA']?.trim();
   const deployMode = env['DEPLOY_MODE']?.trim();
@@ -66,7 +72,7 @@ function sanitizedRuntimeConfigError(invalidNames: readonly RuntimeConfigName[])
 }
 
 export async function bootstrapLambdaRuntime(options: LambdaRuntimeBootstrapOptions): Promise<void> {
-  configureSecretFreeLogger(options.serviceName, options.env ?? process.env);
+  configureSecretFreeLogger(options.serviceName, options.runtimeProfile, options.env ?? process.env);
 
   const referenceInvalidNames = createInvalidNameCollector();
   try {

@@ -22,14 +22,14 @@ describe('apiBaseUrl', () => {
     delete process.env['VITE_API_BASE_URL'];
 
     expect(getApiBaseUrl()).toBeNull();
-    expect(resolveApiUrl('/api/session')).toBe('/api/session');
+    expect(resolveApiUrl('/api/sessions')).toBe('/api/sessions');
   });
 
   it('normalizes the configured Vite origin', () => {
     setBrowserPublicEnvForTests('VITE_API_BASE_URL', 'https://example.com/');
 
     expect(getApiBaseUrl()).toBe('https://example.com');
-    expect(resolveApiUrl('/api/session')).toBe('https://example.com/api/session');
+    expect(resolveApiUrl('/api/sessions')).toBe('https://example.com/api/sessions');
   });
 
   it.each([
@@ -43,7 +43,7 @@ describe('apiBaseUrl', () => {
     setBrowserPublicEnvForTests('VITE_API_BASE_URL', value);
 
     expect(getApiBaseUrl()).toBeNull();
-    expect(resolveApiUrl('/api/session')).toBe('/api/session');
+    expect(resolveApiUrl('/api/sessions')).toBe('/api/sessions');
   });
 
   it('returns the input when the path is already absolute', () => {

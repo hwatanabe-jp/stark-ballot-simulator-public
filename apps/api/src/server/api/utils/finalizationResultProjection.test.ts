@@ -8,12 +8,12 @@ import {
 } from './finalizationResultProjection';
 
 describe('projectFinalizationResultForPublicResponse', () => {
-  it('reconstructs public compatibility aliases from the canonical journal only', () => {
+  it('derives the public authority and presentation partitions from the canonical journal only', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 61,
-      missingIndices: 1,
-      invalidIndices: 2,
+      missingSlots: 1,
+      invalidPresentedSlots: 2,
     });
     const authority = buildFinalizationResultFromJournal({
       journal,
@@ -23,32 +23,58 @@ describe('projectFinalizationResultForPublicResponse', () => {
       includedBitmap: [true, false],
       includedBitmapRoot: journal.includedBitmapRoot,
       treeSize: journal.treeSize,
-      finalizedAt: 1730000000000,
+      finalizedAtMs: 1730000000000,
     };
 
     const projected = projectFinalizationResultForPublicResponse(authority);
 
-    expect(projected.bulletinRoot).toBe(journal.bulletinRoot);
-    expect(projected.verifiedTally).toEqual(journal.verifiedTally);
-    expect(projected.missingSlots).toBe(journal.missingSlots);
-    expect(projected.invalidPresentedSlots).toBe(journal.invalidPresentedSlots);
-    expect(projected.rejectedRecords).toBe(journal.rejectedRecords);
-    expect(projected.journal.validVotes).toBe(journal.validVotes);
-    expect(projected.totalExpected).toBe(journal.totalExpected);
-    expect(projected.treeSize).toBe(journal.treeSize);
-    expect(projected.excludedSlots).toBe(journal.excludedSlots);
-    expect(projected.sthDigest).toBe(journal.sthDigest);
-    expect(projected.seenBitmapRoot).toBe(journal.seenBitmapRoot);
-    expect(projected.includedBitmapRoot).toBe(journal.includedBitmapRoot);
-    expect(projected.inputCommitment).toBe(journal.inputCommitment);
-    expect(projected.seenIndicesCount).toBe(journal.seenIndicesCount);
-    expect(projected.imageId).toBe(authority.imageId);
-    expect(projected.journal).toEqual(journal);
-    expect('receiptRaw' in projected).toBe(false);
-    expect('bitmapData' in projected).toBe(false);
+    expect(projected.authority.imageId).toBe(authority.imageId);
+    expect(projected.authority.journal).toEqual(journal);
+    expect(projected.presentation).toMatchObject({
+      bulletinRoot: journal.bulletinRoot,
+      verifiedTally: journal.verifiedTally,
+      missingSlots: journal.missingSlots,
+      invalidPresentedSlots: journal.invalidPresentedSlots,
+      rejectedRecords: journal.rejectedRecords,
+      totalExpected: journal.totalExpected,
+      treeSize: journal.treeSize,
+      excludedSlots: journal.excludedSlots,
+      sthDigest: journal.sthDigest,
+      seenBitmapRoot: journal.seenBitmapRoot,
+      includedBitmapRoot: journal.includedBitmapRoot,
+      inputCommitment: journal.inputCommitment,
+      seenIndicesCount: journal.seenIndicesCount,
+    });
+    expect(projected.voterEvidence.state).toBe('verification-gated');
+    expect(projected.artifactAvailability.includedBitmap).toBe('unavailable');
+    expect(projected).not.toHaveProperty('receiptRaw');
+    expect(projected).not.toHaveProperty('bitmapData');
   });
 
-  it('serializes verification result without server-only paths', () => {
+  it('declares bitmap availability only from admitted durable sidecar evidence', () => {
+    const journal = createTestJournal({ totalExpected: 1, validVotes: 1 });
+    const authority = buildFinalizationResultFromJournal({
+      journal,
+      imageId: '0x' + '1'.repeat(64),
+    });
+    const bitmapData = {
+      sessionId: 'session-1',
+      finalizationId: 'finalization-1',
+      includedBitmap: [true],
+      includedBitmapRoot: journal.includedBitmapRoot,
+      treeSize: journal.treeSize,
+      finalizedAtMs: 1_730_000_000_000,
+    };
+
+    const projected = projectFinalizationResultForPublicResponse(authority, undefined, { bitmapData });
+
+    expect(projected.artifactAvailability).toMatchObject({
+      includedBitmap: 'available',
+      seenBitmap: 'unavailable',
+    });
+  });
+
+  it('serializes separate verification result authority without server-only paths', () => {
     const journal = createTestJournal();
     const authority = buildFinalizationResultFromJournal({
       journal,
@@ -57,7 +83,6 @@ describe('projectFinalizationResultForPublicResponse', () => {
     const verificationResult = {
       status: 'success' as const,
       failureCategory: 'none' as const,
-      executionId: 'exec-1',
       report: {
         status: 'success' as const,
         verifier_version: '1.0.0',
@@ -70,20 +95,20 @@ describe('projectFinalizationResultForPublicResponse', () => {
       },
     };
 
-    const projected = projectFinalizationResultForPublicResponse({ ...authority, verificationResult });
-    const projectedVerificationResult = projected.verificationResult;
-
-    expect(projectedVerificationResult).toMatchObject({
-      status: 'success',
-      executionId: 'exec-1',
+    const projected = projectFinalizationResultForPublicResponse(authority, undefined, {
+      verificationResult,
     });
-    expect(projectedVerificationResult).not.toHaveProperty('bundleUrl');
-    expect(projectedVerificationResult).not.toHaveProperty('reportUrl');
-    expect(projectedVerificationResult).not.toHaveProperty('bundlePath');
-    expect(projectedVerificationResult).not.toHaveProperty('reportPath');
-    expect(projectedVerificationResult).not.toHaveProperty('bundleArchivePath');
-    expect(projectedVerificationResult).not.toHaveProperty('failureCategory');
-    expect(projectedVerificationResult?.report).toMatchObject({
+    const projectedVerificationReport = projected.presentation.verificationReport;
+
+    expect(projected.presentation.verificationStatus).toBe('success');
+    expect(projected.presentation).not.toHaveProperty('finalizationId');
+    expect(projected.presentation).not.toHaveProperty('bundleUrl');
+    expect(projected.presentation).not.toHaveProperty('reportUrl');
+    expect(projected.presentation).not.toHaveProperty('bundlePath');
+    expect(projected.presentation).not.toHaveProperty('reportPath');
+    expect(projected.presentation).not.toHaveProperty('bundleArchivePath');
+    expect(projected.presentation).not.toHaveProperty('failureCategory');
+    expect(projectedVerificationReport).toMatchObject({
       status: 'success',
       verifier_version: '1.0.0',
       verified_at: '2026-01-01T00:00:00.000Z',
@@ -92,8 +117,30 @@ describe('projectFinalizationResultForPublicResponse', () => {
       receipt_image_id: authority.imageId,
       dev_mode_receipt: false,
     });
-    expect(projectedVerificationResult?.report).not.toHaveProperty('bundle_path');
-    expect(projectedVerificationResult?.report).not.toHaveProperty('receipt_path');
+    expect(projectedVerificationReport).not.toHaveProperty('bundle_path');
+    expect(projectedVerificationReport).not.toHaveProperty('receipt_path');
+  });
+
+  it('projects only allowlisted receipt metadata into the public response', () => {
+    const journal = createTestJournal();
+    const authority = buildFinalizationResultFromJournal({
+      journal,
+      imageId: '0x' + '1'.repeat(64),
+    });
+    authority.receipt = {
+      imageId: authority.imageId,
+      seal: 'seal',
+      journal: 'receipt-journal',
+      metadata: {
+        isFake: true,
+        verifier_parameters: [1, 2, 3],
+        verifierPath: '/tmp/private-verifier/receipt.json',
+      },
+    };
+
+    const projected = projectFinalizationResultForPublicResponse(authority);
+
+    expect(projected.authority.receipt?.metadata).toEqual({ isFake: true });
   });
 
   it('projects claim-tampered verifier success as fail-closed public status', () => {
@@ -115,11 +162,9 @@ describe('projectFinalizationResultForPublicResponse', () => {
         },
       },
     });
-    const projected = projectFinalizationResultForPublicResponse({
-      ...authority,
+    const projected = projectFinalizationResultForPublicResponse(authority, undefined, {
       verificationResult: {
         status: 'dev_mode',
-        executionId: 'exec-1',
         report: {
           status: 'dev_mode',
           verifier_version: '1.0.0',
@@ -133,10 +178,8 @@ describe('projectFinalizationResultForPublicResponse', () => {
       },
     });
 
-    expect(projected.verificationResult).toMatchObject({
-      status: 'failed',
-      executionId: 'exec-1',
-    });
+    expect(projected.presentation.verificationStatus).toBe('failed');
+    expect(projected.presentation).not.toHaveProperty('finalizationId');
   });
 
   it('projects sync verification execution authority outside the pure verification result', () => {
@@ -145,7 +188,7 @@ describe('projectFinalizationResultForPublicResponse', () => {
       journal,
       imageId: '0x' + '1'.repeat(64),
     });
-    authority.verificationResult = {
+    const verificationResult = {
       status: 'success',
       report: {
         status: 'success',
@@ -157,12 +200,29 @@ describe('projectFinalizationResultForPublicResponse', () => {
         dev_mode_receipt: false,
         errors: [],
       },
-    };
+    } satisfies FinalizeSyncPayload['verificationResult'];
 
     const projected = projectFinalizeSyncPayloadForResponse({
       sessionId: 'session-1',
-      verificationExecutionId: 'exec-sync-1',
+      finalizationId: 'exec-sync-1',
+      state: {
+        status: 'succeeded',
+        finalizationId: 'exec-sync-1',
+        queuedAtMs: 1730000000000,
+        startedAtMs: 1730000001000,
+        completedAtMs: 1730000002000,
+      },
       finalizationResult: authority,
+      verificationResult,
+      bitmapDisposition: {
+        availability: 'available',
+        data: {
+          includedBitmap: [true],
+          includedBitmapRoot: journal.includedBitmapRoot,
+          treeSize: journal.treeSize,
+          finalizedAtMs: 1730000002000,
+        },
+      },
       bulletinRoot: journal.bulletinRoot,
       voteReceipt: {
         voteId: 'vote-1',
@@ -191,6 +251,13 @@ describe('projectFinalizationResultForPublicResponse', () => {
       inputCommitment: journal.inputCommitment,
     } satisfies FinalizeSyncPayload);
 
-    expect(projected.verificationExecutionId).toBe('exec-sync-1');
+    expect(projected.finalizationId).toBe('exec-sync-1');
+    expect(projected.status).toBe('succeeded');
+    expect(projected.runtimeDiagnostics).toEqual({ asyncMode: 'disabled' });
+    if (projected.status !== 'succeeded') {
+      throw new Error('Expected synchronous finalization projection to succeed');
+    }
+    expect(projected.result.voterEvidence.state).toBe('available');
+    expect(projected.result.artifactAvailability.includedBitmap).toBe('available');
   });
 });

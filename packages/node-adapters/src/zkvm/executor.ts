@@ -24,6 +24,7 @@ import {
 } from '@stark-ballot/zkvm-contract/zkvm/bitmap-artifacts';
 import { logger } from './logger';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import type { Risc0ProofProfile } from './executor-factory';
 
 const execAsync = promisify(exec);
 
@@ -37,7 +38,7 @@ const ZKVM_TIMEOUT = 600000; // 600秒 = 10分
 /**
  * Execute the zkVM to generate proof
  */
-export async function executeZkVM(input: ZkVMInput): Promise<ZkVMExecutionResult> {
+export async function executeZkVM(input: ZkVMInput, proofProfile: Risc0ProofProfile): Promise<ZkVMExecutionResult> {
   // Ensure temp directory exists
   await fs.mkdir(TEMP_DIR, { recursive: true });
 
@@ -64,8 +65,7 @@ export async function executeZkVM(input: ZkVMInput): Promise<ZkVMExecutionResult
     const command = `${HOST_BINARY} ${inputFile}`;
     logger.info('[zkVM] Host execution starting');
 
-    // Log zkVM mode
-    if (process.env['RISC0_DEV_MODE'] === '1') {
+    if (proofProfile.evidence === 'development') {
       logger.info('[zkVM] Running in DEV mode (Fake receipts, fast execution)');
     } else {
       logger.info('[zkVM] Running in PRODUCTION mode (Real STARK proofs, ~366s for 64 votes)');
@@ -74,12 +74,16 @@ export async function executeZkVM(input: ZkVMInput): Promise<ZkVMExecutionResult
     const startTime = Date.now();
     let stderr: string | undefined;
     try {
+      const childEnvironment = { ...process.env };
+      if (proofProfile.evidence === 'development') {
+        childEnvironment['RISC0_DEV_MODE'] = '1';
+      } else {
+        delete childEnvironment['RISC0_DEV_MODE'];
+      }
+
       ({ stderr } = await execAsync(command, {
         timeout: ZKVM_TIMEOUT,
-        env: {
-          ...process.env,
-          // Pass RISC0_DEV_MODE as-is from environment
-        },
+        env: childEnvironment,
       }));
     } catch (error) {
       const durationMs = Date.now() - startTime;

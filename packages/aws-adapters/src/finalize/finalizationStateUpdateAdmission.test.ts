@@ -3,9 +3,8 @@ import { parseFinalizationStateUpdatePayload } from './finalizationStateUpdateAd
 
 const basePayload = {
   sessionId: 'session-running-admission',
-  executionId: 'exec-running-admission',
-  contractGeneration: '2026-04-zkvm-current-v1',
-  queuedAt: 1_700_000_000_000,
+  finalizationId: 'exec-running-admission',
+  queuedAtMs: 1_700_000_000_000,
 };
 
 describe('parseFinalizationStateUpdatePayload', () => {
@@ -14,20 +13,20 @@ describe('parseFinalizationStateUpdatePayload', () => {
       parseFinalizationStateUpdatePayload({
         ...basePayload,
         status: 'RUNNING',
-        startedAt: 1_700_000_001_000,
+        startedAtMs: 1_700_000_001_000,
         stepFunctionsArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:machine:exec-running-admission',
       }),
     ).toEqual({
       ...basePayload,
       status: 'RUNNING',
-      startedAt: 1_700_000_001_000,
+      startedAtMs: 1_700_000_001_000,
       runtimeMetadata: {
         stepFunctionsArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:machine:exec-running-admission',
       },
     });
   });
 
-  it('rejects RUNNING updates without startedAt', () => {
+  it('rejects RUNNING updates without startedAtMs', () => {
     expect(
       parseFinalizationStateUpdatePayload({
         ...basePayload,
@@ -36,12 +35,12 @@ describe('parseFinalizationStateUpdatePayload', () => {
     ).toBeUndefined();
   });
 
-  it('rejects RUNNING updates whose startedAt is before queuedAt', () => {
+  it('rejects RUNNING updates whose startedAtMs is before queuedAtMs', () => {
     expect(
       parseFinalizationStateUpdatePayload({
         ...basePayload,
         status: 'RUNNING',
-        startedAt: basePayload.queuedAt - 1,
+        startedAtMs: basePayload.queuedAtMs - 1,
       }),
     ).toBeUndefined();
   });
@@ -51,8 +50,8 @@ describe('parseFinalizationStateUpdatePayload', () => {
       parseFinalizationStateUpdatePayload({
         ...basePayload,
         status: 'SUCCEEDED',
-        startedAt: 1_700_000_001_000,
-        completedAt: 1_700_000_002_000,
+        startedAtMs: 1_700_000_001_000,
+        completedAtMs: 1_700_000_002_000,
       }),
     ).toBeUndefined();
   });
@@ -68,7 +67,7 @@ describe('parseFinalizationStateUpdatePayload', () => {
       parseFinalizationStateUpdatePayload({
         ...basePayload,
         status: 'FAILED',
-        failedAt: 1_700_000_002_000,
+        failedAtMs: 1_700_000_002_000,
         error: {
           code,
           message: 'untrusted callback message with internal data',
@@ -82,7 +81,7 @@ describe('parseFinalizationStateUpdatePayload', () => {
     ).toEqual({
       ...basePayload,
       status: 'FAILED',
-      failedAt: 1_700_000_002_000,
+      failedAtMs: 1_700_000_002_000,
       error: {
         code,
         message,
@@ -96,6 +95,7 @@ describe('parseFinalizationStateUpdatePayload', () => {
       parseFinalizationStateUpdatePayload({
         ...basePayload,
         status: 'FAILED',
+        failedAtMs: 1_700_000_002_000,
         error: {
           code: 'States.TaskFailed',
           message: 'untrusted callback message with internal data',
@@ -121,6 +121,7 @@ describe('parseFinalizationStateUpdatePayload', () => {
       parseFinalizationStateUpdatePayload({
         ...basePayload,
         status: 'FAILED',
+        failedAtMs: 1_700_000_002_000,
         error: {
           code: 'PROVER_TASK_FAILED',
           message: 'Target prover task failed',
@@ -131,6 +132,7 @@ describe('parseFinalizationStateUpdatePayload', () => {
     ).toEqual({
       ...basePayload,
       status: 'FAILED',
+      failedAtMs: 1_700_000_002_000,
       error: {
         code: 'PROVER_TASK_FAILED',
         message: 'Target prover task failed',
@@ -139,20 +141,39 @@ describe('parseFinalizationStateUpdatePayload', () => {
     });
   });
 
-  it('supplies the fixed generic tuple when a failed update omits error input', () => {
+  it('rejects a failed update that omits its required error tuple', () => {
     expect(
       parseFinalizationStateUpdatePayload({
         ...basePayload,
         status: 'FAILED',
+        failedAtMs: 1_700_000_002_000,
       }),
-    ).toEqual({
-      ...basePayload,
-      status: 'FAILED',
-      error: {
-        code: 'FINALIZATION_FAILED',
-        message: 'Finalization failed',
-        category: 'unknown',
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ['RUNNING', { startedAtMs: 1_700_000_001_000, failedAtMs: 1_700_000_002_000 }],
+    [
+      'FAILED',
+      {
+        failedAtMs: 1_700_000_002_000,
+        completedAtMs: 1_700_000_002_000,
+        error: { code: 'FINALIZATION_FAILED', message: 'Finalization failed' },
       },
-    });
+    ],
+    ['TIMED_OUT', { timeoutAtMs: 1_700_000_002_000, error: { code: 'FINALIZATION_FAILED', message: 'failed' } }],
+  ] as const)('rejects %s updates carrying fields owned by another status', (status, fields) => {
+    expect(parseFinalizationStateUpdatePayload({ ...basePayload, status, ...fields })).toBeUndefined();
+  });
+
+  it('rejects the retired repository generation marker', () => {
+    expect(
+      parseFinalizationStateUpdatePayload({
+        ...basePayload,
+        contractGeneration: 'retired-generation',
+        status: 'RUNNING',
+        startedAtMs: 1_700_000_001_000,
+      }),
+    ).toBeUndefined();
   });
 });

@@ -5,22 +5,17 @@ import { Button } from '@stark-ballot/web/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@stark-ballot/web/components/ui/Card';
 import { Badge } from '@stark-ballot/web/components/ui/Badge';
 import { useTranslation } from '@stark-ballot/web/hooks';
-import { apiFetch } from '@stark-ballot/web/api/apiFetch';
-import { resolveApiUrl } from '@stark-ballot/web/api/apiBaseUrl';
 import {
   captureSessionIdentity,
-  getSessionAuthHeaders,
   getSessionData,
   getSessionDataForIdentity,
   isSessionReplacedForIdentity,
   saveSessionDataForIdentity,
   SESSION_STORAGE_KEY,
 } from '@stark-ballot/web/session';
-import {
-  fetchFinalizationStatus,
-  resolveFinalizationStatusErrorCode,
-  type FinalizationStatusResponse,
-} from '@stark-ballot/web/finalize/finalization-status-client';
+import { fetchCurrentFinalization, resolveFinalizationStatusErrorCode } from '@stark-ballot/web/api/finalizations';
+import type { FinalizationResource } from '@stark-ballot/api-contract/schemas/finalizations';
+import { runVerification } from '@stark-ballot/web/api/verification';
 import {
   clearKnowledge,
   getKnowledgeValue,
@@ -32,32 +27,20 @@ import { clearSession } from '@stark-ballot/web/session';
 import {
   clearClientSessionAuthority,
   clearClientFinalizedProjection,
-  hasFailClosedFinalizationStatus,
 } from '@stark-ballot/web/finalize/client-finalization-boundary';
 import {
+  projectFinalizationResourceToClientSnapshot,
   projectClientFinalizationSnapshotForKnowledge,
   resolveCanonicalFinalizationPayload,
   resolveClientFinalizationVerificationStatus,
 } from '@stark-ballot/web/finalize/client-finalization-result';
 import { startStarkVerificationPolling } from '@stark-ballot/web/verification/stark-verification-polling';
-import { isCapabilityLossErrorCode } from '@stark-ballot/web/api/apiErrors';
-import { getRecordProperty, getNumberProperty, isRecord } from '@stark-ballot/verification/shared/guards';
+import { isCapabilityLossErrorCode } from '@stark-ballot/api-contract/errors/apiErrorGuards';
 import type { VoteChoice } from '@stark-ballot/web/session/types';
 import { useAppRouter } from '@stark-ballot/web/navigation/appNavigation';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 const VOTE_CHOICES: VoteChoice[] = ['A', 'B', 'C', 'D', 'E'];
-
-const isFinalizationResultReady = (status: FinalizationStatusResponse): boolean => {
-  if (!status.finalizationResult) {
-    return false;
-  }
-  const state = status.finalizationState;
-  if (!state) {
-    return true;
-  }
-  return state.status === 'succeeded';
-};
 
 interface TallyCounts {
   A: number;
@@ -96,12 +79,11 @@ export default function ResultPage(): React.ReactElement {
     setIsLoading(false);
   }, [resolveSessionErrorMessage]);
 
-  const handleFailClosedStatus = useCallback(
-    (status: FinalizationStatusResponse): void => {
+  const handleTerminalResource = useCallback(
+    (resource: Extract<FinalizationResource, { status: 'failed' | 'timeout' }>): void => {
       clearClientFinalizedProjection(expectedSessionIdentityRef.current);
-      const state = status.finalizationState;
-      if (state?.status === 'failed') {
-        setError(state.error.message || t('errors.generic'));
+      if (resource.status === 'failed') {
+        setError(resource.error.message || t('errors.generic'));
       } else {
         setError(t('errors.generic'));
       }
@@ -139,18 +121,17 @@ export default function ResultPage(): React.ReactElement {
 
         let finalizeResult = null;
         try {
-          const status = await fetchFinalizationStatus(sessionData.sessionId, {
-            authHeaders: getSessionAuthHeaders(sessionData),
-          });
-          if (hasFailClosedFinalizationStatus(status)) {
-            handleFailClosedStatus(status);
+          const resource = await fetchCurrentFinalization(sessionData);
+          if (resource?.status === 'failed' || resource?.status === 'timeout') {
+            handleTerminalResource(resource);
             return;
           }
-
-          const restoredFinalizeResult = resolveCanonicalFinalizationPayload(status.finalizationResult);
-          if (isFinalizationResultReady(status) && restoredFinalizeResult) {
-            finalizeResult = restoredFinalizeResult;
-          } else if (status.finalizationResult) {
+          if (resource?.status === 'succeeded') {
+            finalizeResult = projectFinalizationResourceToClientSnapshot(resource);
+            if (!finalizeResult) {
+              clearClientFinalizedProjection(expectedSessionIdentityRef.current);
+            }
+          } else if (resource) {
             clearClientFinalizedProjection(expectedSessionIdentityRef.current);
           }
         } catch (err) {
@@ -181,62 +162,18 @@ export default function ResultPage(): React.ReactElement {
           ...omitUndefinedProperties({ expectedSessionId: expectedSessionIdentityRef.current?.sessionId }),
         });
 
-        // Extract tally data
-        const tally = getRecordProperty(finalizeResult, 'tally');
-        const counts = tally ? getRecordProperty(tally, 'counts') : null;
-
-        if (counts && isRecord(counts)) {
-          const tallyData: TallyCounts = {
-            A: getNumberProperty(counts, 'A') ?? 0,
-            B: getNumberProperty(counts, 'B') ?? 0,
-            C: getNumberProperty(counts, 'C') ?? 0,
-            D: getNumberProperty(counts, 'D') ?? 0,
-            E: getNumberProperty(counts, 'E') ?? 0,
-          };
-          setTallyCounts(tallyData);
-        }
-
-        // Extract other result data
-        const total = tally
-          ? getNumberProperty(tally, 'totalVotes')
-          : getNumberProperty(finalizeResult, 'totalExpected');
-        if (total !== undefined) {
-          setTotalVotes(total);
-        }
+        setTallyCounts({ ...finalizeResult.tally.counts });
+        setTotalVotes(finalizeResult.tally.totalVotes);
 
         // Save additional knowledge data from result
-        const knowledgeUpdates: Record<string, unknown> = {};
-        const journal = getRecordProperty(finalizeResult, 'journal');
-
-        const missingSlots =
-          getNumberProperty(finalizeResult, 'missingSlots') ??
-          (journal ? getNumberProperty(journal, 'missingSlots') : undefined);
-        if (missingSlots !== undefined) knowledgeUpdates['missingSlots'] = missingSlots;
-
-        const invalidPresentedSlots =
-          getNumberProperty(finalizeResult, 'invalidPresentedSlots') ??
-          (journal ? getNumberProperty(journal, 'invalidPresentedSlots') : undefined);
-        if (invalidPresentedSlots !== undefined) knowledgeUpdates['invalidPresentedSlots'] = invalidPresentedSlots;
-
-        const rejectedRecords =
-          getNumberProperty(finalizeResult, 'rejectedRecords') ??
-          (journal ? getNumberProperty(journal, 'rejectedRecords') : undefined);
-        if (rejectedRecords !== undefined) knowledgeUpdates['rejectedRecords'] = rejectedRecords;
-
-        const validVotes =
-          getNumberProperty(finalizeResult, 'validVotes') ??
-          (journal ? getNumberProperty(journal, 'validVotes') : undefined);
-        if (validVotes !== undefined) knowledgeUpdates['validVotes'] = validVotes;
-
-        const excludedSlots =
-          getNumberProperty(finalizeResult, 'excludedSlots') ??
-          (journal ? getNumberProperty(journal, 'excludedSlots') : undefined);
-        if (excludedSlots !== undefined) knowledgeUpdates['excludedSlots'] = excludedSlots;
-
-        const totalExpected =
-          getNumberProperty(finalizeResult, 'totalExpected') ??
-          (journal ? getNumberProperty(journal, 'totalExpected') : undefined);
-        if (totalExpected !== undefined) knowledgeUpdates['totalExpected'] = totalExpected;
+        const knowledgeUpdates: Record<string, unknown> = {
+          missingSlots: finalizeResult.missingSlots,
+          invalidPresentedSlots: finalizeResult.invalidPresentedSlots,
+          rejectedRecords: finalizeResult.rejectedRecords,
+          validVotes: finalizeResult.journal.validVotes,
+          excludedSlots: finalizeResult.excludedSlots,
+          totalExpected: finalizeResult.totalExpected,
+        };
 
         // Set initial proof bundle status only if not already downloaded
         const currentBundleStatus = getKnowledgeValue('proofBundleStatus');
@@ -259,7 +196,7 @@ export default function ResultPage(): React.ReactElement {
     };
 
     void loadResult();
-  }, [getExpectedSession, handleFailClosedStatus, handleMissingSession, resolveSessionErrorMessage, t]);
+  }, [getExpectedSession, handleMissingSession, handleTerminalResource, resolveSessionErrorMessage, t]);
 
   const handleVerify = () => {
     if (isNavigating) return;
@@ -284,25 +221,15 @@ export default function ResultPage(): React.ReactElement {
     if (sessionId) {
       saveSessionDataForIdentity(expectedSessionIdentityRef.current, { verificationRequestedAt: Date.now() });
       if (shouldTriggerVerification) {
-        void apiFetch(resolveApiUrl('/api/verification/run'), {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...getSessionAuthHeaders(sessionData),
-          },
-          body: JSON.stringify({}),
-        })
-          .then((response) => {
-            if (!response.ok) {
-              console.warn('[ResultPage] Failed to start STARK verification', response.statusText);
-            }
-          })
-          .catch((err) => {
-            console.warn('[ResultPage] Failed to start STARK verification', err);
-          });
+        void runVerification(sessionData, finalizationSnapshot.finalizationId).catch((err) => {
+          console.warn('[ResultPage] Failed to start STARK verification', err);
+        });
       }
       if (shouldStartPolling) {
-        startStarkVerificationPolling({ sessionId });
+        startStarkVerificationPolling({
+          sessionId,
+          finalizationId: finalizationSnapshot.finalizationId,
+        });
       }
     }
 

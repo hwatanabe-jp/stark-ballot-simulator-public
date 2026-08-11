@@ -1,4 +1,4 @@
-import type { VoteData } from '@stark-ballot/domain/types/server';
+import type { StoredVoteRecord } from '@stark-ballot/domain/types/sessionRecords';
 import type { ScenarioTamperMode } from '@stark-ballot/domain/types/scenario';
 import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
 import { VOTE_CHOICES } from '@stark-ballot/domain/shared/constants';
@@ -11,8 +11,8 @@ export interface ScenarioSummary {
 }
 
 export interface ScenarioApplicationResult {
-  modifiedVotes: Map<number, VoteData>;
-  scenarioResult: ScenarioResult | null;
+  modifiedVotes: Map<number, StoredVoteRecord>;
+  scenarioResult: ScenarioResult<StoredVoteRecord> | null;
   scenariosApplied: string[];
   summary: ScenarioSummary;
   claimedCounts: Record<VoteChoice, number>;
@@ -21,7 +21,7 @@ export interface ScenarioApplicationResult {
 }
 
 export interface ScenarioApplicationOptions {
-  votes: Map<number, VoteData>;
+  votes: Map<number, StoredVoteRecord>;
   userVoteIndex: number;
   scenarios?: string[];
   simulateTampering?: boolean;

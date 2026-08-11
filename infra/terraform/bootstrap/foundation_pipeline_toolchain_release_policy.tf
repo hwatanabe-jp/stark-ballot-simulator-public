@@ -185,7 +185,7 @@ data "aws_iam_policy_document" "foundation_toolchain_release_update_accepted_poi
     condition {
       test     = "StringEqualsIfExists"
       variable = "s3:prefix"
-      values   = ["channels/develop/toolchain/accepted.json"]
+      values   = [local.deployment_shared_names.toolchainAcceptedPointerKey]
     }
   }
 }

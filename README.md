@@ -88,6 +88,7 @@ verification paths and must not be counted as production STARK proofs.
 - **Validation:** local schema validators and explicit response-shape tests
 - **Proof stack:** RISC Zero zkVM guest/host plus a standalone Rust `verifier-service`
 - **Image supply chain:** a dedicated verifier checks the selected digest-pinned prover image at app preflight and before runtime launch
+- **Session persistence:** lifecycle-owned identity, voting, finalization, verification-observation, and adapter-metadata records rather than one optional-field session aggregate
 - **Formal scope:** Lean 4 models for selected summary, count, bitmap, input-commitment, and guest-model contracts
 - **AWS path:** Terraform-managed static frontend, Hono/API, DynamoDB store, and async prover infrastructure
 - **Public docs:** mdBook in `public-book/`, published as the Public Specs
@@ -99,8 +100,9 @@ external services.
 
 ### Prerequisites
 
-- Node.js 24
-- Corepack with pnpm 11.15.1, as pinned by `packageManager`
+- Node.js 24.15 or later within the Node 24 release line (the supported range is bounded by
+  `engines.node`; `.nvmrc` selects the current Node 24 release for version managers)
+- Corepack, which resolves the exact pnpm release and integrity hash from the root `packageManager`
 - Rust 1.97.1 only if you want Rust builds or real zkVM flows
 - RISC Zero tooling only if you want real zkVM flows
 - Lean / `elan` only if you want to run the formal verification gate
@@ -108,8 +110,17 @@ external services.
 
 ### Install
 
+If you use nvm, select the checked-in Node major first:
+
+```bash
+nvm use
+```
+
+Then activate the root package-manager authority and install:
+
 ```bash
 corepack enable
+corepack install
 pnpm install --frozen-lockfile
 ```
 
@@ -136,20 +147,39 @@ Then open:
 http://localhost:3000
 ```
 
-`pnpm dev` starts the Vite frontend shell and supplies these browser-only development flags:
+`pnpm dev` starts the Vite frontend shell with the browser projection of the
+`local-demo` runtime profile:
 
-- `VITE_USE_MOCK_API=true`
-- `VITE_TURNSTILE_BYPASS=1`
+- `VITE_RUNTIME_PROFILE=local-demo`
+- browser mock API
+- Turnstile bypass eligibility for this local-only profile
 
-The `.env.local` copied from `.env.local.example` supplies the remaining local runtime defaults:
+The `.env.local` copied from `.env.local.example` aligns the server-side
+selector:
 
-- `USE_MOCK_STORE=true`
-- `USE_MOCK_ZKVM=true`
-- `RUNTIME_DEPLOYMENT_ENV=develop`
+- `RUNTIME_PROFILE=local-demo`
+- `VITE_RUNTIME_PROFILE=local-demo`
 
-These settings are for local development only. `pnpm build:ci` and the normal
-frontend build force target-safe browser flags before building and scanning
-`dist/`.
+One immutable server profile selects storage, proof evidence, finalization,
+artifact delivery, rate limiting, runtime adapters, and admission posture
+before adapters are created. The supported local profiles are:
+
+| Profile                   | Store  | Proof evidence               | Browser API | Intended use                 |
+| ------------------------- | ------ | ---------------------------- | ----------- | ---------------------------- |
+| `local-demo`              | memory | mock; no STARK proof         | mock        | `pnpm dev`                   |
+| `static-mock-e2e`         | file   | mock; no STARK proof         | same-origin | Playwright and mock CLI      |
+| `local-proof-development` | memory | fake development receipt     | same-origin | TypeScript/Rust contract run |
+| `local-proof-production`  | memory | production RISC Zero receipt | same-origin | local real-proof evidence    |
+
+Target runtime definitions use `target-aws-async` for production-proof,
+DynamoDB/S3/queue-backed execution. A develop-only
+`target-aws-async-quiesced` server profile keeps existing asynchronous work
+available while rejecting new public sessions; it is not a browser profile.
+Target definitions and deployment remain separately reviewed and authorized.
+
+These profiles are not interchangeable evidence labels: mock and development
+receipts do not prove production STARK correctness. `pnpm build:ci` selects
+the target-safe browser profile before building and scanning `dist/`.
 
 ## Local Checks
 
@@ -188,28 +218,40 @@ rzup install r0vm 3.0.6
 rzup install cargo-risczero 3.0.6
 ```
 
-Build the Rust components:
+Build the development-evidence Rust components before the real-host
+development flow:
+
+```bash
+pnpm build:zkvm:dev-mode
+pnpm build:verifier-service:dev-mode
+pnpm test:cli:real-dev
+```
+
+Build the production-feature components before generating a real STARK proof:
 
 ```bash
 pnpm build:zkvm
 pnpm build:verifier-service
-```
-
-Run the real zkVM development receipt flow:
-
-```bash
-pnpm test:cli:real-dev
-```
-
-Run a production STARK proof for the normal scenario:
-
-```bash
 pnpm test:cli:real-prod:s0
+```
+
+Run each Rust workspace's local quality gates through the semantic root
+proxies:
+
+```bash
+pnpm rust:verifier:format
+pnpm rust:verifier:clippy
+pnpm rust:verifier:test
+pnpm rust:zkvm:format
+pnpm rust:zkvm:clippy
+pnpm rust:zkvm:test
 ```
 
 Notes:
 
-- `test:cli:real-dev` uses `RISC0_DEV_MODE=1`; these receipts are not production STARK proofs.
+- `test:cli:real-dev` selects `local-proof-development`; the adapter invokes
+  the real Rust host in development-evidence mode, but its fake receipts are
+  not production STARK proofs.
 - `test:cli:real-prod:s0` generates a real STARK receipt and can take significantly longer than mock mode.
 - Proof-input, journal, bundle, verifier, or ImageID changes should be validated beyond mock mode before they are treated as complete.
 

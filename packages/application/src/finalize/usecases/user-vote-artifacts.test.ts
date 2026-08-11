@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
-import type { SessionData, VoteData } from '@stark-ballot/domain/types/server';
+import type { SessionVotingRecord, StoredVoteRecord } from '@stark-ballot/domain/types/sessionRecords';
 import {
   buildUserVoteArtifacts,
   UserVoteArtifactsUnavailableError,
@@ -8,7 +8,7 @@ import {
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 
 function createSessionWithBulletin(): {
-  session: SessionData;
+  voting: SessionVotingRecord;
   bulletinRoot: string;
   voteId: string;
   firstVoteRootAtCast: string;
@@ -20,7 +20,7 @@ function createSessionWithBulletin(): {
   const board = new SimpleBulletinBoard('0x' + '0'.repeat(64));
   const appendA = board.appendVote(voteIdA, 'a'.repeat(64));
   const appendB = board.appendVote(voteIdB, 'b'.repeat(64));
-  const votes = new Map<number, VoteData>([
+  const votes = new Map<number, StoredVoteRecord>([
     [
       0,
       {
@@ -28,7 +28,6 @@ function createSessionWithBulletin(): {
         vote: 'A',
         commit: '0x' + 'a'.repeat(64),
         rand: '0x' + '1'.repeat(64),
-        path: [],
         timestamp: now,
         rootAtCast: '0x' + appendA.rootAtAppend,
       },
@@ -40,21 +39,18 @@ function createSessionWithBulletin(): {
         vote: 'B',
         commit: '0x' + 'b'.repeat(64),
         rand: '0x' + '2'.repeat(64),
-        path: [],
         timestamp: now,
         rootAtCast: '0x' + appendB.rootAtAppend,
       },
     ],
   ]);
 
-  const session: SessionData = {
+  const voting: SessionVotingRecord = {
     sessionId: 'session-123',
     votes,
     botCount: 2,
-    finalized: false,
-    createdAt: now,
-    lastActivity: now,
-    userVoteIndex: 1,
+    lastActivityMs: now,
+    userParticipation: { status: 'cast', voteIndex: 1 },
     bulletin: board,
     bulletinRootHistory: [
       {
@@ -66,7 +62,7 @@ function createSessionWithBulletin(): {
   };
 
   return {
-    session,
+    voting,
     bulletinRoot: '0x' + board.getCurrentRoot(),
     voteId: voteIdB,
     firstVoteRootAtCast: '0x' + appendA.rootAtAppend,
@@ -76,7 +72,7 @@ function createSessionWithBulletin(): {
 
 describe('buildUserVoteArtifacts', () => {
   it('builds vote receipt and inclusion proof with normalized hex values', () => {
-    const { session, bulletinRoot, voteId, userVoteRootAtCast } = createSessionWithBulletin();
+    const { voting, bulletinRoot, voteId, userVoteRootAtCast } = createSessionWithBulletin();
     const journal = createTestJournal();
     const finalizationResult = {
       tally: {
@@ -92,7 +88,7 @@ describe('buildUserVoteArtifacts', () => {
       },
     };
 
-    const artifacts = buildUserVoteArtifacts({ session, finalizationResult });
+    const artifacts = buildUserVoteArtifacts({ voting, finalizationResult });
 
     expect(artifacts.voteReceipt.voteId).toBe(voteId);
     expect(artifacts.voteReceipt.commitment).toBe('0x' + 'b'.repeat(64));
@@ -104,12 +100,12 @@ describe('buildUserVoteArtifacts', () => {
   });
 
   it('fails closed when the exact cast-time bulletin root is missing for the user vote', () => {
-    const { session, bulletinRoot } = createSessionWithBulletin();
-    const userVote = session.votes.get(1);
+    const { voting, bulletinRoot } = createSessionWithBulletin();
+    const userVote = voting.votes.get(1);
     if (!userVote) {
       throw new Error('Expected user vote to exist');
     }
-    delete userVote.rootAtCast;
+    Reflect.deleteProperty(userVote, 'rootAtCast');
 
     const finalizationResult = {
       tally: {
@@ -125,14 +121,14 @@ describe('buildUserVoteArtifacts', () => {
       },
     };
 
-    expect(() => buildUserVoteArtifacts({ session, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
       'Exact cast-time bulletin root is missing for user vote',
     );
   });
 
   it('fails closed when the user vote index is missing', () => {
-    const { session, bulletinRoot } = createSessionWithBulletin();
-    delete session.userVoteIndex;
+    const { voting, bulletinRoot } = createSessionWithBulletin();
+    voting.userParticipation = { status: 'not_cast' };
 
     const finalizationResult = {
       tally: {
@@ -148,17 +144,17 @@ describe('buildUserVoteArtifacts', () => {
       },
     };
 
-    expect(() => buildUserVoteArtifacts({ session, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
       UserVoteArtifactsUnavailableError,
     );
-    expect(() => buildUserVoteArtifacts({ session, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
       'User vote index is missing for finalization',
     );
   });
 
   it('fails closed when the exact user vote record is missing', () => {
-    const { session, bulletinRoot } = createSessionWithBulletin();
-    session.votes.delete(1);
+    const { voting, bulletinRoot } = createSessionWithBulletin();
+    voting.votes.delete(1);
 
     const finalizationResult = {
       tally: {
@@ -174,21 +170,21 @@ describe('buildUserVoteArtifacts', () => {
       },
     };
 
-    expect(() => buildUserVoteArtifacts({ session, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
       UserVoteArtifactsUnavailableError,
     );
-    expect(() => buildUserVoteArtifacts({ session, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
       'Exact user vote record is missing for finalization',
     );
   });
 
   it('fails closed when the user vote identifier is missing', () => {
-    const { session, bulletinRoot } = createSessionWithBulletin();
-    const userVote = session.votes.get(1);
+    const { voting, bulletinRoot } = createSessionWithBulletin();
+    const userVote = voting.votes.get(1);
     if (!userVote) {
       throw new Error('Expected user vote to exist');
     }
-    delete userVote.voteId;
+    Reflect.deleteProperty(userVote, 'voteId');
 
     const finalizationResult = {
       tally: {
@@ -204,17 +200,17 @@ describe('buildUserVoteArtifacts', () => {
       },
     };
 
-    expect(() => buildUserVoteArtifacts({ session, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
       UserVoteArtifactsUnavailableError,
     );
-    expect(() => buildUserVoteArtifacts({ session, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
       'Vote identifier is missing for user vote',
     );
   });
 
   it('fails closed when bulletin inclusion proofs are unavailable for the user vote', () => {
-    const { session, bulletinRoot } = createSessionWithBulletin();
-    delete session.bulletin;
+    const { voting, bulletinRoot } = createSessionWithBulletin();
+    Reflect.deleteProperty(voting, 'bulletin');
 
     const finalizationResult = {
       tally: {
@@ -230,17 +226,17 @@ describe('buildUserVoteArtifacts', () => {
       },
     };
 
-    expect(() => buildUserVoteArtifacts({ session, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
       UserVoteArtifactsUnavailableError,
     );
-    expect(() => buildUserVoteArtifacts({ session, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
       'Bulletin inclusion proof function unavailable for user vote',
     );
   });
 
   it('fails closed when the stored cast root does not match the exact cast-time inclusion proof root', () => {
-    const { session, bulletinRoot, firstVoteRootAtCast } = createSessionWithBulletin();
-    const userVote = session.votes.get(1);
+    const { voting, bulletinRoot, firstVoteRootAtCast } = createSessionWithBulletin();
+    const userVote = voting.votes.get(1);
     if (!userVote) {
       throw new Error('Expected user vote to exist');
     }
@@ -260,7 +256,7 @@ describe('buildUserVoteArtifacts', () => {
       },
     };
 
-    expect(() => buildUserVoteArtifacts({ session, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
       'Stored cast root does not match exact cast-time inclusion proof root',
     );
   });

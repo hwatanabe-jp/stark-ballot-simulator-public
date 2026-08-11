@@ -35,13 +35,15 @@ describe('CLITestHelpers.generateBotVotes', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it('fails immediately when bot progress reports the current session is unavailable', async () => {
+    const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = extractUrl(input);
 
-      if (url === `${baseUrl}/api/session`) {
+      if (url === `${baseUrl}/api/sessions`) {
         return Promise.resolve(
           buildJsonResponse({
             data: {
@@ -49,12 +51,24 @@ describe('CLITestHelpers.generateBotVotes', () => {
               electionId: 'election-123',
               capabilityToken: 'capability-token-123',
             },
+            meta: { requestId: 'request-session' },
           }),
         );
       }
 
-      if (url === `${baseUrl}/api/progress`) {
-        return Promise.resolve(buildJsonResponse({ error: 'SESSION_NOT_FOUND' }, 404));
+      if (url === `${baseUrl}/api/sessions/session-123/progress`) {
+        return Promise.resolve(
+          buildJsonResponse(
+            {
+              error: {
+                code: 'SESSION_NOT_FOUND',
+                message: 'Session not found',
+              },
+              meta: { requestId: 'request-progress' },
+            },
+            404,
+          ),
+        );
       }
 
       throw new Error(`Unexpected fetch URL: ${url}`);
@@ -69,5 +83,6 @@ describe('CLITestHelpers.generateBotVotes', () => {
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(consoleLogSpy.mock.calls).toEqual([['[CLITest] Waiting for bot votes to be generated...']]);
   });
 });

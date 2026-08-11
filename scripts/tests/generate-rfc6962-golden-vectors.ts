@@ -2,10 +2,14 @@
 
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { format, resolveConfig } from 'prettier';
 import { buildRfc6962GoldenVectors } from './rfc6962-golden-vectors';
 
-const OUTPUT_PATH = path.resolve(__dirname, '../../zkvm/contract-core/testdata/rfc6962-ts-golden-vectors.json');
+const OUTPUT_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../zkvm/contract-core/testdata/rfc6962-ts-golden-vectors.json',
+);
 
 async function main(): Promise<void> {
   const prettierOptions = (await resolveConfig(OUTPUT_PATH)) ?? {};

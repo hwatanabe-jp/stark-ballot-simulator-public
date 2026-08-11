@@ -5,12 +5,7 @@ import {
   resolveNodeConfiguredSthSources,
 } from '@stark-ballot/runtime-config/env/nodeSthPublicRuntimeConfig';
 
-const trackedEnvKeys = [
-  'VITE_STH_SOURCES',
-  'VITE_STH_SOURCES',
-  'VITE_STH_MIN_MATCHES',
-  'VITE_STH_MIN_MATCHES',
-] as const;
+const trackedEnvKeys = ['VITE_STH_SOURCES', 'VITE_STH_MIN_MATCHES'] as const;
 
 type TrackedEnvKey = (typeof trackedEnvKeys)[number];
 
@@ -37,16 +32,19 @@ try {
   assert.deepEqual(resolveNodeConfiguredSthSources(), []);
   assert.equal(resolveNodeConfiguredSthMinMatches(), 2);
 
-  process.env['VITE_STH_SOURCES'] = '/api/sth, https://auditor.example/sth';
+  process.env['VITE_STH_SOURCES'] = '/api/sessions/:sessionId/bulletin/sth, https://auditor.example/sth';
   process.env['VITE_STH_MIN_MATCHES'] = '1';
-  assert.deepEqual(resolveNodeConfiguredSthSources(), ['/api/sth', 'https://auditor.example/sth']);
+  assert.deepEqual(resolveNodeConfiguredSthSources(), [
+    '/api/sessions/:sessionId/bulletin/sth',
+    'https://auditor.example/sth',
+  ]);
   assert.equal(resolveNodeConfiguredSthMinMatches(), 1);
 
   delete process.env['VITE_STH_SOURCES'];
   delete process.env['VITE_STH_MIN_MATCHES'];
-  process.env['VITE_STH_SOURCES'] = 'https://legacy-auditor.example/sth';
+  process.env['VITE_STH_SOURCES'] = 'https://auditor-only.example/sth';
   process.env['VITE_STH_MIN_MATCHES'] = '3';
-  assert.deepEqual(resolveNodeConfiguredSthSources(), ['https://legacy-auditor.example/sth']);
+  assert.deepEqual(resolveNodeConfiguredSthSources(), ['https://auditor-only.example/sth']);
   assert.equal(resolveNodeConfiguredSthMinMatches(), 3);
 } finally {
   restoreTrackedEnv();

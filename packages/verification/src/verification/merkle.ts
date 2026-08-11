@@ -1,5 +1,5 @@
 import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
-import { normalizeHexString } from '@stark-ballot/verification/shared/hex';
+import { normalizeHexString } from '@stark-ballot/crypto-primitives';
 
 export function verifyCTMerkleInclusion(
   commitment: string,

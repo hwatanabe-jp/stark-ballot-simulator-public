@@ -8,10 +8,8 @@
 
 import type {
   AuthenticatedBitmapTreeSize,
-  BitmapBitIndex,
   BitmapBitOffset,
   BitmapLeafIndex,
-  BitmapKind,
   BitmapProofResponse,
   BitmapVerificationResult,
 } from './bitmap-proof-types';
@@ -21,7 +19,6 @@ import {
   asBitmapBitOffset,
   asBitmapLeafIndex,
 } from './bitmap-proof-types';
-import { isRecord } from '@stark-ballot/verification/shared/guards';
 import {
   buildAuthenticatedBitmapProofContext,
   verifyBitmapMerkleProof,
@@ -33,20 +30,19 @@ import {
 } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
-export interface BitmapProofRequest {
-  bitIndex: BitmapBitIndex;
-  kind: BitmapKind;
-}
-
-export type BitmapProofProvider = (request: BitmapProofRequest) => Promise<BitmapProofResponse>;
-
 /**
  * Options for bitmap verification
  */
 export interface BitmapVerificationOptions {
-  /** Runtime adapter that returns proof materials for the requested bitmap bit. */
-  proofProvider?: BitmapProofProvider;
+  /** Proof materials admitted by the runtime boundary. */
+  proof: BitmapProofResponse;
   /** Receipt-authenticated logical bitmap length used to bind proof shape. */
+  treeSize: AuthenticatedBitmapTreeSize;
+}
+
+export interface ExplainedBitmapVerificationOptions {
+  includedProof: BitmapProofResponse;
+  seenProof?: BitmapProofResponse;
   treeSize: AuthenticatedBitmapTreeSize;
 }
 
@@ -101,7 +97,7 @@ export function extractBitFromChunk(chunkHex: string, bitOffset: number): boolea
 /**
  * Verify a bitmap Merkle proof on the client side
  *
- * @param proofResponse - The proof response from the server
+ * @param proofResponse - Proof material admitted by the runtime boundary
  * @param bitIndex - The bit index being verified
  * @param expectedRoot - The expected Merkle root from the receipt
  * @returns Verification result with extracted bit value
@@ -139,19 +135,19 @@ function safeBitOffsetForResult(bitIndex: number): BitmapBitOffset {
 }
 
 /**
- * Verify if my vote was counted by fetching and verifying bitmap proof
+ * Verify whether a vote was counted from admitted bitmap proof material
  *
  * @param myIndex - My vote index (bulletin index)
  * @param includedBitmapRoot - The bitmap root from the zkVM receipt
  * @param options - Verification options
  * @returns Extended verification result with privacy warning
  */
-export async function verifyMyVoteWasCounted(
+export function verifyMyVoteWasCounted(
   myIndex: number,
   includedBitmapRoot: string,
   options: BitmapVerificationOptions,
-): Promise<ExtendedVerificationResult> {
-  const result = await verifyBitmapByKind(myIndex, includedBitmapRoot, 'included', options);
+): ExtendedVerificationResult {
+  const result = verifyAdmittedBitmapProof(myIndex, includedBitmapRoot, options.proof, options.treeSize);
 
   return {
     ...result,
@@ -162,15 +158,18 @@ export async function verifyMyVoteWasCounted(
   };
 }
 
-export async function explainVoteInclusionStatus(
+export function explainVoteInclusionStatus(
   myIndex: number,
   input: {
     includedBitmapRoot: string;
     seenBitmapRoot?: string;
   },
-  options: BitmapVerificationOptions,
-): Promise<ExplainedVoteInclusionResult> {
-  const includedResult = await verifyMyVoteWasCounted(myIndex, input.includedBitmapRoot, options);
+  options: ExplainedBitmapVerificationOptions,
+): ExplainedVoteInclusionResult {
+  const includedResult = verifyMyVoteWasCounted(myIndex, input.includedBitmapRoot, {
+    proof: options.includedProof,
+    treeSize: options.treeSize,
+  });
   if (!includedResult.valid) {
     return {
       ...includedResult,
@@ -193,15 +192,13 @@ export async function explainVoteInclusionStatus(
     };
   }
 
-  let seenResult: BitmapVerificationResult;
-  try {
-    seenResult = await verifyBitmapByKind(myIndex, input.seenBitmapRoot, 'seen', options);
-  } catch {
+  if (!options.seenProof) {
     return {
       ...includedResult,
       statusDetail: 'unknown_excluded',
     };
   }
+  const seenResult = verifyAdmittedBitmapProof(myIndex, input.seenBitmapRoot, options.seenProof, options.treeSize);
   return {
     ...includedResult,
     valid: includedResult.valid,
@@ -214,44 +211,14 @@ export async function explainVoteInclusionStatus(
   };
 }
 
-async function verifyBitmapByKind(
+function verifyAdmittedBitmapProof(
   myIndex: number,
   expectedRoot: string,
-  bitmapKind: BitmapKind,
-  options: BitmapVerificationOptions,
-): Promise<BitmapVerificationResult> {
-  if (!options.proofProvider) {
-    throw new Error('Bitmap proof provider is required');
-  }
-
+  proof: BitmapProofResponse,
+  treeSizeValue: AuthenticatedBitmapTreeSize,
+): BitmapVerificationResult {
   const bitIndex = asBitmapBitIndex(myIndex);
-  const treeSize = asAuthenticatedBitmapTreeSize(options.treeSize);
-  const proofResponse = await options.proofProvider({ bitIndex, kind: bitmapKind });
-  if (!isBitmapProofResponse(proofResponse)) {
-    throw new Error('Invalid bitmap proof response');
-  }
+  const treeSize = asAuthenticatedBitmapTreeSize(treeSizeValue);
 
-  // Verify the proof
-  return verifyBitmapProof(proofResponse, myIndex, expectedRoot, { treeSize });
-}
-
-export function isBitmapProofResponse(value: unknown): value is BitmapProofResponse {
-  if (!isRecord(value)) {
-    return false;
-  }
-  if (typeof value['leafChunk'] !== 'string') {
-    return false;
-  }
-  if (!Array.isArray(value['auditPath'])) {
-    return false;
-  }
-  return value['auditPath'].every((node) => {
-    if (!isRecord(node)) {
-      return false;
-    }
-    if (typeof node['hash'] !== 'string') {
-      return false;
-    }
-    return node['position'] === 'left' || node['position'] === 'right';
-  });
+  return verifyBitmapProof(proof, bitIndex, expectedRoot, { treeSize });
 }

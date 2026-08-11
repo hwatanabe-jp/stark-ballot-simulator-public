@@ -1,60 +1,78 @@
 import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
 import type { FinalizationStore } from '@stark-ballot/application/finalize/finalization-store';
-import type { FinalizationScenarioContext, SessionData } from '@stark-ballot/domain/types/server';
+import {
+  parseSessionIdentityRecord,
+  type SessionIdentityRecord,
+  type SessionVotingRecord,
+} from '@stark-ballot/domain/types/sessionRecords';
 import type { FinalizationQueue } from '@stark-ballot/application/finalize/finalization-queue';
 import type { ProofBundleService } from '@stark-ballot/application/finalize/proof-bundle-service';
-import type { FinalizeSyncDependencies } from './finalize-sync';
+import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
 import type { ZkVMExecutor } from '@stark-ballot/application/finalize/zkvm-executor';
 import { BOT_COUNT } from '@stark-ballot/domain/shared/constants';
-import { ApplicationErrorCode } from '@stark-ballot/application/finalize/finalization-types';
-import { createElectionId } from '@stark-ballot/zkvm-contract/zkvm/types';
+import {
+  ApplicationErrorCode,
+  type FinalizationScenarioContext,
+} from '@stark-ballot/application/finalize/finalization-types';
+import type { VerificationResultStore } from '@stark-ballot/application/finalize/finalization-result-store';
 import { buildZkVMInputFromSession, CtProofUnavailableError } from '@stark-ballot/application/zkvm-input/input-builder';
 import { applyFinalizeScenarios } from '@stark-ballot/domain/finalize/scenario-application';
 import { resolveElectionConfigForManifest } from '@stark-ballot/verification/public-audit-artifacts';
-import { buildUnsupportedCurrentArtifactDetails, isCurrentContractGeneration } from '@stark-ballot/domain/contract';
 import { finalizeAsync, type PersistAsyncProverInput } from './finalize-async';
 import { finalizeSync } from './finalize-sync';
+import { generateFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type { FinalizeScenarioContext, FinalizeSessionError, FinalizeSessionOutcome, Result } from './types';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
-export interface FinalizeSessionInput {
+interface FinalizeSessionInputBase {
   sessionId: string;
-  session: SessionData;
+  identity: SessionIdentityRecord;
+  voting: SessionVotingRecord;
+  currentFinalization: FinalizationRecord | null;
   scenarioId: string;
   expectedImageId: string;
-  asyncMode: boolean;
-  queueUrl?: string;
   publishMaxAttempts: number;
   allowDevMode: boolean;
   debugFinalize: boolean;
   debugFileStore?: boolean;
-  targetAwsRuntime?: boolean;
   executorModeLabel?: string;
   bitmapProofSource?: 'mock' | 'real';
 }
 
+export type FinalizeSessionInput = FinalizeSessionInputBase &
+  ({ finalizationMode: { kind: 'sync' } } | { finalizationMode: { kind: 'async'; inputSource: 'inline' | 's3' } });
+
 export interface FinalizeSessionDependencies {
-  store: VoteStore & FinalizationStore;
+  store: VoteStore & FinalizationStore & VerificationResultStore;
   finalizationQueue: FinalizationQueue;
   proofBundleService: ProofBundleService;
   getExecutor: () => Promise<ZkVMExecutor>;
   now?: () => number;
   persistAsyncProverInput?: PersistAsyncProverInput;
-  assertAdmissibleFinalizationArtifactPatch?: FinalizeSyncDependencies['assertAdmissibleFinalizationArtifactPatch'];
 }
 
 export async function finalizeSessionUsecase(
   input: FinalizeSessionInput,
   deps: FinalizeSessionDependencies,
 ): Promise<Result<FinalizeSessionOutcome, FinalizeSessionError>> {
-  const session = input.session;
+  const { identity, voting } = input;
 
-  if (!session.electionId) {
-    session.electionId = createElectionId();
-    await deps.store.updateSession(input.sessionId, { electionId: session.electionId });
+  if (
+    parseSessionIdentityRecord(identity) === undefined ||
+    identity.sessionId !== input.sessionId ||
+    voting.sessionId !== input.sessionId
+  ) {
+    return {
+      ok: false,
+      error: {
+        kind: 'api',
+        code: ApplicationErrorCode.INTERNAL_ERROR,
+        details: { details: 'Session identity is missing or invalid' },
+      },
+    };
   }
 
-  if (session.finalized) {
+  if (input.currentFinalization?.state.status === 'succeeded') {
     return {
       ok: false,
       error: {
@@ -64,7 +82,7 @@ export async function finalizeSessionUsecase(
     };
   }
 
-  if (session.userVoteIndex === undefined) {
+  if (voting.userParticipation.status !== 'cast') {
     return {
       ok: false,
       error: {
@@ -73,8 +91,9 @@ export async function finalizeSessionUsecase(
       },
     };
   }
+  const userVoteIndex = voting.userParticipation.voteIndex;
 
-  if (session.botCount < BOT_COUNT) {
+  if (voting.botCount < BOT_COUNT) {
     return {
       ok: false,
       error: {
@@ -84,33 +103,16 @@ export async function finalizeSessionUsecase(
     };
   }
 
-  const sessionContractGeneration = session.contractGeneration;
-  if (typeof sessionContractGeneration !== 'string' || !isCurrentContractGeneration(sessionContractGeneration)) {
-    return {
-      ok: false,
-      error: {
-        kind: 'api',
-        code: ApplicationErrorCode.UNSUPPORTED_CURRENT_ARTIFACT,
-        details: {
-          details: 'Session no longer matches the current contract generation',
-          artifactState: 'unsupported_current_artifact',
-          ...buildUnsupportedCurrentArtifactDetails(session, sessionContractGeneration ?? null),
-        },
-      },
-    };
-  }
-  const contractGeneration = sessionContractGeneration;
-
   const scenarios = input.scenarioId === 'S0' ? [] : [input.scenarioId];
 
   let scenarioContext: FinalizeScenarioContext;
   let zkvmInput: ReturnType<typeof buildZkVMInputFromSession>;
-  let authoritativeElectionConfig: NonNullable<SessionData['electionConfig']>;
+  let authoritativeElectionConfig: SessionIdentityRecord['electionConfig'];
 
   try {
     const scenarioApplication = applyFinalizeScenarios({
-      votes: session.votes,
-      userVoteIndex: session.userVoteIndex,
+      votes: voting.votes,
+      userVoteIndex,
       scenarios,
     });
 
@@ -121,7 +123,7 @@ export async function finalizeSessionUsecase(
         ? Array.from(
             new Set(
               scenarioResult.changes
-                .filter((change) => change.voteIndex !== session.userVoteIndex)
+                .filter((change) => change.voteIndex !== userVoteIndex)
                 .map((change) => change.voteIndex),
             ),
           )
@@ -138,20 +140,22 @@ export async function finalizeSessionUsecase(
       ...omitUndefinedProperties({ affectedBotIds: affectedBotIds }),
     };
 
-    const votesForInput =
-      scenarioApplication.tamperMode === 'input' ? scenarioApplication.modifiedVotes : session.votes;
-    const sessionForInput: SessionData = {
-      ...session,
+    const votesForInput = scenarioApplication.tamperMode === 'input' ? scenarioApplication.modifiedVotes : voting.votes;
+    const votingForInput: SessionVotingRecord = {
+      ...voting,
       votes: votesForInput,
     };
 
     // Exclusion scenarios intentionally preserve original bulletin indices so
     // the guest can observe missing slots against the full bulletin tree.
-    zkvmInput = buildZkVMInputFromSession(sessionForInput, {
-      allowSparseVoteIndices: scenarioApplication.tamperMode === 'input',
-    });
+    zkvmInput = buildZkVMInputFromSession(
+      { identity, voting: votingForInput },
+      {
+        allowSparseVoteIndices: scenarioApplication.tamperMode === 'input',
+      },
+    );
     authoritativeElectionConfig = resolveElectionConfigForManifest({
-      ...omitUndefinedProperties({ electionConfig: sessionForInput.electionConfig }),
+      electionConfig: identity.electionConfig,
       electionConfigHash: zkvmInput.electionConfigHash,
       totalExpected: zkvmInput.totalExpected,
     });
@@ -196,34 +200,24 @@ export async function finalizeSessionUsecase(
       ...(scenarioContext.affectedBotIds ? { affectedBotIds: scenarioContext.affectedBotIds } : {}),
     },
   };
+  const queuedAtMs = (deps.now ?? Date.now)();
+  const finalizationId = generateFinalizationId(queuedAtMs);
 
-  if (input.asyncMode) {
-    if (!input.queueUrl) {
-      return {
-        ok: false,
-        error: {
-          kind: 'api',
-          code: ApplicationErrorCode.INTERNAL_ERROR,
-          details: { details: 'PROVER_WORK_QUEUE_URL is not configured' },
-        },
-      };
-    }
-
+  if (input.finalizationMode.kind === 'async') {
     let asyncResult: Awaited<ReturnType<typeof finalizeAsync>>;
     try {
       asyncResult = await finalizeAsync(
         {
           sessionId: input.sessionId,
-          session,
-          contractGeneration,
+          finalizationId,
+          queuedAtMs,
           zkvmInput,
           ...omitUndefinedProperties({ electionConfig: authoritativeElectionConfig }),
           expectedImageId: input.expectedImageId,
           scenarios: scenarioContext.scenariosApplied,
           scenarioContext: scenarioStorageContext,
-          queueUrl: input.queueUrl,
           publishMaxAttempts: input.publishMaxAttempts,
-          targetAwsRuntime: input.targetAwsRuntime ?? false,
+          inputSource: input.finalizationMode.inputSource,
         },
         {
           store: deps.store,
@@ -262,8 +256,9 @@ export async function finalizeSessionUsecase(
   const syncResult = await finalizeSync(
     {
       sessionId: input.sessionId,
-      session,
-      contractGeneration,
+      finalizationId,
+      queuedAtMs,
+      voting,
       zkvmInput,
       ...omitUndefinedProperties({ electionConfig: authoritativeElectionConfig }),
       expectedImageId: input.expectedImageId,
@@ -281,9 +276,6 @@ export async function finalizeSessionUsecase(
       getExecutor: deps.getExecutor,
       proofBundleService: deps.proofBundleService,
       ...omitUndefinedProperties({ now: deps.now }),
-      ...omitUndefinedProperties({
-        assertAdmissibleFinalizationArtifactPatch: deps.assertAdmissibleFinalizationArtifactPatch,
-      }),
     },
   );
 

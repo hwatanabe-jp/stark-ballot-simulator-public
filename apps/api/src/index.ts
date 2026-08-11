@@ -1,2 +1,2 @@
 export { createHonoApp } from './server/api/routes/hono';
-export type { ApiContext, ApiParams } from './server/api/context';
+export type { ApiHandlerArguments, ApiHandlerContext } from './server/api/context';

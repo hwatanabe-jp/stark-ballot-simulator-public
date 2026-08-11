@@ -1,0 +1,20 @@
+{
+  "requiredInAllModes": [
+    "public-input.json",
+    "election-manifest.json",
+    "close-statement.json",
+    "receipt.json",
+    "journal.json"
+  ],
+  "modes": {
+    "sync": {
+      "required": ["metadata.json"],
+      "optional": ["sth.json", "consistency-proof.json"]
+    },
+    "async": {
+      "required": [],
+      "optional": []
+    }
+  },
+  "neverPublic": ["input.json", "verification.json", "included-bitmap.json", "seen-bitmap.json"]
+}

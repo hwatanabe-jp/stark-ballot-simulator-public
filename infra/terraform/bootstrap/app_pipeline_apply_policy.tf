@@ -4,6 +4,17 @@ data "aws_iam_policy_document" "app_terraform_apply" {
   source_policy_documents = [data.aws_iam_policy_document.app_terraform_plan[0].json]
 
   statement {
+    sid    = "UseRetainedApprovalEvidenceForAppApply"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+      "s3:PutObject",
+    ]
+    resources = [local.app_retained_approval_evidence_objects_arn]
+  }
+
+  statement {
     sid       = "ReadAppApprovalActionExecution"
     effect    = "Allow"
     actions   = ["codepipeline:ListActionExecutions"]
@@ -73,7 +84,7 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
   }
 
   statement {
-    sid    = "ManageTargetInvariantNotificationTopic"
+    sid    = "ManageTargetObservabilityNotificationTopics"
     effect = "Allow"
 
     actions = [
@@ -87,11 +98,11 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
       "sns:TagResource",
       "sns:UntagResource",
     ]
-    resources = [local.app_invariant_sns_topic_arn]
+    resources = local.app_observability_sns_topic_arns
   }
 
   statement {
-    sid    = "ManageTargetInvariantEmailSubscription"
+    sid    = "ManageTargetObservabilityEmailSubscriptions"
     effect = "Allow"
 
     actions = [
@@ -198,13 +209,6 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
   }
 
   statement {
-    sid       = "ManageTargetSemaphoreJanitorEvents"
-    effect    = "Allow"
-    actions   = ["events:*"]
-    resources = [local.app_target_event_rule_arn_pattern]
-  }
-
-  statement {
     effect    = "Allow"
     actions   = ["states:ValidateStateMachineDefinition"]
     resources = ["*"]
@@ -277,6 +281,49 @@ resource "aws_iam_role_policy_attachment" "app_terraform_apply_runtime" {
 
   role       = aws_iam_role.app_terraform_apply[0].name
   policy_arn = aws_iam_policy.app_terraform_apply_runtime[0].arn
+}
+
+data "aws_iam_policy_document" "app_terraform_apply_events" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  statement {
+    sid       = "ManageTargetAppEventRules"
+    effect    = "Allow"
+    actions   = ["events:*"]
+    resources = local.app_target_event_rule_arns
+  }
+}
+
+resource "aws_iam_policy" "app_terraform_apply_events" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  depends_on = [
+    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
+    terraform_data.bootstrap_apply_authorization_propagation,
+  ]
+
+  name   = local.app_terraform_apply_events_policy_name
+  policy = data.aws_iam_policy_document.app_terraform_apply_events[0].json
+  tags   = local.common_tags
+}
+
+check "app_terraform_apply_events_policy_size" {
+  assert {
+    condition = (
+      !local.app_pipeline_enabled
+      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.app_terraform_apply_events[0].json))) <= 6144, false)
+    )
+    error_message = "The app Terraform apply EventBridge managed policy must remain within the IAM 6,144-character quota."
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "app_terraform_apply_events" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
+
+  role       = aws_iam_role.app_terraform_apply[0].name
+  policy_arn = aws_iam_policy.app_terraform_apply_events[0].arn
 }
 
 data "aws_iam_policy_document" "app_terraform_apply_runtime_kms" {

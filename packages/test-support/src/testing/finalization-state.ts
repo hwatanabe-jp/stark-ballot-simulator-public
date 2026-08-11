@@ -1,35 +1,35 @@
 export type TestFinalizationState =
   | {
       status: 'pending';
-      executionId: string;
-      queuedAt: number;
+      finalizationId: string;
+      queuedAtMs: number;
       stepFunctionsArn?: string;
     }
   | {
       status: 'running';
-      executionId: string;
-      queuedAt: number;
-      startedAt: number;
+      finalizationId: string;
+      queuedAtMs: number;
+      startedAtMs: number;
       stepFunctionsArn?: string;
     }
   | {
       status: 'succeeded';
-      executionId: string;
-      queuedAt: number;
-      startedAt: number;
-      completedAt: number;
+      finalizationId: string;
+      queuedAtMs: number;
+      startedAtMs: number;
+      completedAtMs: number;
       stepFunctionsArn?: string;
       bundleMetadata?: {
         s3BundleKey?: string | undefined;
-        s3UploadedAt?: string | undefined;
+        s3UploadedAtMs?: number | undefined;
       };
     }
   | {
       status: 'failed';
-      executionId: string;
-      queuedAt: number;
-      startedAt?: number;
-      failedAt: number;
+      finalizationId: string;
+      queuedAtMs: number;
+      startedAtMs?: number;
+      failedAtMs: number;
       error: {
         code: string;
         message: string;
@@ -39,9 +39,9 @@ export type TestFinalizationState =
     }
   | {
       status: 'timeout';
-      executionId: string;
-      queuedAt: number;
-      startedAt?: number;
-      timeoutAt: number;
+      finalizationId: string;
+      queuedAtMs: number;
+      startedAtMs?: number;
+      timeoutAtMs: number;
       stepFunctionsArn?: string;
     };

@@ -123,6 +123,8 @@ data "aws_iam_policy_document" "foundation_prover_release_candidate_build" {
 
     actions = [
       "ecr:GetAuthorizationToken",
+      "ecr-public:GetAuthorizationToken",
+      "sts:GetServiceBearerToken",
     ]
     resources = ["*"]
   }
@@ -260,7 +262,7 @@ data "aws_iam_policy_document" "foundation_prover_release_update_accepted_pointe
     condition {
       test     = "StringEqualsIfExists"
       variable = "s3:prefix"
-      values   = ["channels/develop/prover/accepted.json"]
+      values   = [local.deployment_shared_names.proverAcceptedPointerKey]
     }
   }
 }

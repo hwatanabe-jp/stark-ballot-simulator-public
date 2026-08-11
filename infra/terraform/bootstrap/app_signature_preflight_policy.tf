@@ -3,6 +3,17 @@ data "aws_iam_policy_document" "app_signature_preflight_plan" {
   source_policy_documents = [data.aws_iam_policy_document.app_codebuild_common[0].json]
 
   statement {
+    sid    = "UseRetainedVerifierPackageForPreflightPlan"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+      "s3:PutObject",
+    ]
+    resources = [local.app_retained_lambda_artifact_objects_arn]
+  }
+
+  statement {
     sid    = "ReadCurrentAcceptedProverForVerifierOnlyPlan"
     effect = "Allow"
     actions = [
@@ -45,8 +56,8 @@ data "aws_iam_policy_document" "app_signature_preflight_plan" {
       test     = "StringLike"
       variable = "s3:prefix"
       values = [
-        "stark-ballot-simulator/stark-dev/develop/app/",
-        "stark-ballot-simulator/stark-dev/develop/app/*",
+        "${dirname(local.app_state_backend_key)}/",
+        "${dirname(local.app_state_backend_key)}/*",
       ]
     }
   }
@@ -309,21 +320,15 @@ data "aws_iam_policy_document" "app_signature_preflight_invoker" {
       "s3:GetObjectVersion",
     ]
     resources = [
-      # CodePipeline shortens SourceOutput in generated S3 keys. SigApply is
-      # deliberately short so its reviewed-apply artifact remains distinct.
-      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/*/SourceOut*/*",
-      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/*/SigApply/*",
+      "${aws_s3_bucket.app_pipeline_execution_artifacts[0].arn}/*",
     ]
   }
 
   statement {
-    sid     = "WriteSignaturePreflightOutputArtifact"
-    effect  = "Allow"
-    actions = ["s3:PutObject"]
-    resources = [
-      # CodePipeline shortens VerifierPreflightVerifyOutput in generated S3 keys.
-      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/*/VerifierPr*/*",
-    ]
+    sid       = "WriteSignaturePreflightOutputArtifact"
+    effect    = "Allow"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.app_pipeline_execution_artifacts[0].arn}/*"]
   }
 
   statement {
@@ -334,7 +339,7 @@ data "aws_iam_policy_document" "app_signature_preflight_invoker" {
       "logs:PutLogEvents",
     ]
     resources = [
-      "${aws_cloudwatch_log_group.app_pipeline_codebuild[local.app_signature_preflight_invoke_project_name].arn}:*",
+      "${module.app_pipeline_codebuild_log_groups.log_groups[local.app_signature_preflight_invoke_project_name].arn}:*",
     ]
   }
 

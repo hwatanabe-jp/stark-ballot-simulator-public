@@ -8,43 +8,54 @@ import path from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 
-import { createZkVMExecutor } from '@stark-ballot/node-adapters/zkvm/executor-factory';
+import { createZkVMExecutor, type ZkVMProofProfile } from '@stark-ballot/node-adapters/zkvm/executor-factory';
 import { verifyCTMerkleInclusion } from '@stark-ballot/verification/merkle';
 import type { ZkVMInput, ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
 import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
 import { BOT_COUNT } from '@stark-ballot/domain/shared/constants';
 import { Agent, setGlobalDispatcher } from 'undici';
-import type { TestFinalizationState as FinalizationState } from '@stark-ballot/test-support/testing/finalization-state';
-import type { VerificationReport, VerificationStatus } from '@stark-ballot/verification/shared/types';
+import type { TestFinalizationState } from '@stark-ballot/test-support/testing/finalization-state';
+import type { VerificationStatus } from '@stark-ballot/verification/shared/types';
 import { invokeVerifierService } from '@stark-ballot/node-adapters/verifier-service-client';
 import { loadPublicImageIdMapping } from '@stark-ballot/node-adapters/image-id-mapping';
 import { resolveExpectedImageId } from '@stark-ballot/verification/image-id';
-import { readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
-import type { VerificationCheck } from '@stark-ballot/verification/checks';
+import { getApiErrorCode, readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
+import { getVerificationStepInputs, type VerificationCheck } from '@stark-ballot/verification/checks';
+import {
+  deriveVerificationPresentationPolicy,
+  type VerificationPresentationPolicyResult,
+} from '@stark-ballot/verification/presentation-policy';
 import {
   getNumberProperty,
   getRecordProperty,
   getStringArrayProperty,
   getStringProperty,
   isRecord,
-} from '@stark-ballot/domain/utils/guards';
+} from '@stark-ballot/validation/unknown-value-guards';
+import { isSessionUnavailableErrorCode } from '@stark-ballot/api-contract/errors/apiErrorGuards';
+import { API_ROUTES, buildApiRouteUrl } from '@stark-ballot/api-contract/routes';
 import {
-  isFailClosedFinalizationErrorCode,
-  isSessionUnavailableErrorCode,
-} from '@stark-ballot/api-contract/errors/apiErrorGuards';
-import {
-  fetchFinalizationStatus,
-  FinalizationStatusError,
-  type FinalizationStatusResponse,
-} from './finalization-status-client';
+  FinalizationResponseSchema,
+  type FinalizationResource,
+} from '@stark-ballot/api-contract/schemas/finalizations';
+import type {
+  AvailableVerificationResource,
+  CurrentZkVMJournal as ContractCurrentZkVMJournal,
+  PublicVerificationReport,
+} from '@stark-ballot/api-contract/schemas/verification';
+import { VerificationResourceResponseSchema } from '@stark-ballot/api-contract/schemas/verification';
+import { fetchCurrentFinalization, CurrentFinalizationError } from './finalization-status-client';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import { pollUntil } from '@stark-ballot/test-support/testing/poll';
 
 type VerificationStepStatus = 'pending' | 'running' | 'success' | 'failed' | 'not_run';
 type VerificationStep = {
   id: string;
   status: VerificationStepStatus;
+  inputs?: string[];
+  error?: string;
 };
 
 const DEFAULT_HEADERS_TIMEOUT_MS = 0; // 0 disables timeout in undici
@@ -64,14 +75,13 @@ try {
   // setGlobalDispatcher can only be called once per process; ignore if already set.
 }
 
-function getFinalizeTimeoutMs(): number {
+function getFinalizeTimeoutMs(proofProfile?: ZkVMProofProfile): number {
   const explicit = Number(process.env['CLI_FINALIZE_TIMEOUT_MS']);
   if (Number.isFinite(explicit) && explicit > 0) {
     return explicit;
   }
 
-  const isRealZkVM = process.env['USE_MOCK_ZKVM'] === 'false';
-  return isRealZkVM ? 15 * 60 * 1000 : 2 * 60 * 1000;
+  return proofProfile?.executor === 'mock' ? 2 * 60 * 1000 : 15 * 60 * 1000;
 }
 
 const POLL_MIN_DELAY_MS = 750;
@@ -107,8 +117,8 @@ function resolveOperatorAuthHeaders(env: NodeJS.ProcessEnv = process.env): Recor
     throw new Error(`${OPERATOR_AUTH_HEADER_NAME_ENV} must be a valid HTTP header name.`);
   }
   const normalized = headerName.toLowerCase();
-  if (normalized === 'x-session-id' || normalized === SESSION_CAPABILITY_HEADER.toLowerCase()) {
-    throw new Error(`${OPERATOR_AUTH_HEADER_NAME_ENV} must not override session capability headers.`);
+  if (normalized === SESSION_CAPABILITY_HEADER.toLowerCase()) {
+    throw new Error(`${OPERATOR_AUTH_HEADER_NAME_ENV} must not override the session capability header.`);
   }
   return { [headerName]: headerValue };
 }
@@ -123,14 +133,6 @@ function readOptionalTurnstileToken(
   }
   const shared = env['STARK_BALLOT_TURNSTILE_TOKEN']?.trim();
   return shared && shared.length > 0 ? shared : undefined;
-}
-
-export interface SessionData {
-  sessionId: string;
-  userVoteIndex?: number;
-  botCount: number;
-  finalized: boolean;
-  votes: Map<number, unknown>;
 }
 
 export interface VoteResult {
@@ -156,7 +158,7 @@ export interface TestResult {
     excludedSlots?: number;
     tamperDetected?: boolean;
     verificationStatus?: VerificationStatus;
-    verificationExecutionId?: string;
+    finalizationId?: string;
     verificationBundleDelivery?: VerificationBundleDelivery;
     verificationHash?: string;
     verificationReportHash?: string;
@@ -164,16 +166,15 @@ export interface TestResult {
     bundleExtractionDir?: string;
     errors?: string[];
     finalizationMode?: 'sync' | 'async';
-    finalizationExecutionId?: string;
     finalizationHistory?: FinalizationStatusSample[];
-    finalizationStepFunctions?: FinalizationStatusResponse['stepFunctions'];
+    finalizationRuntimeDiagnostics?: FinalizationResource['runtimeDiagnostics'];
   };
 }
 
 export interface FinalizationStatusSample {
-  state: FinalizationState | null;
+  state: FinalizationResource | TestFinalizationState | null;
   receivedAt: number;
-  stepFunctions: FinalizationStatusResponse['stepFunctions'];
+  runtimeDiagnostics: FinalizationResource['runtimeDiagnostics'] | null;
 }
 
 export interface FinalizeScenarioData {
@@ -214,7 +215,7 @@ export interface FinalizeScenarioData {
   receipt?: unknown;
   receiptRaw?: unknown;
   receiptEncoded?: string;
-  journal?: ZkVMJournal;
+  journal?: ZkVMJournal | ContractCurrentZkVMJournal;
   imageId?: string;
   proof?: {
     tamperDetected?: boolean;
@@ -228,11 +229,9 @@ export interface FinalizeScenarioData {
   verificationStatus?: VerificationStatus;
   verificationSteps?: VerificationStep[];
   verificationChecks?: VerificationCheck[];
-  verificationReport?: VerificationReport;
-  verificationExecutionId?: string;
-  verificationResult?: {
-    executionId?: string;
-  };
+  verificationReport?: PublicVerificationReport;
+  presentationPolicy?: VerificationPresentationPolicyResult;
+  finalizationId?: string;
   debug?: {
     verifiedTally?: number[];
     missingSlots?: number;
@@ -252,10 +251,10 @@ export interface FinalizeWithScenariosResult {
   data: FinalizeScenarioData;
   meta?: {
     mode: 'sync' | 'async';
-    executionId?: string;
-    finalizationState?: FinalizationState | null;
+    finalizationId: string;
+    finalizationState: FinalizationResource;
     finalizationHistory?: FinalizationStatusSample[];
-    stepFunctions?: FinalizationStatusResponse['stepFunctions'];
+    runtimeDiagnostics: FinalizationResource['runtimeDiagnostics'];
   };
 }
 
@@ -287,7 +286,9 @@ export function resolveFinalizationCountDiagnostics(data: FinalizeScenarioData):
   };
 }
 
-function getLatestNonNullState(samples: FinalizationStatusSample[] | undefined): FinalizationState | null {
+function getLatestNonNullState(
+  samples: FinalizationStatusSample[] | undefined,
+): FinalizationResource | TestFinalizationState | null {
   if (!samples || samples.length === 0) {
     return null;
   }
@@ -300,40 +301,255 @@ function getLatestNonNullState(samples: FinalizationStatusSample[] | undefined):
   return null;
 }
 
-function isFinalizationState(value: unknown): value is FinalizationState {
-  if (!isRecord(value)) {
-    return false;
-  }
-  if (
-    typeof value['status'] !== 'string' ||
-    typeof value['executionId'] !== 'string' ||
-    typeof value['queuedAt'] !== 'number'
-  ) {
-    return false;
-  }
-  switch (value['status']) {
-    case 'pending':
-      return true;
-    case 'running':
-      return typeof value['startedAt'] === 'number';
-    case 'succeeded':
-      return typeof value['startedAt'] === 'number' && typeof value['completedAt'] === 'number';
-    case 'failed': {
-      if (typeof value['failedAt'] !== 'number') {
-        return false;
-      }
-      const error = value['error'];
-      return isRecord(error) && typeof error['code'] === 'string' && typeof error['message'] === 'string';
-    }
-    case 'timeout':
-      return typeof value['timeoutAt'] === 'number';
-    default:
-      return false;
-  }
+function projectFinalizationResource(
+  sessionId: string,
+  resource: Extract<FinalizationResource, { status: 'succeeded' }>,
+): FinalizeScenarioData {
+  const { authority, presentation, voterEvidence } = resource.result;
+  const userVote =
+    voterEvidence.state === 'available'
+      ? {
+          commitment: voterEvidence.userVote.commitment,
+          voteId: voterEvidence.userVote.voteId,
+          leafIndex: voterEvidence.userVote.proof.leafIndex,
+          merklePath: [...voterEvidence.userVote.proof.merklePath],
+          treeSize: voterEvidence.userVote.proof.treeSize,
+          proof: {
+            ...voterEvidence.userVote.proof,
+            merklePath: [...voterEvidence.userVote.proof.merklePath],
+          },
+        }
+      : undefined;
+
+  return omitUndefinedProperties({
+    sessionId,
+    finalizationId: resource.finalizationId,
+    tally: omitUndefinedProperties({
+      counts: { ...presentation.tally.counts },
+      bulletinRoot: presentation.bulletinRoot,
+      totalVotes: presentation.tally.totalVotes,
+      tamperedCount: presentation.tally.tamperedCount,
+    }),
+    result: omitUndefinedProperties({
+      counts: { ...presentation.tally.counts },
+      bulletinRoot: presentation.bulletinRoot,
+      totalVotes: presentation.tally.totalVotes,
+      tamperedCount: presentation.tally.tamperedCount,
+    }),
+    bulletinRoot: presentation.bulletinRoot,
+    totalVotes: presentation.tally.totalVotes,
+    tamperedCount: presentation.tally.tamperedCount,
+    totalExpected: presentation.totalExpected,
+    treeSize: presentation.treeSize,
+    userVote,
+    voteReceipt: voterEvidence.state === 'available' ? voterEvidence.voteReceipt : undefined,
+    receipt: authority.receipt,
+    journal: authority.journal,
+    imageId: authority.imageId,
+    proof: omitUndefinedProperties({
+      tamperDetected: presentation.tamperDetected,
+      receipt: authority.receipt,
+      imageId: authority.imageId,
+    }),
+    verificationStatus: presentation.verificationStatus,
+    verificationReport: presentation.verificationReport,
+    missingSlots: presentation.missingSlots,
+    invalidPresentedSlots: presentation.invalidPresentedSlots,
+    validVotes: authority.journal.validVotes,
+    excludedSlots: presentation.excludedSlots,
+    verifiedTally: [...presentation.verifiedTally],
+    debug: {
+      verifiedTally: [...presentation.verifiedTally],
+      missingSlots: presentation.missingSlots,
+      invalidPresentedSlots: presentation.invalidPresentedSlots,
+      validVotes: authority.journal.validVotes,
+      excludedSlots: presentation.excludedSlots,
+    },
+  });
 }
 
-function asFinalizeScenarioData(value: unknown): FinalizeScenarioData {
-  return isRecord(value) ? value : {};
+const VERIFICATION_STEP_IDS = [
+  'cast_as_intended',
+  'recorded_as_cast',
+  'counted_as_recorded',
+  'stark_verification',
+] as const;
+
+function deriveCliVerificationPresentationPolicy(
+  resource: AvailableVerificationResource,
+  checks: readonly VerificationCheck[],
+): VerificationPresentationPolicyResult {
+  const input = {
+    availability: 'available' as const,
+    checks,
+    context: {
+      missingSlots: resource.proofAuthority.missingSlots,
+      invalidPresentedSlots: resource.proofAuthority.invalidPresentedSlots,
+      rejectedRecords: resource.proofAuthority.rejectedRecords,
+      excludedSlots: resource.proofAuthority.excludedSlots,
+      devModeEvidence: resource.verifierResult.report?.dev_mode_receipt === true,
+    },
+    verificationStatus: resource.verifierResult.status,
+    ...omitUndefinedProperties({
+      verificationReportStatus: resource.verifierResult.report?.status,
+    }),
+  };
+  const withoutConfiguredSth = deriveVerificationPresentationPolicy({
+    ...input,
+    context: {
+      ...input.context,
+      sthSourcesConfigured: false,
+    },
+  });
+  const thirdPartyCheck = checks.find((check) => check.id === 'recorded_sth_third_party');
+  const sthSourcesConfigured =
+    (thirdPartyCheck !== undefined && thirdPartyCheck.status !== 'not_run') ||
+    resource.presentation.policy.stageStatuses.recorded_as_cast !== withoutConfiguredSth.stageStatuses.recorded_as_cast;
+
+  return deriveVerificationPresentationPolicy({
+    ...input,
+    context: {
+      ...input.context,
+      sthSourcesConfigured,
+    },
+  });
+}
+
+function projectVerificationChecks(resource: AvailableVerificationResource): VerificationCheck[] {
+  return resource.verification.checks.map((check) => ({
+    id: check.id,
+    status: check.status,
+    evidence: check.evidence,
+    inputs: [...check.inputs],
+    ...omitUndefinedProperties({
+      noteKey: check.noteKey,
+      derivedFrom: check.derivedFrom,
+    }),
+  }));
+}
+
+function projectVerificationSteps(
+  resource: AvailableVerificationResource,
+  policy: VerificationPresentationPolicyResult,
+): VerificationStep[] {
+  const serverSteps = new Map(resource.verification.steps.map((step) => [step.id, step] as const));
+  return VERIFICATION_STEP_IDS.map((id) => {
+    const serverStep = serverSteps.get(id);
+    return {
+      id,
+      status: policy.stageStatuses[id],
+      inputs: serverStep?.inputs ? [...serverStep.inputs] : getVerificationStepInputs(id),
+      ...(serverStep?.error ? { error: serverStep.error } : {}),
+    };
+  });
+}
+
+function projectVerificationResource(resource: AvailableVerificationResource): FinalizeScenarioData {
+  const proof = resource.proofAuthority;
+  const presentation = resource.presentation;
+  const verifierReport = resource.verifierResult.report;
+  const journal = resource.journal.representation === 'included' ? resource.journal.value : undefined;
+  const verificationChecks = projectVerificationChecks(resource);
+  const policy = deriveCliVerificationPresentationPolicy(resource, verificationChecks);
+  const voterEvidence = resource.voterEvidence;
+  const userVote =
+    voterEvidence.availability === 'available'
+      ? {
+          commitment: voterEvidence.userVote.commitment,
+          voteId: voterEvidence.userVote.voteId,
+          leafIndex: voterEvidence.userVote.proof.leafIndex,
+          merklePath: [...voterEvidence.userVote.proof.merklePath],
+          treeSize: voterEvidence.userVote.proof.treeSize,
+          proof: {
+            ...voterEvidence.userVote.proof,
+            merklePath: [...voterEvidence.userVote.proof.merklePath],
+          },
+        }
+      : {
+          commitment: voterEvidence.userVote.commitment,
+          ...omitUndefinedProperties({ voteId: voterEvidence.userVote.voteId }),
+        };
+
+  return omitUndefinedProperties({
+    finalizationId: resource.finalizationId,
+    electionId: proof.electionId,
+    electionConfigHash: proof.electionConfigHash,
+    logId: proof.logId,
+    tally: {
+      counts: { ...presentation.tally.counts },
+      bulletinRoot: proof.bulletinRoot,
+      totalVotes: presentation.tally.totalVotes,
+      tamperedCount: presentation.tally.tamperedCount ?? 0,
+    },
+    result: {
+      counts: { ...presentation.tally.counts },
+      bulletinRoot: proof.bulletinRoot,
+      totalVotes: presentation.tally.totalVotes,
+      tamperedCount: presentation.tally.tamperedCount ?? 0,
+    },
+    bulletinRoot: proof.bulletinRoot,
+    totalVotes: presentation.tally.totalVotes,
+    tamperedCount: presentation.tally.tamperedCount ?? 0,
+    totalExpected: proof.totalExpected,
+    treeSize: proof.treeSize,
+    userVote,
+    voteReceipt: voterEvidence.availability === 'available' ? voterEvidence.voteReceipt : undefined,
+    journal,
+    imageId: proof.imageId,
+    proof: omitUndefinedProperties({
+      tamperDetected: presentation.tamperDetected,
+      imageId: proof.imageId,
+    }),
+    scenarioId: presentation.scenarioId,
+    verificationStatus: resource.verifierResult.status,
+    verificationSteps: projectVerificationSteps(resource, policy),
+    verificationChecks,
+    verificationReport: verifierReport
+      ? {
+          ...verifierReport,
+          ...omitUndefinedProperties({ errors: verifierReport.errors ? [...verifierReport.errors] : undefined }),
+        }
+      : undefined,
+    presentationPolicy: policy,
+    missingSlots: proof.missingSlots,
+    invalidPresentedSlots: proof.invalidPresentedSlots,
+    rejectedRecords: proof.rejectedRecords,
+    validVotes: journal?.validVotes,
+    excludedSlots: proof.excludedSlots,
+    verifiedTally: [...proof.verifiedTally],
+    sthDigest: proof.sthDigest,
+    seenBitmapRoot: proof.seenBitmapRoot,
+    includedBitmapRoot: proof.includedBitmapRoot,
+    inputCommitment: proof.inputCommitment,
+    seenIndicesCount: proof.seenIndicesCount,
+    botVotesSummary: presentation.botVotesSummary
+      ? {
+          ...presentation.botVotesSummary,
+          ...omitUndefinedProperties({
+            affectedBotIds: presentation.botVotesSummary.affectedBotIds
+              ? [...presentation.botVotesSummary.affectedBotIds]
+              : undefined,
+          }),
+        }
+      : undefined,
+    tamperSummary: presentation.tamperSummary
+      ? {
+          ...presentation.tamperSummary,
+          ...omitUndefinedProperties({
+            affectedBotIds: presentation.tamperSummary.affectedBotIds
+              ? [...presentation.tamperSummary.affectedBotIds]
+              : undefined,
+          }),
+        }
+      : undefined,
+    debug: {
+      verifiedTally: [...proof.verifiedTally],
+      missingSlots: proof.missingSlots,
+      invalidPresentedSlots: proof.invalidPresentedSlots,
+      ...omitUndefinedProperties({ validVotes: journal?.validVotes }),
+      excludedSlots: proof.excludedSlots,
+    },
+  });
 }
 
 function mergeFinalizeScenarioData(
@@ -344,6 +560,7 @@ function mergeFinalizeScenarioData(
   const verificationCounts = resolveFinalizationCountDiagnostics(verificationData);
 
   return omitUndefinedProperties({
+    ...verificationData,
     ...finalizeData,
     sessionId: finalizeData.sessionId ?? verificationData.sessionId,
     tally: finalizeData.tally ?? verificationData.tally,
@@ -361,12 +578,12 @@ function mergeFinalizeScenarioData(
     journal: verificationData.journal ?? finalizeData.journal,
     imageId: finalizeData.imageId ?? verificationData.imageId,
     proof: finalizeData.proof ?? verificationData.proof,
-    verificationStatus: verificationData.verificationStatus ?? finalizeData.verificationStatus,
-    verificationSteps: verificationData.verificationSteps ?? finalizeData.verificationSteps,
-    verificationChecks: verificationData.verificationChecks ?? finalizeData.verificationChecks,
-    verificationReport: verificationData.verificationReport ?? finalizeData.verificationReport,
-    verificationExecutionId: verificationData.verificationExecutionId ?? finalizeData.verificationExecutionId,
-    verificationResult: verificationData.verificationResult ?? finalizeData.verificationResult,
+    verificationStatus: verificationData.verificationStatus,
+    verificationSteps: verificationData.verificationSteps,
+    verificationChecks: verificationData.verificationChecks,
+    verificationReport: verificationData.verificationReport,
+    presentationPolicy: verificationData.presentationPolicy,
+    finalizationId: finalizeData.finalizationId,
     debug: finalizeData.debug ?? verificationData.debug,
     missingSlots: finalizeCounts.missingSlots ?? verificationCounts.missingSlots,
     invalidPresentedSlots: finalizeCounts.invalidPresentedSlots ?? verificationCounts.invalidPresentedSlots,
@@ -393,35 +610,37 @@ function formatFinalizationDiagnostics(details: TestResult['details'], format: '
 
   if (details.finalizationMode) {
     const modeLabel = details.finalizationMode.toUpperCase();
-    const execution = details.finalizationExecutionId ? ` (executionId=${details.finalizationExecutionId})` : '';
-    lines.push(`${prefix}Finalization mode: ${modeLabel}${execution}`);
+    const identity = details.finalizationId ? ` (finalizationId=${details.finalizationId})` : '';
+    lines.push(`${prefix}Finalization mode: ${modeLabel}${identity}`);
   }
 
   const latestState = getLatestNonNullState(details.finalizationHistory);
   if (latestState) {
     const timestamps: string[] = [];
-    timestamps.push(`queuedAt=${toIso(latestState.queuedAt) ?? 'n/a'}`);
-    if ('startedAt' in latestState && typeof latestState.startedAt === 'number') {
-      timestamps.push(`startedAt=${toIso(latestState.startedAt) ?? 'n/a'}`);
+    timestamps.push(`queuedAtMs=${toIso(latestState.queuedAtMs) ?? 'n/a'}`);
+    if ('startedAtMs' in latestState && typeof latestState.startedAtMs === 'number') {
+      timestamps.push(`startedAtMs=${toIso(latestState.startedAtMs) ?? 'n/a'}`);
     }
     if (latestState.status === 'succeeded') {
-      timestamps.push(`completedAt=${toIso(latestState.completedAt) ?? 'n/a'}`);
+      timestamps.push(`completedAtMs=${toIso(latestState.completedAtMs) ?? 'n/a'}`);
     } else if (latestState.status === 'failed') {
-      const failedAt =
-        'failedAt' in latestState && typeof latestState.failedAt === 'number' ? latestState.failedAt : undefined;
-      timestamps.push(`failedAt=${toIso(failedAt) ?? 'n/a'}`);
+      const failedAtMs =
+        'failedAtMs' in latestState && typeof latestState.failedAtMs === 'number' ? latestState.failedAtMs : undefined;
+      timestamps.push(`failedAtMs=${toIso(failedAtMs) ?? 'n/a'}`);
     } else if (latestState.status === 'timeout') {
-      const timeoutAt =
-        'timeoutAt' in latestState && typeof latestState.timeoutAt === 'number' ? latestState.timeoutAt : undefined;
-      timestamps.push(`timeoutAt=${toIso(timeoutAt) ?? 'n/a'}`);
+      const timeoutAtMs =
+        'timeoutAtMs' in latestState && typeof latestState.timeoutAtMs === 'number'
+          ? latestState.timeoutAtMs
+          : undefined;
+      timestamps.push(`timeoutAtMs=${toIso(timeoutAtMs) ?? 'n/a'}`);
     }
     const joined = timestamps.join(', ');
     lines.push(`${prefix}Finalization state: ${latestState.status.toUpperCase()} (${joined})`);
   }
 
-  const stepFunctions = details.finalizationStepFunctions;
-  if (stepFunctions) {
-    const status = stepFunctions.status ?? 'UNKNOWN';
+  const orchestrator = details.finalizationRuntimeDiagnostics?.orchestrator;
+  if (orchestrator) {
+    const status = orchestrator.status ?? 'UNKNOWN';
     const parts = [`status=${status}`];
     lines.push(`${prefix}Step Functions: ${parts.join(' · ')}`);
   }
@@ -434,10 +653,16 @@ export class CLITestHelpers {
   private electionId: string | null = null;
   private sessionCapabilityToken: string | null = null;
   private operatorAuthHeaders: Record<string, string>;
+  private proofProfile: ZkVMProofProfile | undefined;
 
-  constructor(baseUrl = 'http://localhost:3000', operatorAuthHeaders = resolveOperatorAuthHeaders()) {
+  constructor(
+    baseUrl = 'http://localhost:3000',
+    operatorAuthHeaders = resolveOperatorAuthHeaders(),
+    proofProfile?: ZkVMProofProfile,
+  ) {
     this.baseUrl = baseUrl;
     this.operatorAuthHeaders = operatorAuthHeaders;
+    this.proofProfile = proofProfile;
   }
 
   private requireBaseUrl(): string {
@@ -457,9 +682,12 @@ export class CLITestHelpers {
     bulletinRootAtCast?: string;
   }> {
     const baseUrl = this.requireBaseUrl();
-    const response = await fetch(`${baseUrl}/api/bulletin/${voteId}/proof`, {
+    const proofPath = buildApiRouteUrl(API_ROUTES.sessionVoteInclusionProof, {
+      params: { sessionId, voteId },
+    });
+    const response = await fetch(`${baseUrl}${proofPath}`, {
       method: 'GET',
-      headers: this.getSensitiveAuthHeaders(sessionId),
+      headers: this.getPathSessionAuthHeaders(),
     });
 
     if (!response.ok) {
@@ -469,12 +697,13 @@ export class CLITestHelpers {
       } catch {
         errorPayload = null;
       }
-      const errorCode = getStringProperty(errorPayload, 'error');
+      const errorCode = getApiErrorCode(errorPayload);
       throw new Error(`Failed to fetch vote proof: ${errorCode ?? 'Unknown error'}`);
     }
 
     const payload = await readJsonRecord(response, 'vote proof');
-    const proof = getRecordProperty(payload, 'proof');
+    const data = getRecordProperty(payload, 'data');
+    const proof = getRecordProperty(data, 'proof');
     const leafIndex = getNumberProperty(proof, 'leafIndex');
     const merklePath = getStringArrayProperty(proof, 'merklePath');
     const treeSize = getNumberProperty(proof, 'treeSize');
@@ -491,7 +720,7 @@ export class CLITestHelpers {
    */
   async createSession(): Promise<string> {
     const baseUrl = this.requireBaseUrl();
-    const response = await fetch(`${baseUrl}/api/session`, {
+    const response = await fetch(`${baseUrl}/api/sessions`, {
       method: 'POST',
       headers: {
         ...this.getOperatorAuthHeaders(),
@@ -531,11 +760,11 @@ export class CLITestHelpers {
     const commitment = computeCommitment(this.electionId, choiceNum, random);
 
     const baseUrl = this.requireBaseUrl();
-    const response = await fetch(`${baseUrl}/api/vote`, {
+    const response = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/votes`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...this.getSensitiveAuthHeaders(sessionId),
+        ...this.getPathSessionAuthHeaders(),
       },
       body: JSON.stringify(
         omitUndefinedProperties({
@@ -554,7 +783,7 @@ export class CLITestHelpers {
       } catch {
         errorPayload = null;
       }
-      const errorCode = getStringProperty(errorPayload, 'error');
+      const errorCode = getApiErrorCode(errorPayload);
       throw new Error(`Failed to submit vote: ${errorCode ?? 'Unknown error'}`);
     }
 
@@ -592,69 +821,74 @@ export class CLITestHelpers {
     // Wait for bot voting to complete using the progress API
     console.log('[CLITest] Waiting for bot votes to be generated...');
 
-    let attempts = 0;
     const maxAttempts = 70; // 70 seconds max wait
 
-    while (attempts < maxAttempts) {
-      const baseUrl = this.requireBaseUrl();
-      const response = await fetch(`${baseUrl}/api/progress`, {
-        method: 'GET',
-        headers: this.getSensitiveAuthHeaders(sessionId),
-      });
+    await pollUntil<boolean>({
+      maxAttempts,
+      operation: async ({ attempt }) => {
+        const baseUrl = this.requireBaseUrl();
+        const response = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/progress`, {
+          method: 'GET',
+          headers: this.getPathSessionAuthHeaders(),
+        });
 
-      if (response.ok) {
-        const payload = await readJsonRecord(response, 'bot progress');
-        const data = getRecordProperty(payload, 'data');
-        const botCount = getNumberProperty(data, 'count'); // API returns 'count', not 'botCount'
-        if (botCount === undefined) {
-          throw new Error('Invalid progress response');
+        if (response.ok) {
+          const payload = await readJsonRecord(response, 'bot progress');
+          const data = getRecordProperty(payload, 'data');
+          const botCount = getNumberProperty(data, 'count'); // API returns 'count', not 'botCount'
+          if (botCount === undefined) {
+            throw new Error('Invalid progress response');
+          }
+
+          if (botCount >= BOT_COUNT) {
+            console.log(`[CLITest] All ${BOT_COUNT} bot votes generated`);
+            return true;
+          }
+
+          if (attempt % 10 === 0) {
+            console.log(`[CLITest] Bot voting progress: ${botCount}/${BOT_COUNT}`);
+          }
+        } else {
+          let errorPayload: unknown = null;
+          try {
+            errorPayload = await response.json();
+          } catch {
+            errorPayload = null;
+          }
+          const errorCode = getApiErrorCode(errorPayload);
+          if (isSessionUnavailableErrorCode(errorCode)) {
+            throw new Error(
+              `Bot voting progress became unavailable (${errorCode}). Create a fresh session before retrying.`,
+            );
+          }
         }
 
-        if (botCount >= BOT_COUNT) {
-          console.log(`[CLITest] All ${BOT_COUNT} bot votes generated`);
-          return;
-        }
-
-        if (attempts % 10 === 0) {
-          console.log(`[CLITest] Bot voting progress: ${botCount}/${BOT_COUNT}`);
-        }
-      } else {
-        let errorPayload: unknown = null;
-        try {
-          errorPayload = await response.json();
-        } catch {
-          errorPayload = null;
-        }
-        const errorCode = getStringProperty(errorPayload, 'error');
-        if (isSessionUnavailableErrorCode(errorCode)) {
-          throw new Error(
-            `Bot voting progress became unavailable (${errorCode}). Create a fresh session before retrying.`,
-          );
-        }
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      attempts++;
-    }
-
-    throw new Error(`Bot voting did not complete after ${maxAttempts} seconds`);
+        return false;
+      },
+      isTerminal: (complete) => complete,
+      delay: async () => sleep(1000),
+      createTimeoutError: () => new Error(`Bot voting did not complete after ${maxAttempts} seconds`),
+    });
   }
 
   /**
    * Finalize session with a specific tamper scenario
    */
   async finalizeWithScenarios(sessionId: string, scenarioId: string): Promise<FinalizeWithScenariosResult> {
-    const timeoutMs = getFinalizeTimeoutMs();
+    const timeoutMs = getFinalizeTimeoutMs(this.proofProfile);
     const controller = new AbortController();
     const timeout = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
     const baseUrl = this.requireBaseUrl();
 
     try {
-      const response = await fetch(`${baseUrl}/api/finalize`, {
-        method: 'POST',
+      const createPath = buildApiRouteUrl(API_ROUTES.createFinalization, {
+        params: { sessionId },
+      });
+      const response = await fetch(new URL(createPath, baseUrl), {
+        method: API_ROUTES.createFinalization.method,
         headers: {
           'Content-Type': 'application/json',
-          ...this.getSensitiveAuthHeaders(sessionId),
+          ...this.getPathSessionAuthHeaders(),
         },
         body: JSON.stringify(
           omitUndefinedProperties({
@@ -665,67 +899,71 @@ export class CLITestHelpers {
         signal: controller.signal,
       });
 
-      if (response.status === 202) {
-        const payload = await readJsonRecord(response, 'finalize async');
-        const executionId = getStringProperty(payload, 'executionId');
-        if (!executionId) {
-          throw new Error('Async finalization response missing executionId');
-        }
-
-        const initialState = isFinalizationState(payload['state']) ? payload['state'] : null;
-
-        if (initialState) {
-          this.logFinalizationTransition(executionId, initialState);
-        } else {
-          console.log(`[CLI] Finalization job enqueued (executionId=${executionId})`);
-        }
-
-        const pollResult = await this.pollFinalizationStatus(sessionId, {
-          executionId,
-          timeoutMs,
-          initialState,
-          baseUrl,
-        });
-
-        const verificationResponse = await this.fetchVerificationResult(sessionId, {
-          includeJournal: true,
-          baseUrl,
-        });
-
-        return {
-          data: verificationResponse.data,
-          meta: {
-            mode: 'async',
-            executionId,
-            finalizationState: pollResult.state,
-            finalizationHistory: pollResult.history,
-            stepFunctions: pollResult.stepFunctions,
-          },
-        };
-      }
-
+      const payload = await readJsonRecord(response, 'finalization');
       if (!response.ok) {
-        let errorPayload: unknown = null;
-        try {
-          errorPayload = await response.json();
-        } catch {
-          errorPayload = null;
-        }
-        const errorCode = getStringProperty(errorPayload, 'error');
+        const errorCode = getApiErrorCode(payload);
         throw new Error(`Failed to finalize: ${errorCode ?? 'Unknown error'}`);
       }
 
-      const result = await readJsonRecord(response, 'finalize sync');
-      const data = getRecordProperty(result, 'data');
-      const scenarioData = data ? asFinalizeScenarioData(data) : {};
-      const verificationResponse = await this.fetchVerificationResult(sessionId, {
-        includeJournal: true,
+      const parsed = FinalizationResponseSchema.safeParse(payload);
+      if (!parsed.success) {
+        const firstIssue = parsed.error.issues[0];
+        throw new Error(`Invalid finalization response: ${firstIssue?.message ?? 'schema validation failed'}`);
+      }
+
+      const initialResource = parsed.data.data;
+      this.logFinalizationTransition(initialResource);
+      if (initialResource.status === 'failed') {
+        throw new Error(
+          `Finalization failed (code=${initialResource.error.code}, message=${initialResource.error.message})`,
+        );
+      }
+      if (initialResource.status === 'timeout') {
+        throw new Error('Finalization timed out before completion');
+      }
+
+      const pollResult =
+        initialResource.status === 'succeeded'
+          ? {
+              state: initialResource,
+              history: [
+                {
+                  state: initialResource,
+                  receivedAt: Date.now(),
+                  runtimeDiagnostics: initialResource.runtimeDiagnostics,
+                },
+              ],
+            }
+          : await this.pollCurrentFinalization(sessionId, {
+              finalizationId: initialResource.finalizationId,
+              timeoutMs,
+              initialState: initialResource,
+              baseUrl,
+            });
+
+      const scenarioData = projectFinalizationResource(sessionId, pollResult.state);
+      const verificationResponse = await this.fetchVerificationResult(sessionId, pollResult.state.finalizationId, {
         baseUrl,
       });
+      if (verificationResponse.data.finalizationId !== pollResult.state.finalizationId) {
+        throw new Error(
+          `Verification finalization identity mismatch (expected ${pollResult.state.finalizationId}, received ${verificationResponse.data.finalizationId ?? '<none>'})`,
+        );
+      }
       return {
-        data: mergeFinalizeScenarioData(scenarioData, verificationResponse.data),
+        data: mergeFinalizeScenarioData(
+          {
+            ...scenarioData,
+            scenarioId,
+          },
+          verificationResponse.data,
+        ),
         meta: {
-          mode: 'sync',
+          mode: response.status === 202 ? 'async' : 'sync',
+          finalizationId: pollResult.state.finalizationId,
+          finalizationState: pollResult.state,
+          finalizationHistory: pollResult.history,
+          runtimeDiagnostics: pollResult.state.runtimeDiagnostics,
         },
       };
     } finally {
@@ -735,194 +973,214 @@ export class CLITestHelpers {
     }
   }
 
-  private logFinalizationTransition(executionId: string, state: FinalizationState) {
+  private logFinalizationTransition(state: FinalizationResource) {
+    const { finalizationId } = state;
     switch (state.status) {
       case 'pending':
-        console.log(`[CLI] Finalization queued (executionId=${executionId})`);
+        console.log(`[CLI] Finalization queued (finalizationId=${finalizationId})`);
         break;
       case 'running': {
-        const startedAt = new Date(state.startedAt).toISOString();
-        console.log(`[CLI] Finalization running since ${startedAt} (executionId=${executionId})`);
+        const startedAt = new Date(state.startedAtMs).toISOString();
+        console.log(`[CLI] Finalization running since ${startedAt} (finalizationId=${finalizationId})`);
         break;
       }
       case 'succeeded': {
-        const completedAt = new Date(state.completedAt).toISOString();
-        console.log(`[CLI] Finalization succeeded at ${completedAt} (executionId=${executionId})`);
+        const completedAt = new Date(state.completedAtMs).toISOString();
+        console.log(`[CLI] Finalization succeeded at ${completedAt} (finalizationId=${finalizationId})`);
         break;
       }
       case 'failed':
         console.log(
-          `[CLI] Finalization failed (executionId=${executionId}, code=${state.error.code}, message=${state.error.message})`,
+          `[CLI] Finalization failed (finalizationId=${finalizationId}, code=${state.error.code}, message=${state.error.message})`,
         );
         break;
       case 'timeout':
-        console.log(`[CLI] Finalization timed out (executionId=${executionId})`);
+        console.log(`[CLI] Finalization timed out (finalizationId=${finalizationId})`);
         break;
     }
   }
 
-  private async pollFinalizationStatus(
+  private async pollCurrentFinalization(
     sessionId: string,
     options: {
-      executionId: string;
+      finalizationId: string;
       timeoutMs: number;
-      initialState: FinalizationState | null;
+      initialState: FinalizationResource;
       baseUrl: string;
     },
   ): Promise<{
-    state: FinalizationState;
+    state: Extract<FinalizationResource, { status: 'succeeded' }>;
     history: FinalizationStatusSample[];
-    stepFunctions: FinalizationStatusResponse['stepFunctions'];
   }> {
     const history: FinalizationStatusSample[] = [];
-    let lastLoggedStatus = options.initialState?.status ?? null;
+    let lastLoggedStatus = options.initialState.status;
     const deadline = options.timeoutMs > 0 ? Date.now() + options.timeoutMs : Number.POSITIVE_INFINITY;
     let delayMs = POLL_MIN_DELAY_MS;
-    let stepFunctionsDetails: FinalizationStatusResponse['stepFunctions'] = null;
-    let lastStepFunctionsSnapshot: string | null = null;
+    let lastRuntimeDiagnosticsSnapshot = JSON.stringify(options.initialState.runtimeDiagnostics);
 
-    if (options.initialState) {
-      history.push({
-        state: options.initialState,
-        receivedAt: Date.now(),
-        stepFunctions: null,
-      });
-      if (options.initialState.status === 'succeeded' || options.initialState.status === 'failed') {
-        return {
-          state: options.initialState,
-          history,
-          stepFunctions: null,
-        };
-      }
-    }
+    history.push({
+      state: options.initialState,
+      receivedAt: Date.now(),
+      runtimeDiagnostics: options.initialState.runtimeDiagnostics,
+    });
 
-    for (;;) {
-      if (Date.now() > deadline) {
-        throw new Error('Finalization status polling exceeded configured timeout');
-      }
-
-      await sleep(delayMs);
-
-      let statusResponse: FinalizationStatusResponse;
-      try {
-        statusResponse = await fetchFinalizationStatus(sessionId, {
-          baseUrl: options.baseUrl,
-          authHeaders: this.getSensitiveAuthHeaders(sessionId),
-        });
-      } catch (error) {
-        if (error instanceof FinalizationStatusError) {
-          if (error.status === 404) {
-            const responseBody = error.responseBody;
-            const reason =
-              isRecord(responseBody) && typeof responseBody['error'] === 'string'
-                ? responseBody['error']
-                : 'Session not found';
-            // 404 はセッションが存在しない／非同期モードが無効化されたことを示すため、再試行せず即座に失敗扱いとする。
-            throw new Error(`Status endpoint returned 404: ${reason}`);
+    const state = await pollUntil<Extract<FinalizationResource, { status: 'succeeded' }> | null>({
+      deadlineMs: deadline,
+      clock: Date.now,
+      delayPosition: 'before-attempt',
+      delay: async () => sleep(delayMs),
+      operation: async () => {
+        let nextState: FinalizationResource | null;
+        try {
+          nextState = await fetchCurrentFinalization(sessionId, {
+            baseUrl: options.baseUrl,
+            authHeaders: this.getPathSessionAuthHeaders(),
+          });
+        } catch (error) {
+          if (error instanceof CurrentFinalizationError) {
+            if (error.status === 404) {
+              const reason = getApiErrorCode(error.responseBody) ?? 'Session not found';
+              throw new Error(`Current finalization endpoint returned 404: ${reason}`);
+            }
+            if (error.status >= 500) {
+              console.warn(`[CLI] Current finalization request failed with ${error.status}, retrying...`);
+              delayMs = Math.min(delayMs * 1.5, POLL_MAX_DELAY_MS);
+              return null;
+            }
+            throw new Error(`Current finalization request failed with ${error.status}`);
           }
-          if (error.status >= 500) {
-            console.warn(`[CLI] Status request failed with ${error.status}, retrying...`);
-            delayMs = Math.min(delayMs * 1.5, POLL_MAX_DELAY_MS);
-            continue;
-          }
-          throw new Error(`Status request failed with ${error.status}`);
+          throw error;
         }
-        throw error;
-      }
 
-      stepFunctionsDetails = statusResponse.stepFunctions ?? null;
-      const currentSnapshot = stepFunctionsDetails ? JSON.stringify(stepFunctionsDetails) : null;
-      if (currentSnapshot !== lastStepFunctionsSnapshot) {
-        console.log('[CLI] Step Functions updated:', stepFunctionsDetails);
-        lastStepFunctionsSnapshot = currentSnapshot;
-      }
-      const state = statusResponse.finalizationState;
-      history.push({
-        state,
-        receivedAt: Date.now(),
-        stepFunctions: stepFunctionsDetails,
-      });
+        const runtimeDiagnostics = nextState?.runtimeDiagnostics ?? null;
+        const currentSnapshot = JSON.stringify(runtimeDiagnostics);
+        if (currentSnapshot !== lastRuntimeDiagnosticsSnapshot) {
+          console.log('[CLI] Finalization runtime diagnostics updated:', runtimeDiagnostics);
+          lastRuntimeDiagnosticsSnapshot = currentSnapshot;
+        }
+        history.push({
+          state: nextState,
+          receivedAt: Date.now(),
+          runtimeDiagnostics,
+        });
 
-      if (!state) {
-        delayMs = Math.min(delayMs * 1.5, POLL_MAX_DELAY_MS);
-        continue;
-      }
-
-      if (state.executionId !== options.executionId) {
-        console.warn(
-          `[CLI] Finalization state executionId mismatch (expected ${options.executionId}, received ${state.executionId}). Continuing polling.`,
-        );
-      }
-
-      if (state.status !== lastLoggedStatus) {
-        this.logFinalizationTransition(options.executionId, state);
-        lastLoggedStatus = state.status;
-      }
-
-      switch (state.status) {
-        case 'succeeded':
-          return { state, history, stepFunctions: stepFunctionsDetails };
-        case 'failed':
-          throw new Error(`Finalization failed (code=${state.error.code}, message=${state.error.message})`);
-        case 'timeout':
-          throw new Error('Finalization timed out before completion');
-        case 'pending':
-        case 'running':
+        if (!nextState) {
           delayMs = Math.min(delayMs * 1.5, POLL_MAX_DELAY_MS);
-          break;
-      }
+          return null;
+        }
+
+        if (nextState.finalizationId !== options.finalizationId) {
+          throw new Error(
+            `Finalization identity mismatch (expected ${options.finalizationId}, received ${nextState.finalizationId})`,
+          );
+        }
+
+        if (nextState.status !== lastLoggedStatus) {
+          this.logFinalizationTransition(nextState);
+          lastLoggedStatus = nextState.status;
+        }
+
+        switch (nextState.status) {
+          case 'succeeded':
+            return nextState;
+          case 'failed':
+            throw new Error(`Finalization failed (code=${nextState.error.code}, message=${nextState.error.message})`);
+          case 'timeout':
+            throw new Error('Finalization timed out before completion');
+          case 'pending':
+          case 'running':
+            delayMs = Math.min(delayMs * 1.5, POLL_MAX_DELAY_MS);
+            return null;
+        }
+      },
+      isTerminal: (nextState): nextState is Extract<FinalizationResource, { status: 'succeeded' }> =>
+        nextState !== null,
+      createTimeoutError: () => new Error('Finalization status polling exceeded configured timeout'),
+    });
+
+    if (!state) {
+      throw new Error('Finalization status polling exceeded configured timeout');
     }
+    return { state, history };
   }
 
   private async fetchVerificationResult(
     sessionId: string,
-    options: { includeJournal?: boolean; baseUrl?: string; retries?: number } = {},
+    finalizationId: string,
+    options: { baseUrl?: string; retries?: number } = {},
   ): Promise<{ data: FinalizeScenarioData }> {
     const baseUrl = options.baseUrl ?? this.requireBaseUrl();
-    const queryParams = new URLSearchParams();
-    if (options.includeJournal !== false) {
-      queryParams.set('includeJournal', '1');
-    }
-    const query = queryParams.size > 0 ? `?${queryParams.toString()}` : '';
+    const verificationPath = buildApiRouteUrl(API_ROUTES.verification, {
+      params: { sessionId, finalizationId },
+      query: { include: 'journal' },
+    });
     const attempts = Math.max(1, options.retries ?? 4);
 
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      const response = await fetch(`${baseUrl}/api/verify${query}`, {
-        method: 'GET',
-        headers: this.getSensitiveAuthHeaders(sessionId),
-      });
+    const limit: { maxAttempts: number } | { deadlineMs: number; clock: () => number } = Number.isNaN(attempts)
+      ? { maxAttempts: 0 }
+      : Number.isFinite(attempts)
+        ? { maxAttempts: Math.ceil(attempts) }
+        : { deadlineMs: Number.POSITIVE_INFINITY, clock: Date.now };
 
-      const payload = await readJsonRecord(response, 'verification result');
-      if (response.ok) {
-        const errorCode = getStringProperty(payload, 'error');
-        if (isFailClosedFinalizationErrorCode(errorCode)) {
-          throw new Error(`Failed to retrieve verification result: ${errorCode}`);
+    const result = await pollUntil<{ data: FinalizeScenarioData } | null>({
+      ...limit,
+      operation: async ({ attempt }) => {
+        const response = await fetch(new URL(verificationPath, baseUrl), {
+          method: API_ROUTES.verification.method,
+          headers: this.getPathSessionAuthHeaders(),
+        });
+
+        let payload: unknown;
+        try {
+          payload = await response.json();
+        } catch {
+          throw new Error('Invalid verification result response: response body is not valid JSON');
         }
-        const data = getRecordProperty(payload, 'data');
-        const scenarioData = data ? asFinalizeScenarioData(data) : {};
-        return { data: scenarioData };
-      }
 
-      const reason = getStringProperty(payload, 'error') ?? response.statusText;
+        if (response.ok) {
+          const parsed = VerificationResourceResponseSchema.safeParse(payload);
+          if (!parsed.success) {
+            const issue = parsed.error.issues[0];
+            throw new Error(`Invalid verification result response: ${issue?.message ?? 'schema validation failed'}`);
+          }
+          const resource = parsed.data.data;
+          if (resource.finalizationId !== finalizationId) {
+            throw new Error(
+              `Verification finalization identity mismatch (expected ${finalizationId}, received ${resource.finalizationId})`,
+            );
+          }
+          if (resource.availability !== 'available') {
+            throw new Error(`Verification result is ${resource.availability}: ${resource.message}`);
+          }
+          if (resource.journal.representation !== 'included') {
+            throw new Error('Verification result omitted the requested journal representation');
+          }
+          return { data: projectVerificationResource(resource) };
+        }
 
-      if (reason === 'SESSION_NOT_FINALIZED' && attempt < attempts - 1) {
-        await sleep(POLL_MIN_DELAY_MS);
-        continue;
-      }
+        const reason = getApiErrorCode(payload) ?? response.statusText;
+        if (reason === 'SESSION_NOT_FINALIZED' && attempt < attempts - 1) {
+          return null;
+        }
 
-      throw new Error(`Failed to retrieve verification result: ${reason}`);
+        throw new Error(`Failed to retrieve verification result: ${reason}`);
+      },
+      isTerminal: (result): result is { data: FinalizeScenarioData } => result !== null,
+      delay: async () => sleep(POLL_MIN_DELAY_MS),
+      createTimeoutError: () => new Error('Failed to retrieve verification result after multiple attempts'),
+    });
+    if (!result) {
+      throw new Error('Failed to retrieve verification result after multiple attempts');
     }
-
-    throw new Error('Failed to retrieve verification result after multiple attempts');
+    return result;
   }
 
-  getSensitiveAuthHeaders(sessionId: string): Record<string, string> {
+  getPathSessionAuthHeaders(): Record<string, string> {
     if (!this.sessionCapabilityToken) {
       throw new Error('Session capability token is not initialized. Call createSession first.');
     }
     return {
       ...this.getOperatorAuthHeaders(),
-      'X-Session-ID': sessionId,
       [SESSION_CAPABILITY_HEADER]: this.sessionCapabilityToken,
     };
   }
@@ -934,8 +1192,8 @@ export class CLITestHelpers {
   /**
    * Execute zkVM directly
    */
-  async executeZkVM(input: ZkVMInput, useMock?: boolean): Promise<ZkVMJournal> {
-    const executor = await createZkVMExecutor(omitUndefinedProperties({ useMock }));
+  async executeZkVM(input: ZkVMInput, proofProfile: ZkVMProofProfile): Promise<ZkVMJournal> {
+    const executor = await createZkVMExecutor(proofProfile);
     console.log(`[CLITest] Using ${executor.type} zkVM executor`);
     return await executor.execute(input);
   }
@@ -946,23 +1204,22 @@ export class CLITestHelpers {
    */
   async verifySTARK(
     receipt: unknown,
-    options?: {
-      useRealZkVM?: boolean;
+    options: {
+      proofProfile: ZkVMProofProfile;
       imageId?: string;
       verificationStatus?: VerificationStatus;
       verificationReport?: unknown;
       verificationBundlePath?: string;
-      allowDevMode?: boolean;
     },
   ): Promise<boolean> {
-    const useRealZkVM = options?.useRealZkVM ?? false;
-    const allowDevMode = options?.allowDevMode ?? false;
+    const { proofProfile } = options;
+    const acceptsDevelopmentEvidence = proofProfile.executor === 'risc0' && proofProfile.evidence === 'development';
 
-    if (!useRealZkVM) {
-      return this.verifyReceiptStructurally(receipt, false);
+    if (proofProfile.executor === 'mock') {
+      return this.verifyReceiptStructurally(receipt);
     }
 
-    if (options?.verificationBundlePath) {
+    if (options.verificationBundlePath) {
       const expectedImageId =
         options.imageId ??
         (await resolveExpectedImageId(undefined, {
@@ -987,7 +1244,7 @@ export class CLITestHelpers {
         }
 
         if (result.status === 'dev_mode') {
-          if (allowDevMode) {
+          if (acceptsDevelopmentEvidence) {
             console.warn('[STARK Verifier] verifier-service reported dev mode receipt (accepted)');
             return true;
           }
@@ -1007,13 +1264,13 @@ export class CLITestHelpers {
       }
     }
 
-    if (options?.verificationStatus) {
+    if (options.verificationStatus) {
       if (options.verificationStatus === 'success') {
         return true;
       }
 
       if (options.verificationStatus === 'dev_mode') {
-        if (allowDevMode) {
+        if (acceptsDevelopmentEvidence) {
           console.warn('[STARK Verifier] Dev mode receipt detected by verifier-service (accepted)');
           return true;
         }
@@ -1023,7 +1280,7 @@ export class CLITestHelpers {
       return false;
     }
 
-    return this.verifyReceiptStructurally(receipt, true);
+    return this.verifyReceiptStructurally(receipt);
   }
 
   private buildVerifierReportPath(): string {
@@ -1039,10 +1296,9 @@ export class CLITestHelpers {
     }
   }
 
-  private verifyReceiptStructurally(receipt: unknown, useRealZkVM: boolean): boolean {
+  private verifyReceiptStructurally(receipt: unknown): boolean {
     try {
       const { kind, data } = this.describeReceipt(receipt);
-      const isDevMode = process.env['RISC0_DEV_MODE'] === '1' || process.env['FORCE_DEV_MODE'] === 'true';
 
       switch (kind) {
         case 'mock':
@@ -1065,10 +1321,6 @@ export class CLITestHelpers {
             Buffer.from(modern.seal, 'base64');
           } catch (error) {
             console.warn('[STARK Verifier] Modern receipt seal is not valid base64', error);
-          }
-
-          if (useRealZkVM && isDevMode) {
-            console.warn('[STARK Verifier] Real zkVM requested but RISC0_DEV_MODE=1; treating receipt as dev-mode.');
           }
 
           return true;
@@ -1194,8 +1446,8 @@ export class CLITestHelpers {
         if (result.details.verificationStatus) {
           report += `- Verification status: ${result.details.verificationStatus}\n`;
         }
-        if (result.details.verificationExecutionId) {
-          report += `- Verification executionId: ${result.details.verificationExecutionId}\n`;
+        if (result.details.finalizationId && !result.details.finalizationMode) {
+          report += `- Finalization ID: ${result.details.finalizationId}\n`;
         }
         if (result.details.verificationBundleDelivery) {
           report += `- Verification bundle delivery: ${result.details.verificationBundleDelivery}\n`;
@@ -1267,8 +1519,8 @@ export class CLITestHelpers {
       if (result.details.verificationStatus) {
         report += `   Verification status: ${result.details.verificationStatus}\n`;
       }
-      if (result.details.verificationExecutionId) {
-        report += `   Verification executionId: ${result.details.verificationExecutionId}\n`;
+      if (result.details.finalizationId && !result.details.finalizationMode) {
+        report += `   Finalization ID: ${result.details.finalizationId}\n`;
       }
       if (result.details.verificationBundleDelivery) {
         report += `   Verification bundle delivery: ${result.details.verificationBundleDelivery}\n`;

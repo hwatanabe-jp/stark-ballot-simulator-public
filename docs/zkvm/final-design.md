@@ -30,8 +30,9 @@
 | 検証チェック ID / required 判定の基礎 | `packages/verification/src/verification/verification-checks.ts`                                                                            |
 | 検証チェック評価                      | `packages/verification/src/verification/build-verification-checks.ts`, `packages/verification/src/verification/engine/evaluate-checks.ts`  |
 | 検証ステップ生成                      | `packages/verification/src/verification/build-verification-steps.ts`                                                                       |
-| overall verdict                       | `packages/verification/src/verification/verification-summary.ts`, `apps/web/src/routes/verify/page.tsx`                                    |
-| `/api/verify`                         | `apps/api/src/server/api/handlers/verify.ts`                                                                                               |
+| overall presentation eligibility      | `packages/verification/src/verification/verification-presentation-policy.ts`                                                               |
+| local cast evidence                   | `packages/verification/src/verification/local-cast-checks.ts`                                                                              |
+| verification read                     | `packages/application/src/verification/prepare-verification-read.ts`, `apps/api/src/server/api/handlers/verify.ts`                         |
 | server-side receipt verification      | `apps/api/src/server/api/handlers/verificationRun.ts`, `verifier-service/`                                                                 |
 | bitmap proof                          | `apps/api/src/server/api/handlers/bitmapProof.ts`, `packages/verification/src/verification/bitmap-verifier.ts`                             |
 | 公開 bundle 生成                      | `packages/verification/src/verification/verification-bundle.ts`, `infra/docker/entrypoint.sh`                                              |
@@ -264,7 +265,7 @@ assert 失敗で証拠が失われるのではなく、ユーザーが「なぜ 
 
 ## 6. Verification Checks
 
-`verificationChecks` の ID と base metadata は `packages/verification/src/verification/verification-checks.ts` が単一ソースである。
+`verification.checks` の ID と base metadata は `packages/verification/src/verification/verification-checks.ts` が単一ソースである。
 ドキュメント上の一覧は説明用であり、変更時はコードとテストを優先する。
 
 | Stage    | Checks                                                                                                                                                                                                                                                                                                                  |
@@ -283,7 +284,7 @@ Required / optional の扱い:
 - Counted 10 checks は required。
 - STARK 2 checks は required。
 
-`verificationSteps[].status` は、各 stage の required checks から導出する。手で管理した subset や表示都合の
+`verification.steps[].status` は、各 stage の required checks から導出する。手で管理した subset や表示都合の
 状態を source of truth にしてはならない。
 
 ---
@@ -292,19 +293,21 @@ Required / optional の扱い:
 
 現行の verify flow は次の責務分担を持つ。
 
-| ステップ                     | 責務                                                                                               |
-| ---------------------------- | -------------------------------------------------------------------------------------------------- |
-| `GET /api/verify`            | Journal、bundle 状態、bulletin 情報、verification checks / steps を組み立てる。                    |
-| verify page                  | browser-local cast evidence を使って Cast checks を上書きし、UI sequence と verdict を制御する。   |
-| `POST /api/verification/run` | server-side verifier-service を起動し、receipt verification report を生成する。                    |
-| verifier-service             | `Receipt::verify(expectedImageId)` を実行し、receipt / journal / ImageID の検証結果を返す。        |
-| summary logic                | required checks、hard failures、exclusion signals、pending state から overall verdict を導出する。 |
+| ステップ                                                                                | 責務                                                                                                        |
+| --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification`               | strict grouped availability resource を組み立てる。`include=journal` で journal group を追加する。          |
+| local cast checks + shared presentation policy                                          | browser-local evidence を server checks に重ね、fail-closed display eligibility を一箇所で導出する。        |
+| `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification`              | strict empty body で server-side verifier-service を起動する。                                              |
+| `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification/observations` | telemetry-only `{ castChecks: ... }` を exact finalization に記録する。                                     |
+| verifier-service                                                                        | `Receipt::verify(expectedImageId)` を実行し、receipt / journal / ImageID の検証結果を返す。                 |
+| shared presentation policy                                                              | required checks、hard failures、exclusion signals、pending state から presentation eligibility を導出する。 |
 
-`GET /api/verify` は current finalized authority を復元できる場合、検証失敗を示すデータであっても原則として
-payload を返す。unsupported artifact や corrupt artifact は fail-closed payload として扱う。
+verification GET は current finalized authority を復元できる場合、検証失敗を示すデータであっても
+available payload を返す。unsupported artifact や corrupt artifact は
+`availability: "unavailable" | "corrupt"` の fail-closed resource として扱う。
 
-Session-scoped endpoint では capability token を要求する。検証系 endpoint で capability を緩める場合は、
-契約文書、handler、caller、route tests を同時に更新する必要がある。
+3 route とも path の `sessionId` / `finalizationId` と `X-Session-Capability` だけを
+authority とし、body identity と path/finalization mismatch を拒否する。
 
 ---
 
@@ -331,7 +334,9 @@ Bitmap contract:
 - bit order は LSB-first。
 - 32 バイト chunk に pack し、不足分は zero padding する。
 - chunk leaf は CT-style leaf hash を使う。
-- private bitmap artifact は `/api/bitmap-proof` の trusted source であり、public bundle には含めない。
+- private bitmap artifact は
+  `/api/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex` の trusted source
+  であり、public bundle には含めない。
 
 Privacy trade-off:
 
@@ -482,28 +487,41 @@ SHA-256 commitment の第二原像困難性により、commitment 後に別の�
 
 主要 API と責務は次の通り。
 
-| Endpoint                                                     | Method | 責務                                                                                                                                                                                                                          |
-| ------------------------------------------------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/api/session`                                               | POST   | session 作成と capability token 発行。                                                                                                                                                                                        |
-| `/api/vote`                                                  | POST   | ユーザー投票を記録し、receipt 情報を返す。                                                                                                                                                                                    |
-| `/api/progress`                                              | GET    | Bot 投票進捗。                                                                                                                                                                                                                |
-| `/api/finalize`                                              | POST   | finalize / zkVM proof generation の開始。                                                                                                                                                                                     |
-| `/api/sessions/{sessionId}/status`                           | GET    | async finalize status。                                                                                                                                                                                                       |
-| `/api/finalize/callback`                                     | POST   | async prover callback。                                                                                                                                                                                                       |
-| `/api/finalize/cancel`                                       | POST   | finalize cancel。                                                                                                                                                                                                             |
-| `/api/verify`                                                | GET    | verification data, checks, steps を返す。                                                                                                                                                                                     |
-| `/api/verification/run`                                      | POST   | server-side receipt verification を実行する。                                                                                                                                                                                 |
-| `/api/verification/bundles/{sessionId}/{executionId}`        | GET    | public bundle を返す。                                                                                                                                                                                                        |
-| `/api/verification/bundles/{sessionId}/{executionId}/report` | GET    | protected verification report を返す。                                                                                                                                                                                        |
-| `/api/bulletin`                                              | GET    | 現行 retained owner-scoped bulletin inspection。Target 通常 public browser/CLI contract では full-bulletin inspection を public surface として扱わず、残す場合は retained owner-scoped または internal/operator-only に分類。 |
-| `/api/bulletin/{voteId}/proof`                               | GET    | session-authorized vote proof。                                                                                                                                                                                               |
-| `/api/bulletin/consistency-proof`                            | GET    | append-only consistency proof。                                                                                                                                                                                               |
-| `/api/bitmap-proof`                                          | GET    | included / seen bitmap proof material。                                                                                                                                                                                       |
-| `/api/zkvm-input-hash`                                       | GET    | hash-only owner-scoped evidence。Private `includeData` variants は現行 legacy/private inspection で、target 通常 contract では retired/rejected/non-public。                                                                  |
-| `/api/botdata/{id}`                                          | GET    | retired / unregistered。Hono route inventory には登録せず、通常 public browser/CLI API では公開しない。contract metadata は fail-closed 監査用に残す。                                                                        |
-| `/api/sth`                                                   | GET    | STH source for verification/tests。                                                                                                                                                                                           |
+| Endpoint                                                                             | Method | 責務                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/api/sessions`                                                                      | POST   | session 作成、capability token、artifact contract ID の発行。                                                                                                                        |
+| `/api/sessions/{sessionId}/votes`                                                    | POST   | path の session と capability を検証し、ユーザー投票を記録して receipt 情報を返す。                                                                                                  |
+| `/api/sessions/{sessionId}/progress`                                                 | GET    | path の session と capability に対応する Bot 投票進捗。                                                                                                                              |
+| `/api/sessions/{sessionId}/finalizations`                                            | POST   | finalize / zkVM proof generation の開始。                                                                                                                                            |
+| `/api/sessions/{sessionId}/finalizations/current`                                    | GET    | current finalization resource。                                                                                                                                                      |
+| `/api/internal/sessions/{sessionId}/finalizations/{finalizationId}/callback`         | POST   | API-local internal HMAC callback。public route inventory / CORS / API Gateway mode の外側。                                                                                          |
+| `/api/sessions/{sessionId}/finalizations/{finalizationId}/cancel`                    | POST   | matching pending/running finalization の cancel。                                                                                                                                    |
+| `/api/sessions/{sessionId}/finalizations/{finalizationId}/verification`              | GET    | strict grouped availability resource を返す。`include=journal` だけが journal group の opt-in。                                                                                      |
+| `/api/sessions/{sessionId}/finalizations/{finalizationId}/verification`              | POST   | strict empty body で server-side receipt verification を実行する。                                                                                                                   |
+| `/api/sessions/{sessionId}/finalizations/{finalizationId}/verification/observations` | POST   | telemetry-only `{ castChecks: ... }` を exact finalization に記録する。                                                                                                              |
+| `/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/bundle`          | GET    | admitted public bundle を返す。                                                                                                                                                      |
+| `/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/report`          | GET    | protected verification report の exact bytes を返す。                                                                                                                                |
+| `/api/sessions/{sessionId}/bulletin`                                                 | GET    | 現行 retained owner-scoped bulletin inspection。Target 通常 public browser/CLI contract では full-bulletin inspection を public surface として扱わず、retained owner-scoped に分類。 |
+| `/api/sessions/{sessionId}/votes/{voteId}/inclusion-proof`                           | GET    | session-authorized vote proof。                                                                                                                                                      |
+| `/api/sessions/{sessionId}/bulletin/consistency-proof`                               | GET    | append-only consistency proof。                                                                                                                                                      |
+| `/api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}/{voteIndex}`   | GET    | included / seen bitmap proof material。                                                                                                                                              |
+| `/api/sessions/{sessionId}/finalizations/current/input-commitment`                   | GET    | hash-only owner-scoped evidence。Private input を選択する query/path variant は存在しない。                                                                                          |
+| `/api/sessions/{sessionId}/bulletin/sth`                                             | GET    | same-origin STH source for verification/tests。External HTTPS auditor は capability/session header なしで直接取得する。                                                              |
 
-`apps/api/src/server/api/routes/definitions.ts` が framework-neutral route inventory であり、共有 handler と Hono route binding の source of truth にする。
+`packages/api-contract/src/routes/inventory.ts` が schema-carrying route inventory
+であり、`apps/api/src/server/api/routes/definitions.ts` は runtime route set を選択する。
+`apps/api/src/server/api/routes/hono.ts` が共有 handler を binding し、同じ typed route
+定義から transport admission を行う。
+
+create/current/cancel と3つの verification route は path の `sessionId` と
+`X-Session-Capability` を authority とする。verification route は path の exact
+`finalizationId` も authority とし、body/header identity fallback を持たない。
+同じ discriminated `FinalizationResource` と一つの `finalizationId` を lifecycle、
+verification work / observation、artifact locator まで使う。
+repository event/message の snake_case field は `finalization_id` で、別 identity へ
+fallback しない。queue record は `recordType: "prover-work"` または
+`recordType: "verification-work"` で識別する。これらは proof input、journal、ImageID、
+Merkle、verdict semantics を変更しない transport/lifecycle contract である。
 
 ---
 

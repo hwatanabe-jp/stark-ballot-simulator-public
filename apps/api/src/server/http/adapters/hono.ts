@@ -1,16 +1,19 @@
 import type { Context } from 'hono';
 import { getConnInfo as getAwsLambdaConnInfo } from 'hono/aws-lambda';
-import type { ApiContext, ApiContextStore, ApiParams } from '../../api/context';
+import type { ApiHandlerContext, ApiContextStore } from '../../api/context';
 import { getRequestIp } from '../../api/security/turnstile';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 /**
  * Input for converting a Hono request to an ApiContext.
  */
-export interface HonoAdapterInput<TParams extends ApiParams> {
+export interface HonoAdapterInput {
   context: Context;
+  runtimeProfile: ResolvedRuntimeProfile;
   store: ApiContextStore;
-  params?: TParams;
+  requestId: string;
+  operatorGatedDevelop: boolean;
   fallbackIp?: string | null;
 }
 
@@ -89,15 +92,18 @@ export function resolveAwsRequestId(context: HonoEnvContextLike): string | null 
 /**
  * Convert a Hono Context to a framework-agnostic ApiContext.
  */
-export function toApiContext<TParams extends ApiParams>(input: HonoAdapterInput<TParams>): ApiContext<TParams> {
-  const { context, store, params, fallbackIp } = input;
+export function toApiHandlerContext(input: HonoAdapterInput): ApiHandlerContext {
+  const { context, runtimeProfile, store, requestId, operatorGatedDevelop, fallbackIp } = input;
   const request = context.req.raw;
   const effectiveFallbackIp = fallbackIp ?? resolveAwsSourceIp(context);
-  const clientIp = getRequestIp(request.headers, effectiveFallbackIp);
+  const clientIp = getRequestIp(runtimeProfile, request.headers, effectiveFallbackIp);
 
   return {
-    request,
+    runtimeProfile,
     store,
-    ...omitUndefinedProperties({ params, clientIp }),
+    requestId,
+    requestOrigin: new URL(request.url).origin,
+    operatorGatedDevelop,
+    ...omitUndefinedProperties({ clientIp }),
   };
 }

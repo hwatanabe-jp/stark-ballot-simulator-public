@@ -2,17 +2,21 @@
   "name": "@stark-ballot/api",
   "private": true,
   "type": "module",
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec eslint apps/api",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/api",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server/index.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-lambda": "3.1091.0",
-    "@aws-sdk/client-sfn": "3.1091.0",
-    "@aws-sdk/client-sqs": "3.1091.0",
+    "@aws-sdk/client-sfn": "catalog:aws-sdk",
     "@stark-ballot/api-contract": "workspace:*",
     "@stark-ballot/application": "workspace:*",
     "@stark-ballot/aws-adapters": "workspace:*",
+    "@stark-ballot/crypto-primitives": "workspace:*",
     "@stark-ballot/diagnostics": "workspace:*",
     "@stark-ballot/domain": "workspace:*",
     "@stark-ballot/node-adapters": "workspace:*",
@@ -20,11 +24,11 @@
     "@stark-ballot/validation": "workspace:*",
     "@stark-ballot/verification": "workspace:*",
     "@stark-ballot/zkvm-contract": "workspace:*",
-    "hono": "4.12.31"
+    "hono": "4.13.1"
   },
   "devDependencies": {
-    "@aws-sdk/lib-dynamodb": "3.1091.0",
+    "@aws-sdk/lib-dynamodb": "catalog:aws-sdk",
     "@stark-ballot/test-support": "workspace:*",
-    "vitest": "4.1.10"
+    "vitest": "catalog:testing"
   }
 }

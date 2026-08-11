@@ -2,17 +2,22 @@
   "name": "@stark-ballot/zkvm-contract",
   "private": true,
   "type": "module",
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec eslint packages/zkvm-contract",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/zkvm-contract",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./zkvm/bitmap": "./src/zkvm/bitmap.ts",
     "./zkvm/bitmap-artifacts": "./src/zkvm/bitmap-artifacts.ts",
+    "./zkvm/bitmap-core": "./src/zkvm/bitmap-core.ts",
     "./zkvm/contract-constants": "./src/zkvm/contract-constants.ts",
     "./zkvm/election-config": "./src/zkvm/election-config.ts",
     "./zkvm/guards": "./src/zkvm/guards.ts",
     "./zkvm/hex": "./src/zkvm/hex.ts",
     "./zkvm/host-io": "./src/zkvm/host-io.ts",
     "./zkvm/identifiers": "./src/zkvm/identifiers.ts",
-    "./zkvm/journal-count-compat": "./src/zkvm/journal-count-compat.ts",
     "./zkvm/journal-guards": "./src/zkvm/journal-guards.ts",
     "./zkvm/log-id": "./src/zkvm/log-id.ts",
     "./zkvm/public-journal": "./src/zkvm/public-journal.ts",
@@ -22,10 +27,10 @@
     "./zkvm/work-budget": "./src/zkvm/work-budget.ts"
   },
   "dependencies": {
-    "@noble/hashes": "2.2.0"
+    "@noble/hashes": "catalog:crypto-testing"
   },
   "devDependencies": {
-    "fast-check": "4.9.0",
-    "vitest": "4.1.10"
+    "fast-check": "catalog:crypto-testing",
+    "vitest": "catalog:testing"
   }
 }

@@ -1,4 +1,5 @@
 import { VOTE_CHOICES, type VoteChoice } from '@stark-ballot/verification/shared/constants';
+import type { FinalizationResource } from '@stark-ballot/api-contract';
 import type {
   PublicVerificationErrorMessage,
   PublicVerificationReport,
@@ -6,27 +7,23 @@ import type {
   VerificationStatus,
 } from '@stark-ballot/verification/shared/types';
 import { sanitizeFinalizationPayloadVerificationStatus } from '@stark-ballot/verification/fail-closed-status';
-import { isValidHexString, normalizeHexString } from '@stark-ballot/verification/shared/hex';
+import { isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import {
   getArrayProperty,
   getNumberProperty,
   getRecordProperty,
   getStringProperty,
   isRecord,
-} from '@stark-ballot/verification/shared/guards';
+} from '@stark-ballot/validation/unknown-value-guards';
 import { isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import { toPublicZkvmJournal } from '@stark-ballot/zkvm-contract/zkvm/public-journal';
 import {
   resolveFinalizationTamperDetected,
   resolveScenarioTamperCount,
-} from '@stark-ballot/web/finalize/finalization-tamper';
-import { isSafeVerifierSegment } from '@stark-ballot/web/verification/verifier-paths';
+} from '@stark-ballot/verification/finalization-tamper';
 import { isPublicVerificationErrorMessage } from '@stark-ballot/verification/public-result';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
-
-type ClientVerificationResult = PublicVerificationResult & {
-  executionId?: string;
-};
+import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
 
 interface ClientFinalizationReceiptPublication {
   receiptHash: string;
@@ -42,6 +39,7 @@ interface ClientFinalizationTamperSummary {
 }
 
 export interface ClientFinalizationSnapshot {
+  finalizationId: string;
   tally: {
     counts: Record<VoteChoice, number>;
     totalVotes: number;
@@ -52,7 +50,6 @@ export interface ClientFinalizationSnapshot {
   tamperDetected?: boolean;
   scenarios?: string[];
   journal: ReturnType<typeof toPublicZkvmJournal>;
-  verificationExecutionId?: string;
   tamperSummary?: ClientFinalizationTamperSummary;
   bulletinRoot: string;
   verifiedTally: number[];
@@ -68,7 +65,7 @@ export interface ClientFinalizationSnapshot {
   inputCommitment: string;
   seenIndicesCount: number;
   verificationStatus?: VerificationStatus;
-  verificationResult?: ClientVerificationResult;
+  verificationResult?: PublicVerificationResult;
 }
 
 const IMAGE_ID_BYTE_LENGTH = 32;
@@ -80,9 +77,9 @@ const VERIFICATION_STATUS_VALUES: readonly VerificationStatus[] = [
   'running',
 ];
 
-function getSafeVerificationExecutionId(value: Record<string, unknown>): string | undefined {
-  const executionId = getStringProperty(value, 'verificationExecutionId');
-  return executionId && isSafeVerifierSegment(executionId) ? executionId : undefined;
+function getSafeFinalizationId(value: Record<string, unknown>): string | undefined {
+  const finalizationId = getStringProperty(value, 'finalizationId');
+  return finalizationId && isSafeVerifierSegment(finalizationId) ? finalizationId : undefined;
 }
 
 function toVerificationStatus(value: unknown): VerificationStatus | undefined {
@@ -243,7 +240,7 @@ function resolveVerificationReport(value: Record<string, unknown>): PublicVerifi
 function resolveVerificationResult(
   value: Record<string, unknown>,
   verificationStatus: VerificationStatus | undefined,
-): ClientVerificationResult | undefined {
+): PublicVerificationResult | undefined {
   const verificationResult = getRecordProperty(value, 'verificationResult');
   const status = verificationStatus ?? toVerificationStatus(getStringProperty(verificationResult, 'status'));
   if (!status) {
@@ -251,12 +248,10 @@ function resolveVerificationResult(
   }
 
   const report = resolveVerificationReport(value);
-  const executionId = getSafeVerificationExecutionId(value);
 
   return {
     status,
     ...(report ? { report } : {}),
-    ...(executionId ? { executionId } : {}),
   };
 }
 
@@ -283,11 +278,7 @@ export function resolveClientFinalizationVerificationStatus(
     return undefined;
   }
 
-  return (
-    snapshot.verificationStatus ??
-    snapshot.verificationResult?.status ??
-    (snapshot.verificationExecutionId ? 'running' : undefined)
-  );
+  return snapshot.verificationStatus ?? snapshot.verificationResult?.status;
 }
 
 /**
@@ -300,6 +291,10 @@ export function resolveCanonicalFinalizationPayload(value: unknown): ClientFinal
   }
 
   const sanitized = sanitizeFinalizationPayloadVerificationStatus(value);
+  const finalizationId = getSafeFinalizationId(sanitized);
+  if (!finalizationId) {
+    return null;
+  }
   const journalValue = getRecordProperty(sanitized, 'journal');
   if (!isSupportedZkVMJournal(journalValue)) {
     return null;
@@ -322,10 +317,10 @@ export function resolveCanonicalFinalizationPayload(value: unknown): ClientFinal
   const receiptPublication = resolveReceiptPublication(sanitized);
   const scenarios = resolveScenarios(sanitized);
   const verificationResult = resolveVerificationResult(sanitized, verificationStatus);
-  const verificationExecutionId = getSafeVerificationExecutionId(sanitized);
   const tamperSummary = resolveTamperSummary(sanitized);
 
   return {
+    finalizationId,
     tally,
     ...(receiptPublication ? { receiptPublication } : {}),
     imageId,
@@ -340,7 +335,6 @@ export function resolveCanonicalFinalizationPayload(value: unknown): ClientFinal
     journal,
     ...(verificationStatus ? { verificationStatus } : {}),
     ...(verificationResult ? { verificationResult } : {}),
-    ...(verificationExecutionId ? { verificationExecutionId } : {}),
     ...(tamperSummary ? { tamperSummary } : {}),
     bulletinRoot: journal.bulletinRoot,
     verifiedTally: [...journal.verifiedTally],
@@ -356,6 +350,33 @@ export function resolveCanonicalFinalizationPayload(value: unknown): ClientFinal
     inputCommitment: journal.inputCommitment,
     seenIndicesCount: journal.seenIndicesCount,
   };
+}
+
+/**
+ * Projects the public succeeded resource into the minimal browser snapshot.
+ * Voter-private evidence stays behind the verification gate and is never
+ * copied into the finalization cache.
+ */
+export function projectFinalizationResourceToClientSnapshot(
+  resource: FinalizationResource,
+): ClientFinalizationSnapshot | null {
+  if (resource.status !== 'succeeded') {
+    return null;
+  }
+
+  const { authority, presentation, voterEvidence } = resource.result;
+  return resolveCanonicalFinalizationPayload({
+    finalizationId: resource.finalizationId,
+    tally: presentation.tally,
+    imageId: authority.imageId,
+    journal: authority.journal,
+    tamperDetected: presentation.tamperDetected,
+    scenarios: presentation.scenarios,
+    tamperSummary: presentation.tamperSummary,
+    verificationStatus: presentation.verificationStatus,
+    verificationReport: presentation.verificationReport,
+    receiptPublication: voterEvidence.receiptPublication,
+  });
 }
 
 export function projectClientFinalizationSnapshotForKnowledge(

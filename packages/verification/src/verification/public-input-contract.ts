@@ -6,8 +6,8 @@ import {
   getRecordProperty,
   getStringProperty,
   isRecord,
-} from '@stark-ballot/verification/shared/guards';
-import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/verification/shared/hex';
+} from '@stark-ballot/validation/unknown-value-guards';
+import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 export const PUBLIC_INPUT_SCHEMA = 'stark-ballot.public_input';
@@ -17,7 +17,7 @@ export type PublicInputArtifactSource = 'bundle' | 'generated';
 
 export interface PublicInputArtifactProvenance {
   source?: PublicInputArtifactSource;
-  executionId?: string;
+  finalizationId?: string;
   bundleKey?: string;
 }
 
@@ -39,13 +39,11 @@ export interface PublicInputArtifactRecord {
   timestamp: number;
   methodVersion: number;
   votes: PublicInputArtifactVote[];
-  contractGeneration: string;
 }
 
-export interface PublicInputCompatibilityMarker {
+export interface PublicInputArtifactFormat {
   schema?: string;
   version?: string;
-  contractGeneration?: string;
 }
 
 export interface PublicInputObservedFields {
@@ -79,17 +77,16 @@ export interface PublicInputTypedAuthority {
 }
 
 export interface SupportedPublicInputArtifact {
-  compatibilityMarker: {
+  format: {
     schema: typeof PUBLIC_INPUT_SCHEMA;
     version: typeof PUBLIC_INPUT_VERSION;
-    contractGeneration: string;
   };
   provenance: PublicInputArtifactProvenance;
   typedAuthority: PublicInputTypedAuthority;
 }
 
 export interface ParsedPublicInputArtifact {
-  compatibilityMarker: PublicInputCompatibilityMarker;
+  format: PublicInputArtifactFormat;
   provenance: PublicInputArtifactProvenance;
   observed: PublicInputObservedFields;
   typedAuthority?: PublicInputTypedAuthority;
@@ -98,17 +95,48 @@ export interface ParsedPublicInputArtifact {
 }
 
 const EMPTY_HEX_32 = `0x${'0'.repeat(64)}`;
+const PUBLIC_INPUT_KEYS = new Set([
+  'schema',
+  'version',
+  'electionId',
+  'electionConfigHash',
+  'bulletinRoot',
+  'treeSize',
+  'totalExpected',
+  'logId',
+  'timestamp',
+  'methodVersion',
+  'votes',
+]);
+const PUBLIC_INPUT_VOTE_KEYS = new Set(['index', 'commitment', 'merklePath']);
+const STORED_PUBLIC_INPUT_KEYS = new Set(['format', 'provenance', 'typedAuthority']);
+const PUBLIC_INPUT_FORMAT_KEYS = new Set(['schema', 'version']);
+const PUBLIC_INPUT_PROVENANCE_KEYS = new Set(['source', 'finalizationId', 'bundleKey']);
+const PUBLIC_INPUT_AUTHORITY_KEYS = new Set([
+  'electionId',
+  'electionConfigHash',
+  'methodVersion',
+  'bulletinRoot',
+  'treeSize',
+  'totalExpected',
+  'votesCount',
+  'uniqueIndices',
+  'uniqueCommitments',
+  'logId',
+  'timestamp',
+  'recomputedInputCommitment',
+]);
+
+function unexpectedKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): string[] {
+  return Object.keys(value)
+    .filter((key) => !allowed.has(key))
+    .map((key) => `unexpected_key:${key}`);
+}
 
 export function buildPublicInputArtifactFromZkvmInput(
   input: ZkVMInput,
   methodVersion: number,
-  contractGeneration: string,
 ): PublicInputArtifactRecord {
-  const normalizedContractGeneration = contractGeneration.trim();
-  if (!normalizedContractGeneration) {
-    throw new Error('contractGeneration is required for public-input artifacts');
-  }
-
   return {
     schema: PUBLIC_INPUT_SCHEMA,
     version: PUBLIC_INPUT_VERSION,
@@ -120,7 +148,6 @@ export function buildPublicInputArtifactFromZkvmInput(
     logId: input.logId,
     timestamp: input.timestamp,
     methodVersion,
-    contractGeneration: normalizedContractGeneration,
     votes: input.votes.map((vote) => ({
       index: vote.index,
       commitment: vote.commitment,
@@ -134,7 +161,7 @@ export function parsePublicInputArtifact(
   options: PublicInputArtifactProvenance = {},
 ): ParsedPublicInputArtifact {
   const errors: string[] = [];
-  const compatibilityMarker: PublicInputCompatibilityMarker = {};
+  const format: PublicInputArtifactFormat = {};
   const observed: PublicInputObservedFields = {
     votesCount: 0,
     treeSize: 0,
@@ -145,16 +172,17 @@ export function parsePublicInputArtifact(
 
   if (!isRecord(raw)) {
     return finalizeParsedPublicInput({
-      compatibilityMarker,
+      format,
       provenance: options,
       observed,
       errors: ['public_input_not_record'],
     });
   }
+  errors.push(...unexpectedKeys(raw, PUBLIC_INPUT_KEYS));
 
   const schema = getStringProperty(raw, 'schema');
   if (schema) {
-    compatibilityMarker.schema = schema;
+    format.schema = schema;
   }
   if (schema !== PUBLIC_INPUT_SCHEMA) {
     errors.push('schema');
@@ -162,17 +190,10 @@ export function parsePublicInputArtifact(
 
   const version = getStringProperty(raw, 'version');
   if (version) {
-    compatibilityMarker.version = version;
+    format.version = version;
   }
   if (version !== PUBLIC_INPUT_VERSION) {
     errors.push('version');
-  }
-
-  const contractGeneration = getStringProperty(raw, 'contractGeneration');
-  if (!contractGeneration || contractGeneration.trim().length === 0) {
-    errors.push('contractGeneration');
-  } else {
-    compatibilityMarker.contractGeneration = contractGeneration.trim();
   }
 
   const electionId = getStringProperty(raw, 'electionId');
@@ -234,7 +255,7 @@ export function parsePublicInputArtifact(
   const votes = getArrayProperty(raw, 'votes');
   if (!votes) {
     return finalizeParsedPublicInput({
-      compatibilityMarker,
+      format,
       provenance: options,
       observed,
       errors: [...errors, 'votes'],
@@ -252,6 +273,7 @@ export function parsePublicInputArtifact(
       errors.push('vote_record');
       continue;
     }
+    errors.push(...unexpectedKeys(voteEntry, PUBLIC_INPUT_VOTE_KEYS));
 
     const index = getNumberProperty(voteEntry, 'index');
     if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
@@ -341,7 +363,7 @@ export function parsePublicInputArtifact(
       : undefined;
 
   return finalizeParsedPublicInput({
-    compatibilityMarker,
+    format,
     provenance: options,
     observed,
     ...omitUndefinedProperties({ typedAuthority: typedAuthority }),
@@ -359,24 +381,19 @@ function finalizeParsedPublicInput(input: Omit<ParsedPublicInputArtifact, 'valid
 export function toSupportedPublicInputArtifact(
   parsed: ParsedPublicInputArtifact,
 ): SupportedPublicInputArtifact | undefined {
-  const contractGeneration = parsed.compatibilityMarker.contractGeneration;
-
   if (
     !parsed.valid ||
     !parsed.typedAuthority ||
-    parsed.compatibilityMarker.schema !== PUBLIC_INPUT_SCHEMA ||
-    parsed.compatibilityMarker.version !== PUBLIC_INPUT_VERSION ||
-    typeof contractGeneration !== 'string' ||
-    contractGeneration.length === 0
+    parsed.format.schema !== PUBLIC_INPUT_SCHEMA ||
+    parsed.format.version !== PUBLIC_INPUT_VERSION
   ) {
     return undefined;
   }
 
   return {
-    compatibilityMarker: {
+    format: {
       schema: PUBLIC_INPUT_SCHEMA,
       version: PUBLIC_INPUT_VERSION,
-      contractGeneration,
     },
     provenance: { ...parsed.provenance },
     ...omitUndefinedProperties({ typedAuthority: { ...parsed.typedAuthority } }),
@@ -386,13 +403,9 @@ export function toSupportedPublicInputArtifact(
 export function buildSupportedPublicInputArtifactFromZkvmInput(
   input: ZkVMInput,
   methodVersion: number,
-  contractGeneration: string,
   options: PublicInputArtifactProvenance = {},
 ): SupportedPublicInputArtifact {
-  const parsed = parsePublicInputArtifact(
-    buildPublicInputArtifactFromZkvmInput(input, methodVersion, contractGeneration),
-    options,
-  );
+  const parsed = parsePublicInputArtifact(buildPublicInputArtifactFromZkvmInput(input, methodVersion), options);
   const supported = toSupportedPublicInputArtifact(parsed);
 
   if (!supported) {
@@ -410,21 +423,30 @@ export function parseSupportedPublicInputArtifact(
 }
 
 export function parseStoredPublicInputArtifact(value: unknown): SupportedPublicInputArtifact | undefined {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || Array.isArray(value) || unexpectedKeys(value, STORED_PUBLIC_INPUT_KEYS).length > 0) {
     return undefined;
   }
 
-  const compatibilityMarker = getRecordProperty(value, 'compatibilityMarker');
+  const format = getRecordProperty(value, 'format');
   const provenance = getRecordProperty(value, 'provenance');
   const typedAuthority = getRecordProperty(value, 'typedAuthority');
-  if (!compatibilityMarker || !provenance || !typedAuthority) {
+  if (
+    !format ||
+    Array.isArray(format) ||
+    unexpectedKeys(format, PUBLIC_INPUT_FORMAT_KEYS).length > 0 ||
+    !provenance ||
+    Array.isArray(provenance) ||
+    unexpectedKeys(provenance, PUBLIC_INPUT_PROVENANCE_KEYS).length > 0 ||
+    !typedAuthority ||
+    Array.isArray(typedAuthority) ||
+    unexpectedKeys(typedAuthority, PUBLIC_INPUT_AUTHORITY_KEYS).length > 0
+  ) {
     return undefined;
   }
 
-  const schema = getStringProperty(compatibilityMarker, 'schema');
-  const version = getStringProperty(compatibilityMarker, 'version');
-  const contractGeneration = getStringProperty(compatibilityMarker, 'contractGeneration');
-  if (schema !== PUBLIC_INPUT_SCHEMA || version !== PUBLIC_INPUT_VERSION || !contractGeneration?.trim()) {
+  const schema = getStringProperty(format, 'schema');
+  const version = getStringProperty(format, 'version');
+  if (schema !== PUBLIC_INPUT_SCHEMA || version !== PUBLIC_INPUT_VERSION) {
     return undefined;
   }
 
@@ -470,18 +492,17 @@ export function parseStoredPublicInputArtifact(value: unknown): SupportedPublicI
     return undefined;
   }
 
-  const executionId = getStringProperty(provenance, 'executionId');
+  const finalizationId = getStringProperty(provenance, 'finalizationId');
   const bundleKey = getStringProperty(provenance, 'bundleKey');
 
   return {
-    compatibilityMarker: {
+    format: {
       schema: PUBLIC_INPUT_SCHEMA,
       version: PUBLIC_INPUT_VERSION,
-      contractGeneration: contractGeneration.trim(),
     },
     provenance: {
       source,
-      ...(executionId ? { executionId } : {}),
+      ...(finalizationId ? { finalizationId } : {}),
       ...(bundleKey ? { bundleKey } : {}),
     },
     typedAuthority: {

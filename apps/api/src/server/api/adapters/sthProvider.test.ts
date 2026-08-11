@@ -1,10 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
-import { admitSthProviderResponse, resolveSthVerificationFromProviders } from './sthProvider';
+import {
+  SESSION_STH_SOURCE_TEMPLATE,
+  acquireSthEvidenceFromProviders,
+  admitExternalSthProviderResponse,
+  resolveSthVerificationFromProviders,
+} from './sthProvider';
 
 const baseJournal = {
   sthDigest: `0x${'a'.repeat(64)}`,
   bulletinRoot: `0x${'b'.repeat(64)}`,
   treeSize: 64,
+};
+
+const canonicalSthRecord = {
+  ...baseJournal,
+  timestamp: 1_730_000_000_000,
+  logId: 'log-1',
 };
 
 function response(body: unknown, init: ResponseInit = {}): Response {
@@ -15,150 +26,141 @@ function response(body: unknown, init: ResponseInit = {}): Response {
   });
 }
 
-describe('admitSthProviderResponse', () => {
-  it('admits wrapped and unwrapped STH provider records', () => {
-    expect(
-      admitSthProviderResponse('https://auditor.example/sth', {
-        sth: {
-          sthDigest: baseJournal.sthDigest,
-          bulletinRoot: baseJournal.bulletinRoot,
-          treeSize: baseJournal.treeSize,
-          log_id: 'log-1',
-        },
-      }),
-    ).toEqual({
+describe('admitExternalSthProviderResponse', () => {
+  it('admits only the canonical flat external-auditor record', () => {
+    expect(admitExternalSthProviderResponse('https://auditor.example/sth', canonicalSthRecord)).toEqual({
       source: 'https://auditor.example/sth',
-      sthDigest: baseJournal.sthDigest,
-      bulletinRoot: baseJournal.bulletinRoot,
-      treeSize: baseJournal.treeSize,
-      logId: 'log-1',
+      ...canonicalSthRecord,
     });
   });
 
-  it('rejects malformed provider records fail-closed', () => {
-    expect(admitSthProviderResponse('https://auditor.example/sth', { sth: { treeSize: 64 } })).toBeNull();
-    expect(admitSthProviderResponse('https://auditor.example/sth', 'not json')).toBeNull();
+  it.each([
+    ['same-origin wrapper', { sth: canonicalSthRecord }],
+    ['digest alias', { ...canonicalSthRecord, sthDigest: undefined, digest: baseJournal.sthDigest }],
+    ['root alias', { ...canonicalSthRecord, bulletinRoot: undefined, root: baseJournal.bulletinRoot }],
+    ['log ID alias', { ...canonicalSthRecord, logId: undefined, log_id: 'log-1' }],
+  ])('rejects the %s instead of applying a provider fallback', (_case, providerRecord) => {
+    expect(admitExternalSthProviderResponse('https://auditor.example/sth', providerRecord)).toBeNull();
   });
 
   it.each([
-    ['treeSize', { ...baseJournal, treeSize: 'bad' }],
-    ['bulletinRoot', { ...baseJournal, bulletinRoot: 123 }],
-    ['timestamp', { ...baseJournal, timestamp: Number.NaN }],
-    ['logId', { ...baseJournal, logId: '' }],
-  ])('rejects present malformed %s fields fail-closed', (_field, providerRecord) => {
-    expect(admitSthProviderResponse('https://auditor.example/sth', providerRecord)).toBeNull();
+    ['treeSize', { ...canonicalSthRecord, treeSize: 'bad' }],
+    ['bulletinRoot', { ...canonicalSthRecord, bulletinRoot: 123 }],
+    ['timestamp', { ...canonicalSthRecord, timestamp: Number.NaN }],
+    ['logId', { ...canonicalSthRecord, logId: '' }],
+  ])('rejects a malformed canonical %s field fail-closed', (_field, providerRecord) => {
+    expect(admitExternalSthProviderResponse('https://auditor.example/sth', providerRecord)).toBeNull();
+  });
+});
+
+describe('acquireSthEvidenceFromProviders', () => {
+  it('resolves the exact same-origin template with the typed route builder and does not self-fetch', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    const sameOriginProvider = vi.fn().mockReturnValue({ sth: canonicalSthRecord });
+
+    const evidence = await acquireSthEvidenceFromProviders({
+      sources: [`${SESSION_STH_SOURCE_TEMPLATE}?auditorId=local-auditor`],
+      sessionId: 'session-1',
+      sameOriginProvider,
+      fetchImpl: fetchMock,
+    });
+
+    expect(sameOriginProvider).toHaveBeenCalledWith({
+      auditorId: 'local-auditor',
+      resolvedPath: '/api/sessions/session-1/bulletin/sth?auditorId=local-auditor',
+      sourceTemplate: `${SESSION_STH_SOURCE_TEMPLATE}?auditorId=local-auditor`,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(evidence).toEqual([
+      {
+        kind: 'admitted',
+        value: {
+          source: '/api/sessions/session-1/bulletin/sth?auditorId=local-auditor',
+          ...canonicalSthRecord,
+        },
+      },
+    ]);
   });
 
-  it('rejects malformed primary fields instead of falling back to valid aliases', () => {
-    expect(
-      admitSthProviderResponse('https://auditor.example/sth', {
-        ...baseJournal,
-        bulletinRoot: 123,
-        root: baseJournal.bulletinRoot,
-      }),
-    ).toBeNull();
+  it('treats absolute HTTPS URLs as external and never attaches repository auth headers', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(() => Promise.resolve(response(canonicalSthRecord)));
+    const sameOriginProvider = vi.fn();
+
+    const evidence = await acquireSthEvidenceFromProviders({
+      sources: ['https://app.example/auditor/sth', 'https://auditor.example/sth'],
+      sessionId: 'session-1',
+      sameOriginProvider,
+      fetchImpl: fetchMock,
+    });
+
+    expect(sameOriginProvider).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetchMock.mock.calls) {
+      const headers = new Headers(init?.headers);
+      expect(headers.get('X-Session-Capability')).toBeNull();
+    }
+    expect(evidence.every((item) => item.kind === 'admitted')).toBe(true);
+  });
+
+  it('classifies unavailable, malformed, and transport-failed evidence explicitly', async () => {
+    const missingLocal = await acquireSthEvidenceFromProviders({
+      sources: [SESSION_STH_SOURCE_TEMPLATE],
+      sessionId: 'session-1',
+      fetchImpl: vi.fn<typeof fetch>(),
+    });
+    expect(missingLocal[0]).toMatchObject({ kind: 'unavailable' });
+
+    const malformed = await acquireSthEvidenceFromProviders({
+      sources: ['/api/sth', 'https://auditor.example/sth'],
+      sessionId: 'session-1',
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(response({ sth: canonicalSthRecord })),
+    });
+    expect(malformed.map((item) => item.kind)).toEqual(['malformed', 'malformed']);
+
+    const transportFailed = await acquireSthEvidenceFromProviders({
+      sources: ['https://auditor.example/sth'],
+      sessionId: 'session-1',
+      fetchImpl: vi.fn<typeof fetch>().mockRejectedValue(new Error('network unavailable')),
+    });
+    expect(transportFailed[0]).toMatchObject({ kind: 'transport_failed' });
   });
 });
 
 describe('resolveSthVerificationFromProviders', () => {
-  it('forwards session auth headers only to same-origin sources', async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response(baseJournal));
-
-    await resolveSthVerificationFromProviders({
-      sources: ['/api/sth', 'https://app.example/api/sth-absolute', 'https://auditor.example/sth'],
-      journal: baseJournal,
-      minMatchingSources: 3,
-      sameOriginOrigin: 'https://app.example',
-      sameOriginHeaders: {
-        'X-Session-ID': 'session-1',
-        'X-Session-Capability': 'capability-token',
-      },
-      fetchImpl: fetchMock,
-    });
-
-    const sameOriginHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
-    const sameOriginAbsoluteHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers);
-    const crossOriginHeaders = new Headers(fetchMock.mock.calls[2]?.[1]?.headers);
-
-    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://app.example/api/sth');
-    expect(sameOriginHeaders.get('X-Session-ID')).toBe('session-1');
-    expect(sameOriginHeaders.get('X-Session-Capability')).toBe('capability-token');
-    expect(fetchMock.mock.calls[1]?.[0]).toBe('https://app.example/api/sth-absolute');
-    expect(sameOriginAbsoluteHeaders.get('X-Session-ID')).toBe('session-1');
-    expect(sameOriginAbsoluteHeaders.get('X-Session-Capability')).toBe('capability-token');
-    expect(crossOriginHeaders.get('X-Session-ID')).toBeNull();
-    expect(crossOriginHeaders.get('X-Session-Capability')).toBeNull();
-  });
-
-  it('does not forward session auth headers to protocol-relative cross-origin sources', async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response(baseJournal));
-
-    await resolveSthVerificationFromProviders({
-      sources: ['//evil.example/sth', '///evil.example/sth'],
-      journal: baseJournal,
-      minMatchingSources: 2,
-      sameOriginOrigin: 'https://app.example',
-      sameOriginHeaders: {
-        'X-Session-ID': 'session-1',
-        'X-Session-Capability': 'capability-token',
-      },
-      fetchImpl: fetchMock,
-    });
-
-    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://evil.example/sth');
-    expect(fetchMock.mock.calls[1]?.[0]).toBe('https://evil.example/sth');
-
-    for (const [, init] of fetchMock.mock.calls) {
-      const headers = new Headers(init?.headers);
-      expect(headers.get('X-Session-ID')).toBeNull();
-      expect(headers.get('X-Session-Capability')).toBeNull();
-    }
-  });
-
-  it('fails closed for malformed or non-JSON provider responses', async () => {
+  it('makes any malformed configured source fail consensus even when admitted records meet the threshold', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(response({ sth: { treeSize: 64 } }))
-      .mockResolvedValueOnce(new Response('not json', { status: 200, headers: { 'Content-Type': 'text/plain' } }));
+      .mockResolvedValueOnce(response(canonicalSthRecord))
+      .mockResolvedValueOnce(response({ sth: canonicalSthRecord }));
 
     const result = await resolveSthVerificationFromProviders({
       sources: ['https://auditor-a.example/sth', 'https://auditor-b.example/sth'],
+      sessionId: 'session-1',
       journal: baseJournal,
       minMatchingSources: 1,
       fetchImpl: fetchMock,
     });
 
     expect(result.verified).toBe(false);
-    expect(result.sourcesChecked).toBe(2);
-    expect(result.errors.join('\n')).toMatch(/Malformed STH response|Unexpected token|JSON/);
-  });
-
-  it('does not count malformed provider records toward the matching-source threshold', async () => {
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(response(baseJournal))
-      .mockResolvedValueOnce(response({ ...baseJournal, treeSize: 'bad' }));
-
-    const result = await resolveSthVerificationFromProviders({
-      sources: ['https://auditor-a.example/sth', 'https://auditor-b.example/sth'],
-      journal: baseJournal,
-      minMatchingSources: 2,
-      fetchImpl: fetchMock,
-    });
-
-    expect(result.verified).toBe(false);
     expect(result.matchingSources).toBe(1);
+    expect(result.sourcesChecked).toBe(2);
     expect(result.errors.join('\n')).toMatch(/Malformed STH response/);
   });
 
-  it('respects configured consensus and min-match behavior', async () => {
+  it('preserves consensus and min-match behavior for admitted evidence', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(response(baseJournal))
-      .mockResolvedValueOnce(response({ ...baseJournal, sthDigest: `0x${'c'.repeat(64)}` }));
+      .mockResolvedValueOnce(response(canonicalSthRecord))
+      .mockResolvedValueOnce(
+        response({
+          ...canonicalSthRecord,
+          sthDigest: `0x${'c'.repeat(64)}`,
+        }),
+      );
 
     const result = await resolveSthVerificationFromProviders({
       sources: ['https://auditor-a.example/sth', 'https://auditor-b.example/sth'],
+      sessionId: 'session-1',
       journal: baseJournal,
       minMatchingSources: 1,
       fetchImpl: fetchMock,

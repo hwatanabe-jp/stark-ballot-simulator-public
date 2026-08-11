@@ -23,8 +23,17 @@ function normalizePublicBaseUrl(raw: string): string | null {
   }
 }
 
-function resolveForwardedBaseUrl(headers: Headers): string | null {
-  const forwardedHost = headers.get('x-forwarded-host') ?? headers.get('host');
+export interface PublicBaseUrlRequestMetadata {
+  origin: string;
+  headers: {
+    Host?: string;
+    'X-Forwarded-Host'?: string;
+    'X-Forwarded-Proto'?: string;
+  };
+}
+
+function resolveForwardedBaseUrl(headers: PublicBaseUrlRequestMetadata['headers']): string | null {
+  const forwardedHost = headers['X-Forwarded-Host'] ?? headers.Host;
   if (!forwardedHost) {
     return null;
   }
@@ -34,14 +43,14 @@ function resolveForwardedBaseUrl(headers: Headers): string | null {
     return null;
   }
 
-  const forwardedProto = headers.get('x-forwarded-proto');
+  const forwardedProto = headers['X-Forwarded-Proto'];
   const proto = forwardedProto ? forwardedProto.split(',')[0]?.trim().toLowerCase() : '';
   const protocol = proto === 'http' || proto === 'https' ? proto : 'https';
 
   return `${protocol}://${host}`;
 }
 
-export function resolvePublicBaseUrl(request: Request): PublicBaseUrlResult {
+export function resolvePublicBaseUrl(request: PublicBaseUrlRequestMetadata): PublicBaseUrlResult {
   const base = process.env['VERIFIER_PUBLIC_BASE_URL'];
   if (base) {
     const normalized = normalizePublicBaseUrl(base);
@@ -61,7 +70,7 @@ export function resolvePublicBaseUrl(request: Request): PublicBaseUrlResult {
   }
 
   try {
-    return { ok: true, baseUrl: new URL(request.url).origin };
+    return { ok: true, baseUrl: new URL(request.origin).origin };
   } catch {
     return { ok: false, details: REQUEST_BASE_URL_MESSAGE };
   }

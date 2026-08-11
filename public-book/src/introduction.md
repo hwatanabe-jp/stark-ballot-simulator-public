@@ -1,6 +1,6 @@
 # はじめに
 
-> **最終更新:** 2026-07-29
+> **最終更新:** 2026-08-10
 
 このドキュメントは、`STARK Ballot Simulator` の公開向けガイドです。
 `STARK Ballot Simulator` は投票の完全性を段階的に検証する教育・ポートフォリオ向けの PoC であり、実運用の選挙基盤ではありません。
@@ -16,8 +16,8 @@
 本書は、ライブデモと公開用ソース snapshot の読者に向けたドキュメントです。
 公開 repository snapshot は [hwatanabe-jp/stark-ballot-simulator-public](https://github.com/hwatanabe-jp/stark-ballot-simulator-public) で確認できます。
 
-ソースコードへのアクセスが必要な再現手順は、対象リリースの公開 repository snapshot と照合して実行してください。
-`bundle.zip` だけで実行できる確認範囲は [第三者検証ガイド](reproducibility/index.md) にまとめています。
+再現手順は、対象リリースの `bundle.zip` と対応する公開 repository snapshot を照合して実行してください。
+必要な材料と `bundle.zip` 単体では揃わない証拠は [第三者検証ガイド](reproducibility/index.md) にまとめています。
 
 公開仕様は、runtime、検証、artifact の 3 つの境界を説明します。
 これらは利用者、監査者、実装追跡者が確認できる範囲です。
@@ -64,7 +64,8 @@
 9. [API リファレンス](api/index.md) でエンドポイント仕様を参照する
 10. 実際に検証する場合は [第三者検証ガイド](reproducibility/index.md) で `bundle.zip` を使ったローカル検証手順を実行する
 
-補助資料（[設計判断](decisions/index.md)、[アーキテクチャ語彙マップ（参考）](architecture-map.md)、[参考文献](appendix/references.md)）は必要になった時点で参照してください。
+PoC として受け入れている制約は [全体像](overview.md#poc-として受け入れている制約)、
+設計背景の一次資料は [参考文献](appendix/references.md) から参照してください。
 
 ### 読者別ルート
 
@@ -91,14 +92,14 @@
 3. [検証パイプライン](verification/index.md) でチェック評価、ゲーティング、公開境界を把握する
 4. [API リファレンス](api/index.md) でエンドポイント仕様と session-scoped 認可を確認する
 
-テストのレイヤー分担は [品質保証と形式手法](quality/index.md)、語彙とデータフローの俯瞰は [アーキテクチャ語彙マップ（参考）](architecture-map.md) を参照してください。
+テストのレイヤー分担は [品質保証と形式手法](quality/index.md) を参照してください。
 飛ばしてよい: [第三者検証ガイド](reproducibility/index.md)（実装変更後の動作確認には [改ざんシナリオ](tamper/index.md) を使う方が早い）
 
 #### 運用者向け
 
 AWS インフラ、非同期プローバー、デプロイを担当する読者向けです。
 
-1. [AWS runtime boundary](aws/runtime-boundary.md) で frontend、API、DynamoDB、async prover、artifact delivery の責務分担を把握する
+1. [AWS runtime 境界](aws/runtime-boundary.md) で frontend、API、DynamoDB、async prover、artifact delivery の責務分担を把握する
 2. [AWS アーキテクチャ](aws/index.md) で runtime 構成、環境分離、Terraform-managed infrastructure の連携点を把握する
 3. [非同期プローバー](aws/async-prover.md) で SQS、Step Functions、ECS の責務を理解する
 4. [可観測性設計](aws/observability.md) で構造化ログ、検出、相関、通知境界を確認する

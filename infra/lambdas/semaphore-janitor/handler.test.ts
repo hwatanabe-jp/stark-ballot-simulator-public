@@ -1,17 +1,21 @@
-/**
- * @vitest-environment node
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 import { RuntimeConfigValidationError } from '@stark-ballot/runtime-config/env/configValidationError';
+import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { REPLACED_RUNTIME_SELECTOR_NAMES } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 const ddbSendMock = vi.hoisted(() => vi.fn());
 const sfnSendMock = vi.hoisted(() => vi.fn());
 const logsSendMock = vi.hoisted(() => vi.fn());
+const awsClientConstructedMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@aws-sdk/client-cloudwatch-logs', () => {
   class MockCloudWatchLogsClient {
     send = logsSendMock;
+
+    constructor(options: unknown) {
+      awsClientConstructedMock('logs', options);
+    }
   }
 
   class MockCreateLogStreamCommand {
@@ -40,6 +44,10 @@ vi.mock('@aws-sdk/client-cloudwatch-logs', () => {
 vi.mock('@aws-sdk/client-dynamodb', () => {
   class MockDynamoDBClient {
     send = ddbSendMock;
+
+    constructor(options: unknown) {
+      awsClientConstructedMock('dynamo', options);
+    }
   }
 
   class MockUpdateItemCommand {
@@ -68,6 +76,10 @@ vi.mock('@aws-sdk/client-dynamodb', () => {
 vi.mock('@aws-sdk/client-sfn', () => {
   class MockSFNClient {
     send = sfnSendMock;
+
+    constructor(options: unknown) {
+      awsClientConstructedMock('sfn', options);
+    }
   }
 
   class MockDescribeExecutionCommand {
@@ -117,8 +129,9 @@ const PIPELINE_NAMES = [
   'stark-ballot-simulator-pipeline-stark-dev-develop-prover-release',
 ] as const;
 const DEPLOYMENT_ID = `dep_${'a'.repeat(32)}`;
-const EXECUTION_ID = '01HZ3JQ4ABXYZ7890DEF123456';
-const EXECUTION_ARN = `${STATE_MACHINE_ARN.replace(':stateMachine:', ':execution:')}:${EXECUTION_ID}`;
+const PIPELINE_EXECUTION_ID = '11111111-2222-3333-4444-555555555555';
+const FINALIZATION_ID = '01HZ3JQ4ABXYZ7890DEF123456';
+const EXECUTION_ARN = `${STATE_MACHINE_ARN.replace(':stateMachine:', ':execution:')}:${FINALIZATION_ID}`;
 const NOW = '2026-07-06T00:00:00.000Z';
 const STALE_ACQUIRED_AT = '2026-07-05T23:40:00.000Z';
 const FRESH_ACQUIRED_AT = '2026-07-05T23:59:30.000Z';
@@ -199,6 +212,9 @@ function buildOpsLedgerEvent(overrides: Record<string, unknown> = {}): Record<st
     event_type: 'deployment_accepted',
     env: 'develop',
     deployment_id: DEPLOYMENT_ID,
+    deployment_mode: 'normal',
+    pipeline_execution_id: PIPELINE_EXECUTION_ID,
+    plan_disposition: 'changed',
     resource_name: 'app',
     state: 'ACCEPTED',
     ...overrides,
@@ -251,7 +267,21 @@ describe('target semaphore janitor handler', () => {
     infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => {});
     warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
-    process.env['TARGET_AWS_RUNTIME'] = '1';
+    Object.assign(process.env, targetRuntimeProfileEnv());
+    for (const name of REPLACED_RUNTIME_SELECTOR_NAMES) {
+      delete process.env[name];
+    }
+    for (const name of [
+      'SESSION_CAPABILITY_SECRET',
+      'VOTE_SECRET_ENCRYPTION_KEY',
+      'SESSION_CAPABILITY_TTL_SECONDS',
+      'TURNSTILE_SECRET_KEY',
+      'EXPECTED_ORIGIN_VERIFY_HEADER',
+      'LOG_IP_HASH_SALT',
+      'FINALIZE_CALLBACK_SECRET',
+    ]) {
+      delete process.env[name];
+    }
     process.env['PROVER_SEMAPHORE_TABLE_NAME'] = TABLE_NAME;
     process.env['PROVER_SEMAPHORE_LOCK_NAME'] = LOCK_NAME;
     process.env['PROVER_SEMAPHORE_STALE_SECONDS'] = '300';
@@ -293,8 +323,18 @@ describe('target semaphore janitor handler', () => {
         ),
       ).resolves.toEqual({ released: 1 });
 
+      if (status === 'SUCCEEDED') {
+        expect(awsClientConstructedMock.mock.calls).toEqual([
+          ['dynamo', { region: 'ap-northeast-1' }],
+          ['sfn', { region: 'ap-northeast-1' }],
+          ['logs', { region: 'ap-northeast-1' }],
+        ]);
+        expect(
+          vi.mocked(resolverModule.ensureAwsRuntimeConfigReferencesLoaded).mock.invocationCallOrder[0],
+        ).toBeLessThan(awsClientConstructedMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
+      }
       expect(ddbSendMock).toHaveBeenCalledTimes(1);
-      expectReleaseCommand(commandInputAt(0), EXECUTION_ID);
+      expectReleaseCommand(commandInputAt(0), FINALIZATION_ID);
     },
   );
 
@@ -307,7 +347,7 @@ describe('target semaphore janitor handler', () => {
     expect(infoSpy).toHaveBeenCalledWith(
       '[SemaphoreJanitor] Semaphore owner already released',
       expect.objectContaining({
-        executionId: EXECUTION_ID,
+        finalizationId: FINALIZATION_ID,
       }),
     );
   });
@@ -356,7 +396,7 @@ describe('target semaphore janitor handler', () => {
         LockName: { S: LOCK_NAME },
         currentLockCount: { N: '2' },
         limit: { N: '2' },
-        [EXECUTION_ID]: { S: STALE_ACQUIRED_AT },
+        [FINALIZATION_ID]: { S: STALE_ACQUIRED_AT },
         '01HZ3JQ4ABXYZ7890DEF999999': { S: FRESH_ACQUIRED_AT },
       },
     });
@@ -376,7 +416,7 @@ describe('target semaphore janitor handler', () => {
     );
 
     const updateInput = commandInputAt(1);
-    expectReleaseCommand(updateInput, EXECUTION_ID);
+    expectReleaseCommand(updateInput, FINALIZATION_ID);
     expect(String(updateInput['ConditionExpression'])).toContain('#owner = :observedAcquiredAt');
     expect(updateInput['ExpressionAttributeValues']).toEqual(
       expect.objectContaining({
@@ -391,7 +431,7 @@ describe('target semaphore janitor handler', () => {
         LockName: { S: LOCK_NAME },
         currentLockCount: { N: '1' },
         limit: { N: '2' },
-        [EXECUTION_ID]: { S: STALE_ACQUIRED_AT },
+        [FINALIZATION_ID]: { S: STALE_ACQUIRED_AT },
       },
     });
     sfnSendMock.mockResolvedValueOnce({ status: 'RUNNING' });
@@ -411,7 +451,7 @@ describe('target semaphore janitor handler', () => {
         LockName: { S: LOCK_NAME },
         currentLockCount: { N: '1' },
         limit: { N: '2' },
-        [EXECUTION_ID]: { S: STALE_ACQUIRED_AT },
+        [FINALIZATION_ID]: { S: STALE_ACQUIRED_AT },
       },
     });
     sfnSendMock.mockResolvedValueOnce({ status: 'PENDING_REDRIVE' });
@@ -431,7 +471,7 @@ describe('target semaphore janitor handler', () => {
         LockName: { S: LOCK_NAME },
         currentLockCount: { N: '1' },
         limit: { N: '2' },
-        [EXECUTION_ID]: { S: STALE_ACQUIRED_AT },
+        [FINALIZATION_ID]: { S: STALE_ACQUIRED_AT },
       },
     });
     sfnSendMock.mockResolvedValueOnce({ status: 'FAILED' });
@@ -440,7 +480,7 @@ describe('target semaphore janitor handler', () => {
 
     expect(sfnSendMock).toHaveBeenCalledTimes(1);
     expect(ddbSendMock).toHaveBeenCalledTimes(2);
-    expectReleaseCommand(commandInputAt(1), EXECUTION_ID);
+    expectReleaseCommand(commandInputAt(1), FINALIZATION_ID);
   });
 
   it('scheduled sweep treats a missing execution as releasable stale owner evidence', async () => {
@@ -452,7 +492,7 @@ describe('target semaphore janitor handler', () => {
         LockName: { S: LOCK_NAME },
         currentLockCount: { N: '1' },
         limit: { N: '2' },
-        [EXECUTION_ID]: { S: STALE_ACQUIRED_AT },
+        [FINALIZATION_ID]: { S: STALE_ACQUIRED_AT },
       },
     });
     sfnSendMock.mockRejectedValueOnce(notFound);
@@ -461,7 +501,7 @@ describe('target semaphore janitor handler', () => {
 
     expect(sfnSendMock).toHaveBeenCalledTimes(1);
     expect(ddbSendMock).toHaveBeenCalledTimes(2);
-    expectReleaseCommand(commandInputAt(1), EXECUTION_ID);
+    expectReleaseCommand(commandInputAt(1), FINALIZATION_ID);
   });
 
   it('rethrows DescribeExecution failures during sweep before releasing the owner', async () => {
@@ -470,7 +510,7 @@ describe('target semaphore janitor handler', () => {
         LockName: { S: LOCK_NAME },
         currentLockCount: { N: '1' },
         limit: { N: '2' },
-        [EXECUTION_ID]: { S: STALE_ACQUIRED_AT },
+        [FINALIZATION_ID]: { S: STALE_ACQUIRED_AT },
       },
     });
     sfnSendMock.mockRejectedValueOnce(new Error('Step Functions unavailable'));
@@ -498,7 +538,7 @@ describe('target semaphore janitor handler', () => {
     expect(warnSpy).toHaveBeenCalledWith(
       '[SemaphoreJanitor] Skipping semaphore owner with invalid acquiredAt timestamp',
       expect.objectContaining({
-        executionId: '01HZ3JQ4ABXYZ7890DEFBADTS',
+        finalizationId: '01HZ3JQ4ABXYZ7890DEFBADTS',
       }),
     );
   });
@@ -520,7 +560,7 @@ describe('target semaphore janitor handler', () => {
     expect(warnSpy).toHaveBeenCalledWith(
       '[SemaphoreJanitor] Skipping semaphore owner with unsafe execution name',
       expect.objectContaining({
-        executionId: '../unsafe-owner',
+        finalizationId: '../unsafe-owner',
       }),
     );
   });
@@ -539,39 +579,37 @@ describe('target semaphore janitor handler', () => {
           },
         }),
       ),
-    ).rejects.toThrow('executionId must be a safe single path segment');
+    ).rejects.toThrow('finalizationId must be a safe single path segment');
 
     expect(ddbSendMock).not.toHaveBeenCalled();
   });
 
-  it('fails closed outside TARGET_AWS_RUNTIME before any DynamoDB side effect', async () => {
-    process.env['TARGET_AWS_RUNTIME'] = '0';
+  it('fails closed when the runtime profile changes before any DynamoDB side effect', async () => {
+    process.env['RUNTIME_PROFILE'] = 'local-demo';
 
     await expect(handler(buildExecutionStatusEvent())).rejects.toThrow('Runtime configuration validation failed');
 
     expect(ddbSendMock).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith('Runtime configuration is invalid', {
       event: 'config_invalid',
-      invalid_names: ['TARGET_AWS_RUNTIME'],
+      invalid_names: ['RUNTIME_PROFILE'],
     });
   });
 
-  it.each([
-    'PROVER_SEMAPHORE_TABLE_NAME',
-    'PROVER_SEMAPHORE_LOCK_NAME',
-    'PROVER_SEMAPHORE_STALE_SECONDS',
-    'PROVER_STATE_MACHINE_ARN',
-  ])('reports the exact missing component variable %s', async (name) => {
-    delete process.env[name];
+  it.each(['PROVER_SEMAPHORE_TABLE_NAME', 'PROVER_SEMAPHORE_LOCK_NAME', 'PROVER_SEMAPHORE_STALE_SECONDS'])(
+    'reports the exact missing component variable %s',
+    async (name) => {
+      delete process.env[name];
 
-    await expect(handler(buildScheduledEvent())).rejects.toThrow();
+      await expect(handler(buildScheduledEvent())).rejects.toThrow();
 
-    expect(errorSpy).toHaveBeenCalledWith('Runtime configuration is invalid', {
-      event: 'config_invalid',
-      invalid_names: [name],
-    });
-    expect(ddbSendMock).not.toHaveBeenCalled();
-  });
+      expect(errorSpy).toHaveBeenCalledWith('Runtime configuration is invalid', {
+        event: 'config_invalid',
+        invalid_names: [name],
+      });
+      expect(ddbSendMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('fails before DynamoDB when the target observability contract is invalid', async () => {
     const observabilityError = new RuntimeConfigValidationError(
@@ -645,7 +683,6 @@ describe('target semaphore janitor handler', () => {
     const resolutionError = new Error(`resolution failed: ${secretValue}`);
     vi.mocked(resolverModule.ensureAwsRuntimeConfigReferencesLoaded).mockImplementationOnce(
       async (_entrypoint, options) => {
-        if (!options) throw new Error('Expected runtime-reference resolver options');
         options.invalidNameCollector?.add('LOG_IP_HASH_SALT_REF');
         await Promise.reject(resolutionError);
       },
@@ -672,6 +709,9 @@ describe('target semaphore janitor handler', () => {
         ts: '2026-07-06T00:00:00Z',
         event_type: 'alarm_state_changed',
         deployment_id: undefined,
+        deployment_mode: undefined,
+        pipeline_execution_id: undefined,
+        plan_disposition: undefined,
         resource_name: `${RESOURCE_PREFIX}-public-api-errors`,
         state: 'ALARM',
       }),
@@ -680,6 +720,9 @@ describe('target semaphore janitor handler', () => {
     {
       event: buildOpsLedgerEvent({
         event_type: 'ecs_task_stopped',
+        deployment_mode: undefined,
+        pipeline_execution_id: undefined,
+        plan_disposition: undefined,
         resource_name: 'prover-task',
         state: 'STOPPED',
       }),
@@ -689,6 +732,8 @@ describe('target semaphore janitor handler', () => {
       event: buildOpsLedgerEvent({
         event_type: 'pipeline_execution_changed',
         deployment_id: undefined,
+        deployment_mode: undefined,
+        plan_disposition: undefined,
         resource_name: PIPELINE_NAMES[2],
         state: 'SUCCEEDED',
       }),
@@ -734,22 +779,53 @@ describe('target semaphore janitor handler', () => {
 
   it.each([
     buildOpsLedgerEvent({ raw_event: { detail: 'must-not-pass' } }),
-    buildOpsLedgerEvent({ event_type: 'ecs_task_stopped', resource_name: 'prover-task', state: 'FAILED' }),
+    buildOpsLedgerEvent({
+      event_type: 'ecs_task_stopped',
+      deployment_mode: undefined,
+      pipeline_execution_id: undefined,
+      plan_disposition: undefined,
+      resource_name: 'prover-task',
+      state: 'FAILED',
+    }),
     buildOpsLedgerEvent({
       event_type: 'pipeline_execution_changed',
       deployment_id: undefined,
+      deployment_mode: undefined,
+      plan_disposition: undefined,
       resource_name: 'unrelated-pipeline',
     }),
     buildOpsLedgerEvent({
       event_type: 'pipeline_execution_changed',
       deployment_id: undefined,
+      deployment_mode: undefined,
+      plan_disposition: undefined,
       resource_name: 'stark-ballot-simulator-pipeline-stark-dev-develop-release-candidate',
       state: 'SUCCEEDED',
     }),
     buildOpsLedgerEvent({
       event_type: 'alarm_state_changed',
       deployment_id: undefined,
+      deployment_mode: undefined,
+      pipeline_execution_id: undefined,
+      plan_disposition: undefined,
       resource_name: 'other-alarm',
+    }),
+    buildOpsLedgerEvent({ pipeline_execution_id: 'latest' }),
+    buildOpsLedgerEvent({ pipeline_execution_id: 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE' }),
+    buildOpsLedgerEvent({ deployment_mode: 'recovery' }),
+    buildOpsLedgerEvent({ plan_disposition: 'unchanged' }),
+    buildOpsLedgerEvent({ source_sha: 'b'.repeat(40) }),
+    buildOpsLedgerEvent({ pipeline_execution_id: undefined }),
+    buildOpsLedgerEvent({ deployment_mode: undefined }),
+    buildOpsLedgerEvent({ plan_disposition: undefined }),
+    buildOpsLedgerEvent({
+      event_type: 'pipeline_execution_changed',
+      deployment_id: undefined,
+      deployment_mode: undefined,
+      pipeline_execution_id: undefined,
+      plan_disposition: undefined,
+      resource_name: PIPELINE_NAMES[2],
+      state: 'SUCCEEDED',
     }),
     buildOpsLedgerEvent({ deployment_id: 'dep_not-valid' }),
     buildOpsLedgerEvent({ env: 'main' }),

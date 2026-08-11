@@ -1,584 +1,359 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
-import os from 'os';
-import path from 'path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionData } from '@stark-ballot/domain/types/server';
-import {
-  admitAwsPersistedFinalizationResultBranch,
-  type AwsPersistedFinalizationResult,
-} from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
-import { createMockVoteStore } from '@stark-ballot/test-support/testing/mockVoteStore';
-import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
-import { createTestPublicInputArtifact } from '@stark-ballot/test-support/testing/public-input-artifact';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
+import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
+import type { FinalizationScenarioContext } from '@stark-ballot/application/finalize/finalization-types';
+import type { ArtifactReader, ArtifactReadResult } from '@stark-ballot/application/verification/artifact-reader';
+import { getGlobalStore } from '@stark-ballot/aws-adapters/store/storeInstance';
+import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/schemas/errors';
+import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sessionCapabilityToken';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
-import { resolveCurrentContractGeneration } from '@stark-ballot/domain/contract';
-import { readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
-import { getNumberProperty, getStringProperty } from '@stark-ballot/domain/utils/guards';
-import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/validation/apiSchemas';
-import { hashKeyPrefixForLogging, hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
-import { getVerificationBundleHandler, getVerificationReportHandler } from './verificationBundles';
-
-const s3DownloadMocks = vi.hoisted(() => ({
-  downloadFromS3: vi.fn(),
-  downloadRangeFromS3: vi.fn(),
-  headS3Object: vi.fn(),
-}));
+import type { SessionIdentityRecord, SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
+import { logger } from '@stark-ballot/diagnostics/logger';
+import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { createMockVoteStore, type MockVoteStore } from '../../__tests__/support/mockVoteStore';
+import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
+import { getApiErrorCode, readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
+import { getNumberProperty, getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { createHonoApp } from '../routes/hono';
 
 const canonicalEventMocks = vi.hoisted(() => ({
   emitCanonicalEvent: vi.fn(),
 }));
 
-vi.mock('@stark-ballot/aws-adapters/aws/s3-download', () => ({
-  downloadFromS3: s3DownloadMocks.downloadFromS3,
-  downloadRangeFromS3: s3DownloadMocks.downloadRangeFromS3,
-  headS3Object: s3DownloadMocks.headS3Object,
-}));
-
-vi.mock('@stark-ballot/diagnostics/canonicalEvents', () => ({
+vi.mock('@stark-ballot/diagnostics/canonicalEvents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@stark-ballot/diagnostics/canonicalEvents')>()),
   emitCanonicalEvent: canonicalEventMocks.emitCanonicalEvent,
 }));
 
-const capabilitySecret = 'test-session-capability-secret-0123456789abcdef';
+vi.mock('@stark-ballot/aws-adapters/store/storeInstance', () => ({
+  getGlobalStore: vi.fn(),
+}));
 
-function buildFinalizationResult(
-  sessionId: string,
-  executionId: string,
-  overrides: Partial<Pick<AwsPersistedFinalizationResult, 's3BundleKey' | 'verificationResult'>> = {},
-): AwsPersistedFinalizationResult {
-  const s3BundleKey = `sessions/${sessionId}/${executionId}/bundle.zip`;
-  const s3ReportKey = `sessions/${sessionId}/${executionId}/verification.json`;
+const capabilitySecret = 'test-session-capability-secret-0123456789abcdef';
+const logId = `0x${'2'.repeat(64)}`;
+const scenarioContext: FinalizationScenarioContext = {
+  scenarios: [],
+  tamperMode: 'none',
+  claimedCounts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
+  claimedTotalVotes: 1,
+  summary: {
+    ignoredCount: 0,
+    recountedCount: 0,
+    userRecountChoice: null,
+  },
+};
+
+function readerReturning(result: ArtifactReadResult): ArtifactReader {
+  return {
+    read: vi.fn().mockResolvedValue(result),
+  };
+}
+
+async function requestArtifactRoute(
+  store: MockVoteStore,
+  artifactReader: ArtifactReader,
+  request: Request,
+): Promise<Response> {
+  vi.mocked(getGlobalStore).mockReturnValue(store);
+  return createHonoApp({
+    runtimeProfile: localRuntimeProfile(),
+    artifactDeliveryDependencyOverrides: { artifactReader },
+  }).request(request);
+}
+
+function buildIdentity(sessionId: string): SessionIdentityRecord {
+  return {
+    sessionId,
+    electionId: '550e8400-e29b-41d4-a716-446655440000',
+    electionConfigHash: `0x${'1'.repeat(64)}`,
+    electionConfig: {
+      totalExpected: 1,
+      choices: ['A', 'B', 'C', 'D', 'E'],
+      version: 'test-v1',
+      botCount: 0,
+      merkleTreeDepth: 1,
+    },
+    logId,
+    createdAtMs: Date.now(),
+  };
+}
+
+function buildVotingRecord(sessionId: string): SessionVotingRecord {
+  return {
+    sessionId,
+    votes: new Map(),
+    bulletin: new SimpleBulletinBoard(logId),
+    bulletinRootHistory: [],
+    botCount: 0,
+    userParticipation: { status: 'not_cast' },
+    lastActivityMs: Date.now(),
+  };
+}
+
+function buildFinalizedRecord(sessionId: string, finalizationId: string): FinalizationRecord {
+  const now = Date.now();
   const journal = createTestJournal({
     validVotes: 1,
     totalExpected: 1,
     seenIndicesCount: 1,
   });
-
-  return {
-    tally: {
-      counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
-      totalVotes: 1,
-      tamperedCount: 0,
-    },
-    imageId: `0x${'12'.repeat(32)}`,
-    journal,
-    publicInputArtifact: createTestPublicInputArtifact({
-      source: 'bundle',
-      executionId,
-      bundleKey: s3BundleKey,
-      typedAuthority: {
-        electionId: journal.electionId,
-        electionConfigHash: journal.electionConfigHash,
-        methodVersion: journal.methodVersion,
-        bulletinRoot: journal.bulletinRoot,
-        treeSize: journal.treeSize,
-        totalExpected: journal.totalExpected,
-        votesCount: journal.validVotes,
-        recomputedInputCommitment: journal.inputCommitment,
-      },
-    }),
-    verificationExecutionId: executionId,
-    s3BundleKey,
-    verificationResult: {
-      status: 'success',
-      executionId,
-      s3BundleKey,
-      s3ReportKey,
-    },
-    ...overrides,
-  };
-}
-
-function buildFinalizedSession(
-  sessionId: string,
-  executionId: string,
-  finalizationOverrides: Partial<Pick<AwsPersistedFinalizationResult, 's3BundleKey' | 'verificationResult'>> = {},
-): SessionData {
-  const now = Date.now();
   return {
     sessionId,
-    contractGeneration: resolveCurrentContractGeneration(),
-    finalizationContractGeneration: resolveCurrentContractGeneration(),
-    hasPersistedFinalizationBranch: true,
-    votes: new Map(),
-    botCount: 0,
-    finalized: true,
-    createdAt: now,
-    lastActivity: now,
-    finalizationResult: admitAwsPersistedFinalizationResultBranch(
-      buildFinalizationResult(sessionId, executionId, finalizationOverrides),
-    ),
+    finalizationId,
+    scenarioContext,
+    state: {
+      status: 'succeeded',
+      finalizationId,
+      queuedAtMs: now - 2_000,
+      startedAtMs: now - 1_000,
+      completedAtMs: now,
+    },
+    finalizationResult: {
+      finalizationId,
+      ...buildFinalizationResultFromJournal({
+        journal,
+        imageId: `0x${'12'.repeat(32)}`,
+      }),
+    },
   };
 }
 
-async function expectStandardErrorResponse(
-  response: Response,
-  expected: { status: number; error: string; statusCode?: number },
-): Promise<Record<string, unknown>> {
-  const payload = await readJsonRecord(response, 'standard error response');
-  expect(StandardErrorResponseSchema.safeParse(payload).success).toBe(true);
-  expect(response.status).toBe(expected.status);
-  expect(getStringProperty(payload, 'error')).toBe(expected.error);
-  expect(getNumberProperty(payload, 'statusCode')).toBe(expected.statusCode ?? expected.status);
-  return payload;
+function buildStore(sessionId: string, finalizationId: string, overrides: Partial<MockVoteStore> = {}): MockVoteStore {
+  const identity = buildIdentity(sessionId);
+  const voting = buildVotingRecord(sessionId);
+  const finalization = buildFinalizedRecord(sessionId, finalizationId);
+  return createMockVoteStore({
+    getSessionIdentity: vi.fn((requestedSessionId: string) =>
+      Promise.resolve(requestedSessionId === sessionId ? identity : null),
+    ),
+    getVotingRecord: vi.fn((requestedSessionId: string) =>
+      Promise.resolve(requestedSessionId === sessionId ? voting : null),
+    ),
+    getCurrentFinalizationRecord: vi.fn((requestedSessionId: string) =>
+      Promise.resolve(requestedSessionId === sessionId ? finalization : null),
+    ),
+    ...overrides,
+  });
 }
 
-describe('verification bundle downloads', () => {
-  let originalEnv: Record<string, string | undefined>;
-  let verifierWorkDir: string;
+async function expectStandardError(response: Response, expected: { status: number; code: string }): Promise<void> {
+  const payload = await readJsonRecord(response, 'artifact route error');
+  expect(response.status).toBe(expected.status);
+  expect(StandardErrorResponseSchema.safeParse(payload).success).toBe(true);
+  expect(getApiErrorCode(payload)).toBe(expected.code);
+}
 
-  beforeEach(async () => {
-    originalEnv = {
-      AWS_LAMBDA_FUNCTION_NAME: process.env['AWS_LAMBDA_FUNCTION_NAME'],
-      SESSION_CAPABILITY_SECRET: process.env['SESSION_CAPABILITY_SECRET'],
-      TARGET_AWS_RUNTIME: process.env['TARGET_AWS_RUNTIME'],
-      USE_S3: process.env['USE_S3'],
-      AWS_ACCOUNT_ID: process.env['AWS_ACCOUNT_ID'],
-      AWS_DEFAULT_REGION: process.env['AWS_DEFAULT_REGION'],
-      AWS_REGION: process.env['AWS_REGION'],
-      S3_PROOF_BUCKET: process.env['S3_PROOF_BUCKET'],
-      S3_PROOF_PREFIX: process.env['S3_PROOF_PREFIX'],
-      VERIFIER_WORK_DIR: process.env['VERIFIER_WORK_DIR'],
-    };
-    verifierWorkDir = await mkdtemp(path.join(os.tmpdir(), 'stark-bundle-handler-'));
-    process.env['SESSION_CAPABILITY_SECRET'] = capabilitySecret;
-    process.env['VERIFIER_WORK_DIR'] = verifierWorkDir;
-    vi.clearAllMocks();
+function expectRequestStatusLogs(spy: MockInstance<typeof logger.warn>, statuses: readonly number[]): void {
+  expect(spy).toHaveBeenCalledTimes(statuses.length);
+  for (const [index, status] of statuses.entries()) {
+    const call = spy.mock.calls[index];
+    const fields = call?.[1];
+    expect(call?.[0]).toBe('request completed');
+    expect(getStringProperty(fields, 'event')).toBe('http_request');
+    expect(getNumberProperty(getRecordProperty(fields, 'http'), 'status')).toBe(status);
+  }
+}
+
+describe('verification artifact route integration', () => {
+  const sessionId = 'session-1';
+  const finalizationId = 'finalization-1';
+
+  beforeEach(() => {
+    vi.stubEnv('SESSION_CAPABILITY_SECRET', capabilitySecret);
+    canonicalEventMocks.emitCanonicalEvent.mockReset();
   });
 
-  afterEach(async () => {
-    for (const [key, value] of Object.entries(originalEnv)) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-    await rm(verifierWorkDir, { recursive: true, force: true });
+  afterEach(() => {
+    vi.unstubAllEnvs();
     vi.clearAllMocks();
+    vi.restoreAllMocks();
   });
 
   it.each([
-    ['legacy Amplify Lambda name', 'amplify-starkballotsimulator-dev-honoapi-lambda'],
-    ['arbitrary Lambda name', 'custom-prod-worker'],
-    ['target-like Lambda name', 'stark-ballot-simulator-stark-dev-develop-public-api'],
-  ])('does not serve S3 artifacts from %s without target runtime config', async (_label, functionName) => {
-    const sessionId = 'session-1';
-    const executionId = 'exec-1';
-    const bundleBytes = Uint8Array.from([1, 2, 3, 4]);
-    await mkdir(path.join(verifierWorkDir, sessionId, executionId), { recursive: true });
-    await writeFile(path.join(verifierWorkDir, sessionId, executionId, 'bundle.zip'), bundleBytes);
-    await writeFile(path.join(verifierWorkDir, sessionId, executionId, 'public-input.json'), '{}');
-    process.env['USE_S3'] = 'true';
-    delete process.env['TARGET_AWS_RUNTIME'];
-    process.env['AWS_LAMBDA_FUNCTION_NAME'] = functionName;
-
-    const store = createMockVoteStore({
-      getSession: () => Promise.resolve(buildFinalizedSession(sessionId, executionId)),
+    'amplify-starkballotsimulator-dev-honoapi-lambda',
+    'custom-prod-worker',
+    'stark-ballot-simulator-stark-dev-develop-public-api',
+  ])('uses the explicitly injected reader regardless of Lambda name %s', async (functionName) => {
+    vi.stubEnv('AWS_LAMBDA_FUNCTION_NAME', functionName);
+    const bytes = Uint8Array.from([1, 2, 3, 4]);
+    const artifactReader = readerReturning({
+      kind: 'full',
+      bytes,
+      totalBytes: bytes.byteLength,
+      representation: {},
     });
+    const store = buildStore(sessionId, finalizationId);
     const token = createSessionCapabilityToken({ sessionId }, capabilitySecret);
-    const response = await getVerificationBundleHandler({
-      request: new Request(`http://localhost/api/verification/bundles/${sessionId}/${executionId}`, {
-        headers: {
-          [SESSION_CAPABILITY_HEADER]: token,
-        },
-      }),
-      store,
-      params: {
-        sessionId,
-        executionId,
-      },
-    });
 
-    const body = response.status === 200 ? undefined : await response.clone().text();
-    expect(response.status, body).toBe(200);
-    expect(Array.from(new Uint8Array(await response.arrayBuffer()))).toEqual(Array.from(bundleBytes));
-    expect(s3DownloadMocks.headS3Object).not.toHaveBeenCalled();
-    expect(s3DownloadMocks.downloadFromS3).not.toHaveBeenCalled();
-    expect(s3DownloadMocks.downloadRangeFromS3).not.toHaveBeenCalled();
+    const response = await requestArtifactRoute(
+      store,
+      artifactReader,
+      new Request(`http://localhost/api/sessions/${sessionId}/finalizations/${finalizationId}/artifacts/bundle`, {
+        headers: { [SESSION_CAPABILITY_HEADER]: token },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(Buffer.from(bytes));
+    expect(artifactReader.read).toHaveBeenCalledOnce();
   });
 
-  it('returns a standard error envelope for invalid bundle references in the handler', async () => {
-    const sessionId = 'session-1';
-    const executionId = 'bad.segment';
-    const store = createMockVoteStore();
-    const token = createSessionCapabilityToken({ sessionId }, capabilitySecret);
+  it('rejects missing and cross-session capabilities before store or reader access', async () => {
+    const loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const getSessionIdentity = vi.fn();
+    const getVotingRecord = vi.fn();
+    const getCurrentFinalizationRecord = vi.fn();
+    const store = createMockVoteStore({
+      getSessionIdentity,
+      getVotingRecord,
+      getCurrentFinalizationRecord,
+    });
+    const artifactReader = readerReturning({ kind: 'notFound' });
+    const wrongSessionToken = createSessionCapabilityToken({ sessionId: 'other-session' }, capabilitySecret);
+    const url = `http://localhost/api/sessions/${sessionId}/finalizations/${finalizationId}/artifacts/bundle`;
 
-    const response = await getVerificationBundleHandler({
-      request: new Request(`http://localhost/api/verification/bundles/${sessionId}/${executionId}`, {
-        headers: {
-          [SESSION_CAPABILITY_HEADER]: token,
-        },
-      }),
+    const missing = await requestArtifactRoute(store, artifactReader, new Request(url));
+    const mismatched = await requestArtifactRoute(
       store,
-      params: {
-        sessionId,
-        executionId,
-      },
-    });
+      artifactReader,
+      new Request(url, {
+        headers: { [SESSION_CAPABILITY_HEADER]: wrongSessionToken },
+      }),
+    );
 
-    await expectStandardErrorResponse(response, {
-      status: 400,
-      error: 'INVALID_BUNDLE_REFERENCE',
-    });
+    expect(missing.status).toBe(401);
+    expect(mismatched.status).toBe(401);
+    expect(getSessionIdentity).not.toHaveBeenCalled();
+    expect(getVotingRecord).not.toHaveBeenCalled();
+    expect(getCurrentFinalizationRecord).not.toHaveBeenCalled();
+    expect(artifactReader.read).not.toHaveBeenCalled();
+    expect(canonicalEventMocks.emitCanonicalEvent).not.toHaveBeenCalled();
+    expectRequestStatusLogs(loggerWarnSpy, [401, 401]);
   });
 
-  it('fails closed before S3 access when the stored bundle key uses a non-canonical prefix', async () => {
-    const sessionId = 'session-1';
-    const executionId = 'exec-1';
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_S3'] = 'true';
-    process.env['AWS_DEFAULT_REGION'] = 'ap-northeast-1';
-    process.env['AWS_ACCOUNT_ID'] = '123456789012';
-    process.env['S3_PROOF_BUCKET'] = 'stark-ballot-simulator-stark-dev-develop-proof-artifacts';
-    process.env['S3_PROOF_PREFIX'] = 'sessions/';
+  it.each([
+    {
+      label: 'legacy bundle delivery metadata',
+      path: 'bundle',
+      deliveryMetadata: {
+        s3BundleKey: `archive/${sessionId}/${finalizationId}/bundle.zip`,
+      },
+      expectedCode: 'BUNDLE_NOT_FOUND',
+    },
+    {
+      label: 'legacy report delivery metadata',
+      path: 'report',
+      deliveryMetadata: {
+        s3BundleKey: `sessions/${sessionId}/${finalizationId}/bundle.zip`,
+        s3ReportKey: `archive/${sessionId}/${finalizationId}/verification.json`,
+      },
+      expectedCode: 'REPORT_NOT_FOUND',
+    },
+  ])(
+    'rejects a stale finalization without falling back to $label',
+    async ({ path, deliveryMetadata, expectedCode }) => {
+      const loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      const getAwsVerificationDeliveryMetadata = vi.fn().mockResolvedValue(deliveryMetadata);
+      const artifactReader = readerReturning({
+        kind: 'full',
+        bytes: Uint8Array.from([1]),
+        totalBytes: 1,
+        representation: {},
+      });
+      const store = buildStore(sessionId, 'current-finalization', {
+        getAwsVerificationDeliveryMetadata,
+      });
+      const token = createSessionCapabilityToken({ sessionId }, capabilitySecret);
 
-    const canonicalReportKey = `sessions/${sessionId}/${executionId}/verification.json`;
-    const archiveBundleKey = `archive/${sessionId}/${executionId}/bundle.zip`;
-    const store = createMockVoteStore({
-      getSession: () =>
-        Promise.resolve(
-          buildFinalizedSession(sessionId, executionId, {
-            s3BundleKey: archiveBundleKey,
-            verificationResult: {
-              status: 'success',
-              executionId,
-              s3BundleKey: archiveBundleKey,
-              s3ReportKey: canonicalReportKey,
-            },
-          }),
-        ),
-    });
+      const response = await requestArtifactRoute(
+        store,
+        artifactReader,
+        new Request(`http://localhost/api/sessions/${sessionId}/finalizations/${finalizationId}/artifacts/${path}`, {
+          headers: { [SESSION_CAPABILITY_HEADER]: token },
+        }),
+      );
+
+      await expectStandardError(response, {
+        status: 404,
+        code: expectedCode,
+      });
+      expect(getAwsVerificationDeliveryMetadata).not.toHaveBeenCalled();
+      expect(artifactReader.read).not.toHaveBeenCalled();
+      expectRequestStatusLogs(loggerWarnSpy, [404]);
+    },
+  );
+
+  it.each([
+    ['bundle', 'BUNDLE_NOT_FOUND'],
+    ['report', 'REPORT_NOT_FOUND'],
+  ])('binds %s delivery to the exact current finalization', async (artifact, code) => {
+    const loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const artifactReader = readerReturning({ kind: 'notFound' });
+    const store = buildStore(sessionId, finalizationId);
     const token = createSessionCapabilityToken({ sessionId }, capabilitySecret);
 
-    const response = await getVerificationBundleHandler({
-      request: new Request(`http://localhost/api/verification/bundles/${sessionId}/${executionId}`, {
-        headers: {
-          [SESSION_CAPABILITY_HEADER]: token,
-        },
-      }),
+    const response = await requestArtifactRoute(
       store,
-      params: {
-        sessionId,
-        executionId,
-      },
-    });
+      artifactReader,
+      new Request(`http://localhost/api/sessions/${sessionId}/finalizations/stale-finalization/artifacts/${artifact}`, {
+        headers: { [SESSION_CAPABILITY_HEADER]: token },
+      }),
+    );
 
-    const payload = await expectStandardErrorResponse(response, {
-      status: 404,
-      error: 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE',
-    });
-    expect(getStringProperty(payload, 'artifactState')).toBe('corrupt_or_unreadable');
-    expect(response.headers.get('Cache-Control')).toBe('no-store');
-    expect(s3DownloadMocks.headS3Object).not.toHaveBeenCalled();
-    expect(s3DownloadMocks.downloadFromS3).not.toHaveBeenCalled();
-    expect(s3DownloadMocks.downloadRangeFromS3).not.toHaveBeenCalled();
+    await expectStandardError(response, { status: 404, code });
+    expect(artifactReader.read).not.toHaveBeenCalled();
+    expectRequestStatusLogs(loggerWarnSpy, [404]);
   });
 
-  it('fails closed before S3 access when the stored report key uses a non-canonical prefix', async () => {
-    const sessionId = 'session-1';
-    const executionId = 'exec-1';
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_S3'] = 'true';
-    process.env['AWS_DEFAULT_REGION'] = 'ap-northeast-1';
-    process.env['AWS_ACCOUNT_ID'] = '123456789012';
-    process.env['S3_PROOF_BUCKET'] = 'stark-ballot-simulator-stark-dev-develop-proof-artifacts';
-    process.env['S3_PROOF_PREFIX'] = 'sessions/';
-
-    const canonicalBundleKey = `sessions/${sessionId}/${executionId}/bundle.zip`;
-    const archiveReportKey = `archive/${sessionId}/${executionId}/verification.json`;
-    const store = createMockVoteStore({
-      getSession: () =>
-        Promise.resolve(
-          buildFinalizedSession(sessionId, executionId, {
-            s3BundleKey: canonicalBundleKey,
-            verificationResult: {
-              status: 'success',
-              executionId,
-              s3BundleKey: canonicalBundleKey,
-              s3ReportKey: archiveReportKey,
-            },
-          }),
-        ),
-    });
+  it('preserves declared range errors through Hono response admission', async () => {
+    const loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const artifactReader = readerReturning({ kind: 'invalidRange', totalBytes: 1024 });
+    const store = buildStore(sessionId, finalizationId);
     const token = createSessionCapabilityToken({ sessionId }, capabilitySecret);
 
-    const response = await getVerificationReportHandler({
-      request: new Request(`http://localhost/api/verification/bundles/${sessionId}/${executionId}/report`, {
-        headers: {
-          [SESSION_CAPABILITY_HEADER]: token,
-        },
-      }),
+    const response = await requestArtifactRoute(
       store,
-      params: {
-        sessionId,
-        executionId,
-      },
-    });
-
-    const payload = await expectStandardErrorResponse(response, {
-      status: 404,
-      error: 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE',
-    });
-    expect(getStringProperty(payload, 'artifactState')).toBe('corrupt_or_unreadable');
-    expect(response.headers.get('Cache-Control')).toBe('no-store');
-    expect(s3DownloadMocks.headS3Object).not.toHaveBeenCalled();
-    expect(s3DownloadMocks.downloadFromS3).not.toHaveBeenCalled();
-    expect(s3DownloadMocks.downloadRangeFromS3).not.toHaveBeenCalled();
-  });
-
-  it('fails closed instead of falling back to a local report when persisted report locator metadata is malformed', async () => {
-    const sessionId = 'session-1';
-    const executionId = 'exec-1';
-    await mkdir(path.join(verifierWorkDir, sessionId, executionId), { recursive: true });
-    await writeFile(path.join(verifierWorkDir, sessionId, executionId, 'verification.json'), '{"status":"success"}');
-    const session = buildFinalizedSession(sessionId, executionId);
-    const finalizationResult = buildFinalizationResult(sessionId, executionId);
-    session.finalizationResult = {
-      ...finalizationResult,
-      verificationResult: {
-        ...finalizationResult.verificationResult,
-        status: 'success',
-        executionId,
-        s3ReportKey: null,
-      },
-    } as unknown as NonNullable<SessionData['finalizationResult']>;
-    const store = createMockVoteStore({
-      getSession: () => Promise.resolve(session),
-    });
-    const token = createSessionCapabilityToken({ sessionId }, capabilitySecret);
-
-    const response = await getVerificationReportHandler({
-      request: new Request(`http://localhost/api/verification/bundles/${sessionId}/${executionId}/report`, {
-        headers: {
-          [SESSION_CAPABILITY_HEADER]: token,
-        },
-      }),
-      store,
-      params: {
-        sessionId,
-        executionId,
-      },
-    });
-
-    const payload = await expectStandardErrorResponse(response, {
-      status: 404,
-      error: 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE',
-    });
-    expect(getStringProperty(payload, 'artifactState')).toBe('corrupt_or_unreadable');
-    expect(s3DownloadMocks.headS3Object).not.toHaveBeenCalled();
-    expect(s3DownloadMocks.downloadFromS3).not.toHaveBeenCalled();
-    expect(s3DownloadMocks.downloadRangeFromS3).not.toHaveBeenCalled();
-  });
-
-  it('returns a standard range error envelope while preserving bundle range headers', async () => {
-    const sessionId = 'session-1';
-    const executionId = 'exec-1';
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_S3'] = 'true';
-    process.env['AWS_DEFAULT_REGION'] = 'ap-northeast-1';
-    process.env['AWS_ACCOUNT_ID'] = '123456789012';
-    process.env['S3_PROOF_BUCKET'] = 'stark-ballot-simulator-stark-dev-develop-proof-artifacts';
-    process.env['S3_PROOF_PREFIX'] = 'sessions/';
-    s3DownloadMocks.headS3Object.mockResolvedValue({ contentLength: 1024 });
-
-    const store = createMockVoteStore({
-      getSession: () => Promise.resolve(buildFinalizedSession(sessionId, executionId)),
-    });
-    const token = createSessionCapabilityToken({ sessionId }, capabilitySecret);
-
-    const response = await getVerificationBundleHandler({
-      request: new Request(`http://localhost/api/verification/bundles/${sessionId}/${executionId}`, {
+      artifactReader,
+      new Request(`http://localhost/api/sessions/${sessionId}/finalizations/${finalizationId}/artifacts/bundle`, {
         headers: {
           [SESSION_CAPABILITY_HEADER]: token,
           Range: 'bytes=2000-1000',
         },
       }),
-      store,
-      params: {
-        sessionId,
-        executionId,
-      },
-    });
+    );
 
-    await expectStandardErrorResponse(response, {
-      status: 416,
-      error: 'INVALID_RANGE',
-    });
-    expect(response.headers.get('Accept-Ranges')).toBe('bytes');
+    await expectStandardError(response, { status: 416, code: 'INVALID_RANGE' });
     expect(response.headers.get('Content-Range')).toBe('bytes */1024');
-    expect(response.headers.get('X-Stark-Bundle-Range-Chunk-Size')).toBe(String(4 * 1024 * 1024));
-    expect(s3DownloadMocks.downloadRangeFromS3).not.toHaveBeenCalled();
+    expect(response.headers.get('Accept-Ranges')).toBe('bytes');
+    expectRequestStatusLogs(loggerWarnSpy, [416]);
   });
 
-  it('returns a standard report error envelope when an S3 report exceeds the inline limit', async () => {
-    const sessionId = 'session-1';
-    const executionId = 'exec-1';
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_S3'] = 'true';
-    process.env['AWS_DEFAULT_REGION'] = 'ap-northeast-1';
-    process.env['AWS_ACCOUNT_ID'] = '123456789012';
-    process.env['S3_PROOF_BUCKET'] = 'stark-ballot-simulator-stark-dev-develop-proof-artifacts';
-    process.env['S3_PROOF_PREFIX'] = 'sessions/';
-    s3DownloadMocks.headS3Object.mockResolvedValue({ contentLength: 4 * 1024 * 1024 + 1 });
-
-    const store = createMockVoteStore({
-      getSession: () => Promise.resolve(buildFinalizedSession(sessionId, executionId)),
-    });
+  it('normalizes missing reports and bounded reader failures without exposing storage details', async () => {
+    const loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const store = buildStore(sessionId, finalizationId);
     const token = createSessionCapabilityToken({ sessionId }, capabilitySecret);
+    const reportUrl = `http://localhost/api/sessions/${sessionId}/finalizations/${finalizationId}/artifacts/report`;
+    const missingReader = readerReturning({ kind: 'notFound' });
+    const failedReader = readerReturning({ kind: 'unavailable', failureKind: 'accessDenied' });
 
-    const response = await getVerificationReportHandler({
-      request: new Request(`http://localhost/api/verification/bundles/${sessionId}/${executionId}/report`, {
-        headers: {
-          [SESSION_CAPABILITY_HEADER]: token,
-        },
-      }),
+    const missing = await requestArtifactRoute(
       store,
-      params: {
-        sessionId,
-        executionId,
-      },
-    });
-
-    await expectStandardErrorResponse(response, {
-      status: 413,
-      error: 'REPORT_DOWNLOAD_TOO_LARGE',
-    });
-    expect(response.headers.get('Cache-Control')).toBe('no-store');
-    expect(s3DownloadMocks.downloadFromS3).not.toHaveBeenCalled();
-  });
-
-  it('does not emit a download-failure event before capability authentication succeeds', async () => {
-    const sessionId = 'session-1';
-    const executionId = 'exec-1';
-    const getSession = vi.fn();
-    const store = createMockVoteStore({ getSession });
-
-    const response = await getVerificationBundleHandler({
-      request: new Request(`http://localhost/api/verification/bundles/${sessionId}/${executionId}`),
-      store,
-      params: { sessionId, executionId },
-    });
-
-    expect(response.status).toBe(401);
-    expect(getSession).not.toHaveBeenCalled();
-    expect(canonicalEventMocks.emitCanonicalEvent).not.toHaveBeenCalled();
-  });
-
-  it('emits a privacy-safe authenticated bundle failure with a closed S3 code', async () => {
-    const sessionId = 'session-1';
-    const executionId = 'exec-1';
-    const artifactKey = `sessions/${sessionId}/${executionId}/bundle.zip`;
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_S3'] = 'true';
-    process.env['AWS_DEFAULT_REGION'] = 'ap-northeast-1';
-    process.env['AWS_ACCOUNT_ID'] = '123456789012';
-    process.env['S3_PROOF_BUCKET'] = 'stark-ballot-simulator-stark-dev-develop-proof-artifacts';
-    process.env['S3_PROOF_PREFIX'] = 'sessions/';
-    s3DownloadMocks.headS3Object.mockRejectedValueOnce(
-      Object.assign(new Error('AccessDenied for s3://private-bucket/full/private/key'), {
-        name: 'AccessDenied',
-        Code: 'AccessDenied',
-      }),
+      missingReader,
+      new Request(reportUrl, { headers: { [SESSION_CAPABILITY_HEADER]: token } }),
     );
-    const store = createMockVoteStore({
-      getSession: () => Promise.resolve(buildFinalizedSession(sessionId, executionId)),
-    });
-    const token = createSessionCapabilityToken({ sessionId }, capabilitySecret);
-
-    const response = await getVerificationBundleHandler({
-      request: new Request(`http://localhost/api/verification/bundles/${sessionId}/${executionId}`, {
-        headers: { [SESSION_CAPABILITY_HEADER]: token },
-      }),
+    const failed = await requestArtifactRoute(
       store,
-      params: { sessionId, executionId },
-    });
-
-    expect(response.status).toBe(500);
-    expect(canonicalEventMocks.emitCanonicalEvent).toHaveBeenCalledWith({
-      event: 'bundle_download_failed',
-      endpoint: 'bundle',
-      http_status: 500,
-      s3_error_code: 'access_denied',
-      key_prefix: hashKeyPrefixForLogging(artifactKey),
-      session_id_hash: hashSessionIdForLogging(sessionId),
-      execution_id: executionId,
-    });
-    const captured = JSON.stringify(canonicalEventMocks.emitCanonicalEvent.mock.calls);
-    expect(captured).not.toContain(artifactKey);
-    expect(captured).not.toContain('s3://');
-    expect(captured).not.toContain('private-bucket');
-    expect(captured).not.toContain(sessionId);
-  });
-
-  it('normalizes an authenticated missing report without logging its key or SDK error', async () => {
-    const sessionId = 'session-1';
-    const executionId = 'exec-1';
-    const artifactKey = `sessions/${sessionId}/${executionId}/verification.json`;
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_S3'] = 'true';
-    process.env['AWS_DEFAULT_REGION'] = 'ap-northeast-1';
-    process.env['AWS_ACCOUNT_ID'] = '123456789012';
-    process.env['S3_PROOF_BUCKET'] = 'stark-ballot-simulator-stark-dev-develop-proof-artifacts';
-    process.env['S3_PROOF_PREFIX'] = 'sessions/';
-    s3DownloadMocks.headS3Object.mockRejectedValueOnce(
-      Object.assign(new Error(`NoSuchKey: ${artifactKey}`), { name: 'NoSuchKey', Code: 'NoSuchKey' }),
+      failedReader,
+      new Request(reportUrl, { headers: { [SESSION_CAPABILITY_HEADER]: token } }),
     );
-    const store = createMockVoteStore({
-      getSession: () => Promise.resolve(buildFinalizedSession(sessionId, executionId)),
-    });
-    const token = createSessionCapabilityToken({ sessionId }, capabilitySecret);
 
-    const response = await getVerificationReportHandler({
-      request: new Request(`http://localhost/api/verification/bundles/${sessionId}/${executionId}/report`, {
-        headers: { [SESSION_CAPABILITY_HEADER]: token },
-      }),
-      store,
-      params: { sessionId, executionId },
-    });
-
-    expect(response.status).toBe(404);
-    expect(canonicalEventMocks.emitCanonicalEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'bundle_download_failed',
-        endpoint: 'report',
-        http_status: 404,
-        s3_error_code: 'no_such_key',
-        key_prefix: hashKeyPrefixForLogging(artifactKey),
-      }),
-    );
-    expect(JSON.stringify(canonicalEventMocks.emitCanonicalEvent.mock.calls)).not.toContain(artifactKey);
-  });
-
-  it('keeps the authenticated failure response unchanged if event emission throws', async () => {
-    const sessionId = 'session-1';
-    const executionId = 'exec-1';
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_S3'] = 'true';
-    process.env['AWS_DEFAULT_REGION'] = 'ap-northeast-1';
-    process.env['AWS_ACCOUNT_ID'] = '123456789012';
-    process.env['S3_PROOF_BUCKET'] = 'stark-ballot-simulator-stark-dev-develop-proof-artifacts';
-    process.env['S3_PROOF_PREFIX'] = 'sessions/';
-    s3DownloadMocks.headS3Object.mockRejectedValueOnce(Object.assign(new Error('denied'), { name: 'AccessDenied' }));
-    canonicalEventMocks.emitCanonicalEvent.mockImplementationOnce(() => {
-      throw new Error('telemetry unavailable');
-    });
-    const store = createMockVoteStore({
-      getSession: () => Promise.resolve(buildFinalizedSession(sessionId, executionId)),
-    });
-    const token = createSessionCapabilityToken({ sessionId }, capabilitySecret);
-
-    const response = await getVerificationBundleHandler({
-      request: new Request(`http://localhost/api/verification/bundles/${sessionId}/${executionId}`, {
-        headers: { [SESSION_CAPABILITY_HEADER]: token },
-      }),
-      store,
-      params: { sessionId, executionId },
-    });
-
-    await expectStandardErrorResponse(response, {
-      status: 500,
-      error: 'BUNDLE_DOWNLOAD_FAILED',
-    });
+    await expectStandardError(missing, { status: 404, code: 'REPORT_NOT_FOUND' });
+    await expectStandardError(failed, { status: 500, code: 'REPORT_DOWNLOAD_FAILED' });
+    expect(JSON.stringify(canonicalEventMocks.emitCanonicalEvent.mock.calls)).not.toContain('s3://');
+    expect(JSON.stringify(canonicalEventMocks.emitCanonicalEvent.mock.calls)).not.toContain('verification.json');
+    expectRequestStatusLogs(loggerWarnSpy, [404]);
+    expectRequestStatusLogs(loggerErrorSpy, [500]);
   });
 });

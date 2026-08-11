@@ -1,5 +1,5 @@
 /**
- * /api/bitmap-proof endpoint
+ * Current-finalization bitmap proof endpoint.
  * Following final-design.md §2.6.1 specifications
  *
  * Returns Merkle proof materials for individual vote verification
@@ -8,21 +8,17 @@
 
 import { generateBitmapMerkleProof } from '@stark-ballot/verification/merkle/bitmap-merkle-tree';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
-import type { BitmapKind, BitmapProofResponse } from '@stark-ballot/api-contract/types/api/bitmap-proof';
+import { type BitmapKind } from '@stark-ballot/api-contract/schemas/artifacts';
+import type { BitmapProofResponse } from '@stark-ballot/verification/bitmap-proof-types';
 import { createHash } from 'crypto';
-import type { ApiContext } from '../context';
-import { validateSessionWithCapability } from '../middleware/session';
+import type { ApiHandlerArguments, SessionAdmittedContext } from '../context';
+import { currentFinalizationBitmapProofRoute } from '@stark-ballot/api-contract/routes';
 import { matchesIfNoneMatch } from '../../http/etag';
 import { errorResponse } from '../../http/response';
 import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
 import { logger } from '@stark-ballot/diagnostics/logger';
-import { BitmapProofResponseSchema } from '@stark-ballot/api-contract/validation/apiSchemas';
-import { respondWithSchema } from '../utils/responseSchema';
-import {
-  buildUnsupportedFinalizedArtifactResponse,
-  resolveSupportedFinalizedRead,
-} from '../utils/currentArtifactAdmission';
-import { normalizeHexString } from '@stark-ballot/verification/shared/hex';
+import { normalizeHexString } from '@stark-ballot/crypto-primitives';
+import { respondWithRoute } from '../utils/responseSchema';
 import { asBitmapBitIndex, type BitmapBitIndex } from '@stark-ballot/verification/bitmap-proof-types';
 
 // Cache configuration
@@ -51,33 +47,12 @@ export type BitmapProofResolution = { ok: true; response: BitmapProofResponse } 
  * Validate index parameter
  * Must be a non-negative integer
  */
-function validateIndex(indexStr: string | null): BitmapBitIndex | null {
-  if (!indexStr) {
-    return null;
-  }
-
-  if (!/^(0|[1-9][0-9]*)$/.test(indexStr)) {
-    return null;
-  }
-
-  const index = Number(indexStr);
+function validateIndex(index: number): BitmapBitIndex | null {
   try {
     return asBitmapBitIndex(index);
   } catch {
     return null;
   }
-}
-
-function validateBitmapKind(kindStr: string | null): BitmapKind | null {
-  if (!kindStr || kindStr === 'included') {
-    return 'included';
-  }
-
-  if (kindStr === 'seen') {
-    return 'seen';
-  }
-
-  return null;
 }
 
 /**
@@ -99,7 +74,7 @@ function getCacheHeaders(etag: string): HeadersInit {
     'Content-Type': 'application/json',
     'X-Content-Type-Options': 'nosniff',
     'Cache-Control': `private, max-age=${CACHE_MAX_AGE}, stale-while-revalidate=${CACHE_STALE_WHILE_REVALIDATE}, immutable`,
-    Vary: 'X-Session-ID, X-Session-Capability',
+    Vary: 'X-Session-Capability',
   };
 }
 
@@ -173,13 +148,13 @@ export function resolveBitmapProofResponse(params: {
 }
 
 /**
- * GET /api/bitmap-proof
+ * GET /api/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex
  *
  * Returns Merkle proof for a specific bit in the requested bitmap
  *
- * Query parameters:
- * - i: The session user's vote index (0-based)
- * - kind: included | seen (default: included)
+ * Path parameters:
+ * - voteIndex: The session user's vote index (0-based)
+ * - kind: included | seen
  *
  * Response:
  * - leafChunk: 32-byte chunk containing the bit
@@ -192,43 +167,34 @@ export function resolveBitmapProofResponse(params: {
 /**
  * Return bitmap Merkle proof materials for a specific bit.
  */
-export async function getBitmapProofHandler({ request, store }: ApiContext): Promise<Response> {
+export async function getCurrentFinalizationBitmapProofHandler({
+  input,
+  context,
+}: ApiHandlerArguments<typeof currentFinalizationBitmapProofRoute, SessionAdmittedContext>): Promise<Response> {
   const startTime = performance.now();
 
   try {
-    const sessionResult = await validateSessionWithCapability(request.headers, store, { updateActivity: false });
-    if (sessionResult instanceof Response) {
-      return sessionResult;
-    }
-    const finalizedRead = resolveSupportedFinalizedRead(sessionResult.session);
-    if (finalizedRead.artifactState) {
-      return buildUnsupportedFinalizedArtifactResponse(finalizedRead.artifactState);
-    }
-    if (!finalizedRead.finalizationResult) {
+    const { session, sessionId, store } = context;
+    if (session.finalization?.state.status !== 'succeeded' || !session.finalization.finalizationResult) {
       return bitmapProofErrorResponse('Bitmap proof is unavailable until finalization has completed.');
     }
+    const finalizationResult = session.finalization.finalizationResult;
 
-    // Extract and validate index parameter
-    const { searchParams } = new URL(request.url);
-    const indexParam = searchParams.get('i');
-    const kind = validateBitmapKind(searchParams.get('kind'));
-    const index = validateIndex(indexParam);
+    const { kind } = input.params;
+    const index = validateIndex(input.params.voteIndex);
 
     if (index === null) {
       return bitmapProofErrorResponse('Invalid or missing index parameter');
     }
-    if (kind === null) {
-      return bitmapProofErrorResponse('Invalid bitmap kind parameter');
-    }
-    if (sessionResult.session.userVoteIndex === undefined) {
+    if (session.voting.userParticipation.status !== 'cast') {
       return errorResponse(ErrorCode.USER_NOT_VOTED);
     }
-    if (index !== sessionResult.session.userVoteIndex) {
+    if (index !== session.voting.userParticipation.voteIndex) {
       return bitmapProofErrorResponse('Bitmap proof requests are limited to the session user vote.');
     }
 
     // Retrieve session-scoped bitmap data
-    const bitmapData = store.getBitmapData ? await store.getBitmapData(sessionResult.sessionId) : null;
+    const bitmapData = await store.getBitmapData(sessionId, session.finalization.finalizationId);
 
     if (!bitmapData) {
       return bitmapProofErrorResponse('Bitmap data not found. Ensure finalization has completed.');
@@ -236,7 +202,7 @@ export async function getBitmapProofHandler({ request, store }: ApiContext): Pro
 
     const proofResolution = resolveBitmapProofResponse({
       bitmapData,
-      finalizationResult: finalizedRead.finalizationResult,
+      finalizationResult,
       index,
       kind,
     });
@@ -249,7 +215,7 @@ export async function getBitmapProofHandler({ request, store }: ApiContext): Pro
     const etag = generateETag(responseData);
 
     // Check for conditional request
-    const clientETag = request.headers.get('If-None-Match');
+    const clientETag = input.headers['If-None-Match'] ?? null;
     if (matchesIfNoneMatch(clientETag, etag)) {
       // Return 304 Not Modified
       return new Response(null, {
@@ -271,9 +237,11 @@ export async function getBitmapProofHandler({ request, store }: ApiContext): Pro
     }
 
     // Return proof with aggressive caching (data is immutable)
-    return respondWithSchema(BitmapProofResponseSchema, responseData, {
-      headers: getCacheHeaders(etag),
-    });
+    return respondWithRoute(
+      currentFinalizationBitmapProofRoute,
+      { status: 200, content: 'json', body: { data: responseData } },
+      { headers: getCacheHeaders(etag) },
+    );
   } catch (error) {
     if (process.env['NODE_ENV'] !== 'test' && process.env['VITEST'] !== 'true') {
       logger.error('[API] Error generating bitmap proof:', {

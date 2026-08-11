@@ -1,9 +1,9 @@
-import { isTruthyFlag } from '@stark-ballot/runtime-config/env/flags';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 export const ORIGIN_VERIFY_HEADER = 'X-Stark-Ballot-Origin-Verify';
 
-export function isExpectedTargetOriginVerified(request: Request): boolean {
-  if (process.env['TARGET_AWS_RUNTIME'] !== '1') {
+export function isExpectedTargetOriginVerified(profile: ResolvedRuntimeProfile, request: Request): boolean {
+  if (profile.target.kind !== 'aws') {
     return false;
   }
 
@@ -15,11 +15,11 @@ export function isExpectedTargetOriginVerified(request: Request): boolean {
   return request.headers.get(ORIGIN_VERIFY_HEADER)?.trim() === expected;
 }
 
-export function isOperatorGatedDevelopRequest(request: Request): boolean {
+export function isOperatorGatedDevelopRequest(profile: ResolvedRuntimeProfile, request: Request): boolean {
   return (
-    process.env['TARGET_AWS_RUNTIME'] === '1' &&
-    process.env['RUNTIME_DEPLOYMENT_ENV'] === 'develop' &&
-    isTruthyFlag(process.env['TARGET_DEVELOP_OPERATOR_GATE_ENABLED']) &&
-    isExpectedTargetOriginVerified(request)
+    profile.target.kind === 'aws' &&
+    profile.target.deploymentEnvironment === 'develop' &&
+    profile.turnstile.mode === 'operator-gated' &&
+    isExpectedTargetOriginVerified(profile, request)
   );
 }

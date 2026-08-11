@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
+import { computeIncludedBitmapRootHex } from '@stark-ballot/zkvm-contract/zkvm/bitmap-core';
 import {
   buildAuthenticatedBitmapProofContext,
   generateBitmapMerkleProof,
@@ -40,6 +41,15 @@ function verifyProof(input: {
 }
 
 describe('bitmap Merkle property tests', () => {
+  it('keeps the browser-safe root byte-for-byte compatible with the zkVM contract', () => {
+    fc.assert(
+      fc.property(fc.array(fc.boolean(), { maxLength: 1030 }), (bitmap) => {
+        expect(computeIncludedBitmapRootHex(bitmap)).toBe(computeIncludedBitmapRoot(bitmap));
+      }),
+      { numRuns: 64 },
+    );
+  });
+
   it('round-trips generated proofs and preserves the source bit value', () => {
     fc.assert(
       fc.property(nonEmptyBitmapArbitrary, fc.nat(), (bitmap, seed) => {

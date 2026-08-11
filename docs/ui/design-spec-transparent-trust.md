@@ -927,11 +927,11 @@ import { Scroll, Bot } from 'lucide-react';
 
 集計進行中の進捗バー用。
 
-> **Note**: 100% への遷移は時間ベースではなく、ECS Fargate 完了コールバック受信時に `completeProgress()` で設定する設計。入力値は `queuedAt` / `startedAt` / `estimatedDurationMs`（API 由来）で、`progress.percent` は参照値に留める。
+> **Note**: 100% への遷移は時間ベースではなく、ECS Fargate 完了コールバック受信時に `completeProgress()` で設定する設計。入力値は `queuedAtMs` / `startedAtMs` / `estimatedDurationMs`（API 由来）で、`progress.percent` は参照値に留める。
 
 ```typescript
-const PHASE1_END_RATIO = 168 / 360; // ≈ 0.467
-const PHASE2_END_RATIO = 248 / 360; // ≈ 0.689
+const INITIAL_LINEAR_END_RATIO = 168 / 360; // ≈ 0.467
+const DECELERATION_END_RATIO = 248 / 360; // ≈ 0.689
 
 // 進捗値の補間関数（時間ベース、0-99%）
 function interpolateProgress(elapsed: number, total: number = 360000): number {
@@ -939,16 +939,16 @@ function interpolateProgress(elapsed: number, total: number = 360000): number {
   const ratio = Math.min(1, Math.max(0, elapsed / total));
 
   if (ratio < 1) {
-    if (ratio <= PHASE1_END_RATIO) {
+    if (ratio <= INITIAL_LINEAR_END_RATIO) {
       // 序盤区間 (0-70%): 線形進行
-      return (ratio / PHASE1_END_RATIO) * 70;
-    } else if (ratio <= PHASE2_END_RATIO) {
+      return (ratio / INITIAL_LINEAR_END_RATIO) * 70;
+    } else if (ratio <= DECELERATION_END_RATIO) {
       // 中盤区間 (70-90%): 線形減速
-      const segment = (ratio - PHASE1_END_RATIO) / (PHASE2_END_RATIO - PHASE1_END_RATIO);
+      const segment = (ratio - INITIAL_LINEAR_END_RATIO) / (DECELERATION_END_RATIO - INITIAL_LINEAR_END_RATIO);
       return 70 + linearDeceleration(segment) * 20;
     } else {
       // 終盤区間 (90-99%): 等速度（線形）
-      const segment = (ratio - PHASE2_END_RATIO) / (1 - PHASE2_END_RATIO);
+      const segment = (ratio - DECELERATION_END_RATIO) / (1 - DECELERATION_END_RATIO);
       return 90 + segment * 9;
     }
   }
@@ -1208,7 +1208,8 @@ function completeProgress(): number {
 ### 10.6 検証ページ (/verify)
 
 - 検証ページ到達時に通常は自動で検証シーケンスを開始
-- STARK状態が `not_run` / `running` の間は内部で解決を待ち、必要なら `/api/verification/run` を起動
+- STARK状態が `not_run` / `running` の間は内部で解決を待ち、必要なら
+  `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification` を起動
 - STARK状態解決後に約2秒の準備中表示を出し、その後ステップを順次表示
 - 各検証ステップがカードとして順番にスライドイン
 - ステップ完了時に印鑑アニメーション

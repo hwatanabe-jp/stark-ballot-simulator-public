@@ -21,19 +21,18 @@ export interface RuntimeConfigReferenceResolver {
   resolve(reference: RuntimeConfigReference): string | undefined;
 }
 
-let activeResolver: RuntimeConfigReferenceResolver | undefined;
-
-interface RuntimeConfigReferenceValidationOptions {
+export interface RuntimeConfigReferenceValidationOptions {
   expectedAccountId?: string;
-  expectedDeploymentEnvironment?: string;
+  expectedDeploymentEnvironment: 'develop' | 'main';
   expectedRegion?: string;
 }
 
-type OmitUndefinedProperties<T extends object> = {
-  [K in keyof T as undefined extends T[K] ? K : never]?: Exclude<T[K], undefined>;
-} & {
-  [K in keyof T as undefined extends T[K] ? never : K]: T[K];
-};
+interface BoundRuntimeConfigReferenceResolver {
+  readonly resolver: RuntimeConfigReferenceResolver;
+  readonly validationOptions: Readonly<RuntimeConfigReferenceValidationOptions>;
+}
+
+let activeResolver: BoundRuntimeConfigReferenceResolver | undefined;
 
 const TARGET_RUNTIME_REFERENCE_IDENTITIES = [
   { accountAlias: 'stark-dev', deploymentEnvironment: 'develop' },
@@ -63,17 +62,6 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function readTrimmedEnv(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const value = env[name]?.trim();
-  return value && value.length > 0 ? value : undefined;
-}
-
-function omitUndefinedProperties<T extends object>(value: T): OmitUndefinedProperties<T> {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, entryValue]) => entryValue !== undefined),
-  ) as OmitUndefinedProperties<T>;
-}
-
 function referenceEnvName(name: RuntimeConfigReferenceName): RuntimeConfigReferenceEnvName {
   return `${name}_REF`;
 }
@@ -95,32 +83,22 @@ function requiredMatchGroup(
   return value;
 }
 
-function runtimeReferenceValidationOptions(
-  env: NodeJS.ProcessEnv = process.env,
-): RuntimeConfigReferenceValidationOptions {
-  return omitUndefinedProperties({
-    expectedAccountId: readTrimmedEnv('AWS_ACCOUNT_ID', env),
-    expectedDeploymentEnvironment: readTrimmedEnv('RUNTIME_DEPLOYMENT_ENV', env),
-    expectedRegion: readTrimmedEnv('AWS_REGION', env) ?? readTrimmedEnv('AWS_DEFAULT_REGION', env),
-  });
-}
-
-export function expectedRuntimeConfigReferencePath(name: RuntimeConfigReferenceName): string {
-  return expectedRuntimeConfigReferencePaths(name)[0] ?? '';
+export function expectedRuntimeConfigReferencePath(
+  name: RuntimeConfigReferenceName,
+  deploymentEnvironment: 'develop' | 'main' = 'develop',
+): string {
+  return expectedRuntimeConfigReferencePaths(name, { expectedDeploymentEnvironment: deploymentEnvironment })[0] ?? '';
 }
 
 function expectedRuntimeConfigReferencePaths(
   name: RuntimeConfigReferenceName,
-  options: RuntimeConfigReferenceValidationOptions = {},
+  options: RuntimeConfigReferenceValidationOptions,
 ): string[] {
   const identities = TARGET_RUNTIME_REFERENCE_IDENTITIES.filter(
-    (identity) =>
-      !options.expectedDeploymentEnvironment ||
-      identity.deploymentEnvironment === options.expectedDeploymentEnvironment,
+    (identity) => identity.deploymentEnvironment === options.expectedDeploymentEnvironment,
   );
-  const selectedIdentities = identities.length > 0 ? identities : TARGET_RUNTIME_REFERENCE_IDENTITIES;
   const suffix = TARGET_RUNTIME_REFERENCE_SUFFIXES[name];
-  return selectedIdentities.map(
+  return identities.map(
     (identity) => `/stark-ballot-simulator/${identity.accountAlias}/${identity.deploymentEnvironment}/app/${suffix}`,
   );
 }
@@ -142,7 +120,7 @@ function assertExpectedReferencePath(
 export function validateRuntimeConfigReferenceSource(
   name: RuntimeConfigReferenceName,
   rawReference: string | undefined,
-  options: RuntimeConfigReferenceValidationOptions = {},
+  options: RuntimeConfigReferenceValidationOptions,
 ): string {
   const value = rawReference?.trim();
   if (!value) {
@@ -221,38 +199,55 @@ export function validateRuntimeConfigReferenceSource(
   throw referenceConfigError(name, `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`);
 }
 
-function normalizeReference(reference: RuntimeConfigReference): RuntimeConfigReference {
+function normalizeReference(
+  reference: RuntimeConfigReference,
+  validationOptions: RuntimeConfigReferenceValidationOptions,
+): RuntimeConfigReference {
   if (!reference.reference.trim()) {
     throw referenceConfigError(reference.name, `${reference.name}_REF must be set before resolving ${reference.name}.`);
   }
 
-  const value = validateRuntimeConfigReferenceSource(
-    reference.name,
-    reference.reference,
-    runtimeReferenceValidationOptions(),
-  );
+  const value = validateRuntimeConfigReferenceSource(reference.name, reference.reference, validationOptions);
   return { name: reference.name, reference: value };
 }
 
-export function setRuntimeConfigReferenceResolver(resolver: RuntimeConfigReferenceResolver | undefined): void {
-  activeResolver = resolver;
+export function setRuntimeConfigReferenceResolver(
+  resolver: RuntimeConfigReferenceResolver,
+  validationOptions: RuntimeConfigReferenceValidationOptions,
+): void {
+  activeResolver = {
+    resolver,
+    validationOptions: Object.freeze({ ...validationOptions }),
+  };
 }
 
 export function clearRuntimeConfigReferenceResolver(): void {
   activeResolver = undefined;
 }
 
-export function installStaticRuntimeConfigReferenceResolver(values: ReadonlyMap<string, string>): void {
-  setRuntimeConfigReferenceResolver({
-    resolve(reference) {
-      return values.get(reference.reference);
+export function installStaticRuntimeConfigReferenceResolver(
+  values: ReadonlyMap<string, string>,
+  validationOptions: RuntimeConfigReferenceValidationOptions,
+): void {
+  setRuntimeConfigReferenceResolver(
+    {
+      resolve(reference) {
+        return values.get(reference.reference);
+      },
     },
-  });
+    validationOptions,
+  );
 }
 
 export function resolveRuntimeConfigReference(reference: RuntimeConfigReference): string {
-  const normalized = normalizeReference(reference);
-  const resolved = activeResolver?.resolve(normalized)?.trim();
+  if (!activeResolver) {
+    throw referenceConfigError(
+      reference.name,
+      `${reference.name}_REF is configured but no target runtime resolver returned a value.`,
+    );
+  }
+  const normalized = normalizeReference(reference, activeResolver.validationOptions);
+  const resolved = activeResolver.resolver.resolve(normalized)?.trim();
 
   if (!resolved) {
     throw referenceConfigError(

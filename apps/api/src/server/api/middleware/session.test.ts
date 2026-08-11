@@ -1,262 +1,123 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import {
-  requireSessionCapability,
-  requireSessionId,
-  validateFinalizedSession,
-  validateSessionCapabilityForSession,
-  validateSession,
-  validateSessionWithCapability,
-  validateSessionWithVote,
-} from './session';
-import type { SessionStoreUpdate, VoteStore } from '@stark-ballot/domain/types/voteStore';
-import type { SessionData } from '@stark-ballot/domain/types/server';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
-import { readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
-import { getStringProperty } from '@stark-ballot/domain/utils/guards';
+import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sessionCapabilityToken';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
-import { resolveCurrentContractGeneration } from '@stark-ballot/domain/contract';
-import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import type { SessionIdentityRecord, SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
+import { getApiErrorCode, readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
+import {
+  requireSessionCapability,
+  validateSessionById,
+  validateSessionCapabilityForSession,
+  type SessionValidationStore,
+} from './session';
+import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+
+const runtimeProfile = localRuntimeProfile();
 
 describe('session middleware', () => {
-  let mockStore: VoteStore;
-  let mockSession: SessionData;
-  let getSessionImpl: (sessionId: string) => Promise<SessionData | null>;
-  let updateSessionCalls: Array<[string, SessionStoreUpdate | undefined]>;
   const capabilitySecret = 'test-session-capability-secret-0123456789abcdef';
+  let identity: SessionIdentityRecord;
+  let voting: SessionVotingRecord;
+  let getSessionIdentity: ReturnType<typeof vi.fn<(sessionId: string) => Promise<SessionIdentityRecord | null>>>;
+  let getVotingRecord: ReturnType<typeof vi.fn<(sessionId: string) => Promise<SessionVotingRecord | null>>>;
+  let touchSession: ReturnType<typeof vi.fn<(sessionId: string) => Promise<void>>>;
+  let store: SessionValidationStore;
 
   beforeEach(() => {
     vi.clearAllMocks();
     process.env['SESSION_CAPABILITY_SECRET'] = capabilitySecret;
-
-    mockSession = {
-      sessionId: 'test-session-123',
-      contractGeneration: resolveCurrentContractGeneration(),
-      votes: new Map(),
-      botCount: 0,
-      finalized: false,
-      createdAt: Date.now(),
-      lastActivity: Date.now(),
-      ...omitUndefinedProperties({ userVoteIndex: undefined }),
-    };
-
-    getSessionImpl = () => Promise.resolve(mockSession);
-    updateSessionCalls = [];
-    const store = {
-      createSession: () => Promise.resolve(mockSession),
-      getSession: (sessionId: string) => getSessionImpl(sessionId),
-      addVote: () => Promise.resolve({ leafIndex: 0, merklePath: [], bulletinRootAtCast: `0x${'0'.repeat(64)}` }),
-      addBotVotes: () => Promise.resolve(undefined),
-      updateSession: (sessionId: string, data?: SessionStoreUpdate) => {
-        updateSessionCalls.push([sessionId, data]);
-        return Promise.resolve(undefined);
+    const nowMs = Date.now();
+    identity = {
+      sessionId: 'session-1',
+      electionId: '550e8400-e29b-41d4-a716-446655440000',
+      electionConfigHash: `0x${'1'.repeat(64)}`,
+      electionConfig: {
+        totalExpected: 1,
+        choices: ['A'],
+        version: '1',
+        botCount: 0,
+        merkleTreeDepth: 1,
       },
-      recordVerificationObservation: () => Promise.resolve({ status: 'recorded' }),
-      getActiveSessionCount: () => Promise.resolve(0),
-      getVoteById: () => Promise.resolve(null),
-      getVoteByIdWithProof: () => Promise.resolve(null),
-      getVoteProof: () => Promise.resolve(null),
-    } satisfies VoteStore;
-    mockStore = store;
+      logId: `0x${'2'.repeat(64)}`,
+      createdAtMs: nowMs,
+    };
+    voting = {
+      sessionId: 'session-1',
+      votes: new Map(),
+      bulletin: new SimpleBulletinBoard(identity.logId),
+      bulletinRootHistory: [],
+      botCount: 0,
+      userParticipation: { status: 'not_cast' },
+      lastActivityMs: nowMs,
+    };
+    getSessionIdentity = vi.fn(() => Promise.resolve(identity));
+    getVotingRecord = vi.fn(() => Promise.resolve(voting));
+    touchSession = vi.fn(() => Promise.resolve());
+    store = {
+      getSessionIdentity,
+      getVotingRecord,
+      getCurrentFinalizationRecord: () => Promise.resolve(null),
+      touchSession,
+    };
   });
 
-  describe('validateSession', () => {
-    it('should return error if session ID is missing', async () => {
-      const headers = new Headers();
-
-      const result = await validateSession(headers, mockStore);
-
-      expect(result).toBeInstanceOf(Response);
-      if (result instanceof Response) {
-        const data = await readJsonRecord(result, 'session auth missing id');
-        expect(getStringProperty(data, 'error')).toBe(ErrorCode.SESSION_ID_REQUIRED);
-      }
-    });
-
-    it('should return error if session not found', async () => {
-      getSessionImpl = () => Promise.resolve(null);
-      const headers = new Headers({ 'X-Session-ID': 'test-session-123' });
-
-      const result = await validateSession(headers, mockStore);
-
-      expect(result).toBeInstanceOf(Response);
-      if (result instanceof Response) {
-        const data = await readJsonRecord(result, 'session auth not found');
-        expect(getStringProperty(data, 'error')).toBe(ErrorCode.SESSION_NOT_FOUND);
-      }
-    });
-
-    it('should return session data if valid', async () => {
-      const headers = new Headers({ 'X-Session-ID': 'test-session-123' });
-
-      const result = await validateSession(headers, mockStore);
-
-      expect(result).not.toBeInstanceOf(Response);
-      if (!(result instanceof Response)) {
-        expect(result.session).toBe(mockSession);
-        expect(result.sessionId).toBe('test-session-123');
-      }
-      expect(updateSessionCalls).toEqual([['test-session-123', undefined]]);
-    });
-
-    it('fails closed for stale live sessions before refreshing activity', async () => {
-      mockSession.contractGeneration = 'stale-contract-generation';
-      const headers = new Headers({ 'X-Session-ID': 'test-session-123' });
-
-      const result = await validateSession(headers, mockStore);
-
-      expect(result).toBeInstanceOf(Response);
-      if (result instanceof Response) {
-        const data = await readJsonRecord(result, 'stale live session');
-        expect(getStringProperty(data, 'error')).toBe(ErrorCode.SESSION_NOT_FOUND);
-      }
-      expect(updateSessionCalls).toEqual([]);
-    });
+  it('requires the capability credential', async () => {
+    const result = requireSessionCapability(new Headers());
+    expect(result).toBeInstanceOf(Response);
+    if (result instanceof Response) {
+      expect(getApiErrorCode(await readJsonRecord(result))).toBe(ErrorCode.SESSION_CAPABILITY_REQUIRED);
+    }
   });
 
-  describe('requireSessionCapability', () => {
-    it('returns error when capability token is missing', async () => {
-      const headers = new Headers({ 'X-Session-ID': 'test-session-123' });
+  it('binds a capability token to the exact path session', async () => {
+    const token = createSessionCapabilityToken(
+      { sessionId: 'session-1', nowMs: Date.now(), ttlSeconds: 300 },
+      capabilitySecret,
+    );
+    const headers = new Headers({ [SESSION_CAPABILITY_HEADER]: token });
 
-      const result = requireSessionCapability(headers);
-
-      expect(result).toBeInstanceOf(Response);
-      if (result instanceof Response) {
-        const data = await readJsonRecord(result, 'session capability missing');
-        expect(getStringProperty(data, 'error')).toBe(ErrorCode.SESSION_CAPABILITY_REQUIRED);
-      }
-    });
+    expect(validateSessionCapabilityForSession(runtimeProfile, headers, 'session-1')).not.toBeInstanceOf(Response);
+    const mismatch = validateSessionCapabilityForSession(runtimeProfile, headers, 'session-2');
+    expect(mismatch).toBeInstanceOf(Response);
+    if (mismatch instanceof Response) {
+      expect(getApiErrorCode(await readJsonRecord(mismatch))).toBe(ErrorCode.SESSION_CAPABILITY_INVALID);
+    }
   });
 
-  describe('validateSessionCapabilityForSession', () => {
-    it('returns invalid error for tampered token', async () => {
-      const validToken = createSessionCapabilityToken(
-        {
-          sessionId: 'test-session-123',
-          nowMs: 1_700_000_000_000,
-          ttlSeconds: 300,
-          nonce: 'nonce',
-        },
-        capabilitySecret,
-      );
-      const headers = new Headers({
-        'X-Session-ID': 'test-session-123',
-        [SESSION_CAPABILITY_HEADER]: `${validToken}tampered`,
-      });
+  it('loads the path-selected session and updates activity by default', async () => {
+    const result = await validateSessionById('session-1', store);
 
-      const result = validateSessionCapabilityForSession(headers, 'test-session-123');
-
-      expect(result).toBeInstanceOf(Response);
-      if (result instanceof Response) {
-        const data = await readJsonRecord(result, 'session capability invalid');
-        expect(getStringProperty(data, 'error')).toBe(ErrorCode.SESSION_CAPABILITY_INVALID);
-      }
+    expect(result).toEqual({
+      session: { identity, voting, finalization: null },
+      sessionId: 'session-1',
     });
+    expect(getSessionIdentity).toHaveBeenCalledWith('session-1');
+    expect(getVotingRecord).toHaveBeenCalledWith('session-1');
+    expect(touchSession).toHaveBeenCalledWith('session-1');
   });
 
-  describe('requireSessionId', () => {
-    it('should return error if session ID is missing', async () => {
-      // Given
-      const headers = new Headers();
+  it('can read without updating activity', async () => {
+    const result = await validateSessionById('session-1', store, { updateActivity: false });
 
-      // When
-      const result = requireSessionId(headers);
-
-      // Then
-      expect(result).toBeInstanceOf(Response);
-      if (result instanceof Response) {
-        const data = await readJsonRecord(result, 'session id missing');
-        expect(getStringProperty(data, 'error')).toBe(ErrorCode.SESSION_ID_REQUIRED);
-      }
+    expect(result).toEqual({
+      session: { identity, voting, finalization: null },
+      sessionId: 'session-1',
     });
-
-    it('should return session ID when present', () => {
-      // Given
-      const headers = new Headers({ 'X-Session-ID': 'session-abc' });
-
-      // When
-      const result = requireSessionId(headers);
-
-      // Then
-      expect(result).toBe('session-abc');
-    });
+    expect(touchSession).not.toHaveBeenCalled();
   });
 
-  describe('validateSessionWithVote', () => {
-    it('should return error if user has not voted', async () => {
-      const headers = new Headers({ 'X-Session-ID': 'test-session-123' });
+  it('fails closed for missing or cross-session records', async () => {
+    getSessionIdentity.mockResolvedValueOnce(null);
+    const missing = await validateSessionById('session-1', store);
+    expect(missing).toBeInstanceOf(Response);
+    if (missing instanceof Response) {
+      expect(getApiErrorCode(await readJsonRecord(missing))).toBe(ErrorCode.SESSION_NOT_FOUND);
+    }
 
-      const result = await validateSessionWithVote(headers, mockStore);
-
-      expect(result).toBeInstanceOf(Response);
-      if (result instanceof Response) {
-        const data = await readJsonRecord(result, 'session auth user not voted');
-        expect(getStringProperty(data, 'error')).toBe(ErrorCode.USER_NOT_VOTED);
-      }
-    });
-
-    it('should return session data if user has voted', async () => {
-      mockSession.userVoteIndex = 0;
-      const headers = new Headers({ 'X-Session-ID': 'test-session-123' });
-
-      const result = await validateSessionWithVote(headers, mockStore);
-
-      expect(result).not.toBeInstanceOf(Response);
-      if (!(result instanceof Response)) {
-        expect(result.session).toBe(mockSession);
-        expect(result.sessionId).toBe('test-session-123');
-      }
-    });
-  });
-
-  describe('validateSessionWithCapability', () => {
-    it('returns session data when id/token/session are valid', async () => {
-      const token = createSessionCapabilityToken(
-        {
-          sessionId: 'test-session-123',
-          nowMs: Date.now(),
-          ttlSeconds: 300,
-        },
-        capabilitySecret,
-      );
-      const headers = new Headers({
-        'X-Session-ID': 'test-session-123',
-        [SESSION_CAPABILITY_HEADER]: token,
-      });
-
-      const result = await validateSessionWithCapability(headers, mockStore, { updateActivity: false });
-
-      expect(result).not.toBeInstanceOf(Response);
-      if (!(result instanceof Response)) {
-        expect(result.sessionId).toBe('test-session-123');
-      }
-    });
-  });
-
-  describe('validateFinalizedSession', () => {
-    it('should return error if session not finalized', async () => {
-      const headers = new Headers({ 'X-Session-ID': 'test-session-123' });
-
-      const result = await validateFinalizedSession(headers, mockStore);
-
-      expect(result).toBeInstanceOf(Response);
-      if (result instanceof Response) {
-        const data = await readJsonRecord(result, 'session auth not finalized');
-        expect(getStringProperty(data, 'error')).toBe(ErrorCode.SESSION_NOT_FINALIZED);
-      }
-    });
-
-    it('should return session data if finalized', async () => {
-      mockSession.finalized = true;
-      const headers = new Headers({ 'X-Session-ID': 'test-session-123' });
-
-      const result = await validateFinalizedSession(headers, mockStore);
-
-      expect(result).not.toBeInstanceOf(Response);
-      if (!(result instanceof Response)) {
-        expect(result.session).toBe(mockSession);
-        expect(result.sessionId).toBe('test-session-123');
-      }
-    });
+    voting.sessionId = 'session-2';
+    const mismatched = await validateSessionById('session-1', store);
+    expect(mismatched).toBeInstanceOf(Response);
+    expect(touchSession).not.toHaveBeenCalled();
   });
 });

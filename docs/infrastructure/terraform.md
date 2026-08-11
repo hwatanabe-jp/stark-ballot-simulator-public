@@ -1,7 +1,7 @@
 # Terraform Infrastructure Guide
 
 > **Status:** current target-account Terraform ownership and execution guide.
-> Last reconciled: 2026-07-29. The retired Amplify/local-workspace workflow is
+> Last reconciled: 2026-08-09. The retired Amplify/local-workspace workflow is
 > deliberately excluded and must not be used as a target deployment path.
 
 Terraform separates application runtime, foundation prerequisites, and
@@ -13,14 +13,22 @@ Account-specific procedures start at the operator index retained in the private
 source repository. This page records only the ownership model and guardrails
 that are safe to keep in general project documentation.
 
+`packages/deployment-authority/deployment-targets.json` is the single reviewed
+cross-runtime authority for allowed targets and their exact lane, state,
+backend, policy, and generated-name values. The three active Terraform roots
+decode that file directly and fail closed unless their inputs match the selected
+target. The `@stark-ballot/deployment-authority` package owns the matching
+context, immutable-reference, publication, saved-plan, and acceptance
+admission rules; consumers must not reconstruct names or add a fallback target.
+
 ## Terraform roots
 
-| Root                          | State identity                             | Owns                                                                                                                                                                          | Does not own                                                                                                 |
-| ----------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `infra/terraform/bootstrap/`  | `<account-alias>/<environment>/bootstrap`  | Remote state, KMS, CodeConnections, CodePipeline/CodeBuild, deploy roles, artifact buckets, backend grants, GitHub trigger role                                               | App runtime, ECR workloads, secret values, production authorization                                          |
-| `infra/terraform/foundation/` | `<account-alias>/<environment>/foundation` | ECR repositories, ECR signing authority, prover networking, release storage, secret containers, non-secret config containers, DNS/ACM handoff records                         | Lambda/API/DynamoDB/SQS/Step Functions/ECS tasks/CloudFront/static and proof buckets, image builds           |
-| `infra/terraform/app/`        | `<account-alias>/<environment>/app`        | Static frontend, CloudFront and operator-gate keys, API Gateway/Hono Lambda, DynamoDB, SQS, Step Functions, ECS task definition, proof/report storage, alarms, runtime wiring | ECR repository creation, image publication, secret values, DNS zones, ACM issuance, production authorization |
-| `infra/terraform/legacy/`     | Retired legacy workspace/state             | Read-only retirement inventory                                                                                                                                                | New work, routine plan/apply, target state                                                                   |
+| Root                          | State identity                             | Owns                                                                                                                                                                                                                                                 | Does not own                                                                                                 |
+| ----------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `infra/terraform/bootstrap/`  | `<account-alias>/<environment>/bootstrap`  | Remote state and durable Terraform authority storage/KMS, CodeConnections, CodePipeline/CodeBuild and report-only projects, deploy roles, retained and execution artifact buckets, backend grants, CodeBuild log groups, and the GitHub trigger role | App runtime, ECR workloads, secret values, production authorization                                          |
+| `infra/terraform/foundation/` | `<account-alias>/<environment>/foundation` | ECR repositories and managed Prover signing, reference-aware ECR retention, prover networking, release storage, secret containers, non-secret config containers, and DNS/ACM handoff records                                                         | Lambda/API/DynamoDB/SQS/Step Functions/ECS tasks/CloudFront/static and proof buckets, image builds           |
+| `infra/terraform/app/`        | `<account-alias>/<environment>/app`        | Static frontend, CloudFront and operator-gate keys, API Gateway/Hono Lambda, DynamoDB, SQS, Step Functions, ECS task definition, proof/report storage, alarms and notification routing, the operations ledger, and runtime wiring                    | ECR repository creation, image publication, secret values, DNS zones, ACM issuance, production authorization |
+| `infra/terraform/legacy/`     | Retired legacy workspace/state             | Read-only retirement inventory                                                                                                                                                                                                                       | New work, routine plan/apply, target state                                                                   |
 
 Root-specific details live in the per-root operator `README.md` files, which
 remain in private operator documentation:
@@ -45,6 +53,21 @@ do not enter source control. The bootstrap root manages S3 versioning, KMS
 encryption, public-access blocking, bucket policy, and the S3 lockfile. Treat
 the state body as secret-bearing private data; never copy it into documentation,
 chat, CI summaries, or public exports.
+
+State storage is distinct from both execution evidence and durable accepted
+authority. All three roots exactly require Terraform 1.15.8 and AWS provider
+6.58.0. A managed Plan retains its resolved `.terraform.lock.hcl`,
+Terraform/provider identity, CodeBuild runtime evidence, saved plan, and saved
+plan checksum. Apply copies that exact lock and consumes the reviewed saved
+plan without replanning. Root lock files remain untracked; changing a provider
+constraint or resolution requires a fresh managed Plan.
+
+Successful smoke publishes a secret-safe accepted Terraform baseline to the
+separate Bootstrap-owned Terraform authority bucket. A baseline binds the
+target context, complete backend authority, nonsecret inputs and secret
+references, provider lock/runtime evidence, reviewed plan checksum, acceptance,
+and specialized smoke. It never retains Terraform state, a saved-plan binary,
+raw plan JSON, decrypted values, or generated sensitive values.
 
 ## Selecting a deployment story
 
@@ -116,17 +139,38 @@ Source
   -> static deploy -> smoke -> retained acceptance evidence
 ```
 
+The four self-hosted Bootstrap Validate, Plan, Apply, and Smoke projects run
+checked-in buildspec templates from the exact pinned Source revision and verify
+`infra/terraform/bootstrap/bootstrap-buildspec-assets.sha256`. That manifest
+binds all four templates and their bounded entrypoints. Extracted Foundation,
+App, and report-only buildspecs instead carry a Terraform `filesha256` for one
+bounded entrypoint and verify it before dispatch; neither model admits an
+embedded command-body or local fallback.
+
+Bootstrap is the only composition root that consumes the bounded shared
+`infra/framework/terraform/modules/codebuild-log-groups` module. Its four
+explicit calls own Bootstrap, Foundation, App, and report-only CodeBuild log
+groups. Declarative `moved` blocks preserve the existing Bootstrap,
+Foundation, and App log-group identities; this module is not a new Terraform
+root or deployment lane.
+
 Shared rules:
 
 - Verify the account alias, deployment environment, state scope, backend key,
   source SHA, and caller role for every execution.
 - Keep plan and apply roles separate. Each apply consumes only its reviewed
-  saved plan.
-- In the develop App lane, the ordinary App approval may be skipped only for a
-  normal deployment whose plan is machine-proven empty. Rollback always
-  requires approval even when Terraform is empty. Parse failures, unresolved
-  plan status, and any resource, output, move, or import change fail closed to
-  approval.
+  saved plan and retained provider lock without replanning.
+- Each Plan records the configured CodeBuild image, compute/environment type,
+  privilege mode, project identity, build identity, and observed managed image.
+  A missing field or configured/observed mismatch fails before planning.
+- Terraform 1.15.8 reports a successful complete semantic no-op as
+  `applyable: false`. Bootstrap/Foundation no-ops and App rollback no-ops remain
+  reviewable; only a normal App no-op becomes the mechanical
+  `EMPTY_PLAN_SKIP`. Verifier preflight remains incomplete and applyable.
+  Non-applyable plans with resource/read or root-output changes, applyable
+  semantic no-ops, failed or errored checks, deferred changes, action or
+  deferred-action invocations, moves, and imports fail closed. Provider-reported
+  drift is displayed separately and does not redefine the `applyable` bit.
 - GitHub Actions may start or observe an allowed AWS pipeline; they must not
   read Terraform state or runtime secrets.
 - Local App or Foundation `plan` and `apply` are not acceptance evidence.
@@ -189,7 +233,54 @@ App authority is selected only by
 `accepted-deployments/stark-dev/develop/app/current.json`, never the retired
 `index.json`.
 
+Before that existing App pointer advances, smoke also publishes the attempt's
+immutable accepted Terraform baseline. App does not have a second mutable
+baseline pointer: its current accepted pipeline execution and acceptance
+attempt deterministically select the matching baseline.
+
+## Accepted baselines and report-only controls
+
+Successful Bootstrap, Foundation, and App smoke each publish one durable
+`accepted-terraform-baseline` with immutable `{ key, versionId, sha256 }`
+references. Bootstrap and Foundation select their current baselines through
+root-specific `current-terraform-baseline` pointers using conditional
+first-create or compare-and-swap. App selection follows the accepted execution
+and attempt described above. These records are reconstruction authority for
+inspection; they do not replace state and do not authorize a later saved plan.
+
+Bootstrap owns a weekly AWS-managed coordinator and three root-specific
+report-only drift runners. The coordinator selects each exact accepted
+baseline, and each runner materializes that accepted historical source in a
+private workspace, admits its context, backend, inputs, provider lock/runtime,
+and controller source, then runs refresh-enabled
+`terraform plan -lock=false -detailed-exitcode`. Only a bounded redacted result
+of `no-drift`, `drift-detected`, or `check-failed` is retained. Temporary state
+views, plans, and full plan JSON are removed on exit.
+
+The drift plane has no Apply, state/lock write, accepted-pointer write,
+promotion, or remediation path. A drift result never becomes saved-plan input;
+remediation returns to the owning managed saved-plan lane.
+
+Two distinct source-pinned CodeBuild projects provide on-demand rollback and
+DynamoDB recovery readiness reports. They have no scheduler or alarm trigger
+and may exact-read current authority and publish only create-once encrypted
+readiness evidence. They cannot apply Terraform, mutate state or pointers,
+restore or switch tables, redrive work, stop tasks, inject faults, or authorize
+an exercise. Both projects are installed for the current target but remain
+uninvoked, so the repository and project definitions are not readiness or live
+exercise evidence.
+
 ## Workload resources
+
+### Bootstrap-owned App storage
+
+The full App and static-fast CodePipeline lanes use separate private,
+versioned, KMS-encrypted transient execution buckets. The existing retained App
+bucket is a third, distinct bucket that owns accepted authority, immutable
+deployables, approval and verifier evidence, and CodeBuild cache objects. Each
+lane can access only its execution bucket plus exact retained objects required
+by its work. Legacy CodePipeline transients in the retained bucket are not
+copied and have no compatibility reader; their existing lifecycle expires them.
 
 ### App root
 
@@ -209,12 +300,16 @@ The App root manages:
   controls;
 - CloudWatch log groups, alarms, closed-field metric filters, the compact
   dashboard, and the normalized operations ledger;
-- the invariant-only SNS topic and optional fixed-path email subscription; and
+- separate verification-invariant and operations-actionable SNS topics with
+  optional fixed-path email subscriptions; and
 - non-secret SSM runtime wiring records.
 
-Only the verdict-invariant alarm has an SNS action. Other App-root alarms are
-passive evidence for operator diagnosis, and telemetry never changes a
-verification verdict.
+The verdict-invariant alarm is the only alarm with a direct SNS action. Five
+dedicated damped alarms keep direct actions disabled, but EventBridge routes
+their exact `ALARM` transitions to the separate operations-actionable topic;
+owned-pipeline `FAILED` events use that same route. Remaining alarms are passive
+diagnostic evidence. Neither notification class performs remediation or
+changes a verification verdict.
 
 The App root does not build or promote images. It consumes exact Foundation
 publications and a digest-pinned Prover from accepted release authority.
@@ -223,10 +318,20 @@ publications and a digest-pinned Prover from accepted release authority.
 
 The Foundation root owns the Prover and Toolchain ECR repositories, ECR managed
 signing configuration for the Prover, networking, release-manifest storage,
-and runtime secret/configuration containers. It publishes immutable handoff
-coordinates for later lanes but does not accept an image digest. Mutable tags,
-direct CodeBuild output, local Docker builds, and operator-written manifests
-are not App deployment authority.
+runtime secret/configuration containers, and reference-aware image retention.
+It publishes immutable handoff coordinates for later lanes but does not accept
+an image digest. Mutable tags, direct CodeBuild output, local Docker builds, and
+operator-written manifests are not App deployment authority.
+
+Native ECR lifecycle expiry remains disabled. The scheduled retention
+controller protects current Toolchain/Prover acceptance, retained App accepted
+and rollback references, the live Prover task definition, and each protected
+subject's referrers. Relevant pipeline, candidate-build, finalization, or
+Prover-task activity suppresses deletion. Otherwise the controller requires two
+identical snapshots, lets protected references override the reviewed target
+count, deletes referrers before subjects, and verifies the result. Ordinary
+Foundation Apply remains delete-denied; only the bounded controller role can
+delete from the two repositories.
 
 ## Secret and configuration boundary
 

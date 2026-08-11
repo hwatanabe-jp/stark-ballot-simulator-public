@@ -1,5 +1,5 @@
 import type { ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
-import { normalizeHexString } from '@stark-ballot/verification/shared/hex';
+import { normalizeHexString } from '@stark-ballot/crypto-primitives';
 
 export interface AdmittedSthRecord {
   source?: string;

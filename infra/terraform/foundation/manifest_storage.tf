@@ -76,8 +76,8 @@ data "aws_iam_policy_document" "release_manifests" {
       "${aws_s3_bucket.release_manifests.arn}/deployments/*",
       "${aws_s3_bucket.release_manifests.arn}/rollbacks/*",
       "${aws_s3_bucket.release_manifests.arn}/reissue/*",
-      "${aws_s3_bucket.release_manifests.arn}/channels/develop/toolchain/accepted.json",
-      "${aws_s3_bucket.release_manifests.arn}/channels/develop/prover/accepted.json",
+      "${aws_s3_bucket.release_manifests.arn}/${local.deployment_shared_names.toolchainAcceptedPointerKey}",
+      "${aws_s3_bucket.release_manifests.arn}/${local.deployment_shared_names.proverAcceptedPointerKey}",
     ]
   }
 
@@ -136,8 +136,8 @@ data "aws_iam_policy_document" "release_manifests" {
 
     actions = ["s3:PutObject"]
     resources = [
-      "${aws_s3_bucket.release_manifests.arn}/channels/develop/toolchain/accepted.json",
-      "${aws_s3_bucket.release_manifests.arn}/channels/develop/prover/accepted.json",
+      "${aws_s3_bucket.release_manifests.arn}/${local.deployment_shared_names.toolchainAcceptedPointerKey}",
+      "${aws_s3_bucket.release_manifests.arn}/${local.deployment_shared_names.proverAcceptedPointerKey}",
     ]
 
     condition {

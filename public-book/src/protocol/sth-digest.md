@@ -89,23 +89,24 @@ sequenceDiagram
 
 ### 第三者合意による検出
 
-検証者は、`VITE_STH_SOURCES` に設定された独立ソースへ問い合わせ、ジャーナル内の STH ダイジェストと照合することでスプリットビューを検出できます。
+検証 API は、`VITE_STH_SOURCES` に設定されたソースから STH evidence を取得し、ジャーナル内の STH ダイジェストと照合することでスプリットビューを検出できます。
 
 ```mermaid
 sequenceDiagram
     participant V as 検証者
-    participant S as サーバー
+    participant S as 検証 API
     participant T1 as 第三者ソース 1
     participant T2 as 第三者ソース 2
 
-    V->>S: ジャーナルから STH ダイジェスト D' を取得
-    V->>T1: STH を問い合わせ → D₁
-    V->>T2: STH を問い合わせ → D₂
-    V->>V: D' = D₁ = D₂ ?
+    V->>S: 検証リソースを要求
+    S->>S: ジャーナルから STH ダイジェスト D' を取得
+    S->>T1: STH を問い合わせ → D₁
+    S->>T2: STH を問い合わせ → D₂
+    S->>S: D' = D₁ = D₂ ?
     alt 全て一致
-        V->>V: 合意成立 → 検証成功
+        S->>V: 合意成立を含む検証結果
     else 不一致あり
-        V->>V: スプリットビューの疑い → 検証失敗
+        S->>V: スプリットビューの疑い → 検証失敗
     end
 ```
 
@@ -120,8 +121,14 @@ sequenceDiagram
 | 掲示板ルート     | 提供されている場合は一致 |
 | ツリーサイズ     | 提供されている場合は一致 |
 
-第三者ソースの応答は `sthDigest` を中心としたスナップショット情報として扱います。
-応答署名の検証、外部アンカリング、STH の自動公開は本実装のスコープ外です。
+外部 HTTPS ソースの応答は、`sthDigest`、`bulletinRoot`、`treeSize`、`timestamp`、`logId`
+だけを許可する flat な canonical record として fail-closed に受理します。`sthDigest` は必須で、
+その他のフィールドは任意ですが、指定された場合は型と形式を検証します。wrapper、未知のキー、
+`digest` / `root` / `log_id` などの alias は受理しません。
+設定済みソースの取得失敗、利用不能、または malformed response は、ほかの受理済みソースが
+最小一致数を満たしていても合意失敗になります。
+
+冒頭の注記のとおり応答署名は検証しません。外部アンカリングと STH の自動公開も本実装のスコープ外です。
 
 ## zkVM との連携
 
@@ -153,31 +160,41 @@ STH ダイジェストは 2 つの段階で利用されます。
 
 第三者 STH 検証は環境変数で制御されます。
 
-| 環境変数               | 説明                          | コードフォールバック値           |
-| ---------------------- | ----------------------------- | -------------------------------- |
-| `VITE_STH_SOURCES`     | カンマ区切りの STH ソース URL | 未設定（第三者照合を実行しない） |
-| `VITE_STH_MIN_MATCHES` | 必要な最小一致ソース数        | 2                                |
+| 環境変数               | 説明                                                 | コードフォールバック値           |
+| ---------------------- | ---------------------------------------------------- | -------------------------------- |
+| `VITE_STH_SOURCES`     | カンマ区切りの same-origin template / 外部 HTTPS URL | 未設定（第三者照合を実行しない） |
+| `VITE_STH_MIN_MATCHES` | 必要な最小一致ソース数                               | 2                                |
 
 STH ソースが未設定の場合、`recorded_sth_third_party` は `not_run`（未実行）となり、第三者照合は行いません。
 
 開発用の `.env.local.example` では、必要な場合に有効化する例として次の値がコメントで示されています。
 
-- `VITE_STH_SOURCES=/api/sth`
-- `VITE_STH_MIN_MATCHES=2`
+- `VITE_STH_SOURCES=/api/sessions/:sessionId/bulletin/sth`
+- `VITE_STH_MIN_MATCHES=1`
 
-### same-origin と `/api/sth` の取り扱い
+### same-origin template と外部 HTTPS source の取り扱い
 
-**same-origin 解決と認証ヘッダ転送**: 相対パス（例: `/api/sth`）はリクエスト元のオリジンに対して解決されます。
-`/api/sth` は same-origin の session-scoped 開発用 API で、アクセスにはセッション capability が必要です。
-検証ロジックはセッション認証ヘッダーを same-origin ソースにのみ転送し、cross-origin ソースへは送りません。
-独立第三者ソースを absolute URL で構成する場合、それらはセッション認証に依存しない公開 STH エンドポイントである必要があります。
+**same-origin template**: 相対 source として受理するのは exact template
+`/api/sessions/:sessionId/bulletin/sth` だけです。任意で `auditorId` query を 1 つ指定できます。
+検証 API は `:sessionId` を現在の session ID で解決し、認証済み session context から STH を
+直接 project します。この内部取得では HTTP request や session capability header の転送を行いません。
 
-**`/api/sth` の timestamp**: `/api/sth` が返す `timestamp` はジャーナル内の canonical な時刻ではなく `session.lastActivity` です。
+同じ path を通常の HTTP endpoint として直接取得する場合は、same-origin request と path の
+session ID に対応する `X-Session-Capability` が必要です。finalization が成功している session に限り、
+`{ data: { sth: { ... } }, meta }` envelope を返します。
+
+**外部 HTTPS source**: absolute HTTPS URL は、app と同じ origin を指す場合でも外部 source として
+取得します。repository の session capability や同等の認証情報は送信しません。そのため、独立した
+第三者 source は session 認証に依存しない公開 STH endpoint である必要があります。
+
+**same-origin projection の timestamp**: same-origin projection が返す `timestamp` はジャーナル内の
+canonical な時刻ではなく `session.voting.lastActivityMs` です。
 そのため、第三者合意の一致判定で実際に照合するのは必須の `sthDigest` と、ソースが返した場合の `bulletinRoot` / `treeSize` です。
 
 ## PoC における制約
 
-本 PoC の開発用テンプレート（`.env.local.example`）では、STH ソースとして同一サーバー上の API エンドポイント（`/api/sth`）を使う例を示しています。
+本 PoC の開発用テンプレート（`.env.local.example`）では、STH ソースとして同一サーバー上の
+session-scoped template（`/api/sessions/:sessionId/bulletin/sth`）を使う例を示しています。
 同一サーバー上のソースのみでは防御力が限定的であるため、独立した組織が運営する複数ソースを `VITE_STH_MIN_MATCHES >= 2` で構成することを推奨します。
 
-<!-- source: packages/verification/src/verification/sth-verifier.ts, apps/api/src/server/api/handlers/sth.ts, packages/zkvm-contract/src/zkvm/types.ts:computeSTHDigest, packages/zkvm-contract/src/zkvm/log-id.ts, zkvm/methods/guest/src/sth.rs, packages/verification/src/verification/public-audit-artifacts.ts, packages/verification/src/verification/verification-bundle.ts, infra/docker/entrypoint.sh, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/application/src/finalize/finalization-result.ts, .env.local.example -->
+<!-- source: packages/verification/src/verification/sth-verifier.ts, apps/api/src/server/api/adapters/sthProvider.ts, apps/api/src/server/api/handlers/sth.ts, apps/api/src/server/api/handlers/verify.ts, packages/api-contract/src/schemas/bulletin.ts, packages/runtime-config/src/env/nodeSthPublicRuntimeConfig.ts, packages/zkvm-contract/src/zkvm/types.ts:computeSTHDigest, packages/zkvm-contract/src/zkvm/log-id.ts, zkvm/methods/guest/src/sth.rs, packages/verification/src/verification/public-audit-artifacts.ts, packages/verification/src/verification/verification-bundle.ts, infra/docker/entrypoint.sh, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/application/src/finalize/finalization-result.ts, .env.local.example -->

@@ -2,10 +2,24 @@ packages:
   - '.'
   - 'apps/*'
   - 'packages/*'
+  - 'scripts'
 
-# Apps/packages own workspace boundaries. Root scripts remain the orchestration
-# and execution authority for repository-level gates.
+# Apps, packages, and repository scripts own explicit workspace boundaries.
+# Root commands remain the orchestration authority for repository-level gates.
 strictDepBuilds: true
+disallowWorkspaceCycles: true
+# Keep dependency-state semantics identical in CI and local shells. Commands
+# reject stale installs instead of mutating the workspace through an implicit install.
+enableGlobalVirtualStore: false
+verifyDepsBeforeRun: error
+# Keep transient registry latency below 30 seconds out of otherwise clean CI
+# logs. Fetch timeout, retries, and integrity admission remain unchanged.
+fetchWarnTimeoutMs: 30000
+# testcontainers 12.1.0 still resolves archiver 7 -> archiver-utils 5.0.2,
+# whose latest release requires glob 10. Keep the exact reviewed warning muted
+# until that upstream dependency range admits a supported glob release.
+allowedDeprecatedVersions:
+  glob: '10.5.0'
 minimumReleaseAge: 1440
 minimumReleaseAgeStrict: true
 trustPolicy: no-downgrade
@@ -18,6 +32,40 @@ trustPolicyExclude:
   - 'graphql@15.10.2'
   - 'semver@6.3.1'
   - 'ua-parser-js@1.0.41'
+
+# Keep GitHub Actions on the same update path as registry dependencies. pnpm
+# preserves exact commit pins and refreshes the release tag comments.
+update:
+  githubActions: true
+
+catalogs:
+  aws-sdk:
+    '@aws-sdk/client-codebuild': '3.1106.0'
+    '@aws-sdk/client-codepipeline': '3.1106.0'
+    '@aws-sdk/client-dynamodb': '3.1106.0'
+    '@aws-sdk/client-ecs': '3.1106.0'
+    '@aws-sdk/client-s3': '3.1106.0'
+    '@aws-sdk/client-secrets-manager': '3.1106.0'
+    '@aws-sdk/client-sfn': '3.1106.0'
+    '@aws-sdk/client-sqs': '3.1106.0'
+    '@aws-sdk/client-ssm': '3.1106.0'
+    '@aws-sdk/client-sts': '3.1106.0'
+    '@aws-sdk/lib-dynamodb': '3.1106.0'
+  crypto-testing:
+    '@noble/hashes': '2.3.0'
+    fast-check: '4.9.0'
+  react:
+    '@marsidev/react-turnstile': '1.5.5'
+    '@testing-library/react': '16.3.2'
+    '@testing-library/user-event': '14.6.3'
+    lucide-react: '1.30.0'
+    react: '19.2.8'
+    react-dom: '19.2.8'
+    react-router: '8.3.0'
+  testing:
+    '@vitest/coverage-v8': '4.1.10'
+    typescript: '6.0.3'
+    vitest: '4.1.10'
 
 overrides:
   '@smithy/types': 4.16.1

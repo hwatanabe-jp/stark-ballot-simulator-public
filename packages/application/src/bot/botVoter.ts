@@ -1,8 +1,8 @@
 import { generateBotVote, generateBotId } from '@stark-ballot/domain/bot/voteGenerator';
-import type { VoteData } from '@stark-ballot/domain/types/server';
+import type { VoteData } from '@stark-ballot/domain/types/sessionRecords';
 import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
+import type { FinalizationLifecycleStore } from '@stark-ballot/application/finalize/finalization-store';
 import { BOT_COUNT } from '@stark-ballot/domain/shared/constants';
-import { isRecoverableCurrentLiveSession } from '@stark-ballot/domain/contract';
 import {
   assertCanonicalUserVoteIndexForBotVotes,
   deriveBotCountFromVotes,
@@ -15,30 +15,27 @@ export interface BotVotingProgress {
 }
 
 export class BotVoter {
-  constructor(private readonly store: VoteStore) {}
+  constructor(private readonly store: VoteStore & FinalizationLifecycleStore) {}
 
   /**
    * Start bot voting process for a session
    */
   async startBotVoting(sessionId: string): Promise<void> {
-    // Get current session state
-    const session = await this.store.getSession(sessionId);
-    if (!session) {
+    const [identity, voting, currentFinalization] = await Promise.all([
+      this.store.getSessionIdentity(sessionId),
+      this.store.getVotingRecord(sessionId),
+      this.store.getCurrentFinalizationRecord(sessionId),
+    ]);
+    if (!identity || !voting) {
       throw new Error('SESSION_NOT_FOUND');
     }
-    if (session.finalized) {
+    if (currentFinalization?.state.status === 'succeeded') {
       throw new Error('SESSION_ALREADY_FINALIZED');
     }
-    if (!isRecoverableCurrentLiveSession(session)) {
-      throw new Error('SESSION_NOT_FOUND');
-    }
 
-    const currentBotCount = deriveBotCountFromVotes(session.votes, session.userVoteIndex);
-    const electionId = session.electionId;
-    if (!electionId) {
-      throw new Error('SESSION_MISSING_ELECTION_ID');
-    }
-    assertCanonicalUserVoteIndexForBotVotes(session.votes, session.userVoteIndex);
+    const userVoteIndex = voting.userParticipation.status === 'cast' ? voting.userParticipation.voteIndex : undefined;
+    const currentBotCount = deriveBotCountFromVotes(voting.votes, userVoteIndex);
+    assertCanonicalUserVoteIndexForBotVotes(voting.votes, userVoteIndex);
     if (currentBotCount >= BOT_COUNT) {
       throw new Error('ALL_BOTS_VOTED');
     }
@@ -52,7 +49,7 @@ export class BotVoter {
     for (let i = 0; i < remainingBots; i += 1) {
       const botIndex = startIndex + i;
       const botId = generateBotId(botIndex);
-      const voteData = await generateBotVote(botId, electionId);
+      const voteData = await generateBotVote(botId, identity.electionId);
       batch.push(voteData);
     }
 
@@ -63,12 +60,13 @@ export class BotVoter {
    * Get current bot voting progress
    */
   async getProgress(sessionId: string): Promise<BotVotingProgress | null> {
-    const session = await this.store.getSession(sessionId);
-    if (!session) {
+    const voting = await this.store.getVotingRecord(sessionId);
+    if (!voting) {
       return null;
     }
 
-    const completed = deriveBotCountFromVotes(session.votes, session.userVoteIndex);
+    const userVoteIndex = voting.userParticipation.status === 'cast' ? voting.userParticipation.voteIndex : undefined;
+    const completed = deriveBotCountFromVotes(voting.votes, userVoteIndex);
     const total = BOT_COUNT;
     const percentage = Math.round((completed / total) * 100);
 

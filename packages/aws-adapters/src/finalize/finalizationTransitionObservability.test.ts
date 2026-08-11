@@ -1,13 +1,25 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import fs from 'fs-extra';
+import type { FinalizationScenarioContext } from '@stark-ballot/application/finalize/finalization-types';
 import { logger } from '@stark-ballot/diagnostics/logger';
-import { resolveCurrentContractGeneration } from '@stark-ballot/domain/contract';
 import { MockSessionStore } from '../store/mockSessionStore';
 import {
   recordFinalizationPersistenceOutcome,
   recordFinalizationStorePersistenceOutcome,
 } from './finalizationTransitionObservability';
+
+const scenarioContext: FinalizationScenarioContext = {
+  scenarios: [],
+  tamperMode: 'none',
+  claimedCounts: { A: 0, B: 0, C: 0, D: 0, E: 0 },
+  claimedTotalVotes: 0,
+  summary: {
+    ignoredCount: 0,
+    recountedCount: 0,
+    userRecountChoice: null,
+  },
+};
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -22,13 +34,18 @@ describe('MockSessionStore finalization transition ownership', () => {
     info.mockClear();
 
     const queuedPayload = {
-      executionId: 'exec-store-observation',
-      queuedAt: 1_700_000_000_000,
-      contractGeneration: resolveCurrentContractGeneration(),
+      finalizationId: 'exec-store-observation',
+      queuedAtMs: 1_700_000_000_000,
+      scenarioContext,
       observability: { source: 'finalize', reason: 'FINALIZE_REQUESTED' },
     } as const;
     await store.markFinalizationQueued(session.sessionId, queuedPayload);
 
+    expect(info.mock.calls.filter(([message]) => message === 'finalization_admitted')).toHaveLength(1);
+    expect(info).toHaveBeenCalledWith('finalization_admitted', {
+      event: 'finalization_admitted',
+      finalization_id: 'exec-store-observation',
+    });
     expect(info.mock.calls.filter(([message]) => message === 'finalize_state_transition')).toHaveLength(1);
     expect(info).toHaveBeenCalledWith(
       'finalize_state_transition',
@@ -37,6 +54,7 @@ describe('MockSessionStore finalization transition ownership', () => {
 
     info.mockClear();
     await store.markFinalizationQueued(session.sessionId, queuedPayload);
+    expect(info.mock.calls.filter(([message]) => message === 'finalization_admitted')).toHaveLength(0);
     expect(info.mock.calls.filter(([message]) => message === 'finalize_state_transition')).toHaveLength(1);
     expect(info).toHaveBeenCalledWith(
       'finalize_state_transition',
@@ -46,10 +64,9 @@ describe('MockSessionStore finalization transition ownership', () => {
     info.mockClear();
     warn.mockClear();
     await store.markFinalizationRunning(session.sessionId, {
-      executionId: 'exec-stale-observation',
-      queuedAt: queuedPayload.queuedAt,
-      startedAt: queuedPayload.queuedAt + 1,
-      contractGeneration: queuedPayload.contractGeneration,
+      finalizationId: 'exec-stale-observation',
+      queuedAtMs: queuedPayload.queuedAtMs,
+      startedAtMs: queuedPayload.queuedAtMs + 1,
       observability: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
     });
 
@@ -64,7 +81,7 @@ describe('MockSessionStore finalization transition ownership', () => {
 
 describe('FileMockSessionStore finalization transition ownership', () => {
   it('emits only after the file-backed state has been saved', async () => {
-    const storageDir = path.join(process.cwd(), '.tmp', `p2-finalization-observability-${Date.now()}`);
+    const storageDir = path.join(process.cwd(), '.tmp', `finalization-observability-${Date.now()}`);
     const originalStorageDir = process.env['FILE_MOCK_STORE_DIR'];
     process.env['FILE_MOCK_STORE_DIR'] = storageDir;
     try {
@@ -75,12 +92,13 @@ describe('FileMockSessionStore finalization transition ownership', () => {
       info.mockClear();
 
       await store.markFinalizationQueued(session.sessionId, {
-        executionId: 'exec-file-observation',
-        queuedAt: 1_700_000_000_000,
-        contractGeneration: resolveCurrentContractGeneration(),
+        finalizationId: 'exec-file-observation',
+        queuedAtMs: 1_700_000_000_000,
+        scenarioContext,
         observability: { source: 'finalize', reason: 'FINALIZE_REQUESTED' },
       });
 
+      expect(info.mock.calls.filter(([message]) => message === 'finalization_admitted')).toHaveLength(1);
       expect(info.mock.calls.filter(([message]) => message === 'finalize_state_transition')).toHaveLength(1);
       expect(info).toHaveBeenCalledWith(
         'finalize_state_transition',
@@ -104,10 +122,10 @@ describe('recordFinalizationPersistenceOutcome', () => {
 
     recordFinalizationPersistenceOutcome({
       sessionId: 'session-transition',
-      requestedExecutionId: 'exec-transition',
+      requestedFinalizationId: 'exec-transition',
       requestedTo: 'running',
-      before: { status: 'pending', executionId: 'exec-transition' },
-      actual: { status: 'running', executionId: 'exec-transition' },
+      before: { status: 'pending', finalizationId: 'exec-transition' },
+      actual: { status: 'running', finalizationId: 'exec-transition' },
       authoritativeWrite: true,
       metadata: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
     });
@@ -121,7 +139,7 @@ describe('recordFinalizationPersistenceOutcome', () => {
         source: 'writer_update',
         reason: 'RUNTIME_UPDATE_RECEIVED',
         changed: true,
-        execution_id: 'exec-transition',
+        finalization_id: 'exec-transition',
       }),
     );
     const payload = info.mock.calls[0]?.[1];
@@ -135,10 +153,10 @@ describe('recordFinalizationPersistenceOutcome', () => {
 
     recordFinalizationPersistenceOutcome({
       sessionId: 'session-idempotent',
-      requestedExecutionId: 'exec-idempotent',
+      requestedFinalizationId: 'exec-idempotent',
       requestedTo: 'running',
-      before: { status: 'running', executionId: 'exec-idempotent' },
-      actual: { status: 'running', executionId: 'exec-idempotent' },
+      before: { status: 'running', finalizationId: 'exec-idempotent' },
+      actual: { status: 'running', finalizationId: 'exec-idempotent' },
       authoritativeWrite: true,
       metadata: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
     });
@@ -154,10 +172,10 @@ describe('recordFinalizationPersistenceOutcome', () => {
 
     recordFinalizationPersistenceOutcome({
       sessionId: 'session-concurrent-idempotent',
-      requestedExecutionId: 'exec-concurrent-idempotent',
+      requestedFinalizationId: 'exec-concurrent-idempotent',
       requestedTo: 'running',
-      before: { status: 'pending', executionId: 'exec-concurrent-idempotent' },
-      actual: { status: 'running', executionId: 'exec-concurrent-idempotent' },
+      before: { status: 'pending', finalizationId: 'exec-concurrent-idempotent' },
+      actual: { status: 'running', finalizationId: 'exec-concurrent-idempotent' },
       authoritativeWrite: false,
       metadata: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
     });
@@ -173,10 +191,10 @@ describe('recordFinalizationPersistenceOutcome', () => {
 
     recordFinalizationPersistenceOutcome({
       sessionId: 'session-stale',
-      requestedExecutionId: 'exec-stale',
+      requestedFinalizationId: 'exec-stale',
       requestedTo: 'succeeded',
-      before: { status: 'running', executionId: 'exec-stale' },
-      actual: { status: 'running', executionId: 'exec-current' },
+      before: { status: 'running', finalizationId: 'exec-stale' },
+      actual: { status: 'running', finalizationId: 'exec-current' },
       authoritativeWrite: false,
       metadata: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
     });
@@ -193,10 +211,10 @@ describe('recordFinalizationPersistenceOutcome', () => {
 
     recordFinalizationPersistenceOutcome({
       sessionId: 'session-terminal',
-      requestedExecutionId: 'exec-terminal',
+      requestedFinalizationId: 'exec-terminal',
       requestedTo: 'running',
-      before: { status: 'failed', executionId: 'exec-terminal' },
-      actual: { status: 'failed', executionId: 'exec-terminal' },
+      before: { status: 'failed', finalizationId: 'exec-terminal' },
+      actual: { status: 'failed', finalizationId: 'exec-terminal' },
       authoritativeWrite: true,
       metadata: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
     });
@@ -214,11 +232,11 @@ describe('recordFinalizationPersistenceOutcome', () => {
 
     recordFinalizationPersistenceOutcome({
       sessionId: 'session-fail-closed',
-      requestedExecutionId: 'exec-fail-closed',
+      requestedFinalizationId: 'exec-fail-closed',
       requestedTo: 'running',
-      before: { status: 'pending', executionId: 'exec-fail-closed' },
-      actual: { status: 'failed', executionId: 'exec-fail-closed' },
-      actualReason: 'UNSUPPORTED_CURRENT_ARTIFACT',
+      before: { status: 'pending', finalizationId: 'exec-fail-closed' },
+      actual: { status: 'failed', finalizationId: 'exec-fail-closed' },
+      actualReason: 'INVALID_FINALIZATION_ARTIFACT',
       authoritativeWrite: true,
       metadata: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
     });
@@ -229,12 +247,12 @@ describe('recordFinalizationPersistenceOutcome', () => {
         from: 'pending',
         to: 'failed',
         changed: true,
-        reason: 'UNSUPPORTED_CURRENT_ARTIFACT',
+        reason: 'INVALID_FINALIZATION_ARTIFACT',
       }),
     );
     expect(warn).toHaveBeenCalledWith(
       'finalize_state_update_rejected',
-      expect.objectContaining({ to: 'running', reason: 'UNSUPPORTED_CURRENT_ARTIFACT' }),
+      expect.objectContaining({ to: 'running', reason: 'INVALID_FINALIZATION_ARTIFACT' }),
     );
   });
 
@@ -244,17 +262,17 @@ describe('recordFinalizationPersistenceOutcome', () => {
 
     recordFinalizationStorePersistenceOutcome({
       sessionId: 'session-corrupt-artifact',
-      requestedExecutionId: 'exec-corrupt-artifact',
+      requestedFinalizationId: 'exec-corrupt-artifact',
       requestedTo: 'running',
-      before: { status: 'pending', executionId: 'exec-corrupt-artifact' },
+      before: { status: 'pending', finalizationId: 'exec-corrupt-artifact' },
       actual: {
         status: 'failed',
-        executionId: 'exec-corrupt-artifact',
-        queuedAt: 1_700_000_000_000,
-        failedAt: 1_700_000_001_000,
+        finalizationId: 'exec-corrupt-artifact',
+        queuedAtMs: 1_700_000_000_000,
+        failedAtMs: 1_700_000_001_000,
         error: {
-          code: 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE',
-          message: 'Finalization state is corrupt or unreadable',
+          code: 'INVALID_FINALIZATION_ARTIFACT',
+          message: 'Finalization artifact is invalid',
         },
       },
       authoritativeWrite: true,
@@ -263,11 +281,11 @@ describe('recordFinalizationPersistenceOutcome', () => {
 
     expect(info).toHaveBeenCalledWith(
       'finalize_state_transition',
-      expect.objectContaining({ reason: 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE', changed: true }),
+      expect.objectContaining({ reason: 'INVALID_FINALIZATION_ARTIFACT', changed: true }),
     );
     expect(warn).toHaveBeenCalledWith(
       'finalize_state_update_rejected',
-      expect.objectContaining({ reason: 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE' }),
+      expect.objectContaining({ reason: 'INVALID_FINALIZATION_ARTIFACT' }),
     );
   });
 
@@ -276,9 +294,9 @@ describe('recordFinalizationPersistenceOutcome', () => {
 
     recordFinalizationPersistenceOutcome({
       sessionId: 'session-initial',
-      requestedExecutionId: 'exec-initial',
+      requestedFinalizationId: 'exec-initial',
       requestedTo: 'pending',
-      actual: { status: 'pending', executionId: 'exec-initial' },
+      actual: { status: 'pending', finalizationId: 'exec-initial' },
       authoritativeWrite: true,
       metadata: { source: 'finalize', reason: 'FINALIZE_REQUESTED' },
     });

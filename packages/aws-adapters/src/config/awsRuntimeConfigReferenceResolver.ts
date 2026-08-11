@@ -4,6 +4,7 @@ import {
   installStaticRuntimeConfigReferenceResolver,
   type RuntimeConfigReferenceName,
 } from '@stark-ballot/runtime-config/env/runtimeConfigReferences';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 export type AwsRuntimeReferenceEnvName =
   | 'SESSION_CAPABILITY_SECRET_REF'
@@ -19,6 +20,13 @@ export type AwsRuntimeEntrypoint =
 interface AwsRuntimeReferenceDescriptor {
   envName: AwsRuntimeReferenceEnvName;
   name: RuntimeConfigReferenceName;
+  profileKey:
+    | 'sessionCapabilitySecret'
+    | 'voteSecretEncryptionKey'
+    | 'sessionCapabilityTtlSeconds'
+    | 'turnstileSecretKey'
+    | 'expectedOriginVerifyHeader'
+    | 'logIpHashSalt';
   service: 'secretsmanager' | 'ssm';
   targetEnvName?: string;
 }
@@ -32,6 +40,7 @@ export interface AwsRuntimeConfigInvalidNameCollector {
 }
 
 interface AwsRuntimeConfigReferenceResolverOptions {
+  profile: ResolvedRuntimeProfile;
   env?: NodeJS.ProcessEnv;
   ssmClient?: AwsSendClient;
   secretsManagerClient?: AwsSendClient;
@@ -39,19 +48,41 @@ interface AwsRuntimeConfigReferenceResolverOptions {
 }
 
 const TARGET_RUNTIME_REFERENCES: readonly AwsRuntimeReferenceDescriptor[] = [
-  { envName: 'SESSION_CAPABILITY_SECRET_REF', name: 'SESSION_CAPABILITY_SECRET', service: 'secretsmanager' },
-  { envName: 'VOTE_SECRET_ENCRYPTION_KEY_REF', name: 'VOTE_SECRET_ENCRYPTION_KEY', service: 'secretsmanager' },
-  { envName: 'SESSION_CAPABILITY_TTL_SECONDS_REF', name: 'SESSION_CAPABILITY_TTL_SECONDS', service: 'ssm' },
-  { envName: 'TURNSTILE_SECRET_KEY_REF', name: 'TURNSTILE_SECRET_KEY', service: 'secretsmanager' },
+  {
+    envName: 'SESSION_CAPABILITY_SECRET_REF',
+    name: 'SESSION_CAPABILITY_SECRET',
+    profileKey: 'sessionCapabilitySecret',
+    service: 'secretsmanager',
+  },
+  {
+    envName: 'VOTE_SECRET_ENCRYPTION_KEY_REF',
+    name: 'VOTE_SECRET_ENCRYPTION_KEY',
+    profileKey: 'voteSecretEncryptionKey',
+    service: 'secretsmanager',
+  },
+  {
+    envName: 'SESSION_CAPABILITY_TTL_SECONDS_REF',
+    name: 'SESSION_CAPABILITY_TTL_SECONDS',
+    profileKey: 'sessionCapabilityTtlSeconds',
+    service: 'ssm',
+  },
+  {
+    envName: 'TURNSTILE_SECRET_KEY_REF',
+    name: 'TURNSTILE_SECRET_KEY',
+    profileKey: 'turnstileSecretKey',
+    service: 'secretsmanager',
+  },
   {
     envName: 'EXPECTED_ORIGIN_VERIFY_HEADER_REF',
     name: 'EXPECTED_ORIGIN_VERIFY_HEADER',
+    profileKey: 'expectedOriginVerifyHeader',
     service: 'secretsmanager',
     targetEnvName: 'EXPECTED_ORIGIN_VERIFY_HEADER',
   },
   {
     envName: 'LOG_IP_HASH_SALT_REF',
     name: 'LOG_IP_HASH_SALT',
+    profileKey: 'logIpHashSalt',
     service: 'secretsmanager',
     targetEnvName: 'LOG_IP_HASH_SALT',
   },
@@ -192,19 +223,32 @@ async function resolveAwsRuntimeReference(
   throw new Error(`${reference} was not found in ${serviceName}.`);
 }
 
-export async function loadAwsRuntimeConfigReferences(
-  options: AwsRuntimeConfigReferenceResolverOptions = {},
+async function loadAwsRuntimeConfigReferenceSelection(
+  options: AwsRuntimeConfigReferenceResolverOptions,
+  selectedEnvNames: readonly AwsRuntimeReferenceEnvName[],
 ): Promise<void> {
+  if (options.profile.target.kind !== 'aws' || options.profile.external.kind !== 'aws') {
+    throw new Error('AWS runtime config references require a target AWS runtime profile');
+  }
+  const external = options.profile.external;
   const env = options.env ?? process.env;
-  const ssmClient = options.ssmClient ?? new SSMClient({});
-  const secretsManagerClient = options.secretsManagerClient ?? new SecretsManagerClient({});
+  const selectedNames = new Set(selectedEnvNames);
+  const selectedReferences = TARGET_RUNTIME_REFERENCES.filter((descriptor) =>
+    selectedNames.has(descriptor.envName),
+  ).map((descriptor) => {
+    const reference = env[descriptor.envName]?.trim() ?? '';
+    if (reference !== external.secretReferences[descriptor.profileKey]) {
+      options.invalidNameCollector?.add(descriptor.envName);
+      throw new Error(`${descriptor.envName} must match the reference captured by the runtime profile.`);
+    }
+    return { descriptor, reference };
+  });
+  const clientConfig = { region: external.region };
+  const ssmClient = options.ssmClient ?? new SSMClient(clientConfig);
+  const secretsManagerClient = options.secretsManagerClient ?? new SecretsManagerClient(clientConfig);
   const values = new Map<string, string>();
 
-  for (const descriptor of TARGET_RUNTIME_REFERENCES) {
-    const reference = env[descriptor.envName]?.trim();
-    if (!reference) {
-      continue;
-    }
+  for (const { descriptor, reference } of selectedReferences) {
     let resolvedValue: string;
     try {
       resolvedValue = await resolveAwsRuntimeReference(descriptor, reference, ssmClient, secretsManagerClient);
@@ -218,41 +262,39 @@ export async function loadAwsRuntimeConfigReferences(
     }
   }
 
-  installStaticRuntimeConfigReferenceResolver(values);
+  installStaticRuntimeConfigReferenceResolver(values, {
+    expectedAccountId: external.accountId,
+    expectedDeploymentEnvironment: options.profile.target.deploymentEnvironment,
+    expectedRegion: external.region,
+  });
+}
+
+export async function loadAwsRuntimeConfigReferences(options: AwsRuntimeConfigReferenceResolverOptions): Promise<void> {
+  await loadAwsRuntimeConfigReferenceSelection(
+    options,
+    TARGET_RUNTIME_REFERENCES.map((descriptor) => descriptor.envName),
+  );
 }
 
 export async function loadAwsRuntimeConfigReferencesForEntrypoint(
   entrypoint: AwsRuntimeEntrypoint,
-  options: AwsRuntimeConfigReferenceResolverOptions = {},
+  options: AwsRuntimeConfigReferenceResolverOptions,
 ): Promise<void> {
   const env = options.env ?? process.env;
-  const allowedReferences = new Set(TARGET_RUNTIME_REFERENCES_BY_ENTRYPOINT[entrypoint]);
-  const filteredEnv = {
-    ...env,
-    ...Object.fromEntries(
-      TARGET_RUNTIME_REFERENCES.filter((descriptor) => !allowedReferences.has(descriptor.envName)).map((descriptor) => [
-        descriptor.envName,
-        '',
-      ]),
-    ),
-  };
-  await loadAwsRuntimeConfigReferences({
-    ...options,
-    env: filteredEnv,
-  });
-  for (const descriptor of TARGET_RUNTIME_REFERENCES) {
-    if (descriptor.targetEnvName && filteredEnv[descriptor.targetEnvName]) {
-      env[descriptor.targetEnvName] = filteredEnv[descriptor.targetEnvName];
-    }
-  }
+  await loadAwsRuntimeConfigReferenceSelection(
+    {
+      ...options,
+      env,
+    },
+    TARGET_RUNTIME_REFERENCES_BY_ENTRYPOINT[entrypoint],
+  );
 }
 
 export async function ensureAwsRuntimeConfigReferencesLoaded(
-  entrypoint?: AwsRuntimeEntrypoint,
-  options: AwsRuntimeConfigReferenceResolverOptions = {},
+  entrypoint: AwsRuntimeEntrypoint | undefined,
+  options: AwsRuntimeConfigReferenceResolverOptions,
 ): Promise<void> {
-  const env = options.env ?? process.env;
-  if (env['TARGET_AWS_RUNTIME'] !== '1') {
+  if (options.profile.target.kind !== 'aws') {
     return;
   }
 

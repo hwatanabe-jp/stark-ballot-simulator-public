@@ -2,6 +2,7 @@ import { extractTurnstileToken, validateTurnstileToken } from '../security/turns
 import { ApiError } from '@stark-ballot/api-contract/errors/apiErrors';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 /**
  * Input for Turnstile validation helper.
@@ -16,10 +17,13 @@ export interface TurnstileValidationOptions {
 /**
  * Validate Turnstile token extracted from request payload.
  */
-export async function requireTurnstileToken(options: TurnstileValidationOptions): Promise<void> {
+export async function requireTurnstileToken(
+  profile: ResolvedRuntimeProfile,
+  options: TurnstileValidationOptions,
+): Promise<void> {
   const token = options.explicitToken ?? extractTurnstileToken(options.payload);
   try {
-    await validateTurnstileToken({
+    await validateTurnstileToken(profile, {
       token,
       ...omitUndefinedProperties({ remoteIp: options.clientIp ?? undefined }),
       ...omitUndefinedProperties({ expectedAction: options.expectedAction }),

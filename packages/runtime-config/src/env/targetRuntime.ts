@@ -1,3 +1,5 @@
-export function isTargetAwsRuntime(): boolean {
-  return process.env['TARGET_AWS_RUNTIME'] === '1';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
+
+export function isTargetAwsRuntime(profile: ResolvedRuntimeProfile): boolean {
+  return profile.target.kind === 'aws';
 }

@@ -1,9 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { resolveCanonicalFinalizationPayload } from '@stark-ballot/web/finalize/client-finalization-result';
-import { startStarkVerificationPolling, stopStarkVerificationPolling } from './stark-verification-polling';
-import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VerificationStatus } from '@stark-ballot/verification/shared/types';
-import verifyS0Fixture from '@stark-ballot/web/mock-api/fixtures/json/verify.get.S0.json';
+import { resolveCanonicalFinalizationPayload } from '@stark-ballot/web/finalize/client-finalization-result';
+import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
+import {
+  getStarkVerificationSnapshot,
+  startStarkVerificationPolling,
+  stopStarkVerificationPolling,
+} from './stark-verification-polling';
 
 vi.mock('@stark-ballot/web/api/apiFetch', () => ({
   apiFetch: vi.fn(),
@@ -19,82 +22,123 @@ vi.mock('@stark-ballot/web/session', () => ({
   ),
   clearSession: vi.fn(),
   getSessionData: vi.fn(),
-  getSessionAuthHeaders: vi.fn((session?: { sessionId?: string; capabilityToken?: string } | null) => {
-    if (!session?.sessionId) {
-      return {};
-    }
-    const headers: Record<string, string> = {
-      'X-Session-ID': session.sessionId,
-    };
-    if (session.capabilityToken) {
-      headers['X-Session-Capability'] = session.capabilityToken;
-    }
-    return headers;
-  }),
 }));
 
 const apiModule = await import('@stark-ballot/web/api/apiFetch');
 const sessionModule = await import('@stark-ballot/web/session');
-
 const mockApiFetch = vi.mocked(apiModule.apiFetch);
 const mockGetSessionData = vi.mocked(sessionModule.getSessionData);
 
-const createResponse = (body: unknown, ok = true, status = 200): Response =>
-  ({
-    ok,
-    status,
-    statusText: ok ? 'OK' : 'Error',
-    json: () => Promise.resolve(body),
-  }) as Response;
+const HEX_A = `0x${'a'.repeat(64)}`;
+const HEX_B = `0x${'b'.repeat(64)}`;
+const HEX_C = `0x${'c'.repeat(64)}`;
+const HEX_D = `0x${'d'.repeat(64)}`;
+const HEX_E = `0x${'e'.repeat(64)}`;
+const HEX_F = `0x${'f'.repeat(64)}`;
 
-const createVerifyResponse = (status: VerificationStatus): Record<string, unknown> => {
-  const payload = JSON.parse(JSON.stringify(verifyS0Fixture)) as {
-    data?: {
-      verificationStatus?: VerificationStatus;
-      verificationReport?: {
-        status?: VerificationStatus;
-      };
-    };
+function response(data: unknown, status = 200): Response {
+  return new Response(
+    JSON.stringify({
+      data,
+      meta: { requestId: 'request-1' },
+    }),
+    { status },
+  );
+}
+
+function verificationResource(status: VerificationStatus) {
+  return {
+    availability: 'available' as const,
+    finalizationId: 'finalization-1',
+    proofAuthority: {
+      electionId: 'election-1',
+      electionConfigHash: HEX_A,
+      logId: 'log-1',
+      bulletinRoot: HEX_B,
+      imageId: HEX_C,
+      verifiedTally: [1, 0, 0, 0, 0],
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
+      rejectedRecords: 0,
+      totalExpected: 1,
+      treeSize: 1,
+      excludedSlots: 0,
+      sthDigest: HEX_D,
+      includedBitmapRoot: HEX_E,
+      inputCommitment: HEX_F,
+      seenIndicesCount: 1,
+    },
+    presentation: {
+      tally: {
+        counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
+        totalVotes: 1,
+        tamperedCount: 0,
+      },
+      scenarioId: 'S0' as const,
+      policy: {
+        summary: null,
+        stageStatuses: {
+          cast_as_intended: 'not_run' as const,
+          recorded_as_cast: 'not_run' as const,
+          counted_as_recorded: 'not_run' as const,
+          stark_verification: status === 'success' ? ('success' as const) : ('running' as const),
+        },
+        evidenceFullyVerified: false,
+        fullyVerifiedLabelEligible: false,
+        display: {
+          readiness: 'ready' as const,
+          source: 'pending' as const,
+          status: 'warning' as const,
+          renderedStatus: 'warning' as const,
+        },
+        publishedTallyMismatch: false,
+        devModeEvidence: false,
+        missingEvidence: true,
+      },
+    },
+    verifierResult: { status },
+    verification: { checks: [], steps: [] },
+    voterEvidence: {
+      availability: 'unavailable' as const,
+      reason: 'exact_proof_unavailable' as const,
+      userVote: { commitment: HEX_A },
+    },
+    journal: { representation: 'omitted' as const },
   };
-  if (!payload.data) {
-    throw new Error('Verify fixture missing data');
-  }
-  payload.data.verificationStatus = status;
-  if (payload.data.verificationReport) {
-    payload.data.verificationReport.status = status;
-  }
-  return payload;
-};
+}
 
-const createSessionWithFinalization = () => {
-  const journal = createTestJournal({
-    totalExpected: 1,
-    validVotes: 1,
-    missingIndices: 0,
-    invalidIndices: 0,
-    seenIndicesCount: 1,
-  });
+function createSessionWithFinalization(finalizationId = 'finalization-1') {
   const finalizeResult = resolveCanonicalFinalizationPayload({
+    finalizationId,
     tally: {
       counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
       totalVotes: 1,
       tamperedCount: 0,
     },
-    imageId: '0x' + 'e'.repeat(64),
-    journal,
+    imageId: HEX_C,
+    journal: createTestJournal({
+      totalExpected: 1,
+      validVotes: 1,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
+      seenIndicesCount: 1,
+    }),
   });
-
   if (!finalizeResult) {
-    throw new Error('Failed to build canonical finalization snapshot');
+    throw new Error('Failed to build finalization fixture');
   }
-
   return {
     sessionId: 'session-1',
     capabilityToken: 'test-capability-token',
-    lastActivity: Date.now(),
+    electionId: '550e8400-e29b-41d4-a716-446655440000',
+    electionConfigHash: HEX_A,
+    logId: HEX_B,
+    lastActivity: 1,
+    expiresAt: 86_400_001,
+    phase: 'verifying' as const,
     finalizeResult,
   };
-};
+}
 
 describe('stark-verification-polling', () => {
   beforeEach(() => {
@@ -110,97 +154,88 @@ describe('stark-verification-polling', () => {
     vi.useRealTimers();
   });
 
-  it('stops polling after terminal status resolves', async () => {
-    const responses = [createVerifyResponse('running'), createVerifyResponse('success')];
-    mockApiFetch.mockImplementation(() => Promise.resolve(createResponse(responses.shift() ?? {})));
+  it('polls the exact finalization path until a terminal resource arrives', async () => {
+    const resources = [verificationResource('running'), verificationResource('success')];
+    mockApiFetch.mockImplementation(() => Promise.resolve(response(resources.shift())));
 
-    startStarkVerificationPolling({ sessionId: 'session-1', intervalMs: 10, timeoutMs: 1000 });
-
+    startStarkVerificationPolling({
+      sessionId: 'session-1',
+      finalizationId: 'finalization-1',
+      intervalMs: 10,
+      timeoutMs: 1000,
+    });
     await vi.runAllTimersAsync();
 
     expect(mockApiFetch).toHaveBeenCalledTimes(2);
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/sessions/session-1/finalizations/finalization-1/verification', {
+      headers: { 'X-Session-Capability': 'test-capability-token' },
+      method: 'GET',
+    });
+    expect(getStarkVerificationSnapshot()).toMatchObject({
+      sessionId: 'session-1',
+      finalizationId: 'finalization-1',
+      status: 'success',
+      payload: { availability: 'available' },
+    });
   });
 
-  it('retries after legacy 400 verification errors instead of treating them as terminal payloads', async () => {
-    const responses = [
-      createResponse(
-        {
-          error: 'VERIFICATION_FAILED',
-          data: {
-            verificationStatus: 'failed',
-          },
-        },
-        false,
-        400,
-      ),
-      createResponse(createVerifyResponse('success')),
-    ];
-    mockApiFetch.mockImplementation(() => Promise.resolve(responses.shift() ?? createResponse({}, true, 200)));
+  it('publishes unavailable data as a terminal fail-closed snapshot', async () => {
+    mockApiFetch.mockResolvedValue(
+      response({
+        availability: 'unavailable',
+        finalizationId: 'finalization-1',
+        reason: 'finalization_not_current',
+        message: 'Unsupported artifact',
+      }),
+    );
 
-    startStarkVerificationPolling({ sessionId: 'session-1', intervalMs: 10, timeoutMs: 1000 });
-
+    startStarkVerificationPolling({
+      sessionId: 'session-1',
+      finalizationId: 'finalization-1',
+      intervalMs: 10,
+      timeoutMs: 1000,
+    });
     await vi.runAllTimersAsync();
 
-    expect(mockApiFetch).toHaveBeenCalledTimes(2);
+    expect(mockApiFetch).toHaveBeenCalledOnce();
+    expect(getStarkVerificationSnapshot()).toMatchObject({
+      status: 'failed',
+      payload: { availability: 'unavailable' },
+    });
   });
 
-  it('stops polling when session disappears', async () => {
-    const sessions = [
-      createSessionWithFinalization(),
-      createSessionWithFinalization(),
-      createSessionWithFinalization(),
-      null,
-    ] as Array<ReturnType<typeof mockGetSessionData>>;
-    mockGetSessionData.mockImplementation(() => sessions.shift() ?? null);
-    mockApiFetch.mockResolvedValue(createResponse(createVerifyResponse('running')));
+  it('turns a malformed successful response into a terminal corrupt snapshot', async () => {
+    mockApiFetch.mockResolvedValue(response({ verificationStatus: 'success' }));
 
-    startStarkVerificationPolling({ sessionId: 'session-1', intervalMs: 10, timeoutMs: 1000 });
-
+    startStarkVerificationPolling({
+      sessionId: 'session-1',
+      finalizationId: 'finalization-1',
+      intervalMs: 10,
+      timeoutMs: 1000,
+    });
     await vi.runAllTimersAsync();
 
-    expect(mockApiFetch).toHaveBeenCalledTimes(1);
-  });
-
-  it('stops polling when the canonical finalization snapshot disappears from browser state', async () => {
-    const sessions = [
-      createSessionWithFinalization(),
-      createSessionWithFinalization(),
-      {
-        sessionId: 'session-1',
-        capabilityToken: 'test-capability-token',
-        lastActivity: Date.now(),
+    expect(mockApiFetch).toHaveBeenCalledOnce();
+    expect(getStarkVerificationSnapshot()).toMatchObject({
+      status: 'failed',
+      payload: {
+        availability: 'corrupt',
+        finalizationId: 'finalization-1',
       },
-    ] as Array<ReturnType<typeof mockGetSessionData>>;
-    mockGetSessionData.mockImplementation(() => sessions.shift() ?? null);
-    mockApiFetch.mockResolvedValue(createResponse(createVerifyResponse('running')));
-
-    startStarkVerificationPolling({ sessionId: 'session-1', intervalMs: 10, timeoutMs: 1000 });
-
-    await vi.runAllTimersAsync();
-
-    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    });
   });
 
-  it('does not downgrade to X-Session-ID-only fetches when session authority disappears mid-poll', async () => {
-    const sessions = [createSessionWithFinalization(), createSessionWithFinalization(), null] as Array<
-      ReturnType<typeof mockGetSessionData>
-    >;
-    mockGetSessionData.mockImplementation(() => sessions.shift() ?? null);
+  it('does not poll when browser authority names another finalization', async () => {
+    mockGetSessionData.mockReturnValue(createSessionWithFinalization('finalization-2'));
 
-    startStarkVerificationPolling({ sessionId: 'session-1', intervalMs: 10, timeoutMs: 1000 });
-
+    startStarkVerificationPolling({
+      sessionId: 'session-1',
+      finalizationId: 'finalization-1',
+      intervalMs: 10,
+      timeoutMs: 1000,
+    });
     await vi.runAllTimersAsync();
 
     expect(mockApiFetch).not.toHaveBeenCalled();
-  });
-
-  it('fails closed instead of polling malformed successful verify responses', async () => {
-    mockApiFetch.mockResolvedValue(createResponse({ data: { verificationStatus: 'success' } }));
-
-    startStarkVerificationPolling({ sessionId: 'session-1', intervalMs: 10, timeoutMs: 1000 });
-
-    await vi.runAllTimersAsync();
-
-    expect(mockApiFetch).toHaveBeenCalledTimes(1);
   });
 });

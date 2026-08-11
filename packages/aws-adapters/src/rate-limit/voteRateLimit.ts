@@ -6,8 +6,8 @@ import {
 import {
   getRateLimitAttemptMultiplier,
   getVoteRateLimitConfig,
-  resolveRateLimitStore,
 } from '@stark-ballot/aws-adapters/rate-limit/rateLimitConfig';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 type Timestamp = number;
 
@@ -115,17 +115,18 @@ type VoteLimiterInstance = VoteRateLimiter | DynamoVoteRateLimiter;
 let voteRateLimiter: VoteLimiterInstance | null = null;
 let voteAttemptLimiter: VoteLimiterInstance | null = null;
 
-export function getVoteRateLimiter(): VoteLimiterInstance {
+export function getVoteRateLimiter(profile: ResolvedRuntimeProfile): VoteLimiterInstance {
   if (!voteRateLimiter) {
-    voteRateLimiter = resolveRateLimitStore() === 'dynamo' ? createDynamoVoteRateLimiter() : new VoteRateLimiter();
+    voteRateLimiter =
+      profile.rateLimit.store === 'dynamo' ? createDynamoVoteRateLimiter(profile) : new VoteRateLimiter();
   }
   return voteRateLimiter;
 }
 
-export function getVoteAttemptLimiter(): VoteLimiterInstance {
+export function getVoteAttemptLimiter(profile: ResolvedRuntimeProfile): VoteLimiterInstance {
   if (!voteAttemptLimiter) {
-    if (resolveRateLimitStore() === 'dynamo') {
-      voteAttemptLimiter = createDynamoVoteAttemptLimiter();
+    if (profile.rateLimit.store === 'dynamo') {
+      voteAttemptLimiter = createDynamoVoteAttemptLimiter(profile);
     } else {
       const config = getVoteRateLimitConfig();
       voteAttemptLimiter = new VoteRateLimiter(config.limit * ATTEMPT_MULTIPLIER, config.windowMs, config.maxBuckets);

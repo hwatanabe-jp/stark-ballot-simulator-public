@@ -9,31 +9,37 @@ import { promises as fs } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { config } from 'dotenv';
 import path from 'path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // Try to load .env.local from project root
-const projectRoot = path.resolve(__dirname, '../..');
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 config({ path: path.join(projectRoot, '.env.local'), quiet: true });
 config({ path: path.join(projectRoot, 'scripts/tests/.env.test.defaults'), quiet: true });
 
-console.log('[CLI] AWS auth mode: SigV4 (IAM) with default credential chain');
+const isCliEntrypoint = import.meta.url === pathToFileURL(process.argv[1] ?? '').href;
+if (isCliEntrypoint) {
+  console.log('[CLI] AWS auth mode: SigV4 (IAM) with default credential chain');
+}
 
 import {
   CLITestHelpers,
   resolveFinalizationCountDiagnostics,
   type TestResult,
 } from '@stark-ballot/test-support/testing/cli-test-helpers';
+import { parseContentRange } from '@stark-ballot/api-contract/http/content-range';
 import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
 import { parseArgs } from 'util';
 import net from 'net';
 import { spawn } from 'child_process';
 import { setTimeout as delay } from 'timers/promises';
 import { detectTampering } from '@stark-ballot/verification/tamper-detection';
-import type { ImageIdMapping } from '@stark-ballot/verification/image-id-types';
+import { pollUntil } from '@stark-ballot/test-support/testing/poll';
 import {
   resolveConfiguredImageIdVariant,
   resolveExpectedImageIdFromMapping,
+  type ImageIdMapping,
   type ImageIdVariant,
-} from '@stark-ballot/verification/image-id-policy';
+} from '@stark-ballot/validation/image-id-policy';
 import imageIdMappingJson from '../../public/imageId-mapping.json';
 import { persistCliReport, extractBundleArchive } from '@stark-ballot/test-support/testing/cli-artifacts';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
@@ -46,17 +52,30 @@ import {
   resolveUserVoteProof,
   shouldFetchVoteProof,
 } from '@stark-ballot/test-support/testing/cli-voting-flow-helpers';
-import { isRecord } from '@stark-ballot/domain/utils/guards';
+import { isRecord } from '@stark-ballot/validation/unknown-value-guards';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import {
+  REPLACED_RUNTIME_SELECTOR_NAMES,
+  TARGET_RUNTIME_EXTERNAL_INPUT_NAMES,
+  resolveRuntimeProfile,
+  type RuntimeProfileSelector,
+} from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 const imageIdMapping = imageIdMappingJson as ImageIdMapping;
 const currentMethodVersion = imageIdMapping.current;
 const AUTHENTICATED_ENDPOINT_DELIVERY = 'authenticated-endpoint' as const;
 const DEFAULT_BUNDLE_RANGE_CHUNK_BYTES = 4 * 1024 * 1024;
+const MAX_BUNDLE_DOWNLOAD_BYTES = 256 * 1024 * 1024;
+const MAX_REPORT_DOWNLOAD_BYTES = 4 * 1024 * 1024;
 const BUNDLE_RANGE_CHUNK_HEADER = 'x-stark-bundle-range-chunk-size';
 
-function buildVerifierUrl(baseUrl: string, sessionId: string, executionId: string, ...segments: string[]): string {
-  const relative = ['api', 'verification', 'bundles', sessionId, executionId, ...segments].filter(Boolean).join('/');
+function buildArtifactUrl(
+  baseUrl: string,
+  sessionId: string,
+  finalizationId: string,
+  artifact: 'bundle' | 'report',
+): string {
+  const relative = ['api', 'sessions', sessionId, 'finalizations', finalizationId, 'artifacts', artifact].join('/');
   return new URL(`/${relative}`, baseUrl).toString();
 }
 
@@ -123,24 +142,11 @@ const CLI_BUILD_RUNTIME_ENV_KEYS = [
 const CLI_SAFE_FRONTEND_BUILD_ENV_KEYS = [
   'VITE_API_BASE_URL',
   'VITE_APP_ENV',
-  'VITE_SESSION_CREATE_TURNSTILE_REQUIRED',
-  'VITE_STH_MIN_MATCHES',
-  'VITE_STH_SOURCES',
-  'VITE_TURNSTILE_SITE_KEY',
-  'VITE_API_BASE_URL',
-  'VITE_APP_ENV',
-  'VITE_CONTRACT_GENERATION',
-  'VITE_SESSION_CREATE_TURNSTILE_REQUIRED',
+  'VITE_RUNTIME_PROFILE',
   'VITE_STH_MIN_MATCHES',
   'VITE_STH_SOURCES',
   'VITE_TURNSTILE_SITE_KEY',
 ] as const;
-
-interface ParsedContentRange {
-  start: number;
-  end: number;
-  total: number;
-}
 
 type AuthenticatedArtifactKind = 'bundle' | 'report';
 
@@ -169,7 +175,9 @@ export function resolveDefaultCliExpectedImageId(
 if (!process.env['EXPECTED_IMAGE_ID']) {
   const defaultCliExpectedImageId = resolveDefaultCliExpectedImageId(imageIdMapping);
   const sourceLabel = `imageId-mapping.json (methodVersion ${currentMethodVersion}, variant ${defaultCliExpectedImageId.variant})`;
-  console.warn(`[CLI] EXPECTED_IMAGE_ID not set. Resolving from ${sourceLabel}.`);
+  if (isCliEntrypoint) {
+    console.warn(`[CLI] EXPECTED_IMAGE_ID not set. Resolving from ${sourceLabel}.`);
+  }
   process.env['EXPECTED_IMAGE_ID'] = defaultCliExpectedImageId.imageId;
 }
 
@@ -204,16 +212,27 @@ export interface CLITestConfig {
   skipBuild: boolean;
 }
 
-export function configureCliZkvmEnvironment(
+function resolveCliRuntimeProfile(config: Pick<CLITestConfig, 'useRealZkVM' | 'realMode'>): RuntimeProfileSelector {
+  if (!config.useRealZkVM) {
+    return 'static-mock-e2e';
+  }
+  return config.realMode === 'prod' ? 'local-proof-production' : 'local-proof-development';
+}
+
+export function configureCliRuntimeProfile(
   config: Pick<CLITestConfig, 'useRealZkVM' | 'realMode'>,
   environment: NodeJS.ProcessEnv = process.env,
-): void {
-  environment['USE_MOCK_ZKVM'] = config.useRealZkVM ? 'false' : 'true';
-  if (config.useRealZkVM && config.realMode === 'prod') {
-    delete environment['RISC0_DEV_MODE'];
-  } else {
-    environment['RISC0_DEV_MODE'] = '1';
+): RuntimeProfileSelector {
+  for (const selectorName of REPLACED_RUNTIME_SELECTOR_NAMES) {
+    delete environment[selectorName];
   }
+  for (const externalInputName of TARGET_RUNTIME_EXTERNAL_INPUT_NAMES) {
+    delete environment[externalInputName];
+  }
+  const profile = resolveCliRuntimeProfile(config);
+  environment['RUNTIME_PROFILE'] = profile;
+  environment['VITE_RUNTIME_PROFILE'] = profile;
+  return profile;
 }
 
 // Test cases for different tamper scenarios
@@ -280,7 +299,7 @@ Options:
   --all-scenarios     Run the full S0-S5 scenario matrix
   --output, -o        Report format (table | json | markdown). Default: table
   --verbose, -v       Enable verbose logging
-  --skip-build        Reuse existing Vite dist output (skips \`pnpm build:ci\`)
+  --skip-build        Reuse existing Vite dist output (skips \`pnpm build:local-mock\`)
   --help, -h          Show this help message
 
 Examples:
@@ -295,6 +314,7 @@ export class CLIVotingTest {
   private config: CLITestConfig;
   private baseUrl: string | null;
   private serverProcess: ReturnType<typeof spawn> | null = null;
+  private fileStoreDirectory: string | null = null;
 
   constructor(config: CLITestConfig, helpers?: CLITestHelpers) {
     this.config = config;
@@ -321,26 +341,20 @@ export class CLIVotingTest {
       await new Promise<void>((resolve) => this.serverProcess?.once('exit', () => resolve()));
       this.serverProcess = null;
     }
+    if (this.fileStoreDirectory) {
+      const directory = this.fileStoreDirectory;
+      this.fileStoreDirectory = null;
+      await fs.rm(directory, { recursive: true, force: true });
+    }
   }
 
   private async startStaticHonoServer(): Promise<void> {
-    const projectDir = path.resolve(__dirname, '../..');
+    const projectDir = projectRoot;
 
-    if (!process.env['USE_MOCK_STORE']) {
-      process.env['USE_MOCK_STORE'] = 'true';
-    }
-    configureCliZkvmEnvironment(this.config);
-
-    const insecureZkvmRequested =
-      process.env['USE_MOCK_ZKVM'] === 'true' ||
-      process.env['RISC0_DEV_MODE'] === '1' ||
-      process.env['FORCE_DEV_MODE'] === 'true';
-    if (insecureZkvmRequested && typeof process.env['ALLOW_INSECURE_ZKVM'] === 'undefined') {
-      process.env['ALLOW_INSECURE_ZKVM'] = 'true';
-    }
+    configureCliRuntimeProfile(this.config);
 
     if (!this.config.skipBuild) {
-      console.log('[CLI] Running pnpm build:ci (pass --skip-build to reuse the previous dist output)');
+      console.log('[CLI] Running pnpm build:local-mock (pass --skip-build to reuse the previous dist output)');
       await runBuildCiCommand(projectDir);
     } else {
       console.log('[CLI] Skipping Vite build (reusing existing dist output)');
@@ -348,26 +362,16 @@ export class CLIVotingTest {
 
     const port = await reservePort();
     const host = '127.0.0.1';
-    process.env['TURNSTILE_BYPASS'] = '1';
-    if (process.env['TURNSTILE_BYPASS'] === '1') {
-      // Fail-closed bypass validation requires an explicit non-production runtime marker.
-      const hasRuntimeMarker =
-        Boolean(process.env['RUNTIME_DEPLOYMENT_ENV']?.trim()) ||
-        Boolean(process.env['ENV_NAME']?.trim()) ||
-        Boolean(process.env['AWS_LAMBDA_FUNCTION_NAME']?.trim());
-      if (!hasRuntimeMarker) {
-        process.env['RUNTIME_DEPLOYMENT_ENV'] = 'develop';
-      }
-    }
-    if (process.env['USE_S3'] !== 'false') {
-      process.env['USE_S3'] = 'false';
-    }
+    const cliRuntimeDirectory = path.join(projectDir, '.tmp', 'cli-runtime');
+    await fs.mkdir(cliRuntimeDirectory, { recursive: true });
+    this.fileStoreDirectory = await fs.mkdtemp(path.join(cliRuntimeDirectory, 'file-store-'));
     process.env['VERIFIER_PUBLIC_BASE_URL'] = `http://${host}:${port}`;
 
     this.serverProcess = spawn(getTsxBinary(projectDir), ['scripts/dev/static-hono-server.ts'], {
       cwd: projectDir,
       env: {
         ...process.env,
+        FILE_MOCK_STORE_DIR: this.fileStoreDirectory,
         PORT: String(port),
       },
       stdio: ['ignore', 'inherit', 'inherit'],
@@ -435,7 +439,7 @@ export class CLIVotingTest {
       }
 
       // Set zkVM mode based on config
-      configureCliZkvmEnvironment(this.config);
+      const runtimeProfile = configureCliRuntimeProfile(this.config);
       if (!this.config.useRealZkVM) {
         // Use Mock zkVM (JavaScript implementation)
         this.log('Using Mock zkVM (JavaScript, no STARK proofs)');
@@ -444,13 +448,12 @@ export class CLIVotingTest {
         if (this.config.realMode === 'dev') {
           this.log('Using Real zkVM dev mode (Rust binary, Fake receipts, ~0.04s)');
         } else {
-          this.log('Using Real zkVM production mode (Rust binary, STARK proofs)', 'warning');
-          this.log('This will take approximately 6 minutes (366 seconds) per test case', 'warning');
+          console.log('[CLI] Production STARK proof enabled; expected duration is about 6 minutes per scenario');
           console.log('─────────────────────────────────────────');
         }
 
         console.log(
-          `[CLI] Real zkVM mode: ${this.config.realMode.toUpperCase()} (RISC0_DEV_MODE=${process.env['RISC0_DEV_MODE'] ?? 'unset'}), EXPECTED_IMAGE_ID=${process.env['EXPECTED_IMAGE_ID']}`,
+          `[CLI] Real zkVM profile: ${runtimeProfile}, EXPECTED_IMAGE_ID=${process.env['EXPECTED_IMAGE_ID']}`,
         );
       }
 
@@ -492,15 +495,18 @@ export class CLIVotingTest {
       const finalMerklePath = userVoteProof?.merklePath; // Get the final Merkle path
 
       const finalizationMode: 'sync' | 'async' = finalizeResult.meta?.mode === 'async' ? 'async' : 'sync';
-      const finalizationExecutionId = finalizeResult.meta?.executionId;
+      const finalizationId =
+        finalizeResult.meta?.finalizationId && isSafeVerifierSegment(finalizeResult.meta.finalizationId)
+          ? finalizeResult.meta.finalizationId
+          : undefined;
       const finalizationHistory = finalizeResult.meta?.finalizationHistory;
-      const finalizationStepFunctions = finalizeResult.meta?.stepFunctions;
+      const finalizationRuntimeDiagnostics = finalizeResult.meta?.runtimeDiagnostics;
       const verificationContractErrors = collectCliVerificationContractErrors(finalizeResult.data, {
         requireRequiredChecksSuccess: !testCase.expectedTamper,
       });
 
-      if (finalizationMode === 'async' && finalizationExecutionId) {
-        this.log(`Finalization executionId: ${finalizationExecutionId}`, 'info');
+      if (finalizationId) {
+        this.log(`Finalization ID: ${finalizationId}`, 'info');
       }
 
       for (const contractError of verificationContractErrors) {
@@ -514,23 +520,18 @@ export class CLIVotingTest {
       let verificationReportHash: string | undefined;
       let verificationReportPath: string | undefined;
       let bundleExtractionDir: string | undefined;
-      const verificationExecutionId =
-        typeof finalizeResult.data.verificationExecutionId === 'string' &&
-        isSafeVerifierSegment(finalizeResult.data.verificationExecutionId)
-          ? finalizeResult.data.verificationExecutionId
-          : undefined;
-      if (!verificationExecutionId) {
-        const selectorError = 'Finalized response missing top-level verificationExecutionId';
+      if (!finalizationId) {
+        const selectorError = 'Finalization response missing a safe finalizationId';
         errors.push(selectorError);
         this.log(selectorError, 'error');
       }
       const authenticatedBundleUrl =
-        this.baseUrl && verificationExecutionId && isSafeVerifierSegment(sessionId)
-          ? buildVerifierUrl(this.baseUrl, sessionId, verificationExecutionId)
+        this.baseUrl && finalizationId && isSafeVerifierSegment(sessionId)
+          ? buildArtifactUrl(this.baseUrl, sessionId, finalizationId, 'bundle')
           : undefined;
       const authenticatedReportUrl =
-        this.baseUrl && verificationExecutionId && isSafeVerifierSegment(sessionId)
-          ? buildVerifierUrl(this.baseUrl, sessionId, verificationExecutionId, 'report')
+        this.baseUrl && finalizationId && isSafeVerifierSegment(sessionId)
+          ? buildArtifactUrl(this.baseUrl, sessionId, finalizationId, 'report')
           : undefined;
 
       if (authenticatedBundleUrl) {
@@ -568,38 +569,40 @@ export class CLIVotingTest {
 
       // Step 5: Verify STARK proof
       this.log('Verifying STARK proof...');
+      const proofProfile = resolveRuntimeProfile({ RUNTIME_PROFILE: runtimeProfile }).proof;
       const starkOptions: NonNullable<Parameters<typeof helpers.verifySTARK>[1]> = {
-        useRealZkVM: this.config.useRealZkVM,
+        proofProfile,
         ...omitUndefinedProperties({ imageId: proofPayload.imageId ?? finalizeResult.data.imageId }),
         ...omitUndefinedProperties({ verificationStatus: finalizeResult.data.verificationStatus }),
         ...omitUndefinedProperties({ verificationReport: finalizeResult.data.verificationReport }),
-        allowDevMode: this.config.useRealZkVM && this.config.realMode === 'dev',
       };
 
-      if (this.config.useRealZkVM && verificationBundlePath) {
+      if (proofProfile.executor === 'risc0' && verificationBundlePath) {
         starkOptions.verificationBundlePath = verificationBundlePath;
       }
 
       const starkValid = await helpers.verifySTARK(proofPayload.receipt, starkOptions);
 
-      // Check receipt type
-      const receiptInfo = helpers.describeReceipt(proofPayload.receipt);
+      let mockReceipt = false;
+      if (proofProfile.executor === 'mock') {
+        const receiptInfo = helpers.describeReceipt(proofPayload.receipt);
+        mockReceipt = receiptInfo.kind === 'mock';
 
-      switch (receiptInfo.kind) {
-        case 'mock':
+        if (mockReceipt) {
           this.log('Using Mock zkVM - STARK proof is simulated');
-          break;
-        case 'modern':
-          this.log(`Using Real zkVM receipt (Modern format) - seal bytes ~${receiptInfo.sealLength ?? 'unknown'}`);
-          break;
-        case 'unknown':
-          this.log('Receipt format could not be classified', 'warning');
-          break;
+        } else {
+          this.log('Mock proof profile returned a non-mock receipt', 'warning');
+        }
       }
 
       if (starkValid) {
-        const suffix =
-          receiptInfo.kind === 'mock' ? ' (mock)' : receiptInfo.kind === 'modern' ? ' (modern receipt)' : '';
+        const suffix = mockReceipt
+          ? ' (mock)'
+          : proofProfile.executor === 'risc0'
+            ? verificationBundlePath
+              ? ` (authenticated ${proofProfile.evidence} RISC Zero receipt)`
+              : ` (${proofProfile.evidence} RISC Zero receipt)`
+            : '';
         const statusSuffix =
           finalizeResult.data.verificationStatus && finalizeResult.data.verificationStatus !== 'success'
             ? ` [status=${finalizeResult.data.verificationStatus}]`
@@ -616,7 +619,7 @@ export class CLIVotingTest {
             sessionId,
             bundlePath: verificationBundlePath,
             delivery: verificationBundleDelivery ?? AUTHENTICATED_ENDPOINT_DELIVERY,
-            ...omitUndefinedProperties({ executionId: verificationExecutionId }),
+            ...omitUndefinedProperties({ finalizationId }),
           });
           this.log(`Verification bundle extracted to ${bundleExtractionDir}`);
         } catch (extractError) {
@@ -629,16 +632,12 @@ export class CLIVotingTest {
       // Step 6: Verify Merkle inclusion
       this.log('Verifying Merkle inclusion...');
 
-      // Debug: Log Merkle verification data
-      // Always log in verbose mode or when running specific scenarios
-      const shouldLog = this.config.verbose || this.config.scenario;
-
       // Use the final Merkle path from finalize response if available
       const merklePathToUse = finalMerklePath && finalMerklePath.length > 0 ? finalMerklePath : voteResult.merklePath;
       const leafIndexFromFinalize = userVoteProof?.leafIndex;
       const leafIndexToUse = typeof leafIndexFromFinalize === 'number' ? leafIndexFromFinalize : voteResult.leafIndex;
 
-      if (shouldLog) {
+      if (this.config.verbose) {
         console.log('[DEBUG] Merkle verification data:');
         console.log('  Commitment:', voteResult.commitment);
         console.log('  Leaf Index:', leafIndexToUse);
@@ -822,7 +821,7 @@ export class CLIVotingTest {
             excludedSlots,
             tamperDetected,
             verificationStatus: finalizeResult.data.verificationStatus,
-            verificationExecutionId,
+            finalizationId,
             verificationBundleDelivery,
             verificationHash,
             verificationReportHash,
@@ -830,10 +829,9 @@ export class CLIVotingTest {
             bundleExtractionDir,
             errors: errors.length > 0 ? errors : undefined,
             finalizationMode,
-            finalizationExecutionId,
             finalizationHistory:
               finalizationHistory && finalizationHistory.length > 0 ? finalizationHistory : undefined,
-            finalizationStepFunctions: finalizationStepFunctions ?? undefined,
+            finalizationRuntimeDiagnostics: finalizationRuntimeDiagnostics ?? undefined,
           }),
         },
       };
@@ -863,8 +861,8 @@ export class CLIVotingTest {
 
     const buffer =
       candidate.kind === 'bundle'
-        ? await this.downloadAuthenticatedBundle(sessionId, candidate.url)
-        : await this.downloadAuthenticatedReport(sessionId, candidate.url);
+        ? await this.downloadAuthenticatedBundle(candidate.url)
+        : await this.downloadAuthenticatedReport(candidate.url);
     if (candidate.kind === 'report') {
       try {
         JSON.parse(buffer.toString('utf-8'));
@@ -886,47 +884,51 @@ export class CLIVotingTest {
     return { path: filePath, hash };
   }
 
-  private async downloadAuthenticatedReport(sessionId: string, url: string): Promise<Buffer> {
+  private async downloadAuthenticatedReport(url: string): Promise<Buffer> {
     if (!this.helpers) {
       throw new Error('CLI helpers not initialized');
     }
     const response = await fetch(url, {
       method: 'GET',
-      headers: this.helpers.getSensitiveAuthHeaders(sessionId),
+      headers: this.helpers.getPathSessionAuthHeaders(),
     });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status} ${response.statusText}`);
     }
 
-    return Buffer.from(await response.arrayBuffer());
+    return readResponseBufferWithLimit(response, MAX_REPORT_DOWNLOAD_BYTES, 'report');
   }
 
-  private async downloadAuthenticatedBundle(sessionId: string, url: string): Promise<Buffer> {
-    const firstResponse = await this.fetchAuthenticatedBundleRange(
-      sessionId,
-      url,
-      0,
-      DEFAULT_BUNDLE_RANGE_CHUNK_BYTES - 1,
-    );
+  private async downloadAuthenticatedBundle(url: string): Promise<Buffer> {
+    const firstResponse = await this.fetchAuthenticatedBundleRange(url, 0, DEFAULT_BUNDLE_RANGE_CHUNK_BYTES - 1);
     if (firstResponse.status !== 206) {
       if (!firstResponse.ok) {
         throw new Error(`HTTP ${firstResponse.status} ${firstResponse.statusText}`);
       }
-      return Buffer.from(await firstResponse.arrayBuffer());
+      return readResponseBufferWithLimit(firstResponse, MAX_BUNDLE_DOWNLOAD_BYTES, 'bundle');
     }
 
     const firstRange = parseContentRange(firstResponse.headers.get('content-range'));
-    if (!firstRange || firstRange.start !== 0) {
+    if (
+      firstRange?.kind !== 'satisfied' ||
+      firstRange.start !== 0 ||
+      firstRange.end >= DEFAULT_BUNDLE_RANGE_CHUNK_BYTES ||
+      firstRange.total > MAX_BUNDLE_DOWNLOAD_BYTES
+    ) {
       throw new Error('Invalid ranged bundle response');
     }
 
-    const chunks: Buffer[] = [Buffer.from(await firstResponse.arrayBuffer())];
+    const representationIdentity = readArtifactRepresentationIdentity(firstResponse.headers);
+    if (!representationIdentity) {
+      throw new Error('Invalid ranged bundle response');
+    }
+    const chunks: Buffer[] = [await readRangeBuffer(firstResponse, firstRange.advertisedLength)];
     const chunkSize = resolveAdvertisedChunkSize(firstResponse.headers.get(BUNDLE_RANGE_CHUNK_HEADER));
     let nextStart = firstRange.end + 1;
 
     while (nextStart < firstRange.total) {
       const nextEnd = Math.min(nextStart + chunkSize - 1, firstRange.total - 1);
-      const response = await this.fetchAuthenticatedBundleRange(sessionId, url, nextStart, nextEnd);
+      const response = await this.fetchAuthenticatedBundleRange(url, nextStart, nextEnd);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status} ${response.statusText}`);
       }
@@ -935,30 +937,38 @@ export class CLIVotingTest {
       }
 
       const range = parseContentRange(response.headers.get('content-range'));
-      if (!range || range.start !== nextStart || range.total !== firstRange.total) {
+      if (
+        range?.kind !== 'satisfied' ||
+        range.start !== nextStart ||
+        range.end !== nextEnd ||
+        range.total !== firstRange.total
+      ) {
         throw new Error('Invalid ranged bundle response');
       }
+      const nextRepresentationIdentity = readArtifactRepresentationIdentity(response.headers);
+      if (!nextRepresentationIdentity || nextRepresentationIdentity !== representationIdentity) {
+        throw new Error('Bundle representation changed during download');
+      }
 
-      chunks.push(Buffer.from(await response.arrayBuffer()));
+      chunks.push(await readRangeBuffer(response, range.advertisedLength));
       nextStart = range.end + 1;
     }
 
-    return Buffer.concat(chunks);
+    const bundle = Buffer.concat(chunks, firstRange.total);
+    if (bundle.byteLength !== firstRange.total) {
+      throw new Error('Invalid ranged bundle response');
+    }
+    return bundle;
   }
 
-  private async fetchAuthenticatedBundleRange(
-    sessionId: string,
-    url: string,
-    start: number,
-    end: number,
-  ): Promise<Response> {
+  private async fetchAuthenticatedBundleRange(url: string, start: number, end: number): Promise<Response> {
     if (!this.helpers) {
       throw new Error('CLI helpers not initialized');
     }
     return fetch(url, {
       method: 'GET',
       headers: {
-        ...this.helpers.getSensitiveAuthHeaders(sessionId),
+        ...this.helpers.getPathSessionAuthHeaders(),
         Range: `bytes=${start}-${end}`,
       },
     });
@@ -1028,33 +1038,6 @@ export class CLIVotingTest {
   }
 }
 
-function parseContentRange(value: string | null): ParsedContentRange | null {
-  if (!value) {
-    return null;
-  }
-  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value);
-  if (!match) {
-    return null;
-  }
-
-  const [, rawStart, rawEnd, rawTotal] = match;
-  const start = Number(rawStart);
-  const end = Number(rawEnd);
-  const total = Number(rawTotal);
-  if (
-    !Number.isSafeInteger(start) ||
-    !Number.isSafeInteger(end) ||
-    !Number.isSafeInteger(total) ||
-    start < 0 ||
-    end < start ||
-    total <= end
-  ) {
-    return null;
-  }
-
-  return { start, end, total };
-}
-
 function resolveAdvertisedChunkSize(value: string | null): number {
   if (!value) {
     return DEFAULT_BUNDLE_RANGE_CHUNK_BYTES;
@@ -1063,7 +1046,71 @@ function resolveAdvertisedChunkSize(value: string | null): number {
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     return DEFAULT_BUNDLE_RANGE_CHUNK_BYTES;
   }
-  return parsed;
+  return Math.min(parsed, DEFAULT_BUNDLE_RANGE_CHUNK_BYTES);
+}
+
+function readArtifactRepresentationIdentity(headers: Headers): string | null {
+  const etag = headers.get('etag')?.trim() ?? '';
+  const versionId = headers.get('x-amz-version-id')?.trim() ?? '';
+  return etag || versionId ? `${etag}\u0000${versionId}` : null;
+}
+
+async function readRangeBuffer(response: Response, expectedLength: number): Promise<Buffer> {
+  const body = await readResponseBufferBounded(response, expectedLength, 'Invalid ranged bundle response');
+  if (body.byteLength !== expectedLength) {
+    throw new Error('Invalid ranged bundle response');
+  }
+  return body;
+}
+
+async function readResponseBufferWithLimit(
+  response: Response,
+  maxBytes: number,
+  artifactName: 'bundle' | 'report',
+): Promise<Buffer> {
+  return readResponseBufferBounded(response, maxBytes, `${artifactName} response exceeds size limit`);
+}
+
+async function readResponseBufferBounded(response: Response, maxBytes: number, limitMessage: string): Promise<Buffer> {
+  const contentLength = response.headers.get('content-length');
+  const declaredBytes = contentLength === null || !/^\d+$/.test(contentLength) ? undefined : Number(contentLength);
+  if (
+    contentLength !== null &&
+    (declaredBytes === undefined || !Number.isSafeInteger(declaredBytes) || declaredBytes > maxBytes)
+  ) {
+    throw new Error(limitMessage);
+  }
+
+  if (!response.body) {
+    if (declaredBytes !== undefined && declaredBytes !== 0) {
+      throw new Error(limitMessage);
+    }
+    return Buffer.alloc(0);
+  }
+
+  const chunks: Uint8Array[] = [];
+  const reader = response.body.getReader();
+  let totalBytes = 0;
+  try {
+    let result = await reader.read();
+    while (!result.done) {
+      totalBytes += result.value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(limitMessage);
+      }
+      chunks.push(result.value);
+      result = await reader.read();
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (declaredBytes !== undefined && declaredBytes !== totalBytes) {
+    throw new Error(limitMessage);
+  }
+
+  return Buffer.concat(chunks, totalBytes);
 }
 
 function getPnpmBinary(): string {
@@ -1079,7 +1126,7 @@ export async function runBuildCiCommand(
   spawnImpl: CommandSpawner = spawn,
   sourceEnv: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
-  await runCommand(getPnpmBinary(), ['build:ci'], projectDir, createCliBuildEnvironment(sourceEnv), spawnImpl);
+  await runCommand(getPnpmBinary(), ['build:local-mock'], projectDir, createCliBuildEnvironment(sourceEnv), spawnImpl);
 }
 
 async function runCommand(
@@ -1120,18 +1167,27 @@ async function reservePort(): Promise<number> {
 }
 
 async function waitForService(baseUrl: string, retries = 60): Promise<void> {
-  for (let attempt = 0; attempt < retries; attempt += 1) {
-    try {
-      const response = await fetch(baseUrl, { method: 'GET' });
-      if (response.status < 500) {
-        return;
+  const limit =
+    retries === Number.POSITIVE_INFINITY
+      ? { deadlineMs: Number.POSITIVE_INFINITY, clock: Date.now }
+      : { maxAttempts: Number.isNaN(retries) ? 0 : Math.max(0, Math.ceil(retries)) };
+
+  await pollUntil({
+    ...limit,
+    operation: async () => {
+      try {
+        const response = await fetch(baseUrl, { method: 'GET' });
+        return response.status < 500;
+      } catch {
+        return false;
       }
-    } catch {
-      // ignore
-    }
-    await delay(1000);
-  }
-  throw new Error(`Vite static frontend plus Hono API server did not become ready at ${baseUrl}`);
+    },
+    isTerminal: (ready) => ready,
+    delay: async () => {
+      await delay(1000);
+    },
+    createTimeoutError: () => new Error(`Vite static frontend plus Hono API server did not become ready at ${baseUrl}`),
+  });
 }
 
 // Parse command line arguments
@@ -1233,6 +1289,6 @@ async function main() {
 }
 
 // Run if executed directly
-if (require.main === module) {
+if (isCliEntrypoint) {
   void main();
 }

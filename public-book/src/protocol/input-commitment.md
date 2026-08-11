@@ -93,16 +93,16 @@ vote_entry =
 残りのフィールドは、別のチェックで補完的に検証されます。
 
 `public-input.json` は、zkVM 検証に使う秘密データを含まない検証用レコードです。
-現行実装では `schema`、`version`、`contractGeneration`、`electionId`、`electionConfigHash`、`bulletinRoot`、`treeSize`、`totalExpected`、`logId`、`timestamp`、`methodVersion` を含みます。
+現行実装では `schema`、`version`、`electionId`、`electionConfigHash`、`bulletinRoot`、`treeSize`、`totalExpected`、`logId`、`timestamp`、`methodVersion` を含みます。
 各投票については、`index`、コミットメント値、Merkle パスを含みます。
 
 入力コミットメントが直接束縛するのは、[フィールド一覧](#フィールド一覧)に示した対象のみです。
-`schema`、`version`、`contractGeneration`、`electionConfigHash`、`logId`、`timestamp`、`methodVersion` は対象外です。
+`schema`、`version`、`electionConfigHash`、`logId`、`timestamp`、`methodVersion` は対象外です。
 対象外のフィールドは、proof bundle 内の `election-manifest.json` や `close-statement.json` を組み合わせて、次のように照合されます。
 
 - `electionConfigHash` → `counted_election_manifest_consistent`（manifest と journal 等を照合）
 - `logId` と `timestamp` → `counted_close_statement_consistent`（close statement と journal 等を照合）
-- `schema`、`version`、`contractGeneration` → `public-input.json` の互換性マーカーとして artifact 採用時に検証
+- `schema`、`version` → `public-input.json` の管理対象 artifact format として artifact 採用時に検証
 - `methodVersion` → `public-input.json` 採用時に journal と照合
   Image ID 解決では正規化済み journal 値を使用
 

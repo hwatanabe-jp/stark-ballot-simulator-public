@@ -10,7 +10,9 @@
 - 公開してはいけないアーティファクトの混入
 - `Verified` 判定ロジックの分散
 
-## この部に含まれる章
+<a id="この部に含まれる章"></a>
+
+## この部の章
 
 - [単体、結合、E2E テスト](unit-integration-e2e.md): example-based テストでの局所退行検出と CLI / E2E 経路
 - [Property-based Testing](property-based-testing.md): `fast-check` と Rust `proptest` による入力空間探索
@@ -41,12 +43,14 @@
 - required check が失敗、未実行、実行中なら Verified にしない
 - `excludedSlots > 0` を成功状態にしない
 - STARK receipt verification だけを根拠に全体成功としない
-- `input.json`、`verification.json`、`included-bitmap.json`、`seen-bitmap.json` を公開配布対象に含めない
+- mode 非依存の保護 4 アーティファクト（[公開境界](../verification/public-boundary.md#bundlezip-に入れないファイル)）を公開配布対象に含めない
 - mock / dev receipt / production STARK proof の違いをテスト階層で明示する
 
 これらは [ゲーティングロジック](../verification/gating-logic.md) と [バンドル構造](../verification/bundle-structure.md) で説明した安全境界を、テストと形式化の側から支えるものです。
 
-## 扱わない範囲
+<a id="扱わない範囲"></a>
+
+## この部で扱わないもの
 
 この部は、システム全体の完全な形式検証を主張するものではありません。
 SHA-256 や RISC Zero の暗号学的健全性、各種ランタイムや AWS の正しさ、本番選挙システムとしての安全性は対象外です。

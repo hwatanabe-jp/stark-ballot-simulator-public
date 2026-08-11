@@ -6,7 +6,12 @@
  */
 
 import { downloadFromS3 } from './s3-download';
-import { getNumberProperty, getRecordProperty, getStringProperty, isRecord } from '@stark-ballot/domain/utils/guards';
+import {
+  getNumberProperty,
+  getRecordProperty,
+  getStringProperty,
+  isRecord,
+} from '@stark-ballot/validation/unknown-value-guards';
 import { readZipEntriesFromBuffer } from '@stark-ballot/node-adapters/zip';
 import {
   parseIncludedBitmapArtifact,
@@ -24,10 +29,11 @@ import {
   type CloseStatement,
   type ElectionManifest,
 } from '@stark-ballot/verification/public-audit-artifacts';
-import { normalizeHexString } from '@stark-ballot/domain/utils/hex';
+import { normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashKeyPrefixForLogging } from '@stark-ballot/diagnostics/logging';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 const TRANSIENT_S3_ERROR_IDENTITIES = new Set([
   'AbortError',
@@ -108,12 +114,15 @@ export interface RestoredReceipt {
  *
  * Downloads bundle.zip from S3, extracts receipt.json, and returns parsed receipt data.
  *
- * @param bundleKey S3 object key (e.g., "sessions/{sessionId}/{executionId}/bundle.zip")
+ * @param bundleKey S3 object key (e.g., "sessions/{sessionId}/{finalizationId}/bundle.zip")
  * @returns Restored receipt and admitted receipt payload
  * @throws TransientBundleRestoreError after the S3 client's transient retries are exhausted
  * @throws Error if the object is definitively unavailable or the bundle artifact is invalid
  */
-export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredReceipt> {
+export async function restoreReceiptFromS3(
+  profile: ResolvedRuntimeProfile,
+  bundleKey: string,
+): Promise<RestoredReceipt> {
   const keyPrefix = hashKeyPrefixForLogging(bundleKey);
   try {
     logger.info('[S3 Restore] Starting receipt restoration', {
@@ -124,7 +133,7 @@ export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredR
     });
 
     // Step 1: Download bundle.zip from S3
-    const zipBuffer = await downloadFromS3(bundleKey);
+    const zipBuffer = await downloadFromS3(profile, bundleKey);
 
     // Step 2: Read receipt.json, journal.json, and public-input.json from the zip
     const entries = await readZipEntriesFromBuffer(zipBuffer, [
@@ -164,12 +173,12 @@ export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredR
     let publicInputArtifact: SupportedPublicInputArtifact | undefined;
     let publicInput: unknown;
     if (publicInputBuffer) {
-      const executionId = extractExecutionIdFromBundleKey(bundleKey);
+      const finalizationId = extractFinalizationIdFromBundleKey(bundleKey);
       try {
         const publicInputData: unknown = JSON.parse(publicInputBuffer.toString('utf8'));
         publicInput = publicInputData;
         publicInputArtifact = parseSupportedPublicInputArtifact(publicInputData, {
-          ...omitUndefinedProperties({ executionId: executionId }),
+          ...omitUndefinedProperties({ finalizationId }),
           bundleKey,
           source: 'bundle',
         });
@@ -226,7 +235,7 @@ export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredR
     const includedBitmapKey = deriveSiblingObjectKey(bundleKey, 'included-bitmap.json');
     if (includedBitmapKey) {
       try {
-        const includedBitmapBuffer = await downloadFromS3(includedBitmapKey);
+        const includedBitmapBuffer = await downloadFromS3(profile, includedBitmapKey);
         const includedBitmapData: unknown = JSON.parse(includedBitmapBuffer.toString('utf8'));
         const includedBitmapArtifact = parseIncludedBitmapArtifact(includedBitmapData);
         if (
@@ -245,7 +254,7 @@ export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredR
     const seenBitmapKey = deriveSiblingObjectKey(bundleKey, 'seen-bitmap.json');
     if (seenBitmapKey) {
       try {
-        const seenBitmapBuffer = await downloadFromS3(seenBitmapKey);
+        const seenBitmapBuffer = await downloadFromS3(profile, seenBitmapKey);
         const seenBitmapData: unknown = JSON.parse(seenBitmapBuffer.toString('utf8'));
         const seenBitmapArtifact = parseSeenBitmapArtifact(seenBitmapData);
         if (seenBitmapArtifact && matchesJournalBitmapRoot(seenBitmapArtifact, journalData, 'seenBitmapRoot')) {
@@ -279,7 +288,7 @@ export async function restoreReceiptFromS3(bundleKey: string): Promise<RestoredR
   }
 }
 
-function extractExecutionIdFromBundleKey(bundleKey: string): string | undefined {
+function extractFinalizationIdFromBundleKey(bundleKey: string): string | undefined {
   const segments = bundleKey.split('/').filter(Boolean);
   if (segments.length < 2) {
     return undefined;

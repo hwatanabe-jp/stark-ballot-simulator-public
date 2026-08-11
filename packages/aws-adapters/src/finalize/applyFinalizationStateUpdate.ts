@@ -3,7 +3,8 @@ import {
   type FinalizationStateUpdateApplyResult,
 } from '@stark-ballot/application/finalize/finalization-state-update';
 import type { FinalizationLifecycleStore } from '@stark-ballot/application/finalize/finalization-store';
-import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
+import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
+import type { FinalizationState } from '@stark-ballot/application/finalize/finalization-types';
 import {
   toApplicationFinalizationStateUpdatePayload,
   type AwsFinalizationStateUpdatePayload,
@@ -25,52 +26,85 @@ function withAwsRuntimeMetadata<TPayload extends object>(
   };
 }
 
+async function loadAppliedFinalizationRecord(
+  store: FinalizationLifecycleStore,
+  sessionId: string,
+  state: FinalizationState,
+): Promise<FinalizationRecord> {
+  const record = await store.getFinalizationRecord(sessionId, state.finalizationId);
+  if (
+    !record ||
+    record.finalizationId !== state.finalizationId ||
+    record.state.finalizationId !== state.finalizationId ||
+    record.state.status !== state.status
+  ) {
+    throw new Error('Applied finalization record unavailable');
+  }
+  return record;
+}
+
 export async function applyAwsFinalizationStateUpdatePayload({
   payload,
   store,
 }: {
   payload: AwsFinalizationStateUpdatePayload;
-  store: FinalizationLifecycleStore & AwsFinalizationRuntimeTransitionStore & Pick<VoteStore, 'getSession'>;
+  store: FinalizationLifecycleStore & AwsFinalizationRuntimeTransitionStore;
 }): Promise<FinalizationStateUpdateApplyResult> {
   const runtimeMetadata = payload.runtimeMetadata;
   const projectedStore = {
-    ...store,
-    getSession: store.getSession.bind(store),
-    ...(typeof store.finalizeSession === 'function' ? { finalizeSession: store.finalizeSession.bind(store) } : {}),
-    ...(typeof store.markFinalizationQueued === 'function'
-      ? { markFinalizationQueued: store.markFinalizationQueued.bind(store) }
-      : {}),
+    getFinalizationRecord: store.getFinalizationRecord.bind(store),
     ...(typeof store.markFinalizationRunning === 'function'
       ? {
-          markFinalizationRunning: (sessionId, runningPayload) =>
-            store.markAwsFinalizationRunning(sessionId, withAwsRuntimeMetadata(runningPayload, runtimeMetadata, false)),
+          markFinalizationRunning: async (sessionId, runningPayload) => {
+            const state = await store.markAwsFinalizationRunning(
+              sessionId,
+              withAwsRuntimeMetadata(runningPayload, runtimeMetadata, false),
+            );
+            return loadAppliedFinalizationRecord(store, sessionId, state);
+          },
         }
       : {}),
     ...(typeof store.markFinalizationSucceeded === 'function'
       ? {
-          markFinalizationSucceeded: (sessionId, succeededPayload) =>
-            store.markAwsFinalizationSucceeded(
+          markFinalizationSucceeded: async (sessionId, succeededPayload) => {
+            const state = await store.markAwsFinalizationSucceeded(
               sessionId,
               withAwsRuntimeMetadata(succeededPayload, runtimeMetadata, true),
-            ),
+            );
+            return loadAppliedFinalizationRecord(store, sessionId, state);
+          },
         }
       : {}),
     ...(typeof store.markFinalizationFailed === 'function'
       ? {
-          markFinalizationFailed: (sessionId, failedPayload) =>
-            store.markAwsFinalizationFailed(sessionId, withAwsRuntimeMetadata(failedPayload, runtimeMetadata, false)),
+          markFinalizationFailed: async (sessionId, failedPayload) => {
+            const state = await store.markAwsFinalizationFailed(
+              sessionId,
+              withAwsRuntimeMetadata(failedPayload, runtimeMetadata, false),
+            );
+            return loadAppliedFinalizationRecord(store, sessionId, state);
+          },
         }
       : {}),
     ...(typeof store.markFinalizationTimedOut === 'function'
       ? {
-          markFinalizationTimedOut: (sessionId, timedOutPayload) =>
-            store.markAwsFinalizationTimedOut(
+          markFinalizationTimedOut: async (sessionId, timedOutPayload) => {
+            const state = await store.markAwsFinalizationTimedOut(
               sessionId,
               withAwsRuntimeMetadata(timedOutPayload, runtimeMetadata, false),
-            ),
+            );
+            return loadAppliedFinalizationRecord(store, sessionId, state);
+          },
         }
       : {}),
-  } as FinalizationLifecycleStore & Pick<VoteStore, 'getSession'>;
+  } as Pick<
+    FinalizationLifecycleStore,
+    | 'getFinalizationRecord'
+    | 'markFinalizationRunning'
+    | 'markFinalizationSucceeded'
+    | 'markFinalizationFailed'
+    | 'markFinalizationTimedOut'
+  >;
 
   return applyFinalizationStateUpdatePayload({
     payload: toApplicationFinalizationStateUpdatePayload(payload),

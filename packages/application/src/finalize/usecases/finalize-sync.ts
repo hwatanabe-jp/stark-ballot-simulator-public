@@ -1,15 +1,19 @@
 import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
-import type { FinalizationBitmapStore, FinalizationStore } from '@stark-ballot/application/finalize/finalization-store';
-import type { SessionData } from '@stark-ballot/domain/types/server';
+import type { FinalizationStore } from '@stark-ballot/application/finalize/finalization-store';
+import type { SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
 import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
 import type { ZkVMExecutionResult, ZkVMExecutor } from '@stark-ballot/application/finalize/zkvm-executor';
 import type { ElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import type { ProofBundleService } from '@stark-ballot/application/finalize/proof-bundle-service';
 import {
   ApplicationErrorCode,
-  type FinalizationBitmapData,
+  type FinalizationBitmapDisposition,
+  type FinalizationId,
   type FinalizationResultAuthority,
+  type FinalizationScenarioContext,
 } from '@stark-ballot/application/finalize/finalization-types';
+import type { VerificationResultStore } from '@stark-ballot/application/finalize/finalization-result-store';
+import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
 import { normalizeExecutionReceipt } from '@stark-ballot/verification/receipt-normalizer';
 import { buildSupportedPublicInputArtifactFromZkvmInput } from '@stark-ballot/verification/public-input';
 import { normalizeBitmapRoot } from '@stark-ballot/verification/bitmap-root';
@@ -17,20 +21,23 @@ import { buildCloseStatement, buildElectionManifest } from '@stark-ballot/verifi
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
 import { isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import { toPublicZkvmJournal } from '@stark-ballot/zkvm-contract/zkvm/public-journal';
-import { getStringProperty } from '@stark-ballot/domain/utils/guards';
-import { normalizeHexString } from '@stark-ballot/domain/utils/hex';
+import { getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
-import { resolveFinalizationTamperDetected } from '@stark-ballot/domain/finalize/finalization-tamper';
-import { isCurrentArtifactBoundaryError } from '@stark-ballot/domain/contract';
+import {
+  resolveFinalizationTamperDetected,
+  resolveScenarioTamperCount,
+} from '@stark-ballot/verification/finalization-tamper';
 import { buildUserVoteArtifacts, UserVoteArtifactsUnavailableError } from './user-vote-artifacts';
 import type { FinalizeScenarioContext, FinalizeSessionError, FinalizeSyncPayload, Result } from './types';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 export interface FinalizeSyncInput {
   sessionId: string;
-  session: SessionData;
-  contractGeneration: string;
+  finalizationId: FinalizationId;
+  queuedAtMs: number;
+  voting: SessionVotingRecord;
   zkvmInput: ZkVMInput;
   electionConfig: ElectionConfig;
   expectedImageId: string;
@@ -43,25 +50,32 @@ export interface FinalizeSyncInput {
 }
 
 export interface FinalizeSyncDependencies {
-  store: VoteStore & FinalizationStore;
+  store: VoteStore & FinalizationStore & VerificationResultStore;
   getExecutor: () => Promise<ZkVMExecutor>;
   proofBundleService: ProofBundleService;
   now?: () => number;
-  assertAdmissibleFinalizationArtifactPatch?: (
-    session: SessionData,
-    patch: {
-      finalized: true;
-      finalizationResult: FinalizationResultAuthority;
-      finalizationContractGeneration: string;
+}
+
+function toFinalizationScenarioContext(scenario: FinalizeScenarioContext): FinalizationScenarioContext {
+  return {
+    scenarios: scenario.scenariosApplied,
+    tamperMode: scenario.tamperMode,
+    claimedCounts: scenario.claimedCounts,
+    claimedTotalVotes: scenario.claimedTotalVotes,
+    summary: {
+      ignoredCount: scenario.summary.ignoredCount,
+      recountedCount: scenario.summary.recountedCount,
+      userRecountChoice: scenario.summary.userRecountChoice,
+      ...(scenario.affectedBotIds ? { affectedBotIds: scenario.affectedBotIds } : {}),
     },
-    expectedContractGeneration: string,
-  ) => void;
+  };
 }
 
 export async function finalizeSync(
   input: FinalizeSyncInput,
   deps: FinalizeSyncDependencies,
 ): Promise<Result<FinalizeSyncPayload, FinalizeSessionError>> {
+  const startedAtMs = (deps.now ?? Date.now)();
   try {
     const executor = await deps.getExecutor();
     logger.info(`[API] Using ${executor.type} zkVM executor`);
@@ -83,7 +97,10 @@ export async function finalizeSync(
       });
     }
 
-    const scenarioTamperCount = input.scenario.summary.ignoredCount + input.scenario.summary.recountedCount;
+    const scenarioTamperCount = resolveScenarioTamperCount({
+      ignoredVotes: input.scenario.summary.ignoredCount,
+      recountedVotes: input.scenario.summary.recountedCount,
+    });
     const reportedMethodVersion =
       typeof (zkVMResult as { methodVersion?: unknown }).methodVersion === 'number'
         ? (zkVMResult as { methodVersion: number }).methodVersion
@@ -131,7 +148,7 @@ export async function finalizeSync(
     let userVoteArtifacts;
     try {
       userVoteArtifacts = buildUserVoteArtifacts({
-        session: input.session,
+        voting: input.voting,
         finalizationResult: artifactSourceResult,
       });
     } catch (error) {
@@ -163,7 +180,7 @@ export async function finalizeSync(
 
     const proofBundleOutcome = await deps.proofBundleService.createBundle({
       sessionId: input.sessionId,
-      contractGeneration: input.contractGeneration,
+      finalizationId: input.finalizationId,
       zkvmInput: input.zkvmInput,
       electionConfig: input.electionConfig,
       electionManifest,
@@ -183,7 +200,7 @@ export async function finalizeSync(
             code: ApplicationErrorCode.VERIFICATION_FAILED,
             details: {
               status: proofBundleOutcome.error.status,
-              verificationExecutionId: proofBundleOutcome.error.executionId,
+              finalizationId: proofBundleOutcome.error.finalizationId,
               verificationReport: proofBundleOutcome.error.report,
             },
           },
@@ -201,15 +218,15 @@ export async function finalizeSync(
       };
     }
 
-    const { executionId, verificationResult } = proofBundleOutcome;
-    if (typeof executionId !== 'string' || executionId.length === 0) {
+    const { finalizationId, verificationResult } = proofBundleOutcome;
+    if (finalizationId !== input.finalizationId) {
       return {
         ok: false,
         error: {
           kind: 'api',
-          code: ApplicationErrorCode.CORRUPT_OR_UNREADABLE_FINALIZED_STATE,
+          code: ApplicationErrorCode.INVALID_FINALIZATION_ARTIFACT,
           details: {
-            details: 'Finalization result is missing execution authority',
+            details: 'Proof bundle finalization authority does not match the requested finalization',
           },
         },
       };
@@ -218,9 +235,8 @@ export async function finalizeSync(
     const publicInputArtifact = buildSupportedPublicInputArtifactFromZkvmInput(
       input.zkvmInput,
       zkVMResult.methodVersion,
-      input.contractGeneration,
       {
-        executionId,
+        finalizationId,
         source: 'generated',
       },
     );
@@ -232,18 +248,16 @@ export async function finalizeSync(
     });
 
     const bitmap = buildBitmapData({
-      store: deps.store,
       zkvmResult: zkVMResult,
       bitmapProofSource: input.bitmapProofSource ?? executor.type,
     });
 
-    const finalizationResult: FinalizationResultAuthority = {
+    let finalizationResult: FinalizationResultAuthority = {
       tally: {
         counts: input.scenario.claimedCounts,
         totalVotes: input.scenario.claimedTotalVotes,
         tamperedCount: effectiveTamperedCount,
       },
-      verificationResult,
       receipt: normalizedReceipt.receipt,
       imageId: actualImageId || 'zkvm-image-v' + zkVMResult.methodVersion,
       tamperDetected: resolveFinalizationTamperDetected({
@@ -257,7 +271,6 @@ export async function finalizeSync(
       closeStatement,
       ...omitUndefinedProperties({
         bitmapProofSource: bitmap.bitmapProofSource,
-        bitmapData: bitmap.bitmapData,
       }),
       scenarios: input.scenario.scenarios,
       ...omitUndefinedProperties({
@@ -273,37 +286,6 @@ export async function finalizeSync(
             : undefined,
       }),
     };
-    try {
-      deps.assertAdmissibleFinalizationArtifactPatch?.(
-        input.session,
-        {
-          finalized: true,
-          finalizationResult,
-          finalizationContractGeneration: input.contractGeneration,
-        },
-        input.contractGeneration,
-      );
-    } catch (error) {
-      if (isCurrentArtifactBoundaryError(error)) {
-        return {
-          ok: false,
-          error: {
-            kind: 'api',
-            code:
-              error.code === 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE'
-                ? ApplicationErrorCode.CORRUPT_OR_UNREADABLE_FINALIZED_STATE
-                : ApplicationErrorCode.UNSUPPORTED_CURRENT_ARTIFACT,
-            details: {
-              details: error.message,
-              artifactState: error.artifactState,
-              ...error.details,
-            },
-          },
-        };
-      }
-      throw error;
-    }
-
     const receiptData = {
       receipt: JSON.stringify({
         methodVersion: zkVMResult.methodVersion,
@@ -313,58 +295,24 @@ export async function finalizeSync(
       }),
       timestamp: (deps.now ?? Date.now)(),
     };
-    let receiptHash = '';
-    let boardIndex = 0;
-    if (deps.store.finalizeSessionWithReceiptPublication) {
-      try {
-        const boardResult = await deps.store.finalizeSessionWithReceiptPublication(
-          input.sessionId,
-          finalizationResult,
-          input.contractGeneration,
-          receiptData,
-          executionId,
-        );
-        receiptHash = boardResult.receiptHash;
-        boardIndex = boardResult.boardIndex;
-        finalizationResult.receiptPublication = {
-          receiptHash,
-          boardIndex,
-          timestamp: receiptData.timestamp,
-        };
-        logger.info('[API] Receipt saved to board:', {
-          receiptHash,
-          boardIndex,
-        });
-      } catch (error) {
-        if (isCurrentArtifactBoundaryError(error)) {
-          return {
-            ok: false,
-            error: {
-              kind: 'api',
-              code:
-                error.code === 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE'
-                  ? ApplicationErrorCode.CORRUPT_OR_UNREADABLE_FINALIZED_STATE
-                  : ApplicationErrorCode.UNSUPPORTED_CURRENT_ARTIFACT,
-              details: {
-                details: error.message,
-                artifactState: error.artifactState,
-                ...error.details,
-              },
-            },
-          };
-        }
-        logger.error('[API] Failed to atomically finalize receipt publication:', error);
-        throw error;
-      }
-    }
-
-    if (receiptHash) {
-      finalizationResult.receiptPublication = {
-        receiptHash,
-        boardIndex,
-        timestamp: receiptData.timestamp,
-      };
-    }
+    const completedAtMs = (deps.now ?? Date.now)();
+    const succeededState = {
+      status: 'succeeded' as const,
+      finalizationId,
+      queuedAtMs: input.queuedAtMs,
+      startedAtMs,
+      completedAtMs,
+    };
+    const finalizationRecord: Extract<FinalizationRecord, { state: { status: 'succeeded' } }> = {
+      sessionId: input.sessionId,
+      finalizationId,
+      scenarioContext: toFinalizationScenarioContext(input.scenario),
+      state: succeededState,
+      finalizationResult: {
+        finalizationId,
+        ...finalizationResult,
+      },
+    };
 
     const debugEnabled = input.debugFileStore ?? false;
     if (debugEnabled || input.debugFinalize) {
@@ -376,62 +324,32 @@ export async function finalizeSync(
       });
     }
 
-    if (!deps.store.finalizeSessionWithReceiptPublication) {
-      try {
-        await deps.store.finalizeSession(input.sessionId, finalizationResult, input.contractGeneration, executionId);
-      } catch (error) {
-        if (isCurrentArtifactBoundaryError(error)) {
-          return {
-            ok: false,
-            error: {
-              kind: 'api',
-              code:
-                error.code === 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE'
-                  ? ApplicationErrorCode.CORRUPT_OR_UNREADABLE_FINALIZED_STATE
-                  : ApplicationErrorCode.UNSUPPORTED_CURRENT_ARTIFACT,
-              details: {
-                details: error.message,
-                artifactState: error.artifactState,
-                ...error.details,
-              },
-            },
-          };
-        }
-        throw error;
-      }
+    const committed = await deps.store.commitSuccessfulFinalization({
+      record: finalizationRecord,
+      receipt: receiptData,
+      bitmap: bitmap.disposition,
+      verificationResult,
+    });
+    const { finalizationId: committedFinalizationId, ...committedAuthority } = committed.record.finalizationResult;
+    if (committedFinalizationId !== finalizationId) {
+      throw new Error('Committed finalization authority does not match the requested finalization');
+    }
+    finalizationResult = committedAuthority;
+    if (committed.receiptPublication) {
+      logger.info('[API] Receipt saved to board:', {
+        receiptHash: committed.receiptPublication.receiptHash,
+        boardIndex: committed.receiptPublication.boardIndex,
+      });
     }
 
     if (debugEnabled || input.debugFinalize) {
-      logger.debug('[API][finalize][DEBUG] finalizeSession() completed', {
+      logger.debug('[API][finalize][DEBUG] commitSuccessfulFinalization() completed', {
         session_id_hash: hashSessionIdForLogging(input.sessionId),
         timestamp: new Date().toISOString(),
       });
     }
 
-    if (deps.store.saveBitmapData && bitmap.bitmapDataToSave) {
-      try {
-        await deps.store.saveBitmapData(input.sessionId, bitmap.bitmapDataToSave);
-      } catch (error) {
-        if (isCurrentArtifactBoundaryError(error)) {
-          return {
-            ok: false,
-            error: {
-              kind: 'api',
-              code:
-                error.code === 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE'
-                  ? ApplicationErrorCode.CORRUPT_OR_UNREADABLE_FINALIZED_STATE
-                  : ApplicationErrorCode.UNSUPPORTED_CURRENT_ARTIFACT,
-              details: {
-                details: error.message,
-                artifactState: error.artifactState,
-                ...error.details,
-              },
-            },
-          };
-        }
-        throw error;
-      }
-
+    if (committed.bitmap.availability === 'available') {
       logger.info('[API] Saved bitmap data for session', {
         session_id_hash: hashSessionIdForLogging(input.sessionId),
       });
@@ -460,8 +378,11 @@ export async function finalizeSync(
       ok: true,
       value: {
         sessionId: input.sessionId,
-        verificationExecutionId: executionId,
+        finalizationId,
+        state: committed.record.state,
         finalizationResult,
+        verificationResult,
+        bitmapDisposition: committed.bitmap,
         bulletinRoot,
         voteReceipt,
         receipt: normalizedReceipt.receipt,
@@ -483,24 +404,14 @@ export async function finalizeSync(
   }
 }
 
-function buildBitmapData(params: {
-  store: FinalizationBitmapStore;
-  zkvmResult: ZkVMExecutionResult;
-  bitmapProofSource: 'mock' | 'real';
-}): {
-  bitmapDataToSave: FinalizationBitmapData | null;
+function buildBitmapData(params: { zkvmResult: ZkVMExecutionResult; bitmapProofSource: 'mock' | 'real' }): {
+  disposition: FinalizationBitmapDisposition;
   bitmapProofSource?: 'mock' | 'real';
-  bitmapData?: FinalizationBitmapData;
 } {
-  const shouldSaveBitmap = typeof params.store.saveBitmapData === 'function';
-  if (!shouldSaveBitmap) {
-    return { bitmapDataToSave: null };
-  }
-
   const includedBitmap = params.zkvmResult.includedBitmap ? [...params.zkvmResult.includedBitmap] : null;
   if (!includedBitmap) {
     logger.info('[API] Exact included bitmap unavailable; bitmap proof disabled');
-    return { bitmapDataToSave: null };
+    return { disposition: { availability: 'unavailable' } };
   }
 
   const normalizedRoot = normalizeBitmapRoot(params.zkvmResult.includedBitmapRoot);
@@ -512,7 +423,7 @@ function buildBitmapData(params: {
       expectedRoot: normalizedRoot,
       computedRoot,
     });
-    return { bitmapDataToSave: null };
+    return { disposition: { availability: 'unavailable' } };
   }
 
   const bitmapData = {
@@ -520,13 +431,12 @@ function buildBitmapData(params: {
     includedBitmapRoot: normalizeBitmapRoot(params.zkvmResult.includedBitmapRoot),
     ...buildSeenBitmapData(params.zkvmResult),
     treeSize: params.zkvmResult.treeSize,
-    finalizedAt: Date.now(),
+    finalizedAtMs: Date.now(),
   };
 
   return {
-    bitmapDataToSave: bitmapData,
+    disposition: { availability: 'available', data: bitmapData },
     bitmapProofSource: params.bitmapProofSource,
-    bitmapData,
   };
 }
 

@@ -6,12 +6,16 @@
  * verifier-service, which calls RISC Zero Receipt::verify(expected_image_id).
  */
 
-import { resolveExpectedImageIdFromMapping, type ImageIdVariant } from './image-id-policy.js';
+import {
+  resolveExpectedImageIdFromMapping,
+  type ImageIdMapping,
+  type ImageIdVariant,
+} from '@stark-ballot/validation/image-id-policy';
 import {
   ImageIdMappingValidationError,
   ImageIdVariantResolutionError,
 } from '@stark-ballot/validation/image-id-mapping';
-import type { ImageIdMapping, MultiSourceVerificationResult } from './image-id-types';
+import type { MultiSourceVerificationResult } from './image-id-types';
 
 export class ImageIdResolutionError extends Error {
   constructor(

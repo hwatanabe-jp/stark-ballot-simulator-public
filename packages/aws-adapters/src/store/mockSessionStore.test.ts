@@ -1,89 +1,156 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { MockSessionStore } from './mockSessionStore';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
+import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
+import type {
+  FinalizationResultAuthority,
+  FinalizationScenarioContext,
+} from '@stark-ballot/application/finalize/finalization-types';
 import { logger } from '@stark-ballot/diagnostics/logger';
-import type { VoteData } from '@stark-ballot/domain/types/server';
+import type {
+  SessionIdentityRecord,
+  SessionVotingRecord,
+  StoredVoteRecord,
+  VoteData,
+} from '@stark-ballot/domain/types/sessionRecords';
 import { generateVoteId } from '@stark-ballot/domain/vote/voteId';
-import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { createTestCommitment } from '@stark-ballot/test-support/testing/commitment-test-helpers';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
-import { addHexPrefix } from '@stark-ballot/domain/utils/hex';
-import {
-  CorruptOrUnreadableFinalizedStateBoundaryError,
-  resolveCurrentContractGeneration,
-  resolveSessionFinalizationArtifactState,
-  UnsupportedCurrentArtifactBoundaryError,
-} from '@stark-ballot/domain/contract';
-import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
-import {
-  admitAwsPersistedFinalizationStateBranch,
-  parseAwsPersistedFinalizationResult,
-} from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
-import { buildFinalizationArtifactS3Keys } from '@stark-ballot/aws-adapters/finalize/artifact-key-layout';
+import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
+import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
+import { MockSessionStore } from './mockSessionStore';
+import { computeSuccessfulFinalizationReceiptHash } from './successfulFinalizationReceipt';
 
-function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
-  if (value === undefined || value === null) {
-    throw new Error(`Expected ${label} to be defined`);
+const scenarioContext: FinalizationScenarioContext = {
+  scenarios: [],
+  tamperMode: 'none',
+  claimedCounts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
+  claimedTotalVotes: 1,
+  summary: {
+    ignoredCount: 0,
+    recountedCount: 0,
+    userRecountChoice: null,
+  },
+};
+
+function requireValue<T>(value: T | null | undefined, label: string): T {
+  if (value === null || value === undefined) {
+    throw new Error(`Expected ${label}`);
   }
   return value;
 }
 
-function getVerificationExecutionId(value: unknown): string | undefined {
-  if (!value || typeof value !== 'object') {
-    return undefined;
+function getPrivateMap<T>(store: MockSessionStore, property: string): Map<string, T> {
+  const value: unknown = Reflect.get(store, property);
+  if (!(value instanceof Map)) {
+    throw new Error(`Expected ${property} to be a Map`);
   }
-  const executionId = (value as { verificationExecutionId?: unknown }).verificationExecutionId;
-  return typeof executionId === 'string' ? executionId : undefined;
+  return value as Map<string, T>;
 }
 
-// Use string literals instead of importing VoteChoice
-const VoteChoice = {
-  A: 'A' as const,
-  B: 'B' as const,
-  C: 'C' as const,
-  D: 'D' as const,
-  E: 'E' as const,
-};
+function scopedKey(sessionId: string, finalizationId: string): string {
+  return `${sessionId}\u0000${finalizationId}`;
+}
+
+function buildVote(choice: VoteData['vote'], randomNibble: string, voteId = generateVoteId()): VoteData {
+  const random = `0x${randomNibble.repeat(64)}`;
+  const commitment = createTestCommitment(choice.charCodeAt(0) - 'A'.charCodeAt(0), random);
+  return {
+    voteId,
+    vote: choice,
+    rand: commitment.random,
+    commit: commitment.commitment,
+    path: [],
+    timestamp: 1_730_000_000_000,
+  };
+}
+
+function buildResult(journal = createTestJournal()): FinalizationResultAuthority {
+  return buildFinalizationResultFromJournal({
+    journal,
+    imageId: journal.imageId ?? `0x${'1'.repeat(64)}`,
+  });
+}
+
+function buildSucceededRecord(
+  sessionId: string,
+  finalizationId: string,
+  result = buildResult(),
+): Extract<FinalizationRecord, { state: { status: 'succeeded' } }> {
+  return {
+    sessionId,
+    finalizationId,
+    scenarioContext,
+    state: {
+      status: 'succeeded',
+      finalizationId,
+      queuedAtMs: 10,
+      startedAtMs: 20,
+      completedAtMs: 30,
+    },
+    finalizationResult: {
+      finalizationId,
+      ...result,
+    },
+  };
+}
 
 describe('MockSessionStore', () => {
   let store: MockSessionStore;
+  let identity: SessionIdentityRecord;
   let sessionId: string;
+  let warnLog: MockInstance<typeof logger.warn>;
 
-  const finalizeSessionForBitmap = async (targetSessionId: string): Promise<void> => {
-    const journal = createTestJournal({
-      totalExpected: 1,
-      validVotes: 1,
-      missingIndices: 0,
-      invalidIndices: 0,
+  function consumeRejectedTransitionLogs(
+    ...expected: Array<{ finalizationId: string; reason: string; to: string }>
+  ): void {
+    expect(warnLog).toHaveBeenCalledTimes(expected.length);
+    expected.forEach(({ finalizationId, reason, to }, index) => {
+      expect(warnLog).toHaveBeenNthCalledWith(
+        index + 1,
+        'finalize_state_update_rejected',
+        expect.objectContaining({
+          event: 'finalize_state_update_rejected',
+          finalization_id: finalizationId,
+          reason,
+          to,
+        }),
+      );
     });
+    warnLog.mockClear();
+  }
 
-    await store.finalizeSession(
-      targetSessionId,
-      {
-        tally: {
-          counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
-          totalVotes: 1,
-          tamperedCount: 0,
-        },
-        imageId: journal.imageId ?? '0x' + '1'.repeat(64),
-        journal,
-      },
-      resolveCurrentContractGeneration(),
-      'exec-bitmap',
-    );
-  };
-
-  const createStoredFinalizationResult = (executionId: string, journal = createTestJournal()) => ({
-    ...buildFinalizationResultFromJournal({
-      journal,
-      imageId: '0x' + '1'.repeat(64),
-    }),
-    verificationExecutionId: executionId,
-  });
+  async function succeed(
+    finalizationId: string,
+    targetSessionId = sessionId,
+  ): Promise<Extract<FinalizationRecord, { state: { status: 'succeeded' } }>> {
+    const record = await store.markFinalizationSucceeded(targetSessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      startedAtMs: 20,
+      completedAtMs: 30,
+      scenarioContext,
+      finalizationResult: buildResult(),
+    });
+    if (record.state.status !== 'succeeded') {
+      throw new Error('Expected succeeded finalization');
+    }
+    return record as Extract<FinalizationRecord, { state: { status: 'succeeded' } }>;
+  }
 
   beforeEach(async () => {
+    vi.restoreAllMocks();
+    warnLog = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     store = new MockSessionStore();
-    const session = await store.createSession();
-    sessionId = session.sessionId;
+    identity = await store.createSession();
+    sessionId = identity.sessionId;
+  });
+
+  afterEach(() => {
+    try {
+      expect(warnLog).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it('does not expose standalone receipt-board publication', () => {
@@ -91,1723 +158,1128 @@ describe('MockSessionStore', () => {
     expect(Reflect.get(store, 'saveReceiptToBoard')).toBeUndefined();
   });
 
-  describe('finalization state transitions', () => {
-    it('records one verification observation per current execution idempotently', async () => {
-      const executionId = 'exec-verification-observation';
-      await store.finalizeSession(
-        sessionId,
-        createStoredFinalizationResult(executionId),
-        resolveCurrentContractGeneration(),
-        executionId,
-      );
+  it('creates complete separate identity and voting records', async () => {
+    const voting = requireValue(await store.getVotingRecord(sessionId), 'voting record');
 
-      await expect(
-        store.recordVerificationObservation(sessionId, {
-          executionId,
-          fingerprint: 'a'.repeat(64),
-          observedAt: 1_750_000_000_000,
-        }),
-      ).resolves.toEqual({ status: 'recorded' });
-      await expect(
-        store.recordVerificationObservation(sessionId, {
-          executionId,
-          fingerprint: 'a'.repeat(64),
-          observedAt: 1_750_000_000_100,
-        }),
-      ).resolves.toEqual({ status: 'idempotent' });
-      await expect(
-        store.recordVerificationObservation(sessionId, {
-          executionId,
-          fingerprint: 'b'.repeat(64),
-          observedAt: 1_750_000_000_200,
-        }),
-      ).resolves.toEqual({ status: 'conflict', reason: 'fingerprint_mismatch' });
+    expect(identity.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(identity.electionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(identity.electionConfigHash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(identity.logId).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(identity.createdAtMs).toEqual(expect.any(Number));
+    expect(voting).toMatchObject({
+      sessionId,
+      botCount: 0,
+      userParticipation: { status: 'not_cast' },
+    });
+    expect(voting.votes.size).toBe(0);
+    expect(voting.bulletinRootHistory).toEqual([]);
+    expect(voting.bulletin.getLogId()).toBe(identity.logId);
+    expect(await store.getCurrentFinalizationRecord(sessionId)).toBeNull();
+    expect('getSession' in store).toBe(false);
+  });
 
-      expect((await store.getSession(sessionId))?.verificationObservation).toEqual({
-        executionId,
+  it('rejects a duplicate vote ID without changing vote or bulletin indexes', async () => {
+    const voteId = generateVoteId();
+    await store.addVote(sessionId, buildVote('A', 'a', voteId));
+    const before = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+
+    await expect(store.addVote(sessionId, buildVote('B', 'b', voteId))).rejects.toThrow('Vote ID already exists');
+
+    const after = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+    expect(after.votes).toEqual(before.votes);
+    expect(after.bulletin.getSize()).toBe(1);
+    expect(after.bulletinRootHistory).toEqual(before.bulletinRootHistory);
+    expect(after.userParticipation).toEqual({ status: 'cast', voteIndex: 0 });
+  });
+
+  it('records one verification observation per current finalization idempotently', async () => {
+    const finalizationId = 'verification-observation';
+    await succeed(finalizationId);
+
+    await expect(
+      store.recordVerificationObservation(sessionId, finalizationId, {
         fingerprint: 'a'.repeat(64),
-        observedAt: 1_750_000_000_000,
-      });
-    });
-
-    it('rejects a verification observation for a stale execution', async () => {
-      const executionId = 'exec-verification-observation-current';
-      await store.finalizeSession(
-        sessionId,
-        createStoredFinalizationResult(executionId),
-        resolveCurrentContractGeneration(),
-        executionId,
-      );
-
-      await expect(
-        store.recordVerificationObservation(sessionId, {
-          executionId: 'exec-verification-observation-stale',
-          fingerprint: 'c'.repeat(64),
-          observedAt: 1_750_000_000_000,
-        }),
-      ).resolves.toEqual({ status: 'conflict', reason: 'execution_mismatch' });
-      expect((await store.getSession(sessionId))?.verificationObservation).toBeUndefined();
-    });
-
-    it('persists proof-bundle delivery metadata without requiring locators on pure authority', async () => {
-      const authority = buildFinalizationResultFromJournal({
-        journal: createTestJournal(),
-        imageId: '0x' + '1'.repeat(64),
-      });
-      authority.verificationResult = {
-        status: 'success',
-      };
-      const keys = buildFinalizationArtifactS3Keys(sessionId, 'exec-1');
-      await store.recordAwsProofBundlePublication(sessionId, 'exec-1', {
-        s3BundleKey: keys.bundleS3Key,
-        s3ReportKey: keys.reportS3Key,
-        s3UploadedAt: '2026-01-01T00:00:00.000Z',
-      });
-
-      await store.finalizeSession(sessionId, authority, resolveCurrentContractGeneration(), 'exec-1');
-
-      expect(Object.hasOwn(authority.verificationResult, 'executionId')).toBe(false);
-      expect(Object.hasOwn(authority.verificationResult, 's3BundleKey')).toBe(false);
-      const session = await store.getSession(sessionId);
-      const persisted = parseAwsPersistedFinalizationResult(session?.finalizationResult);
-      expect(persisted).toMatchObject({
-        verificationExecutionId: 'exec-1',
-        s3BundleKey: keys.bundleS3Key,
-        s3UploadedAt: '2026-01-01T00:00:00.000Z',
-        verificationResult: {
-          status: 'success',
-          executionId: 'exec-1',
-          s3BundleKey: keys.bundleS3Key,
-          s3ReportKey: keys.reportS3Key,
-          s3UploadedAt: '2026-01-01T00:00:00.000Z',
-        },
-      });
-    });
-
-    it('seeds the finalization contract generation when scenario context is persisted before queueing', async () => {
-      const executionId = 'ulid-queue-after-context';
-      const queuedAt = 1730000000000;
-
-      await store.markFinalizationQueued(sessionId, {
-        executionId,
-        queuedAt,
-        contractGeneration: resolveCurrentContractGeneration(),
-        scenarioContext: {
-          scenarios: ['S2'],
-          tamperMode: 'claim',
-          claimedCounts: { A: 0, B: 2, C: 1, D: 0, E: 0 },
-          claimedTotalVotes: 3,
-          summary: {
-            ignoredCount: 0,
-            recountedCount: 1,
-            userRecountChoice: 'B',
-          },
-        },
-      });
-
-      const session = await store.getSession(sessionId);
-      expect(session?.finalizationContractGeneration).toBe(resolveCurrentContractGeneration());
-      expect(session?.finalizationState).toEqual({
-        status: 'pending',
-        executionId,
-        queuedAt,
-      });
-      expect(session?.finalizationScenarioContext).toEqual({
-        scenarios: ['S2'],
-        tamperMode: 'claim',
-        claimedCounts: { A: 0, B: 2, C: 1, D: 0, E: 0 },
-        claimedTotalVotes: 3,
-        summary: {
-          ignoredCount: 0,
-          recountedCount: 1,
-          userRecountChoice: 'B',
-        },
-      });
-    });
-
-    it('records queued → running → succeeded transitions with metadata', async () => {
-      const executionId = 'ulid-01HVN5WA1CEH94868G90QGJ7HX';
-      const queuedAt = 1730000000000;
-      const startedAt = queuedAt + 1_000;
-      const completedAt = startedAt + 360_000;
-      const journal = createTestJournal();
-      const finalizationResult = createStoredFinalizationResult(executionId, journal);
-      const keys = buildFinalizationArtifactS3Keys(sessionId, executionId);
-
-      await store.markFinalizationQueued(sessionId, {
-        executionId,
-        queuedAt,
-        contractGeneration: resolveCurrentContractGeneration(),
-      });
-
-      let session = await store.getSession(sessionId);
-      expect(session?.finalizationState).toEqual({
-        status: 'pending',
-        executionId,
-        queuedAt,
-      });
-
-      await store.markAwsFinalizationRunning(sessionId, {
-        executionId,
-        queuedAt,
-        startedAt,
-        contractGeneration: resolveCurrentContractGeneration(),
-        stepFunctionsArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:ProverDispatcher:exec-001',
-      });
-
-      session = await store.getSession(sessionId);
-      expect(session?.finalizationState).toEqual({
-        status: 'running',
-        executionId,
-        queuedAt,
-        startedAt,
-        stepFunctionsArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:ProverDispatcher:exec-001',
-      });
-
-      await store.markAwsFinalizationSucceeded(sessionId, {
-        executionId,
-        queuedAt,
-        startedAt,
-        completedAt,
-        contractGeneration: resolveCurrentContractGeneration(),
-        bundleMetadata: {
-          s3BundleKey: keys.bundleS3Key,
-          s3UploadedAt: '2025-10-26T12:34:56.000Z',
-        },
-        stepFunctionsArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:ProverDispatcher:exec-001',
-        finalizationResult,
-      });
-
-      session = await store.getSession(sessionId);
-      expect(session?.finalizationState).toEqual({
-        status: 'succeeded',
-        executionId,
-        queuedAt,
-        startedAt,
-        completedAt,
-        bundleMetadata: {
-          s3BundleKey: keys.bundleS3Key,
-          s3UploadedAt: '2025-10-26T12:34:56.000Z',
-        },
-        stepFunctionsArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:ProverDispatcher:exec-001',
-      });
-      expect(session?.finalized).toBe(true);
-      expect(parseAwsPersistedFinalizationResult(session?.finalizationResult)).toMatchObject({
-        verificationExecutionId: executionId,
-        s3BundleKey: keys.bundleS3Key,
-        s3UploadedAt: '2025-10-26T12:34:56.000Z',
-      });
-    });
-
-    it('keeps AWS-runtime running state when competing stale executions arrive', async () => {
-      const executionId = 'exec-winning';
-      const queuedAt = 1730000000000;
-      const startedAt = queuedAt + 1_000;
-      const contractGeneration = resolveCurrentContractGeneration();
-      const stepFunctionsArn = 'arn:aws:states:ap-northeast-1:123456789012:execution:ProverDispatcher:exec-winning';
-      const expectedRunningState = {
-        status: 'running' as const,
-        executionId,
-        queuedAt,
-        startedAt,
-        stepFunctionsArn,
-      };
-
-      await store.markFinalizationQueued(sessionId, {
-        executionId,
-        queuedAt,
-        contractGeneration,
-      });
-      await store.markAwsFinalizationRunning(sessionId, {
-        executionId,
-        queuedAt,
-        startedAt,
-        contractGeneration,
-        stepFunctionsArn,
-      });
-
-      await expect(
-        store.markFinalizationQueued(sessionId, {
-          executionId: 'exec-stale-queued',
-          queuedAt: queuedAt - 5_000,
-          contractGeneration,
-        }),
-      ).resolves.toEqual(expectedRunningState);
-      await expect(
-        store.markAwsFinalizationRunning(sessionId, {
-          executionId: 'exec-stale-running',
-          queuedAt: queuedAt - 4_000,
-          startedAt: startedAt - 4_000,
-          contractGeneration,
-          stepFunctionsArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:ProverDispatcher:exec-stale-running',
-        }),
-      ).resolves.toEqual(expectedRunningState);
-      await expect(
-        store.markFinalizationRunning(sessionId, {
-          executionId: 'exec-stale-pure-running',
-          queuedAt: queuedAt - 3_000,
-          startedAt: startedAt - 3_000,
-          contractGeneration,
-        }),
-      ).resolves.toEqual(expectedRunningState);
-      await expect(
-        store.markAwsFinalizationSucceeded(sessionId, {
-          executionId: 'exec-stale-succeeded',
-          queuedAt: queuedAt - 2_000,
-          startedAt: startedAt - 2_000,
-          completedAt: startedAt + 2_000,
-          contractGeneration,
-          finalizationResult: createStoredFinalizationResult('exec-stale-succeeded'),
-        }),
-      ).resolves.toEqual(expectedRunningState);
-      await expect(
-        store.markAwsFinalizationFailed(sessionId, {
-          executionId: 'exec-stale-failed',
-          queuedAt: queuedAt - 1_000,
-          startedAt: startedAt - 1_000,
-          failedAt: startedAt + 3_000,
-          contractGeneration,
-          error: { code: 'STALE_EXECUTION', message: 'stale execution failed after winner started' },
-        }),
-      ).resolves.toEqual(expectedRunningState);
-      await expect(
-        store.markAwsFinalizationTimedOut(sessionId, {
-          executionId: 'exec-stale-timeout',
-          queuedAt: queuedAt - 500,
-          startedAt: startedAt - 500,
-          timeoutAt: startedAt + 4_000,
-          contractGeneration,
-        }),
-      ).resolves.toEqual(expectedRunningState);
-
-      const session = await store.getSession(sessionId);
-      expect(session?.finalizationState).toEqual(expectedRunningState);
-      expect(session?.finalized).toBe(false);
-      expect(session?.finalizationResult).toBeUndefined();
-    });
-
-    it('keeps USER_CANCELLED failed state when a running transition with the same executionId arrives later', async () => {
-      const executionId = 'exec-cancelled-sticky';
-      const queuedAt = 1730000000000;
-      const failedAt = queuedAt + 2_000;
-      const contractGeneration = resolveCurrentContractGeneration();
-      const expectedFailedState = {
-        status: 'failed' as const,
-        executionId,
-        queuedAt,
-        failedAt,
-        error: { code: 'USER_CANCELLED', message: 'User cancelled finalization' },
-      };
-
-      await store.markFinalizationQueued(sessionId, {
-        executionId,
-        queuedAt,
-        contractGeneration,
-      });
-      await store.markAwsFinalizationFailed(sessionId, {
-        executionId,
-        queuedAt,
-        failedAt,
-        contractGeneration,
-        error: expectedFailedState.error,
-      });
-
-      const nextState = await store.markAwsFinalizationRunning(sessionId, {
-        executionId,
-        queuedAt,
-        startedAt: failedAt + 1_000,
-        contractGeneration,
-        stepFunctionsArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:ProverDispatcher:exec-cancelled',
-      });
-
-      const session = await store.getSession(sessionId);
-      expect(nextState).toEqual(expectedFailedState);
-      expect(session?.finalizationState).toEqual(expectedFailedState);
-      expect(session?.finalized).toBe(false);
-      expect(session?.finalizationResult).toBeUndefined();
-    });
-
-    it('keeps terminal finalization states when same-executionId lifecycle transitions arrive later', async () => {
-      const executionId = 'exec-terminal-sticky';
-      const queuedAt = 1730000000000;
-      const startedAt = queuedAt + 1_000;
-      const completedAt = startedAt + 1_000;
-      const failedAt = startedAt + 2_000;
-      const timeoutAt = startedAt + 3_000;
-      const contractGeneration = resolveCurrentContractGeneration();
-
-      const terminalSetups = [
-        {
-          status: 'succeeded',
-          setup: async (targetSessionId: string) => {
-            await store.markFinalizationQueued(targetSessionId, {
-              executionId,
-              queuedAt,
-              contractGeneration,
-            });
-            return store.markAwsFinalizationSucceeded(targetSessionId, {
-              executionId,
-              queuedAt,
-              startedAt,
-              completedAt,
-              contractGeneration,
-              finalizationResult: createStoredFinalizationResult(executionId),
-            });
-          },
-          expectSideEffects: async (targetSessionId: string) => {
-            const session = await store.getSession(targetSessionId);
-            expect(session?.finalized).toBe(true);
-            expect(getVerificationExecutionId(session?.finalizationResult)).toBe(executionId);
-          },
-        },
-        {
-          status: 'failed',
-          setup: async (targetSessionId: string) => {
-            await store.markFinalizationQueued(targetSessionId, {
-              executionId,
-              queuedAt,
-              contractGeneration,
-            });
-            return store.markAwsFinalizationFailed(targetSessionId, {
-              executionId,
-              queuedAt,
-              failedAt,
-              contractGeneration,
-              error: { code: 'USER_CANCELLED', message: 'User cancelled finalization' },
-            });
-          },
-          expectSideEffects: async (targetSessionId: string) => {
-            const session = await store.getSession(targetSessionId);
-            expect(session?.finalized).toBe(false);
-            expect(session?.finalizationResult).toBeUndefined();
-          },
-        },
-        {
-          status: 'timeout',
-          setup: async (targetSessionId: string) => {
-            await store.markFinalizationQueued(targetSessionId, {
-              executionId,
-              queuedAt,
-              contractGeneration,
-            });
-            return store.markAwsFinalizationTimedOut(targetSessionId, {
-              executionId,
-              queuedAt,
-              startedAt,
-              timeoutAt,
-              contractGeneration,
-            });
-          },
-          expectSideEffects: async (targetSessionId: string) => {
-            const session = await store.getSession(targetSessionId);
-            expect(session?.finalized).toBe(false);
-            expect(session?.finalizationResult).toBeUndefined();
-          },
-        },
-      ];
-      const transitionAttempts: Array<{ name: string; run: (targetSessionId: string) => Promise<unknown> }> = [
-        {
-          name: 'pure queued',
-          run: (targetSessionId) =>
-            store.markFinalizationQueued(targetSessionId, {
-              executionId,
-              queuedAt: queuedAt + 10_000,
-              contractGeneration,
-            }),
-        },
-        {
-          name: 'pure running',
-          run: (targetSessionId) =>
-            store.markFinalizationRunning(targetSessionId, {
-              executionId,
-              queuedAt,
-              startedAt: startedAt + 10_000,
-              contractGeneration,
-            }),
-        },
-        {
-          name: 'AWS running',
-          run: (targetSessionId) =>
-            store.markAwsFinalizationRunning(targetSessionId, {
-              executionId,
-              queuedAt,
-              startedAt: startedAt + 20_000,
-              contractGeneration,
-              stepFunctionsArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:ProverDispatcher:exec-running',
-            }),
-        },
-        {
-          name: 'pure succeeded',
-          run: (targetSessionId) =>
-            store.markFinalizationSucceeded(targetSessionId, {
-              executionId,
-              queuedAt,
-              startedAt,
-              completedAt: completedAt + 10_000,
-              contractGeneration,
-              finalizationResult: createStoredFinalizationResult(executionId),
-            }),
-        },
-        {
-          name: 'AWS succeeded',
-          run: (targetSessionId) =>
-            store.markAwsFinalizationSucceeded(targetSessionId, {
-              executionId,
-              queuedAt,
-              startedAt,
-              completedAt: completedAt + 20_000,
-              contractGeneration,
-              finalizationResult: createStoredFinalizationResult(executionId),
-            }),
-        },
-        {
-          name: 'pure failed',
-          run: (targetSessionId) =>
-            store.markFinalizationFailed(targetSessionId, {
-              executionId,
-              queuedAt,
-              startedAt,
-              failedAt: failedAt + 10_000,
-              contractGeneration,
-              error: { code: 'LATE_FAILURE', message: 'late pure failure' },
-            }),
-        },
-        {
-          name: 'AWS failed',
-          run: (targetSessionId) =>
-            store.markAwsFinalizationFailed(targetSessionId, {
-              executionId,
-              queuedAt,
-              startedAt,
-              failedAt: failedAt + 20_000,
-              contractGeneration,
-              error: { code: 'USER_CANCELLED', message: 'late cancellation' },
-            }),
-        },
-        {
-          name: 'pure timeout',
-          run: (targetSessionId) =>
-            store.markFinalizationTimedOut(targetSessionId, {
-              executionId,
-              queuedAt,
-              startedAt,
-              timeoutAt: timeoutAt + 10_000,
-              contractGeneration,
-            }),
-        },
-        {
-          name: 'AWS timeout',
-          run: (targetSessionId) =>
-            store.markAwsFinalizationTimedOut(targetSessionId, {
-              executionId,
-              queuedAt,
-              startedAt,
-              timeoutAt: timeoutAt + 20_000,
-              contractGeneration,
-            }),
-        },
-      ];
-
-      for (const terminalSetup of terminalSetups) {
-        for (const transitionAttempt of transitionAttempts) {
-          const targetSession = await store.createSession();
-          const expectedTerminalState = await terminalSetup.setup(targetSession.sessionId);
-
-          const nextState = await transitionAttempt.run(targetSession.sessionId);
-
-          await terminalSetup.expectSideEffects(targetSession.sessionId);
-          const session = await store.getSession(targetSession.sessionId);
-          expect(nextState, `${terminalSetup.status} should ignore ${transitionAttempt.name}`).toEqual(
-            expectedTerminalState,
-          );
-          expect(session?.finalizationState).toEqual(expectedTerminalState);
-        }
-      }
-    });
-
-    it('does not apply success side effects when same-executionId success arrives after failure', async () => {
-      const executionId = 'exec-failed-then-success';
-      const queuedAt = 1730000000000;
-      const startedAt = queuedAt + 1_000;
-      const failedAt = startedAt + 1_000;
-      const completedAt = failedAt + 1_000;
-      const contractGeneration = resolveCurrentContractGeneration();
-
-      await store.markFinalizationQueued(sessionId, {
-        executionId,
-        queuedAt,
-        contractGeneration,
-      });
-      const expectedFailedState = await store.markAwsFinalizationFailed(sessionId, {
-        executionId,
-        queuedAt,
-        startedAt,
-        failedAt,
-        contractGeneration,
-        error: { code: 'USER_CANCELLED', message: 'User cancelled finalization' },
-      });
-
-      const nextState = await store.markAwsFinalizationSucceeded(sessionId, {
-        executionId,
-        queuedAt,
-        startedAt,
-        completedAt,
-        contractGeneration,
-        finalizationResult: createStoredFinalizationResult(executionId),
-      });
-
-      const session = await store.getSession(sessionId);
-      expect(session?.finalized).toBe(false);
-      expect(session?.finalizationResult).toBeUndefined();
-      expect(nextState).toEqual(expectedFailedState);
-      expect(session?.finalizationState).toEqual(expectedFailedState);
-    });
-
-    it('rejects widened pure lifecycle payloads that include AWS runtime metadata', async () => {
-      const executionId = 'exec-pure-runtime-metadata';
-      const queuedAt = 1730000000000;
-      const startedAt = queuedAt + 1_000;
-      const completedAt = startedAt + 2_000;
-      const stepFunctionsArn = 'arn:aws:states:ap-northeast-1:123456789012:execution:ProverDispatcher:exec-pure';
-      const finalizationResult = createStoredFinalizationResult(executionId);
-
-      await store.markFinalizationQueued(sessionId, {
-        executionId,
-        queuedAt,
-        contractGeneration: resolveCurrentContractGeneration(),
-      });
-
-      const runningPayload = {
-        executionId,
-        queuedAt,
-        startedAt,
-        contractGeneration: resolveCurrentContractGeneration(),
-        stepFunctionsArn,
-      };
-      await expect(store.markFinalizationRunning(sessionId, runningPayload)).rejects.toThrow(
-        'Pure finalization lifecycle methods do not accept AWS runtime metadata',
-      );
-
-      const succeededPayload = {
-        executionId,
-        queuedAt,
-        startedAt,
-        completedAt,
-        contractGeneration: resolveCurrentContractGeneration(),
-        finalizationResult,
-        bundleMetadata: {
-          s3BundleKey: 'sessions/abc/execution-1/bundle.zip',
-          s3UploadedAt: '2025-10-26T12:34:56.000Z',
-        },
-        stepFunctionsArn,
-      };
-      await expect(store.markFinalizationSucceeded(sessionId, succeededPayload)).rejects.toThrow(
-        'Pure finalization lifecycle methods do not accept AWS runtime metadata',
-      );
-
-      const failedPayload = {
-        executionId,
-        queuedAt,
-        startedAt,
-        failedAt: completedAt,
-        contractGeneration: resolveCurrentContractGeneration(),
-        error: { code: 'TEST_FAILURE', message: 'failed during metadata boundary test' },
-        stepFunctionsArn,
-      };
-      await expect(store.markFinalizationFailed(sessionId, failedPayload)).rejects.toThrow(
-        'Pure finalization lifecycle methods do not accept AWS runtime metadata',
-      );
-
-      const timedOutPayload = {
-        executionId,
-        queuedAt,
-        startedAt,
-        timeoutAt: completedAt,
-        contractGeneration: resolveCurrentContractGeneration(),
-        stepFunctionsArn,
-      };
-      await expect(store.markFinalizationTimedOut(sessionId, timedOutPayload)).rejects.toThrow(
-        'Pure finalization lifecycle methods do not accept AWS runtime metadata',
-      );
-
-      const session = await store.getSession(sessionId);
-      expect(session?.finalizationState).toEqual({
-        status: 'pending',
-        executionId,
-        queuedAt,
-      });
-    });
-
-    it('prevents stale execution updates via idempotency guard', async () => {
-      const executionId = 'ulid-01HVN5WA1CEH94868G90QGJ7HX';
-
-      await store.markFinalizationQueued(sessionId, {
-        executionId,
-        queuedAt: 1730000000000,
-        contractGeneration: resolveCurrentContractGeneration(),
-      });
-
-      await store.markFinalizationRunning(sessionId, {
-        executionId,
-        queuedAt: 1730000000000,
-        startedAt: 1730000005000,
-        contractGeneration: resolveCurrentContractGeneration(),
-      });
-
-      // Attempt to overwrite with a different executionId should be ignored
-      await store.markFinalizationQueued(sessionId, {
-        executionId: 'ulid-older',
-        queuedAt: 1720000000000,
-        contractGeneration: resolveCurrentContractGeneration(),
-      });
-
-      const session = await store.getSession(sessionId);
-      expect(session?.finalizationState).toEqual({
-        status: 'running',
-        executionId,
-        queuedAt: 1730000000000,
-        startedAt: 1730000005000,
-      });
-    });
-
-    it('ignores duplicate terminal verification completion for the same execution', async () => {
-      const executionId = 'exec-verification-terminal';
-
-      await store.finalizeSession(
-        sessionId,
-        createStoredFinalizationResult(executionId),
-        resolveCurrentContractGeneration(),
-        executionId,
-      );
-      await store.markVerificationRunning(sessionId, { executionId });
-      await store.completeVerificationResult(sessionId, {
-        executionId,
-        verificationResult: { status: 'success' },
-      });
-      await store.completeVerificationResult(sessionId, {
-        executionId,
-        verificationResult: { status: 'failed' },
-      });
-
-      const session = await store.getSession(sessionId);
-      const finalizationResult = parseAwsPersistedFinalizationResult(session?.finalizationResult);
-      expect(finalizationResult?.verificationResult).toMatchObject({
-        status: 'success',
-        executionId,
-      });
-    });
-
-    it('ignores stale verification completion for a superseded execution', async () => {
-      const executionId = 'exec-verification-current';
-
-      await store.finalizeSession(
-        sessionId,
-        createStoredFinalizationResult(executionId),
-        resolveCurrentContractGeneration(),
-        executionId,
-      );
-      await store.markVerificationRunning(sessionId, { executionId });
-      await store.completeVerificationResult(sessionId, {
-        executionId: 'exec-verification-stale',
-        verificationResult: { status: 'failed' },
-      });
-
-      const session = await store.getSession(sessionId);
-      const finalizationResult = parseAwsPersistedFinalizationResult(session?.finalizationResult);
-      expect(finalizationResult?.verificationResult).toMatchObject({
-        status: 'running',
-        executionId,
-      });
-    });
-
-    it('fails closed when async writes carry a stale contract generation', async () => {
-      const executionId = 'ulid-01HVN5WA1CEH94868G90QGJ7HX';
-      const queuedAt = 1730000000000;
-
-      await store.markFinalizationQueued(sessionId, {
-        executionId,
-        queuedAt,
-        contractGeneration: 'stale-contract-generation',
-      });
-
-      const session = await store.getSession(sessionId);
-      expect(session?.finalizationState).toMatchObject({
-        status: 'failed',
-        executionId,
-        queuedAt,
-        error: {
-          code: 'UNSUPPORTED_CURRENT_ARTIFACT',
-        },
-      });
-      expect(session?.finalized).toBe(false);
-      expect(resolveSessionFinalizationArtifactState(session ?? { finalized: false })).toBe(
-        'unsupported_current_artifact',
-      );
-    });
-
-    it('rejects finalization writes that carry a foreign bundle locator', async () => {
-      const executionId = 'exec-foreign-bundle';
-
-      await expect(
-        store.finalizeSession(
-          sessionId,
-          {
-            ...createStoredFinalizationResult(executionId, createTestJournal()),
-            s3BundleKey: 'sessions/other-session/other-exec/bundle.zip',
-          } as ReturnType<typeof createStoredFinalizationResult>,
-          resolveCurrentContractGeneration(),
-          executionId,
-        ),
-      ).rejects.toThrow(CorruptOrUnreadableFinalizedStateBoundaryError);
-    });
-
-    it('treats the persisted wrapper generation as authoritative after the branch exists', async () => {
-      const executionId = 'ulid-wrapper-stale';
-      const queuedAt = 1730000000000;
-
-      await store.markFinalizationQueued(sessionId, {
-        executionId,
-        queuedAt,
-        contractGeneration: resolveCurrentContractGeneration(),
-      });
-
-      const session = await store.getSession(sessionId);
-      if (!session) {
-        throw new Error('Expected session to exist');
-      }
-      session.finalizationContractGeneration = 'stale-contract-generation';
-
-      const nextState = await store.markFinalizationRunning(sessionId, {
-        executionId,
-        queuedAt,
-        startedAt: queuedAt + 1000,
-        contractGeneration: resolveCurrentContractGeneration(),
-      });
-
-      expect(nextState).toMatchObject({
-        status: 'failed',
-        executionId,
-        queuedAt,
-        error: {
-          code: 'UNSUPPORTED_CURRENT_ARTIFACT',
-        },
-      });
-
-      const updated = await store.getSession(sessionId);
-      expect(updated?.finalizationArtifactState).toBe('unsupported_current_artifact');
-      expect(updated?.finalizationState).toMatchObject({
-        status: 'failed',
-        executionId,
-        queuedAt,
-      });
-      expect(resolveSessionFinalizationArtifactState(updated ?? { finalized: false })).toBe(
-        'unsupported_current_artifact',
-      );
-    });
-
-    it('converges stale branches before returning early on executionId mismatch', async () => {
-      const queuedAt = 1730000000000;
-
-      await store.markFinalizationQueued(sessionId, {
-        executionId: 'exec-original',
-        queuedAt,
-        contractGeneration: resolveCurrentContractGeneration(),
-      });
-
-      const session = await store.getSession(sessionId);
-      if (!session) {
-        throw new Error('Expected session to exist');
-      }
-      session.finalizationContractGeneration = 'stale-contract-generation';
-
-      const nextState = await store.markFinalizationRunning(sessionId, {
-        executionId: 'exec-new',
-        queuedAt: queuedAt + 5000,
-        startedAt: queuedAt + 6000,
-        contractGeneration: resolveCurrentContractGeneration(),
-      });
-
-      expect(nextState).toMatchObject({
-        status: 'failed',
-        executionId: 'exec-original',
-        queuedAt,
-        error: {
-          code: 'UNSUPPORTED_CURRENT_ARTIFACT',
-        },
-      });
-
-      const updated = await store.getSession(sessionId);
-      expect(updated?.finalizationArtifactState).toBe('unsupported_current_artifact');
-      expect(updated?.finalizationState).toMatchObject({
-        status: 'failed',
-        executionId: 'exec-original',
-        queuedAt,
-      });
-    });
-
-    it('rejects write-side updates against a corrupt finalization branch', async () => {
-      const session = await store.getSession(sessionId);
-      if (!session) {
-        throw new Error('Expected session to exist');
-      }
-
-      session.finalizationState = admitAwsPersistedFinalizationStateBranch({
-        status: 'pending',
-        executionId: 'exec-corrupt-branch',
-        queuedAt: 1730000000000,
-      });
-      delete session.finalizationContractGeneration;
-
-      const journal = createTestJournal();
-      await expect(
-        store.finalizeSession(
-          sessionId,
-          {
-            tally: {
-              counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
-              totalVotes: 1,
-              tamperedCount: 0,
-            },
-            imageId: '0x' + '1'.repeat(64),
-            journal,
-          },
-          resolveCurrentContractGeneration(),
-          'exec-corrupt-write',
-        ),
-      ).rejects.toMatchObject({
-        code: 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE',
-        artifactState: 'corrupt_or_unreadable',
-      });
-    });
-
-    it('allows backfill repairs to clear a stale finalization tombstone', async () => {
-      const executionId = 'ulid-repair-stale';
-      const queuedAt = 1730000000000;
-
-      await store.markFinalizationQueued(sessionId, {
-        executionId,
-        queuedAt,
-        contractGeneration: resolveCurrentContractGeneration(),
-      });
-
-      const session = await store.getSession(sessionId);
-      if (!session) {
-        throw new Error('Expected session to exist');
-      }
-      session.finalizationContractGeneration = 'stale-contract-generation';
-      session.finalizationArtifactState = 'unsupported_current_artifact';
-
-      await store.updateFinalizationArtifactMetadata(sessionId, {
-        finalizationContractGeneration: resolveCurrentContractGeneration(),
-      });
-
-      const repaired = await store.getSession(sessionId);
-      expect(repaired?.finalizationContractGeneration).toBe(resolveCurrentContractGeneration());
-      expect(repaired?.finalizationArtifactState).toBeUndefined();
-      expect(resolveSessionFinalizationArtifactState(repaired ?? { finalized: false })).toBe('supported');
-    });
-
-    it('does not publish receipts or consume board indexes for stale finalization publication attempts', async () => {
-      await store.updateFinalizationArtifactMetadata(sessionId, {
-        finalizationContractGeneration: 'stale-contract-generation',
-      });
-
-      await expect(
-        store.finalizeSessionWithReceiptPublication(
-          sessionId,
-          createStoredFinalizationResult('exec-stale'),
-          resolveCurrentContractGeneration(),
-          { receipt: '{"receipt":"stale"}', timestamp: 1000 },
-          'exec-stale',
-        ),
-      ).rejects.toThrow(UnsupportedCurrentArtifactBoundaryError);
-
-      let session = await store.getSession(sessionId);
-      expect(session?.finalized).toBe(false);
-      expect(session?.finalizationResult).toBeUndefined();
-
-      const nextSession = await store.createSession();
-      const publication = await store.finalizeSessionWithReceiptPublication(
-        nextSession.sessionId,
-        createStoredFinalizationResult('exec-current'),
-        resolveCurrentContractGeneration(),
-        { receipt: '{"receipt":"current"}', timestamp: 2000 },
-        'exec-current',
-      );
-
-      expect(publication.boardIndex).toBe(100);
-      session = await store.getSession(nextSession.sessionId);
-      const finalizationResult = parseAwsPersistedFinalizationResult(session?.finalizationResult);
-      expect(getVerificationExecutionId(session?.finalizationResult)).toBe('exec-current');
-      expect(finalizationResult?.receiptPublication).toMatchObject({
-        boardIndex: 100,
-        timestamp: 2000,
-      });
-    });
-
-    it('does not publish receipts or consume board indexes for corrupt finalization publication attempts', async () => {
-      await store.updateFinalizationArtifactMetadata(sessionId, {
-        finalizationArtifactState: 'corrupt_or_unreadable',
-      });
-
-      await expect(
-        store.finalizeSessionWithReceiptPublication(
-          sessionId,
-          createStoredFinalizationResult('exec-corrupt'),
-          resolveCurrentContractGeneration(),
-          { receipt: '{"receipt":"corrupt"}', timestamp: 1000 },
-          'exec-corrupt',
-        ),
-      ).rejects.toThrow(CorruptOrUnreadableFinalizedStateBoundaryError);
-
-      const session = await store.getSession(sessionId);
-      expect(session?.finalized).toBe(false);
-      expect(session?.finalizationResult).toBeUndefined();
-      if (!session) {
-        throw new Error('Expected session to exist');
-      }
-      delete session.finalizationArtifactState;
-
-      const publication = await store.finalizeSessionWithReceiptPublication(
-        sessionId,
-        createStoredFinalizationResult('exec-current-after-corrupt'),
-        resolveCurrentContractGeneration(),
-        { receipt: '{"receipt":"current"}', timestamp: 2000 },
-        'exec-current-after-corrupt',
-      );
-
-      expect(publication.boardIndex).toBe(100);
-      const finalizationResult = parseAwsPersistedFinalizationResult(session.finalizationResult);
-      expect(getVerificationExecutionId(session.finalizationResult)).toBe('exec-current-after-corrupt');
-      expect(finalizationResult?.receiptPublication).toMatchObject({
-        boardIndex: 100,
-        timestamp: 2000,
-      });
-    });
-
-    it('rejects finalization metadata writes through updateSession', async () => {
-      await expect(
-        store.updateSession(sessionId, {
-          finalizationArtifactState: 'corrupt_or_unreadable',
-        } as Parameters<MockSessionStore['updateSession']>[1]),
-      ).rejects.toThrow('dedicated store capability');
-    });
-
-    it('rejects vote and CT writes through updateSession', async () => {
-      await expect(
-        store.updateSession(sessionId, {
-          votes: new Map(),
-        } as Parameters<MockSessionStore['updateSession']>[1]),
-      ).rejects.toThrow('dedicated store capability');
-      await expect(
-        store.updateSession(sessionId, {
-          userVoteIndex: 0,
-        } as Parameters<MockSessionStore['updateSession']>[1]),
-      ).rejects.toThrow('dedicated store capability');
+        observedAt: 100,
+      }),
+    ).resolves.toEqual({ status: 'recorded' });
+    await expect(
+      store.recordVerificationObservation(sessionId, finalizationId, {
+        fingerprint: 'a'.repeat(64),
+        observedAt: 101,
+      }),
+    ).resolves.toEqual({ status: 'idempotent' });
+    await expect(
+      store.recordVerificationObservation(sessionId, finalizationId, {
+        fingerprint: 'b'.repeat(64),
+        observedAt: 102,
+      }),
+    ).resolves.toEqual({ status: 'conflict', reason: 'fingerprint_mismatch' });
+    expect(store.getVerificationObservation(sessionId, finalizationId)).toEqual({
+      finalizationId,
+      fingerprint: 'a'.repeat(64),
+      observedAt: 100,
     });
   });
 
-  it('does not refresh lastActivity on read-only getSession calls', async () => {
-    const session = await store.getSession(sessionId);
-    if (!session) {
-      throw new Error('Expected session to exist');
+  it('rejects a verification observation for a stale finalization', async () => {
+    await succeed('verification-current');
+
+    await expect(
+      store.recordVerificationObservation(sessionId, 'verification-stale', {
+        fingerprint: 'c'.repeat(64),
+        observedAt: 100,
+      }),
+    ).resolves.toEqual({ status: 'conflict', reason: 'finalization_mismatch' });
+    expect(store.getVerificationObservation(sessionId, 'verification-stale')).toBeNull();
+  });
+
+  it('persists proof-bundle delivery metadata outside pure finalization authority', async () => {
+    await store.recordAwsProofBundlePublication(sessionId, 'delivery-separate', {
+      s3BundleKey: `sessions/${sessionId}/delivery-separate/bundle.zip`,
+      s3ReportKey: `sessions/${sessionId}/delivery-separate/verification.json`,
+      s3UploadedAtMs: 35,
+    });
+
+    expect(await store.getCurrentFinalizationRecord(sessionId)).toBeNull();
+    expect(await store.getAwsVerificationDeliveryMetadata(sessionId, 'delivery-separate')).toEqual({
+      s3BundleKey: `sessions/${sessionId}/delivery-separate/bundle.zip`,
+      s3ReportKey: `sessions/${sessionId}/delivery-separate/verification.json`,
+      s3UploadedAtMs: 35,
+    });
+  });
+
+  it('deletes staged delivery metadata when an expired session is evicted', async () => {
+    const finalizationId = 'expired-delivery';
+    await store.recordAwsProofBundlePublication(sessionId, finalizationId, {
+      s3BundleKey: `sessions/${sessionId}/${finalizationId}/bundle.zip`,
+      s3UploadedAtMs: 35,
+    });
+    const voting = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+    getPrivateMap<SessionVotingRecord>(store, 'votingRecords').set(sessionId, {
+      ...voting,
+      lastActivityMs: Date.now() - 5 * 60 * 1000 - 1,
+    });
+
+    await expect(store.getActiveSessionCount()).resolves.toBe(0);
+
+    await expect(store.getSessionIdentity(sessionId)).resolves.toBeNull();
+    await expect(store.getAwsVerificationDeliveryMetadata(sessionId, finalizationId)).resolves.toBeUndefined();
+  });
+
+  it('persists scenario context on queue without a contract generation', async () => {
+    const record = await store.markFinalizationQueued(sessionId, {
+      finalizationId: 'queue-context',
+      queuedAtMs: 10,
+      scenarioContext: {
+        ...scenarioContext,
+        scenarios: ['S2'],
+        tamperMode: 'claim',
+      },
+    });
+
+    expect(record).toMatchObject({
+      sessionId,
+      finalizationId: 'queue-context',
+      scenarioContext: {
+        scenarios: ['S2'],
+        tamperMode: 'claim',
+      },
+      state: {
+        status: 'pending',
+        finalizationId: 'queue-context',
+        queuedAtMs: 10,
+      },
+    });
+    expect(Object.hasOwn(record, 'contractGeneration')).toBe(false);
+  });
+
+  it('records queued to running to succeeded transitions with adapter metadata separate', async () => {
+    const finalizationId = 'transition-success';
+    await store.markFinalizationQueued(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      scenarioContext,
+    });
+    await store.markAwsFinalizationRunning(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      startedAtMs: 20,
+      stepFunctionsArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:test',
+    });
+    await store.markAwsFinalizationSucceeded(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      startedAtMs: 20,
+      completedAtMs: 30,
+      finalizationResult: buildResult(),
+      bundleMetadata: {
+        s3BundleKey: `sessions/${sessionId}/${finalizationId}/bundle.zip`,
+        s3UploadedAtMs: 31,
+      },
+    });
+
+    const record = requireValue(await store.getCurrentFinalizationRecord(sessionId), 'finalization');
+    expect(record.state.status).toBe('succeeded');
+    expect(record).not.toHaveProperty('stepFunctionsArn');
+    expect(record).not.toHaveProperty('bundleMetadata');
+    expect(record.finalizationResult).not.toHaveProperty('s3BundleKey');
+    expect(await store.getAwsFinalizationRuntimeMetadata(sessionId, finalizationId)).toEqual({
+      stepFunctionsArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:test',
+      bundleMetadata: {
+        s3BundleKey: `sessions/${sessionId}/${finalizationId}/bundle.zip`,
+        s3UploadedAtMs: 31,
+      },
+    });
+  });
+
+  it('keeps the current running state when a competing stale finalization arrives', async () => {
+    await store.markFinalizationQueued(sessionId, {
+      finalizationId: 'running-current',
+      queuedAtMs: 10,
+      scenarioContext,
+    });
+    await store.markAwsFinalizationRunning(sessionId, {
+      finalizationId: 'running-current',
+      queuedAtMs: 10,
+      startedAtMs: 20,
+    });
+
+    await expect(
+      store.markAwsFinalizationRunning(sessionId, {
+        finalizationId: 'running-stale',
+        queuedAtMs: 11,
+        startedAtMs: 21,
+        scenarioContext,
+        stepFunctionsArn: 'arn:stale',
+      }),
+    ).resolves.toMatchObject({ status: 'running', finalizationId: 'running-current' });
+    expect(await store.getAwsFinalizationRuntimeMetadata(sessionId, 'running-stale')).toBeUndefined();
+    consumeRejectedTransitionLogs({
+      finalizationId: 'running-stale',
+      reason: 'EXECUTION_MISMATCH',
+      to: 'running',
+    });
+  });
+
+  it('keeps USER_CANCELLED failed state when a running update arrives later', async () => {
+    const finalizationId = 'cancel-sticky';
+    await store.markFinalizationQueued(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      scenarioContext,
+    });
+    const failed = await store.markFinalizationFailed(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      failedAtMs: 20,
+      error: { code: 'USER_CANCELLED', message: 'Cancelled by user' },
+    });
+    const retried = await store.markFinalizationRunning(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      startedAtMs: 21,
+    });
+
+    expect(failed.state).toMatchObject({ status: 'failed', error: { code: 'USER_CANCELLED' } });
+    expect(retried).toEqual(failed);
+    consumeRejectedTransitionLogs({
+      finalizationId,
+      reason: 'USER_CANCELLED',
+      to: 'running',
+    });
+  });
+
+  it('keeps terminal finalization states sticky', async () => {
+    for (const status of ['succeeded', 'failed', 'timeout'] as const) {
+      const localStore = new MockSessionStore();
+      const localIdentity = await localStore.createSession();
+      const finalizationId = `terminal-${status}`;
+      if (status === 'succeeded') {
+        await localStore.markFinalizationSucceeded(localIdentity.sessionId, {
+          finalizationId,
+          queuedAtMs: 10,
+          startedAtMs: 20,
+          completedAtMs: 30,
+          scenarioContext,
+          finalizationResult: buildResult(),
+        });
+      } else if (status === 'failed') {
+        await localStore.markFinalizationFailed(localIdentity.sessionId, {
+          finalizationId,
+          queuedAtMs: 10,
+          failedAtMs: 30,
+          scenarioContext,
+          error: { code: 'FAILED', message: 'failure' },
+        });
+      } else {
+        await localStore.markFinalizationTimedOut(localIdentity.sessionId, {
+          finalizationId,
+          queuedAtMs: 10,
+          timeoutAtMs: 30,
+          scenarioContext,
+        });
+      }
+
+      const retried = await localStore.markFinalizationRunning(localIdentity.sessionId, {
+        finalizationId,
+        queuedAtMs: 10,
+        startedAtMs: 40,
+      });
+      expect(retried.state.status).toBe(status);
+    }
+    consumeRejectedTransitionLogs(
+      { finalizationId: 'terminal-succeeded', reason: 'TERMINAL_STATE_STICKY', to: 'running' },
+      { finalizationId: 'terminal-failed', reason: 'TERMINAL_STATE_STICKY', to: 'running' },
+      { finalizationId: 'terminal-timeout', reason: 'TERMINAL_STATE_STICKY', to: 'running' },
+    );
+  });
+
+  it('does not apply success side effects when success arrives after failure', async () => {
+    const finalizationId = 'failure-before-success';
+    await store.markFinalizationFailed(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      failedAtMs: 20,
+      scenarioContext,
+      error: { code: 'FAILED', message: 'failure' },
+    });
+
+    await expect(
+      store.markAwsFinalizationSucceeded(sessionId, {
+        finalizationId,
+        queuedAtMs: 10,
+        startedAtMs: 20,
+        completedAtMs: 30,
+        finalizationResult: buildResult(),
+        stepFunctionsArn: 'arn:late',
+        bundleMetadata: { s3BundleKey: 'late/bundle.zip', s3UploadedAtMs: 31 },
+      }),
+    ).resolves.toMatchObject({ status: 'failed' });
+    expect(await store.getAwsFinalizationRuntimeMetadata(sessionId, finalizationId)).toBeUndefined();
+    expect(await store.getAwsVerificationDeliveryMetadata(sessionId, finalizationId)).toBeUndefined();
+  });
+
+  it('rejects widened pure lifecycle payloads', async () => {
+    await expect(
+      store.markFinalizationQueued(sessionId, {
+        finalizationId: 'widened-queued',
+        queuedAtMs: 10,
+        scenarioContext,
+        contractGeneration: 'retired',
+      } as never),
+    ).rejects.toThrow('Invalid queued finalization payload');
+    await expect(
+      store.markFinalizationRunning(sessionId, {
+        finalizationId: 'widened-running',
+        queuedAtMs: 10,
+        startedAtMs: 20,
+        scenarioContext,
+        stepFunctionsArn: 'arn:not-pure',
+      } as never),
+    ).rejects.toThrow('Invalid running finalization payload');
+    await expect(
+      store.markFinalizationSucceeded(sessionId, {
+        finalizationId: 'widened-succeeded',
+        queuedAtMs: 10,
+        startedAtMs: 20,
+        completedAtMs: 30,
+        scenarioContext,
+        finalizationResult: buildResult(),
+        bundleMetadata: {},
+      } as never),
+    ).rejects.toThrow('Invalid succeeded finalization payload');
+    await expect(
+      store.markFinalizationFailed(sessionId, {
+        finalizationId: 'widened-failed',
+        queuedAtMs: 10,
+        failedAtMs: 20,
+        scenarioContext,
+        error: { code: 'FAILED', message: 'failure' },
+        stepFunctionsArn: 'arn:not-pure',
+      } as never),
+    ).rejects.toThrow('Invalid failed finalization payload');
+    await expect(
+      store.markFinalizationTimedOut(sessionId, {
+        finalizationId: 'widened-timeout',
+        queuedAtMs: 10,
+        timeoutAtMs: 20,
+        scenarioContext,
+        contractGeneration: 'retired',
+      } as never),
+    ).rejects.toThrow('Invalid timed-out finalization payload');
+  });
+
+  it('prevents stale execution updates through the explicit current index', async () => {
+    const current = await store.markFinalizationQueued(sessionId, {
+      finalizationId: 'indexed-current',
+      queuedAtMs: 10,
+      scenarioContext,
+    });
+    await store.markFinalizationRunning(sessionId, {
+      finalizationId: 'indexed-stale',
+      queuedAtMs: 11,
+      startedAtMs: 21,
+      scenarioContext,
+    });
+
+    expect(await store.getCurrentFinalizationRecord(sessionId)).toEqual(current);
+    expect(await store.getFinalizationRecord(sessionId, 'indexed-stale')).toBeNull();
+    consumeRejectedTransitionLogs({
+      finalizationId: 'indexed-stale',
+      reason: 'EXECUTION_MISMATCH',
+      to: 'running',
+    });
+  });
+
+  it('ignores duplicate terminal verification completion for the same finalization', async () => {
+    const finalizationId = 'verification-terminal';
+    await succeed(finalizationId);
+    const completed = await store.completeVerificationResult(sessionId, finalizationId, {
+      status: 'success',
+    });
+
+    await expect(
+      store.completeVerificationResult(sessionId, finalizationId, {
+        status: 'failed',
+        failureCategory: 'verifier_crash',
+      }),
+    ).resolves.toEqual(completed);
+  });
+
+  it('rejects stale verification completion for another finalization', async () => {
+    await succeed('verification-authority');
+
+    await expect(
+      store.completeVerificationResult(sessionId, 'verification-stale', {
+        status: 'success',
+      }),
+    ).rejects.toThrow('Finalization is unavailable for verification');
+    expect(await store.getVerificationResultRecord(sessionId, 'verification-stale')).toBeNull();
+  });
+
+  it('rejects retired contract-generation fields without mutating authority', async () => {
+    await expect(
+      store.markFinalizationQueued(sessionId, {
+        finalizationId: 'retired-generation',
+        queuedAtMs: 10,
+        scenarioContext,
+        contractGeneration: 'current-v0',
+      } as never),
+    ).rejects.toThrow('Invalid queued finalization payload');
+    expect(await store.getCurrentFinalizationRecord(sessionId)).toBeNull();
+  });
+
+  it('rejects finalization results that carry a foreign bundle locator', async () => {
+    await expect(
+      store.markFinalizationSucceeded(sessionId, {
+        finalizationId: 'foreign-locator',
+        queuedAtMs: 10,
+        startedAtMs: 20,
+        completedAtMs: 30,
+        scenarioContext,
+        finalizationResult: {
+          ...buildResult(),
+          s3BundleKey: 'foreign/bundle.zip',
+        } as never,
+      }),
+    ).rejects.toThrow('invalid_finalization_result');
+    expect(await store.getCurrentFinalizationRecord(sessionId)).toBeNull();
+  });
+
+  it('keeps the exact semantic record authoritative after an adapter branch exists', async () => {
+    const finalizationId = 'semantic-authority';
+    await store.markFinalizationQueued(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      scenarioContext,
+    });
+    await store.markAwsFinalizationRunning(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      startedAtMs: 20,
+      stepFunctionsArn: 'arn:runtime',
+    });
+
+    const record = requireValue(await store.getCurrentFinalizationRecord(sessionId), 'finalization');
+    expect(Object.keys(record).sort()).toEqual(['finalizationId', 'scenarioContext', 'sessionId', 'state']);
+    expect(record.state).toEqual({
+      status: 'running',
+      finalizationId,
+      queuedAtMs: 10,
+      startedAtMs: 20,
+    });
+    expect(await store.getAwsFinalizationRuntimeMetadata(sessionId, finalizationId)).toEqual({
+      stepFunctionsArn: 'arn:runtime',
+    });
+  });
+
+  it('does not reconcile historical records into the explicit current index', async () => {
+    const current = await store.markFinalizationQueued(sessionId, {
+      finalizationId: 'current-record',
+      queuedAtMs: 10,
+      scenarioContext,
+    });
+    const historical: FinalizationRecord = {
+      sessionId,
+      finalizationId: 'historical-record',
+      scenarioContext,
+      state: {
+        status: 'pending',
+        finalizationId: 'historical-record',
+        queuedAtMs: 11,
+      },
+    };
+    getPrivateMap<FinalizationRecord>(store, 'finalizationRecords').set(
+      scopedKey(sessionId, 'historical-record'),
+      historical,
+    );
+
+    expect(await store.getCurrentFinalizationRecord(sessionId)).toEqual(current);
+    expect(await store.getFinalizationRecord(sessionId, 'historical-record')).toEqual(historical);
+  });
+
+  it('rejects write-side updates against a corrupt current finalization record', async () => {
+    const finalizationId = 'corrupt-write';
+    const record = await store.markFinalizationQueued(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      scenarioContext,
+    });
+    getPrivateMap<unknown>(store, 'finalizationRecords').set(scopedKey(sessionId, finalizationId), {
+      ...record,
+      legacyGeneration: 'retired',
+    });
+
+    await expect(
+      store.markFinalizationRunning(sessionId, {
+        finalizationId,
+        queuedAtMs: 10,
+        startedAtMs: 20,
+      }),
+    ).rejects.toThrow('Current finalization record is missing or invalid');
+  });
+
+  it('does not expose repair APIs or repair corrupt finalization records on read', async () => {
+    const finalizationId = 'corrupt-no-repair';
+    const record = await store.markFinalizationQueued(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      scenarioContext,
+    });
+    const corrupt = { ...record, repairMarker: true };
+    const records = getPrivateMap<unknown>(store, 'finalizationRecords');
+    records.set(scopedKey(sessionId, finalizationId), corrupt);
+
+    await expect(store.getCurrentFinalizationRecord(sessionId)).rejects.toThrow(
+      'Current finalization record is missing or invalid',
+    );
+    expect('repairSession' in store).toBe(false);
+    expect(records.get(scopedKey(sessionId, finalizationId))).toBe(corrupt);
+  });
+
+  it('does not publish receipts or consume board indexes for stale attempts', async () => {
+    await succeed('receipt-current');
+    await expect(
+      store.commitSuccessfulFinalization({
+        record: buildSucceededRecord(sessionId, 'receipt-stale'),
+        receipt: { receipt: 'stale', timestamp: 40 },
+        bitmap: { availability: 'unavailable' },
+      }),
+    ).rejects.toThrow('Stale successful finalization commit');
+
+    const fresh = await store.createSession();
+    await expect(
+      store.commitSuccessfulFinalization({
+        record: buildSucceededRecord(fresh.sessionId, 'receipt-fresh'),
+        receipt: { receipt: 'fresh', timestamp: 41 },
+        bitmap: { availability: 'unavailable' },
+      }),
+    ).resolves.toMatchObject({ receiptPublication: { boardIndex: 100 } });
+  });
+
+  it('does not publish receipts or consume board indexes for corrupt current records', async () => {
+    const finalizationId = 'receipt-corrupt';
+    const record = await store.markFinalizationQueued(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      scenarioContext,
+    });
+    getPrivateMap<unknown>(store, 'finalizationRecords').set(scopedKey(sessionId, finalizationId), {
+      ...record,
+      corrupt: true,
+    });
+
+    await expect(
+      store.commitSuccessfulFinalization({
+        record: buildSucceededRecord(sessionId, finalizationId),
+        receipt: { receipt: 'corrupt', timestamp: 40 },
+        bitmap: { availability: 'unavailable' },
+      }),
+    ).rejects.toThrow('Current finalization record is missing or invalid');
+
+    const fresh = await store.createSession();
+    await expect(
+      store.commitSuccessfulFinalization({
+        record: buildSucceededRecord(fresh.sessionId, 'receipt-after-corrupt'),
+        receipt: { receipt: 'fresh', timestamp: 41 },
+        bitmap: { availability: 'unavailable' },
+      }),
+    ).resolves.toMatchObject({ receiptPublication: { boardIndex: 100 } });
+  });
+
+  it('does not partially publish a successful outcome when voting authority disappears before commit', async () => {
+    const finalizationId = 'missing-voting-before-success';
+    const includedBitmap = [true];
+    const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
+    const result = buildResult({
+      ...createTestJournal({ totalExpected: 1, validVotes: 1 }),
+      includedBitmapRoot,
+    });
+    getPrivateMap<SessionVotingRecord>(store, 'votingRecords').delete(sessionId);
+
+    await expect(
+      store.commitSuccessfulFinalization({
+        record: buildSucceededRecord(sessionId, finalizationId, result),
+        receipt: { receipt: '{"atomic":true}', timestamp: 30 },
+        verificationResult: { status: 'success' },
+        bitmap: {
+          availability: 'available',
+          data: { includedBitmap, includedBitmapRoot, treeSize: 1, finalizedAtMs: 30 },
+        },
+        runtimeMetadata: {
+          stepFunctionsArn: 'arn:aws:states:local:execution:missing-voting',
+          bundleMetadata: {
+            s3BundleKey: `sessions/${sessionId}/${finalizationId}/bundle.zip`,
+            s3UploadedAtMs: 31,
+          },
+        },
+      }),
+    ).rejects.toThrow('Session voting record is missing or invalid');
+
+    await expect(store.getCurrentFinalizationRecord(sessionId)).resolves.toBeNull();
+    await expect(store.getVerificationResultRecord(sessionId, finalizationId)).resolves.toBeNull();
+    await expect(store.getBitmapData(sessionId, finalizationId)).resolves.toBeNull();
+    await expect(store.getAwsFinalizationRuntimeMetadata(sessionId, finalizationId)).resolves.toBeUndefined();
+    await expect(store.getAwsVerificationDeliveryMetadata(sessionId, finalizationId)).resolves.toBeUndefined();
+    expect(Reflect.get(store, 'receiptCounter')).toBe(100);
+  });
+
+  it('does not partially publish a successful outcome when staged bitmap persistence fails', async () => {
+    const finalizationId = 'bitmap-write-failure-before-success';
+    const includedBitmap = [true];
+    const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
+    const result = buildResult({
+      ...createTestJournal({ totalExpected: 1, validVotes: 1 }),
+      includedBitmapRoot,
+    });
+    const pending = await store.markFinalizationQueued(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      scenarioContext,
+    });
+    // Keep the native method so the prototype spy can fail only the staged bitmap write.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const originalSet = Map.prototype.set;
+    const mapSet = vi.spyOn(Map.prototype, 'set').mockImplementation(function (
+      this: Map<unknown, unknown>,
+      key,
+      value,
+    ) {
+      if (
+        key === scopedKey(sessionId, finalizationId) &&
+        typeof value === 'object' &&
+        value !== null &&
+        'includedBitmap' in value
+      ) {
+        throw new Error('forced bitmap write failure');
+      }
+      return originalSet.call(this, key, value);
+    });
+
+    try {
+      await expect(
+        store.commitSuccessfulFinalization({
+          record: buildSucceededRecord(sessionId, finalizationId, result),
+          receipt: { receipt: '{"atomic":true}', timestamp: 30 },
+          verificationResult: { status: 'success' },
+          bitmap: {
+            availability: 'available',
+            data: { includedBitmap, includedBitmapRoot, treeSize: 1, finalizedAtMs: 30 },
+          },
+          runtimeMetadata: {
+            stepFunctionsArn: 'arn:aws:states:local:execution:bitmap-write-failure',
+            bundleMetadata: {
+              s3BundleKey: `sessions/${sessionId}/${finalizationId}/bundle.zip`,
+              s3UploadedAtMs: 31,
+            },
+          },
+        }),
+      ).rejects.toThrow('forced bitmap write failure');
+    } finally {
+      mapSet.mockRestore();
     }
 
-    session.lastActivity = 1234;
-    const reloaded = await store.getSession(sessionId);
+    await expect(store.getCurrentFinalizationRecord(sessionId)).resolves.toEqual(pending);
+    await expect(store.getVerificationResultRecord(sessionId, finalizationId)).resolves.toBeNull();
+    await expect(store.getBitmapData(sessionId, finalizationId)).resolves.toBeNull();
+    await expect(store.getAwsFinalizationRuntimeMetadata(sessionId, finalizationId)).resolves.toBeUndefined();
+    await expect(store.getAwsVerificationDeliveryMetadata(sessionId, finalizationId)).resolves.toBeUndefined();
+    expect(getPrivateMap<unknown>(store, 'receipts').has(scopedKey(sessionId, finalizationId))).toBe(false);
+    expect(Reflect.get(store, 'receiptCounter')).toBe(100);
+  });
 
-    expect(reloaded?.lastActivity).toBe(1234);
+  it.each(['bitmap', 'verification'] as const)(
+    'rejects a preterminal %s orphan without changing pending authority',
+    async (kind) => {
+      const finalizationId = `mock-preterminal-${kind}-orphan`;
+      const includedBitmap = [true];
+      const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
+      const result = buildResult({
+        ...createTestJournal({ totalExpected: 1, validVotes: 1 }),
+        includedBitmapRoot,
+      });
+      const pending = await store.markFinalizationQueued(sessionId, {
+        finalizationId,
+        queuedAtMs: 10,
+        scenarioContext,
+      });
+      if (kind === 'bitmap') {
+        getPrivateMap<unknown>(store, 'bitmapRecords').set(scopedKey(sessionId, finalizationId), {
+          sessionId,
+          finalizationId,
+          includedBitmap,
+          includedBitmapRoot,
+          treeSize: 1,
+          finalizedAtMs: 30,
+        });
+      } else {
+        getPrivateMap<unknown>(store, 'verificationResultRecords').set(scopedKey(sessionId, finalizationId), {
+          sessionId,
+          finalizationId,
+          verificationResult: { status: 'running' },
+        });
+      }
+
+      await expect(
+        store.commitSuccessfulFinalization({
+          record: buildSucceededRecord(sessionId, finalizationId, result),
+          bitmap: { availability: 'unavailable' },
+        }),
+      ).rejects.toThrow('Successful finalization artifacts exist before terminal authority');
+      await expect(store.getCurrentFinalizationRecord(sessionId)).resolves.toEqual(pending);
+    },
+  );
+
+  it('rejects a preterminal receipt orphan without changing pending authority', async () => {
+    const finalizationId = 'mock-preterminal-receipt-orphan';
+    const pending = await store.markFinalizationQueued(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      scenarioContext,
+    });
+    const receipt = { receipt: '{"orphan":true}', timestamp: 30 };
+    getPrivateMap<unknown>(store, 'receipts').set(scopedKey(sessionId, finalizationId), {
+      receiptHash: computeSuccessfulFinalizationReceiptHash(receipt),
+      boardIndex: 100,
+      receipt,
+    });
+
+    await expect(
+      store.commitSuccessfulFinalization({
+        record: buildSucceededRecord(sessionId, finalizationId),
+        bitmap: { availability: 'unavailable' },
+      }),
+    ).rejects.toThrow('Successful finalization receipt exists before terminal authority');
+    await expect(store.getCurrentFinalizationRecord(sessionId)).resolves.toEqual(pending);
+    expect(Reflect.get(store, 'receiptCounter')).toBe(100);
+  });
+
+  it('routes direct success through the atomic commit and rejects a preterminal bitmap orphan', async () => {
+    const finalizationId = 'mock-direct-success-bitmap-orphan';
+    const includedBitmap = [true];
+    const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
+    const result = buildResult({
+      ...createTestJournal({ totalExpected: 1, validVotes: 1 }),
+      includedBitmapRoot,
+    });
+    const pending = await store.markFinalizationQueued(sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      scenarioContext,
+    });
+    getPrivateMap<unknown>(store, 'bitmapRecords').set(scopedKey(sessionId, finalizationId), {
+      sessionId,
+      finalizationId,
+      includedBitmap,
+      includedBitmapRoot,
+      treeSize: 1,
+      finalizedAtMs: 30,
+    });
+
+    await expect(
+      store.markFinalizationSucceeded(sessionId, {
+        finalizationId,
+        queuedAtMs: 10,
+        startedAtMs: 20,
+        completedAtMs: 30,
+        scenarioContext,
+        finalizationResult: result,
+      }),
+    ).rejects.toThrow('Successful finalization artifacts exist before terminal authority');
+    await expect(store.getCurrentFinalizationRecord(sessionId)).resolves.toEqual(pending);
+  });
+
+  it.each(['missing', 'not-advanced'] as const)(
+    'rejects an idempotent receipt replay when the in-memory counter is %s',
+    async (counterState) => {
+      const finalizationId = `mock-receipt-counter-${counterState}`;
+      const input = {
+        record: buildSucceededRecord(sessionId, finalizationId),
+        receipt: { receipt: '{"counter":true}', timestamp: 30 },
+        bitmap: { availability: 'unavailable' as const },
+      };
+      const committed = await store.commitSuccessfulFinalization(input);
+      Reflect.set(
+        store,
+        'receiptCounter',
+        counterState === 'missing' ? undefined : (committed.receiptPublication?.boardIndex ?? 100),
+      );
+
+      await expect(store.commitSuccessfulFinalization(input)).rejects.toThrow(
+        'Receipt board counter does not cover the persisted publication',
+      );
+      await expect(store.getCurrentFinalizationRecord(sessionId)).resolves.toEqual(committed.record);
+    },
+  );
+
+  it('rejects an idempotent replay when the persisted receipt hash is corrupt', async () => {
+    const finalizationId = 'mock-corrupt-receipt-hash';
+    const input = {
+      record: buildSucceededRecord(sessionId, finalizationId),
+      receipt: { receipt: '{"exact":true}', timestamp: 30 },
+      bitmap: { availability: 'unavailable' as const },
+    };
+    const committed = await store.commitSuccessfulFinalization(input);
+    const entry = getPrivateMap<{ receiptHash: string }>(store, 'receipts').get(scopedKey(sessionId, finalizationId));
+    if (!entry) {
+      throw new Error('Expected persisted receipt');
+    }
+    entry.receiptHash = `0x${'f'.repeat(64)}`;
+
+    await expect(store.commitSuccessfulFinalization(input)).rejects.toThrow('Invalid persisted finalization receipt');
+    await expect(store.getCurrentFinalizationRecord(sessionId)).resolves.toEqual(committed.record);
+  });
+
+  it('does not expose generic finalization artifact metadata updates', () => {
+    expect('updateFinalizationArtifactMetadata' in store).toBe(false);
+    expect(Reflect.get(store, 'updateFinalizationArtifactMetadata')).toBeUndefined();
+  });
+
+  it('does not expose generic session updates', () => {
+    expect('updateSession' in store).toBe(false);
+    expect(Reflect.get(store, 'updateSession')).toBeUndefined();
+  });
+
+  it('does not refresh activity on read-only record access', async () => {
+    const before = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+
+    await store.getSessionIdentity(sessionId);
+    await store.getVotingRecord(sessionId);
+    await store.getSessionVotingSummary(sessionId);
+    await store.getCurrentFinalizationRecord(sessionId);
+
+    const after = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+    expect(after.lastActivityMs).toBe(before.lastActivityMs);
   });
 
   it('excludes fail-closed live sessions from the active session count', async () => {
-    expect(await store.getActiveSessionCount()).toBe(1);
+    const identities = getPrivateMap<unknown>(store, 'identityRecords');
+    identities.set(sessionId, {
+      ...identity,
+      legacyGeneration: 'retired',
+    });
 
-    const session = await store.getSession(sessionId);
-    if (!session) {
-      throw new Error('Expected session to exist');
-    }
-
-    session.finalizationArtifactState = 'corrupt_or_unreadable';
-    expect(await store.getActiveSessionCount()).toBe(0);
+    await expect(store.getActiveSessionCount()).resolves.toBe(0);
   });
 
   it('summarizes a batch of bot votes in one debug log entry', async () => {
-    const userVote = createTestCommitment(0);
-    await store.addVote(sessionId, {
-      voteId: generateVoteId(),
-      vote: VoteChoice.A,
-      rand: userVote.random,
-      commit: userVote.commitment,
-      path: [],
-      timestamp: Date.now(),
-    });
-    const botVotes = [1, 2, 3].map((index) => {
-      const vote = createTestCommitment(index);
-      return {
-        voteId: generateVoteId(),
-        vote: VoteChoice.B,
-        rand: vote.random,
-        commit: vote.commitment,
-        path: [],
-        timestamp: Date.now(),
-      };
-    });
-    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    const debug = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
+    await store.addVote(sessionId, buildVote('A', 'a'));
+    await store.addBotVotes(sessionId, [buildVote('B', 'b'), buildVote('C', 'c')]);
 
-    try {
-      await store.addBotVotes(sessionId, botVotes);
-
-      const botVoteLogs = debugSpy.mock.calls.filter(([message]) => String(message).includes('[MockStore] Bot vote'));
-      expect(botVoteLogs).toEqual([
-        [
-          '[MockStore] Bot votes added:',
-          expect.objectContaining({
-            addedCount: 3,
-            totalBotCount: 3,
-            firstBotIndex: 1,
-            lastBotIndex: 3,
-            bulletinSize: 4,
-          }),
-        ],
-      ]);
-    } finally {
-      debugSpy.mockRestore();
-    }
+    expect(debug).toHaveBeenCalledTimes(1);
+    expect(debug).toHaveBeenCalledWith(
+      '[MockStore] Bot votes added:',
+      expect.objectContaining({
+        addedCount: 2,
+        totalBotCount: 2,
+        firstBotIndex: 1,
+        lastBotIndex: 2,
+        bulletinSize: 3,
+      }),
+    );
   });
 
-  it('fails closed when addBotVotes targets a stale live session', async () => {
-    const session = await store.getSession(sessionId);
-    if (!session) {
-      throw new Error('Expected session to exist');
-    }
-    session.contractGeneration = 'stale-contract-generation';
-
-    const { commitment, random } = createTestCommitment(0);
-    await expect(
-      store.addBotVotes(sessionId, [
-        {
-          voteId: generateVoteId(),
-          vote: VoteChoice.A,
-          rand: random,
-          commit: commitment,
-          path: [],
-          timestamp: Date.now(),
-        },
-      ]),
-    ).rejects.toThrow('Session not found');
-
-    const reloaded = await store.getSession(sessionId);
-    expect(reloaded?.botCount).toBe(0);
-  });
-
-  it('reconciles stale botCount before assigning bot vote indices', async () => {
-    const userVote = createTestCommitment(0);
-    const firstBotVoteId = generateVoteId();
-    const firstBotVote = createTestCommitment(1);
-    const secondBotVoteId = generateVoteId();
-    const secondBotVote = createTestCommitment(2);
-
-    await store.addVote(sessionId, {
-      voteId: generateVoteId(),
-      vote: VoteChoice.A,
-      rand: userVote.random,
-      commit: userVote.commitment,
-      path: [],
-      timestamp: Date.now(),
+  it('fails closed when addBotVotes targets a finalized session', async () => {
+    await store.addVote(sessionId, buildVote('A', 'a'));
+    await store.markFinalizationQueued(sessionId, {
+      finalizationId: 'finalized-vote-authority',
+      queuedAtMs: 10,
+      scenarioContext,
     });
 
-    await store.addBotVotes(sessionId, [
-      {
-        voteId: firstBotVoteId,
-        vote: VoteChoice.B,
-        rand: firstBotVote.random,
-        commit: firstBotVote.commitment,
-        path: [],
-        timestamp: Date.now(),
-      },
-    ]);
-
-    const session = await store.getSession(sessionId);
-    if (!session) {
-      throw new Error('Expected session to exist');
-    }
-    session.botCount = 0;
-
-    await store.addBotVotes(sessionId, [
-      {
-        voteId: secondBotVoteId,
-        vote: VoteChoice.C,
-        rand: secondBotVote.random,
-        commit: secondBotVote.commitment,
-        path: [],
-        timestamp: Date.now(),
-      },
-    ]);
-
-    const reloaded = await store.getSession(sessionId);
-    expect(Array.from(reloaded?.votes.keys() ?? [])).toEqual([0, 1, 2]);
-    expect(reloaded?.votes.get(1)?.voteId).toBe(firstBotVoteId);
-    expect(reloaded?.votes.get(2)?.voteId).toBe(secondBotVoteId);
-    expect(reloaded?.bulletin?.getSize()).toBe(3);
-    expect(reloaded?.botCount).toBe(2);
+    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b')])).rejects.toThrow('Session already finalized');
   });
 
-  it('repairs a missing userVoteIndex from the canonical vote at index zero before appending bot votes', async () => {
-    const userVote = createTestCommitment(0);
-    const botVote = createTestCommitment(1);
-    const botVoteId = generateVoteId();
-
-    await store.addVote(sessionId, {
-      voteId: generateVoteId(),
-      vote: VoteChoice.A,
-      rand: userVote.random,
-      commit: userVote.commitment,
-      path: [],
-      timestamp: Date.now(),
+  it('fails closed on stale botCount without reconciling it', async () => {
+    await store.addVote(sessionId, buildVote('A', 'a'));
+    const voting = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+    getPrivateMap<SessionVotingRecord>(store, 'votingRecords').set(sessionId, {
+      ...voting,
+      botCount: 1,
     });
 
-    const session = await store.getSession(sessionId);
-    if (!session) {
-      throw new Error('Expected session to exist');
-    }
-    delete session.userVoteIndex;
+    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b')])).rejects.toThrow(
+      'Session voting record bot count is inconsistent',
+    );
+    expect(getPrivateMap<SessionVotingRecord>(store, 'votingRecords').get(sessionId)?.botCount).toBe(1);
+  });
 
-    await store.addBotVotes(sessionId, [
-      {
-        voteId: botVoteId,
-        vote: VoteChoice.B,
-        rand: botVote.random,
-        commit: botVote.commitment,
-        path: [],
-        timestamp: Date.now(),
-      },
-    ]);
+  it('fails closed on missing user participation without repairing index zero', async () => {
+    await store.addVote(sessionId, buildVote('A', 'a'));
+    const voting = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+    getPrivateMap<unknown>(store, 'votingRecords').set(sessionId, {
+      ...voting,
+      userParticipation: undefined,
+    });
 
-    const reloaded = await store.getSession(sessionId);
-    expect(reloaded?.userVoteIndex).toBe(0);
-    expect(Array.from(reloaded?.votes.keys() ?? [])).toEqual([0, 1]);
-    expect(reloaded?.votes.get(1)?.voteId).toBe(botVoteId);
-    expect(reloaded?.botCount).toBe(1);
+    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b')])).rejects.toThrow(
+      'Session voting record is missing or invalid',
+    );
+    expect(
+      (getPrivateMap<Record<string, unknown>>(store, 'votingRecords').get(sessionId) ?? {})['userParticipation'],
+    ).toBeUndefined();
   });
 
   it('fails closed when addBotVotes is called before the user vote exists', async () => {
-    const botVote = createTestCommitment(1);
-
-    await expect(
-      store.addBotVotes(sessionId, [
-        {
-          voteId: generateVoteId(),
-          vote: VoteChoice.B,
-          rand: botVote.random,
-          commit: botVote.commitment,
-          path: [],
-          timestamp: Date.now(),
-        },
-      ]),
-    ).rejects.toThrow('USER_VOTE_REQUIRED_BEFORE_BOT_VOTES');
-
-    const reloaded = await store.getSession(sessionId);
-    expect(reloaded?.votes.size).toBe(0);
-    expect(reloaded?.botCount).toBe(0);
+    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b')])).rejects.toThrow(
+      'USER_VOTE_REQUIRED_BEFORE_BOT_VOTES',
+    );
+    expect(requireValue(await store.getVotingRecord(sessionId), 'voting record').votes.size).toBe(0);
   });
 
   it('fails closed when addBotVotes sees a non-canonical user vote index', async () => {
-    const userVote = createTestCommitment(0);
-    const botVote = createTestCommitment(1);
-
-    await store.addVote(sessionId, {
-      voteId: generateVoteId(),
-      vote: VoteChoice.A,
-      rand: userVote.random,
-      commit: userVote.commitment,
-      path: [],
-      timestamp: Date.now(),
+    await store.addVote(sessionId, buildVote('A', 'a'));
+    const voting = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+    getPrivateMap<SessionVotingRecord>(store, 'votingRecords').set(sessionId, {
+      ...voting,
+      userParticipation: { status: 'cast', voteIndex: 1 },
     });
 
-    const session = await store.getSession(sessionId);
-    if (!session) {
-      throw new Error('Expected session to exist');
-    }
-    const existingVote = session.votes.get(0);
-    if (!existingVote) {
-      throw new Error('Expected stored vote at index 0');
-    }
-    const alternateVote = createTestCommitment(2);
-    session.votes.set(1, {
-      ...existingVote,
-      voteId: generateVoteId(),
-      rand: alternateVote.random,
-      commit: alternateVote.commitment,
-    });
-    session.userVoteIndex = 1;
-
-    await expect(
-      store.addBotVotes(sessionId, [
-        {
-          voteId: generateVoteId(),
-          vote: VoteChoice.B,
-          rand: botVote.random,
-          commit: botVote.commitment,
-          path: [],
-          timestamp: Date.now(),
-        },
-      ]),
-    ).rejects.toThrow('USER_VOTE_REQUIRED_BEFORE_BOT_VOTES');
+    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b')])).rejects.toThrow(
+      'Session voting record is missing or invalid',
+    );
   });
 
   it('fails closed when addBotVotes sees sparse vote indices', async () => {
-    const userVote = createTestCommitment(0);
-    const firstBotVote = createTestCommitment(1);
-    const nextBotVote = createTestCommitment(2);
-
-    await store.addVote(sessionId, {
-      voteId: generateVoteId(),
-      vote: VoteChoice.A,
-      rand: userVote.random,
-      commit: userVote.commitment,
-      path: [],
-      timestamp: Date.now(),
+    await store.addVote(sessionId, buildVote('A', 'a'));
+    const voting = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+    const userVote = requireValue(voting.votes.get(0), 'user vote');
+    getPrivateMap<SessionVotingRecord>(store, 'votingRecords').set(sessionId, {
+      ...voting,
+      votes: new Map([
+        [0, userVote],
+        [2, { ...userVote, voteId: generateVoteId() }],
+      ]),
+      botCount: 1,
     });
 
-    await store.addBotVotes(sessionId, [
-      {
-        voteId: generateVoteId(),
-        vote: VoteChoice.B,
-        rand: firstBotVote.random,
-        commit: firstBotVote.commitment,
-        path: [],
-        timestamp: Date.now(),
-      },
-    ]);
-
-    const session = await store.getSession(sessionId);
-    if (!session) {
-      throw new Error('Expected session to exist');
-    }
-    const storedBotVote = session.votes.get(1);
-    if (!storedBotVote) {
-      throw new Error('Expected stored bot vote at index 1');
-    }
-    session.votes.delete(1);
-    session.votes.set(2, storedBotVote);
-
-    await expect(
-      store.addBotVotes(sessionId, [
-        {
-          voteId: generateVoteId(),
-          vote: VoteChoice.C,
-          rand: nextBotVote.random,
-          commit: nextBotVote.commitment,
-          path: [],
-          timestamp: Date.now(),
-        },
-      ]),
-    ).rejects.toThrow('NON_CANONICAL_CT_VOTE_INDICES');
+    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b')])).rejects.toThrow('NON_CANONICAL_CT_VOTE_INDICES');
   });
 
-  it('does not leave a ghost user vote behind when cast-time CT state is unavailable', async () => {
-    const session = await store.getSession(sessionId);
-    if (!session) {
-      throw new Error('Expected session to exist');
-    }
-    delete session.bulletin;
+  it('does not leave a ghost user vote when CT state is unavailable', async () => {
+    const voting = requireValue(
+      getPrivateMap<SessionVotingRecord>(store, 'votingRecords').get(sessionId),
+      'internal voting record',
+    );
+    vi.spyOn(voting.bulletin, 'getLogId').mockImplementation(() => {
+      throw new Error('CT unavailable');
+    });
 
-    const voteId = generateVoteId();
-    const { commitment, random } = createTestCommitment(0);
-
-    await expect(
-      store.addVote(sessionId, {
-        voteId,
-        vote: VoteChoice.A,
-        rand: random,
-        commit: commitment,
-        path: [],
-        timestamp: Date.now(),
-      }),
-    ).rejects.toThrow('CT_PROOF_UNAVAILABLE');
-
-    const reloaded = await store.getSession(sessionId);
-    expect(reloaded?.votes.size).toBe(0);
-    expect(reloaded?.userVoteIndex).toBeUndefined();
-    await expect(store.getVoteById(sessionId, voteId)).resolves.toBeNull();
+    await expect(store.addVote(sessionId, buildVote('A', 'a'))).rejects.toThrow('CT unavailable');
+    const persisted = requireValue(
+      getPrivateMap<SessionVotingRecord>(store, 'votingRecords').get(sessionId),
+      'internal voting record',
+    );
+    expect(persisted.votes.size).toBe(0);
+    expect(persisted.bulletinRootHistory).toEqual([]);
+    expect(persisted.userParticipation).toEqual({ status: 'not_cast' });
   });
 
   it('applies bot vote batches atomically when a later CT append fails', async () => {
-    const userVote = createTestCommitment(0);
-    await store.addVote(sessionId, {
-      voteId: generateVoteId(),
-      vote: VoteChoice.A,
-      rand: userVote.random,
-      commit: userVote.commitment,
-      path: [],
-      timestamp: Date.now(),
+    await store.addVote(sessionId, buildVote('A', 'a'));
+    const before = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+
+    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b'), buildVote('B', 'b')])).rejects.toThrow(
+      'Commitment already exists',
+    );
+    const after = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+    expect(after.votes).toEqual(before.votes);
+    expect(after.bulletinRootHistory).toEqual(before.bulletinRootHistory);
+    expect(after.bulletin.getSize()).toBe(before.bulletin.getSize());
+    expect(after.botCount).toBe(0);
+  });
+
+  it('returns the exact cast-time bulletin root from addVote', async () => {
+    const result = await store.addVote(sessionId, buildVote('A', 'a'));
+    const voting = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+
+    expect(result.bulletinRootAtCast).toBe(voting.votes.get(0)?.rootAtCast);
+    expect(result.bulletinRootAtCast).toBe(`0x${voting.bulletin.getRootAtSize(1)}`);
+  });
+
+  it('retrieves a vote by voteId', async () => {
+    const voteId = generateVoteId();
+    await store.addVote(sessionId, buildVote('A', 'a', voteId));
+
+    await expect(store.getVoteById(sessionId, voteId)).resolves.toMatchObject({
+      index: 0,
+      voteData: { voteId, vote: 'A' },
+    });
+  });
+
+  it('returns null for a non-existent voteId', async () => {
+    await expect(store.getVoteById(sessionId, generateVoteId())).resolves.toBeNull();
+  });
+
+  it('returns null when the vote belongs to another session', async () => {
+    const voteId = generateVoteId();
+    await store.addVote(sessionId, buildVote('A', 'a', voteId));
+    const other = await store.createSession();
+
+    await expect(store.getVoteById(other.sessionId, voteId)).resolves.toBeNull();
+  });
+
+  it('retrieves a vote with its exact Merkle proof', async () => {
+    const voteId = generateVoteId();
+    await store.addVote(sessionId, buildVote('A', 'a', voteId));
+
+    await expect(store.getVoteByIdWithProof(sessionId, voteId)).resolves.toMatchObject({
+      leafIndex: 0,
+      treeSize: 1,
+      merklePath: [],
+      voteData: { voteId },
+    });
+  });
+
+  it('does not fall back to incremental proof when CT proof derivation fails', async () => {
+    const voteId = generateVoteId();
+    await store.addVote(sessionId, buildVote('A', 'a', voteId));
+    const voting = requireValue(
+      getPrivateMap<SessionVotingRecord>(store, 'votingRecords').get(sessionId),
+      'internal voting record',
+    );
+    vi.spyOn(voting.bulletin, 'getInclusionProof').mockImplementation(() => {
+      throw new Error('broken proof');
     });
 
-    const successfulBotVoteId = generateVoteId();
-    const firstBotVote = createTestCommitment(1);
-    const secondBotVote = createTestCommitment(2);
+    await expect(store.getVoteByIdWithProof(sessionId, voteId)).rejects.toThrow('CT_PROOF_UNAVAILABLE');
+  });
 
-    await expect(
-      store.addBotVotes(sessionId, [
-        {
-          voteId: successfulBotVoteId,
-          vote: VoteChoice.B,
-          rand: firstBotVote.random,
-          commit: firstBotVote.commitment,
-          path: [],
-          timestamp: Date.now(),
+  it('fails closed when stored rootAtCast is missing', async () => {
+    const voteId = generateVoteId();
+    await store.addVote(sessionId, buildVote('A', 'a', voteId));
+    const voting = requireValue(
+      getPrivateMap<SessionVotingRecord>(store, 'votingRecords').get(sessionId),
+      'internal voting record',
+    );
+    const storedVote = requireValue(voting.votes.get(0), 'stored vote');
+    const { rootAtCast: _rootAtCast, ...withoutRoot } = storedVote;
+    void _rootAtCast;
+    voting.votes.set(0, withoutRoot as StoredVoteRecord);
+
+    await expect(store.getVoteByIdWithProof(sessionId, voteId)).resolves.toBeNull();
+    await expect(store.getVotingRecord(sessionId)).resolves.toBeNull();
+  });
+
+  it('includes the correct bulletin index', async () => {
+    const voteId = generateVoteId();
+    const result = await store.addVote(sessionId, buildVote('A', 'a', voteId));
+
+    expect(result.leafIndex).toBe(0);
+    await expect(store.getVoteProof(voteId)).resolves.toMatchObject({ leafIndex: 0, treeSize: 1 });
+  });
+
+  it('maintains the voteId index across multiple votes', async () => {
+    const userVoteId = generateVoteId();
+    const firstBotId = generateVoteId();
+    const secondBotId = generateVoteId();
+    await store.addVote(sessionId, buildVote('A', 'a', userVoteId));
+    await store.addBotVotes(sessionId, [buildVote('B', 'b', firstBotId), buildVote('C', 'c', secondBotId)]);
+
+    await expect(store.getVoteById(sessionId, userVoteId)).resolves.toMatchObject({ index: 0 });
+    await expect(store.getVoteById(sessionId, firstBotId)).resolves.toMatchObject({ index: 1 });
+    await expect(store.getVoteById(sessionId, secondBotId)).resolves.toMatchObject({ index: 2 });
+  });
+
+  it('stores commitments that match the election-scoped hash', async () => {
+    const vote = buildVote('C', 'c');
+    vote.commit = `0x${'f'.repeat(64)}`;
+    await store.addVote(sessionId, vote);
+    const voting = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+
+    expect(voting.votes.get(0)?.commit).toBe(computeCommitment(identity.electionId, 2, vote.rand));
+  });
+
+  it('returns bitmap data only for the matching session and finalization', async () => {
+    const finalizationId = 'bitmap-match';
+    const includedBitmap = [true];
+    const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
+    const journal = { ...createTestJournal({ totalExpected: 1 }), includedBitmapRoot };
+    const bitmap = {
+      includedBitmap: [true],
+      includedBitmapRoot,
+      treeSize: 1,
+      finalizedAtMs: 30,
+    };
+    await store.commitSuccessfulFinalization({
+      record: buildSucceededRecord(sessionId, finalizationId, buildResult(journal)),
+      bitmap: { availability: 'available', data: bitmap },
+    });
+    const other = await store.createSession();
+
+    await expect(store.getBitmapData(sessionId, finalizationId)).resolves.toMatchObject({
+      sessionId,
+      finalizationId,
+      includedBitmap: [true],
+    });
+    await expect(store.getBitmapData(sessionId, 'bitmap-other')).resolves.toBeNull();
+    await expect(store.getBitmapData(other.sessionId, finalizationId)).resolves.toBeNull();
+  });
+
+  it('keeps bitmap data separated between sessions', async () => {
+    const finalizationId = 'bitmap-separated';
+    const other = await store.createSession();
+    for (const [targetSessionId, includedBitmap, finalizedAtMs] of [
+      [sessionId, [true], 30],
+      [other.sessionId, [false], 31],
+    ] as const) {
+      const includedBitmapRoot = computeIncludedBitmapRoot([...includedBitmap]);
+      const journal = { ...createTestJournal({ totalExpected: 1 }), includedBitmapRoot };
+      await store.commitSuccessfulFinalization({
+        record: buildSucceededRecord(targetSessionId, finalizationId, buildResult(journal)),
+        bitmap: {
+          availability: 'available',
+          data: { includedBitmap: [...includedBitmap], includedBitmapRoot, treeSize: 1, finalizedAtMs },
         },
-        {
-          voteId: 'not-a-uuid',
-          vote: VoteChoice.C,
-          rand: secondBotVote.random,
-          commit: secondBotVote.commitment,
-          path: [],
-          timestamp: Date.now(),
-        },
-      ]),
-    ).rejects.toThrow('Invalid vote ID format');
-
-    const reloaded = await store.getSession(sessionId);
-    expect(reloaded?.votes.size).toBe(1);
-    expect(reloaded?.botCount).toBe(0);
-    expect(reloaded?.bulletin?.getSize()).toBe(1);
-    await expect(store.getVoteById(sessionId, successfulBotVoteId)).resolves.toBeNull();
-  });
-
-  describe('getVoteById', () => {
-    it('returns the exact cast-time bulletin root from addVote', async () => {
-      const voteId = generateVoteId();
-      const voteData: VoteData = {
-        voteId,
-        vote: VoteChoice.A,
-        rand: '0x' + 'a'.repeat(64),
-        commit: '0x' + 'b'.repeat(64),
-        path: [],
-        timestamp: Date.now(),
-      };
-
-      const result = await store.addVote(sessionId, voteData);
-      const session = await store.getSession(sessionId);
-      const storedVote = session?.votes.get(0);
-
-      expect(result.leafIndex).toBe(0);
-      expect(result.merklePath).toEqual(expect.any(Array));
-      expect(result.bulletinRootAtCast).toBe(storedVote?.rootAtCast);
-    });
-
-    it('should retrieve vote by voteId', async () => {
-      // Arrange
-      const voteId = generateVoteId();
-      const voteData: VoteData = {
-        voteId,
-        vote: VoteChoice.A,
-        rand: '0x' + 'a'.repeat(64),
-        commit: '0x' + 'b'.repeat(64),
-        path: [],
-        timestamp: Date.now(),
-      };
-
-      await store.addVote(sessionId, voteData);
-
-      // Act
-      const result = await store.getVoteById(sessionId, voteId);
-
-      // Assert
-      expect(result).toBeDefined();
-      expect(result?.voteData.voteId).toBe(voteId);
-      expect(result?.voteData.vote).toBe(VoteChoice.A);
-    });
-
-    it('should return null for non-existent voteId', async () => {
-      // Act
-      const result = await store.getVoteById(sessionId, 'non-existent-id');
-
-      // Assert
-      expect(result).toBeNull();
-    });
-
-    it('should return null for wrong sessionId', async () => {
-      // Arrange
-      const voteId = generateVoteId();
-      const voteData: VoteData = {
-        voteId,
-        vote: VoteChoice.B,
-        rand: '0x' + 'c'.repeat(64),
-        commit: '0x' + 'd'.repeat(64),
-        path: [],
-        timestamp: Date.now(),
-      };
-
-      await store.addVote(sessionId, voteData);
-
-      // Act
-      const result = await store.getVoteById('wrong-session-id', voteId);
-
-      // Assert
-      expect(result).toBeNull();
-    });
-  });
-
-  describe('getVoteByIdWithProof', () => {
-    it('should retrieve vote with Merkle proof', async () => {
-      // Arrange
-      const session = await store.getSession(sessionId);
-      if (!session) {
-        throw new Error('Expected session to be available');
-      }
-      const electionId = session.electionId;
-      if (!electionId) {
-        throw new Error('Expected electionId to be set');
-      }
-      const voteId = generateVoteId();
-      const random = '0x' + 'e'.repeat(64);
-      const choiceNumber = VoteChoice.C.charCodeAt(0) - 'A'.charCodeAt(0);
-      const expectedCommitment = computeCommitment(electionId, choiceNumber, random);
-
-      const voteData: VoteData = {
-        voteId,
-        vote: VoteChoice.C,
-        rand: random,
-        commit: '0x' + 'f'.repeat(64), // Will be replaced by store
-        path: [],
-        timestamp: Date.now(),
-      };
-
-      await store.addVote(sessionId, voteData);
-      // Add a bot vote so the current tree size differs from the cast-time size
-      const botCommitment = createTestCommitment(0);
-      await store.addBotVotes(sessionId, [
-        {
-          voteId: generateVoteId(),
-          vote: VoteChoice.A,
-          rand: botCommitment.random,
-          commit: botCommitment.commitment,
-          path: [],
-          timestamp: Date.now(),
-        },
-      ]);
-
-      // Act
-      const result = await store.getVoteByIdWithProof(sessionId, voteId);
-
-      // Assert
-      expect(result).toBeDefined();
-      expect(result?.voteData.voteId).toBe(voteId);
-      expect(result?.voteData.commit).toBe(expectedCommitment); // Check computed commitment
-      expect(result?.leafIndex).toBe(0); // First vote
-      expect(result?.merklePath).toBeInstanceOf(Array);
-      expect(result?.bulletinRootAtCast).toBeDefined();
-      expect(result?.treeSize).toBe(1);
-      expect(result).not.toHaveProperty('proofMode');
-
-      const bulletin = session.bulletin;
-      if (!bulletin) {
-        throw new Error('Expected bulletin board to be available');
-      }
-      const ctProof = bulletin.getInclusionProof(voteId, 1);
-      if (!ctProof) {
-        throw new Error('Expected CT inclusion proof');
-      }
-      expect(result?.merklePath).toEqual(ctProof.proofNodes.map((node) => addHexPrefix(node)));
-      expect(result?.bulletinRootAtCast).toBe(addHexPrefix(ctProof.rootHash));
-    });
-
-    it('should not fall back to incremental proof when CT proof derivation fails', async () => {
-      const session = await store.getSession(sessionId);
-      if (!session) {
-        throw new Error('Expected session to be available');
-      }
-      if (!session.bulletin) {
-        throw new Error('Expected bulletin board to be available');
-      }
-
-      const voteId = generateVoteId();
-      const { commitment, random } = createTestCommitment(0);
-      await store.addVote(sessionId, {
-        voteId,
-        vote: VoteChoice.A,
-        rand: random,
-        commit: commitment,
-        path: [],
-        timestamp: Date.now(),
       });
+    }
 
-      vi.spyOn(session.bulletin, 'getInclusionProof').mockImplementation(() => {
-        throw new Error('ct failure');
-      });
-
-      await expect(store.getVoteByIdWithProof(sessionId, voteId)).rejects.toThrow();
+    await expect(store.getBitmapData(sessionId, finalizationId)).resolves.toMatchObject({
+      includedBitmap: [true],
     });
-
-    it('should fail closed when stored rootAtCast is missing', async () => {
-      const voteId = generateVoteId();
-      const { commitment, random } = createTestCommitment(0);
-      await store.addVote(sessionId, {
-        voteId,
-        vote: VoteChoice.A,
-        rand: random,
-        commit: commitment,
-        path: [],
-        timestamp: Date.now(),
-      });
-
-      const session = await store.getSession(sessionId);
-      if (!session) {
-        throw new Error('Expected session to be available');
-      }
-      const storedVote = session.votes.get(0);
-      if (!storedVote) {
-        throw new Error('Expected stored vote');
-      }
-      delete storedVote.rootAtCast;
-
-      await expect(store.getVoteByIdWithProof(sessionId, voteId)).rejects.toThrow('CT_PROOF_UNAVAILABLE');
-    });
-
-    it('should include correct bulletin index', async () => {
-      // Arrange - Add multiple votes
-      const votes: VoteData[] = [];
-      for (let i = 0; i < 3; i++) {
-        const { commitment, random } = createTestCommitment(0); // Choice A
-        const voteData: VoteData = {
-          voteId: generateVoteId(),
-          vote: VoteChoice.A,
-          rand: random,
-          commit: commitment,
-          path: [],
-          timestamp: Date.now() + i * 1000,
-        };
-        votes.push(voteData);
-        await store.addVote(sessionId, voteData);
-      }
-
-      // Act - Get the second vote (index 1)
-      const secondVote = strictDefined(votes[1]);
-      if (!secondVote.voteId) {
-        throw new Error('Expected second vote to have a voteId');
-      }
-      const result = await store.getVoteByIdWithProof(sessionId, secondVote.voteId);
-
-      // Assert
-      expect(result).toBeDefined();
-      expect(result?.leafIndex).toBe(1); // Should be at index 1
-      expect(result?.voteData.voteId).toBe(secondVote.voteId);
-    });
-  });
-
-  describe('voteId indexing', () => {
-    it('should maintain voteId index across multiple votes', async () => {
-      // Arrange - Add multiple votes
-      const voteIds: string[] = [];
-      for (let i = 0; i < 5; i++) {
-        const voteId = generateVoteId();
-        voteIds.push(voteId);
-        const { commitment, random } = createTestCommitment(3); // Choice D
-        const voteData: VoteData = {
-          voteId,
-          vote: VoteChoice.D,
-          rand: random,
-          commit: commitment,
-          path: [],
-          timestamp: Date.now() + i * 100,
-        };
-        await store.addVote(sessionId, voteData);
-      }
-
-      // Act & Assert - Verify all votes can be retrieved
-      for (const voteId of voteIds) {
-        const result = await store.getVoteById(sessionId, voteId);
-        expect(result).toBeDefined();
-        expect(result?.voteData.voteId).toBe(voteId);
-      }
-    });
-  });
-
-  describe('commitment domain separation', () => {
-    it('should store commitments that match the election-scoped hash', async () => {
-      const session = await store.getSession(sessionId);
-      expect(session).toBeTruthy();
-      const electionId = session?.electionId;
-      expect(electionId).toBeDefined();
-      if (!electionId) {
-        throw new Error('Expected electionId to be set');
-      }
-
-      const random = '0x' + '1'.repeat(64);
-      const voteData: VoteData = {
-        voteId: generateVoteId(),
-        vote: VoteChoice.A,
-        rand: random,
-        commit: '0x' + '2'.repeat(64), // legacy placeholder
-        path: [],
-        timestamp: Date.now(),
-      };
-
-      await store.addVote(sessionId, voteData);
-
-      const updatedSession = await store.getSession(sessionId);
-      const storedVote = updatedSession?.votes.get(0);
-      expect(storedVote).toBeDefined();
-      if (!storedVote) {
-        throw new Error('Expected stored vote at index 0');
-      }
-
-      const choiceNumber = VoteChoice.A.charCodeAt(0) - 'A'.charCodeAt(0);
-      const expectedCommitment = computeCommitment(electionId, choiceNumber, random);
-
-      expect(storedVote.commit).toBe(expectedCommitment);
-    });
-  });
-
-  describe('bitmap data isolation', () => {
-    it('returns bitmap data only for the matching session', async () => {
-      const otherSession = await store.createSession();
-      const bitmapForPrimary = {
-        includedBitmap: [true, false, true, false],
-        includedBitmapRoot: '0x' + 'a'.repeat(64),
-        treeSize: 4,
-        finalizedAt: Date.now(),
-      };
-
-      await finalizeSessionForBitmap(sessionId);
-      await store.saveBitmapData(sessionId, bitmapForPrimary);
-
-      const ownBitmap = await store.getBitmapData(sessionId);
-      const otherBitmap = await store.getBitmapData(otherSession.sessionId);
-
-      expect(ownBitmap).toEqual({
-        sessionId,
-        ...bitmapForPrimary,
-      });
-      expect(otherBitmap).toBeNull();
-    });
-
-    it('keeps session A and session B bitmap data separated', async () => {
-      const sessionA = await store.createSession();
-      const sessionB = await store.createSession();
-
-      await finalizeSessionForBitmap(sessionA.sessionId);
-      await finalizeSessionForBitmap(sessionB.sessionId);
-
-      await store.saveBitmapData(sessionA.sessionId, {
-        includedBitmap: [true, false],
-        includedBitmapRoot: '0x' + 'b'.repeat(64),
-        treeSize: 2,
-        finalizedAt: 111,
-      });
-      await store.saveBitmapData(sessionB.sessionId, {
-        includedBitmap: [false, true],
-        includedBitmapRoot: '0x' + 'c'.repeat(64),
-        treeSize: 2,
-        finalizedAt: 222,
-      });
-
-      const bitmapA = await store.getBitmapData(sessionA.sessionId);
-      const bitmapB = await store.getBitmapData(sessionB.sessionId);
-
-      expect(bitmapA?.includedBitmapRoot).toBe('0x' + 'b'.repeat(64));
-      expect(bitmapB?.includedBitmapRoot).toBe('0x' + 'c'.repeat(64));
+    await expect(store.getBitmapData(other.sessionId, finalizationId)).resolves.toMatchObject({
+      includedBitmap: [false],
     });
   });
 });

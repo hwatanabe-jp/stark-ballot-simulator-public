@@ -30,6 +30,13 @@ resource "terraform_data" "ecr_signing_configuration" {
     sha256(jsonencode(local.ecr_signing_repository_filters)),
   ]
 
+  lifecycle {
+    precondition {
+      condition     = local.deployment_target_inputs_exact
+      error_message = "Foundation inputs must match the exact reviewed stark-dev/develop target and lane configuration."
+    }
+  }
+
   provisioner "local-exec" {
     command = "aws ecr put-signing-configuration --region ${self.input.aws_region} --signing-configuration '${self.input.signing_configuration}' --output json --no-cli-pager"
   }

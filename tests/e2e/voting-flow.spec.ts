@@ -8,6 +8,7 @@ import {
 } from './helpers/test-helpers';
 import type { VerificationCheckId, VerificationStepId } from './pages';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import { PLAYWRIGHT_RUNTIME_PROFILE } from './runtime-profile';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -17,15 +18,15 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
 }
 
 // Test configuration
-const USE_REAL_ZKVM = process.env['USE_REAL_ZKVM'] === 'true';
-const IS_PRODUCTION_MODE = USE_REAL_ZKVM && process.env['RISC0_DEV_MODE'] !== '1';
+const USES_RISC0_EXECUTOR = PLAYWRIGHT_RUNTIME_PROFILE.proof.executor === 'risc0';
+const IS_PRODUCTION_MODE = PLAYWRIGHT_RUNTIME_PROFILE.proof.evidence === 'production';
 const IS_CI = process.env['CI'] === 'true';
 const isRecordValue = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
 // Increase timeout based on zkVM mode
 if (IS_PRODUCTION_MODE) {
   test.setTimeout(180000); // 3 minutes per test for production STARK
-} else if (USE_REAL_ZKVM) {
+} else if (USES_RISC0_EXECUTOR) {
   test.setTimeout(120000); // 2 minutes for dev mode
 } else {
   test.setTimeout(90000); // 1.5 minutes for mock mode
@@ -49,7 +50,7 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
 
     // Mock zkVM uses random bot votes (production-like behavior)
     // E2E tests validate total vote count (sum = 64) instead of exact distribution
-    if (!USE_REAL_ZKVM) {
+    if (!USES_RISC0_EXECUTOR) {
       console.log('[E2E] Using Mock zkVM with random bot votes');
     }
 
@@ -105,7 +106,7 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
           const title = await homePage.getPageTitle();
           expect(title).toContain('STARK Ballot Simulator');
 
-          // Click start button (this should call /api/session and save sessionId)
+          // Click start button (this should call /api/sessions and save sessionId)
           console.log('  Clicking Start button...');
           await homePage.clickStart();
 
@@ -242,7 +243,7 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
 
           // Run aggregation with zkVM
           console.log(
-            `  ⏳ Running zkVM (${USE_REAL_ZKVM ? (IS_PRODUCTION_MODE ? 'production STARK' : 'dev mode') : 'mock'})...`,
+            `  ⏳ Running zkVM (${USES_RISC0_EXECUTOR ? (IS_PRODUCTION_MODE ? 'production STARK' : 'dev mode') : 'mock'})...`,
           );
           const zkStart = Date.now();
           await aggregatePage.runAggregation();
@@ -379,7 +380,8 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
     await aggregatePage.selectScenario('S0');
     const zkStart = Date.now();
     await aggregatePage.runAggregation();
-    benchmarkResults.zkvm[USE_REAL_ZKVM ? (IS_PRODUCTION_MODE ? 'production' : 'dev') : 'mock'] = Date.now() - zkStart;
+    benchmarkResults.zkvm[USES_RISC0_EXECUTOR ? (IS_PRODUCTION_MODE ? 'production' : 'dev') : 'mock'] =
+      Date.now() - zkStart;
 
     // Display benchmark results
     console.log('\n📊 Benchmark Results:');
@@ -394,7 +396,7 @@ test.describe('STARK Ballot Simulator E2E Voting Flow', () => {
     expect(strictDefined(benchmarkResults.operations['voteSubmission'])).toBeLessThan(maxVoteSubmissionMs); // 3s local / 7s CI
 
     if (!IS_PRODUCTION_MODE) {
-      expect(strictDefined(benchmarkResults.zkvm[USE_REAL_ZKVM ? 'dev' : 'mock'])).toBeLessThan(10000); // 10s for mock/dev
+      expect(strictDefined(benchmarkResults.zkvm[USES_RISC0_EXECUTOR ? 'dev' : 'mock'])).toBeLessThan(10000); // 10s for mock/dev
     }
   });
 });

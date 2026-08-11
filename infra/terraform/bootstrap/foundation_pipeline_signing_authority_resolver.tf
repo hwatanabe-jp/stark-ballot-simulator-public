@@ -35,33 +35,15 @@ resource "aws_codebuild_project" "foundation_image_signing_authority_resolver" {
 
   logs_config {
     cloudwatch_logs {
-      group_name  = aws_cloudwatch_log_group.foundation_pipeline_codebuild[local.foundation_image_signing_authority_resolver_project_name].name
+      group_name  = module.foundation_pipeline_codebuild_log_groups.log_groups[local.foundation_image_signing_authority_resolver_project_name].name
       stream_name = "foundation-signing-authority"
     }
   }
 
   source {
     type = "CODEPIPELINE"
-    buildspec = yamlencode({
-      version = "0.2"
-      phases = {
-        build = {
-          commands = [
-            "set -eu",
-            "test \"$REQUESTED_SOURCE_SHA\" = \"$PIPELINE_SOURCE_SHA\"",
-            "test \"$REQUESTED_SOURCE_SHA\" = \"$CODEBUILD_RESOLVED_SOURCE_VERSION\"",
-            "printf '%s' \"$REQUESTED_SOURCE_SHA\" | grep -Eq '^[0-9a-f]{40}$'",
-            "mkdir -p foundation-signing-authority",
-            "node infra/terraform/bootstrap/foundation-pipeline-scripts/validate-foundation-image-signing-authority.mjs --bucket \"$FOUNDATION_SIGNING_AUTHORITY_BUCKET\" --key \"$FOUNDATION_SIGNING_AUTHORITY_KEY\" --version-id \"$FOUNDATION_SIGNING_AUTHORITY_VERSION_ID\" --sha256 \"$FOUNDATION_SIGNING_AUTHORITY_SHA256\" --expected-account-id \"$AWS_ACCOUNT_ID\" --region \"$AWS_DEFAULT_REGION\" --source-sha \"$REQUESTED_SOURCE_SHA\" --output foundation-signing-authority/foundation-signing-authority.json",
-          ]
-        }
-      }
-      artifacts = {
-        files = [
-          "foundation-signing-authority/foundation-signing-authority.json",
-        ]
-        "discard-paths" = true
-      }
+    buildspec = templatefile("${path.module}/buildspec-foundation-signing-authority-resolver.yml.tftpl", {
+      entrypoint_sha256 = filesha256("${path.module}/foundation-pipeline-scripts/resolve-foundation-signing-authority.sh")
     })
   }
 

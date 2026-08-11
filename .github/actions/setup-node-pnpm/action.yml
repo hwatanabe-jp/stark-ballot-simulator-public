@@ -24,15 +24,46 @@ runs:
         node-version: ${{ inputs.node-version }}
 
     - name: Setup pnpm
+      id: pnpm
       shell: bash
+      env:
+        INSTALL_DEPENDENCIES: ${{ inputs.install }}
+        LOCKFILE_PATH: ${{ inputs.lockfile }}
       run: |
+        case "$INSTALL_DEPENDENCIES" in
+          true | false) ;;
+          *)
+            echo "::error::install must be either 'true' or 'false'." >&2
+            exit 1
+            ;;
+        esac
+        if [[ "$INSTALL_DEPENDENCIES" == "true" && ! -f "$LOCKFILE_PATH" ]]; then
+          echo "::error::Lockfile not found: $LOCKFILE_PATH" >&2
+          exit 1
+        fi
+
         export COREPACK_HOME="$RUNNER_TEMP/corepack"
         mkdir -p "$RUNNER_TEMP/pnpm-bin"
         corepack enable --install-directory "$RUNNER_TEMP/pnpm-bin"
-        corepack prepare pnpm@11.15.1 --activate
+        corepack install
         printf '%s\n' "$RUNNER_TEMP/pnpm-bin" >> "$GITHUB_PATH"
         printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
         "$RUNNER_TEMP/pnpm-bin/pnpm" --version
+        pnpm_store_path="$("$RUNNER_TEMP/pnpm-bin/pnpm" store path)"
+        if [[ -z "$pnpm_store_path" ]]; then
+          echo "::error::pnpm returned an empty store path." >&2
+          exit 1
+        fi
+        printf 'store-path=%s\n' "$pnpm_store_path" >> "$GITHUB_OUTPUT"
+
+    - name: Restore and save pnpm store
+      if: ${{ inputs.install == 'true' }}
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.pnpm.outputs.store-path }}
+        key: pnpm-store-${{ runner.os }}-${{ runner.arch }}-node-${{ inputs.node-version }}-${{ hashFiles(inputs.lockfile) }}
+        restore-keys: |
+          pnpm-store-${{ runner.os }}-${{ runner.arch }}-node-${{ inputs.node-version }}-
 
     - name: Install dependencies
       if: ${{ inputs.install == 'true' }}

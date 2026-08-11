@@ -2,6 +2,11 @@
   "name": "@stark-ballot/runtime-config",
   "private": true,
   "type": "module",
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec eslint packages/runtime-config",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/runtime-config",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.browser.json && tsc --noEmit -p tsconfig.test.json"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./env/*": "./src/env/*"
@@ -10,6 +15,6 @@
     "@stark-ballot/validation": "workspace:*"
   },
   "devDependencies": {
-    "vitest": "4.1.10"
+    "vitest": "catalog:testing"
   }
 }

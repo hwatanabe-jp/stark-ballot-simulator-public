@@ -8,10 +8,6 @@ import type { VerificationPayload } from '../lib/verification-data';
 import { useVerificationObservation } from './useVerificationObservation';
 
 vi.mock('@stark-ballot/web/session', () => ({
-  getSessionAuthHeaders: vi.fn(() => ({
-    'X-Session-ID': 'session-1',
-    'X-Session-Capability': 'redacted-capability',
-  })),
   getSessionDataForIdentity: vi.fn(() => ({
     sessionId: 'session-1',
     capabilityToken: 'redacted-capability',
@@ -38,7 +34,7 @@ const castCheckIds = [
 
 function payload(): VerificationPayload {
   return {
-    verificationExecutionId: 'execution-1',
+    finalizationId: 'finalization-1',
     verificationStatus: 'success',
     verificationChecks: castCheckIds.map((id) => {
       const definition = VERIFICATION_CHECK_DEFINITIONS.find((candidate) => candidate.id === id);
@@ -58,7 +54,15 @@ function payload(): VerificationPayload {
 describe('useVerificationObservation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockApiFetch.mockResolvedValue(new Response(JSON.stringify({ data: { status: 'recorded' } }), { status: 200 }));
+    mockApiFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: { status: 'recorded' },
+          meta: { requestId: 'request-id' },
+        }),
+        { status: 200 },
+      ),
+    );
   });
 
   it('submits once only after server validation, terminal verification, and completed presentation', async () => {
@@ -99,23 +103,24 @@ describe('useVerificationObservation', () => {
     rerender({ sequenceComplete: true, verificationStatus: 'success' });
 
     await waitFor(() => expect(mockApiFetch).toHaveBeenCalledOnce());
-    expect(mockApiFetch).toHaveBeenCalledWith('/api/verification/observation', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-ID': 'session-1',
-        'X-Session-Capability': 'redacted-capability',
-      },
-      body: JSON.stringify({
-        verificationExecutionId: 'execution-1',
-        castChecks: {
-          cast_receipt_present: 'success',
-          cast_choice_range: 'success',
-          cast_random_format: 'success',
-          cast_commitment_match: 'success',
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      '/api/sessions/session-1/finalizations/finalization-1/verification/observations',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Capability': 'redacted-capability',
         },
-      }),
-    });
+        body: JSON.stringify({
+          castChecks: {
+            cast_receipt_present: 'success',
+            cast_choice_range: 'success',
+            cast_random_format: 'success',
+            cast_commitment_match: 'success',
+          },
+        }),
+      },
+    );
 
     rerender({ sequenceComplete: true, verificationStatus: 'success' });
     await Promise.resolve();
@@ -158,7 +163,16 @@ describe('useVerificationObservation', () => {
 
   it('does not retry a deterministic client error for the same observation fingerprint', async () => {
     mockApiFetch.mockResolvedValue(
-      new Response(JSON.stringify({ error: 'INVALID_REQUEST', statusCode: 409 }), { status: 409 }),
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 'INVALID_REQUEST',
+            message: 'Invalid verification observation',
+          },
+          meta: { requestId: 'request-id' },
+        }),
+        { status: 409 },
+      ),
     );
     const sessionIdentityRef = {
       current: {

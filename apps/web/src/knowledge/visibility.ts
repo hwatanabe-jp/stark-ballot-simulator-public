@@ -50,7 +50,7 @@ export const VERIFY_BOT_KNOWLEDGE_KEYS: ReadonlyArray<keyof KnowledgeData> = [
 
 export const HIDDEN_KNOWLEDGE_KEYS: ReadonlyArray<keyof KnowledgeData> = [
   'sessionId',
-  'user.voteTimestamp',
+  'user.castAtMs',
   'scenarioId',
   'verification.steps',
   'verification.reportSummary',

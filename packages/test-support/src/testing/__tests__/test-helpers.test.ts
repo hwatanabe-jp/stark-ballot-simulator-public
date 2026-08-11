@@ -170,11 +170,11 @@ describe('test-helpers', () => {
   });
 
   describe('createTestJournal', () => {
-    it('should keep record-only rejections out of slot-based compatibility mirrors', () => {
+    it('should keep record-only rejections out of slot-based counts', () => {
       const counts = normalizeTestJournalCounts({
         validVotes: 4,
-        missingIndices: 6,
-        invalidIndices: 0,
+        missingSlots: 6,
+        invalidPresentedSlots: 0,
         rejectedRecords: 3,
       });
 
@@ -187,10 +187,10 @@ describe('test-helpers', () => {
       expect(counts.excludedSlots).toBe(6);
     });
 
-    it('should derive seenIndicesCount from counted and slot-invalid counts', () => {
+    it('should derive seenIndicesCount from valid and slot-invalid counts', () => {
       const counts = normalizeTestJournalCounts({
-        countedIndices: 4,
-        invalidIndices: 2,
+        validVotes: 4,
+        invalidPresentedSlots: 2,
       });
 
       expect(counts.validVotes).toBe(4);
@@ -218,11 +218,11 @@ describe('test-helpers', () => {
       expect(journal.tamperDetected).toBeUndefined();
     });
 
-    it('should derive slot-based compatibility counts from the current journal fields', () => {
+    it('should derive slot-based counts from the current journal fields', () => {
       const journal = createTestJournal({
         totalExpected: 10,
         validVotes: 4,
-        missingIndices: 6,
+        missingSlots: 6,
       });
 
       expect(journal.validVotes).toBe(4);
@@ -240,8 +240,8 @@ describe('test-helpers', () => {
       const journal = createTestJournal({
         totalExpected: 10,
         validVotes: 4,
-        missingIndices: 2,
-        invalidIndices: 4,
+        missingSlots: 2,
+        invalidPresentedSlots: 4,
         seenIndicesCount: 8,
       });
 
@@ -255,12 +255,12 @@ describe('test-helpers', () => {
       expect(journal.excludedSlots).toBe(6);
     });
 
-    it('should treat invalidIndices as a legacy alias for slot-based invalidPresentedSlots', () => {
+    it('should use invalidPresentedSlots as the slot-invalid count', () => {
       const journal = createTestJournal({
         totalExpected: 10,
         validVotes: 4,
-        missingIndices: 2,
-        invalidIndices: 4,
+        missingSlots: 2,
+        invalidPresentedSlots: 4,
       });
 
       expect(journal.seenIndicesCount).toBe(8);
@@ -271,16 +271,16 @@ describe('test-helpers', () => {
       expect(journal.totalVotes).toBe(8);
     });
 
-    it('should throw when invalidIndices and seenIndicesCount disagree about slot counts', () => {
+    it('should throw when invalidPresentedSlots and seenIndicesCount disagree about slot counts', () => {
       expect(() =>
         createTestJournal({
           totalExpected: 10,
           validVotes: 4,
-          missingIndices: 2,
-          invalidIndices: 3,
+          missingSlots: 2,
+          invalidPresentedSlots: 3,
           seenIndicesCount: 8,
         }),
-      ).toThrow(/invalidIndices/i);
+      ).toThrow(/invalidPresentedSlots/i);
     });
 
     it('should throw when the slot partition exceeds totalExpected', () => {
@@ -288,8 +288,8 @@ describe('test-helpers', () => {
         createTestJournal({
           totalExpected: 10,
           validVotes: 4,
-          missingIndices: 1,
-          invalidIndices: 6,
+          missingSlots: 1,
+          invalidPresentedSlots: 6,
         }),
       ).toThrow(/slot partition/i);
     });
@@ -298,7 +298,7 @@ describe('test-helpers', () => {
       const journal = createTestJournal({
         totalExpected: 10,
         validVotes: 4,
-        missingIndices: 6,
+        missingSlots: 6,
         rejectedRecords: 3,
       });
 
@@ -312,13 +312,13 @@ describe('test-helpers', () => {
       expect(journal.excludedSlots).toBe(6);
     });
 
-    it('should throw when rejectedRecords is smaller than slot-based invalidIndices', () => {
+    it('should throw when rejectedRecords is smaller than invalidPresentedSlots', () => {
       expect(() =>
         createTestJournal({
           totalExpected: 10,
           validVotes: 4,
-          missingIndices: 2,
-          invalidIndices: 4,
+          missingSlots: 2,
+          invalidPresentedSlots: 4,
           rejectedRecords: 3,
         }),
       ).toThrow(/rejectedRecords/i);

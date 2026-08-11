@@ -27,7 +27,7 @@ export {
 } from './visibility';
 
 // Normalizer
-export { normalizeKnowledgeData, normalizeBotData, getPhaseForKey } from './normalizer';
+export { normalizeKnowledgeData, getPhaseForKey } from './normalizer';
 
 // Store
 export {
@@ -35,7 +35,6 @@ export {
   getKnowledgeValue,
   saveKnowledgeData,
   mergeKnowledgeFromApi,
-  mergeBotKnowledge,
   clearBotKnowledge,
   clearKnowledge,
   clearKnowledgeForSession,

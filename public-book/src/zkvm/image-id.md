@@ -55,7 +55,7 @@ Image ID は RISC Zero のビルドシステムによってコンパイル時に
 
 app deployment では、選択された prover release metadata から Image ID と methodVersion を導出し、mapping は互換性と公開台帳の証拠として照合します。
 `public/imageId-mapping.json` は公開検証者が expected Image ID を解決するための互換性台帳であり、prover image digest の承認 authority ではありません。
-ECR digest と Image ID / `methodVersion` の組み合わせは、選択された prover release record と app deployment record で固定します。
+ECR digest と Image ID / `methodVersion` の組み合わせは、選択された prover release record と app deployment record で固定します（candidate metadata から app deployment record までの chain は [イメージ署名](../aws/image-signing.md#image-id-との関係) を参照）。
 
 現行実装では、実行環境を自動判定して x86_64 を選びません。
 未指定時は `default` variant を選択します。
@@ -125,7 +125,7 @@ flowchart TD
   設定されている場合は mapping と variant による解決を行わず、その値を期待 Image ID として採用します。
   運用者は、この値が対象 methodVersion のデプロイ済みゲスト Image ID と一致することを別途保証する必要があります。
   不一致なら `stark_image_id_match` または `stark_receipt_verify` が失敗します。
-- `resolveExpectedImageId()` / `/api/verification/run` の version 選択は、省略時はマッピングの `current` を使用し、明示時は `CURRENT_METHOD_VERSION` と一致する場合のみ受理します（`deprecated` 側は拒否）。
+- `resolveExpectedImageId()` / `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification` の version 選択は、省略時はマッピングの `current` を使用し、明示時は `CURRENT_METHOD_VERSION` と一致する場合のみ受理します（`deprecated` 側は拒否）。
 - 低レベルのマッピング読み取り API は、mapping に保持されている version だけを明示的に解決できます。
   現行 mapping には v13 以下が存在しないため、それらも fail-closed で拒否します。
 - 現行の検証実行フローでは、正規化済みのジャーナルから `methodVersion` を取得して `resolveExpectedImageId(methodVersion)` を呼びます（`public-input.json` フォールバックは現行未使用）。
@@ -171,7 +171,7 @@ Image ID が一致していても、`RISC0_DEV_MODE=1` の dev-mode receipt（�
 ゲストプログラムを変更した場合、Image ID を更新する必要があります。
 
 1. ゲスト変更と authority schema を Commit A に入れ、target `default` を `unconfirmed` にする
-2. 管理された Prover lane でイメージを 1 回ビルドし、push 前後の `host --print-image-id --json` が一致することを確認して release を昇格する
+2. 管理された Prover lane でイメージを 1 回ビルドし、push 前後の `host --print-image-id --json` が一致することを確認して release を昇格する（candidate build と promotion の AWS 側の詳細は [イメージ署名](../aws/image-signing.md#ビルドと署名の概念) を参照）
 3. accepted Prover release の immutable key / VersionId / body SHA-256 を確認する
 4. Commit B で `default` を `confirmed` にし、accepted release の Image ID、image digest、candidate/release/Toolchain record checksum を provenance に記録する
 5. Foundation と App の saved-plan lane で Commit B を反映する。App は Prover release の `zkvmContractHash` と App source の再計算値も照合する
@@ -185,7 +185,7 @@ Commit A の `unconfirmed` 期間は意図的に App deployment が停止しま�
 片方だけをデプロイ可能な状態にするフォールバックはありません。
 一方で、entrypoint だけの prover container rebuild のように guest Image ID が変わらない変更では、ECR digest は変わっても mapping を更新する必要はありません。
 
-- 通常の `/api/verification/run` フローでは、現行の journal contract のみ受け付ける
+- 通常の `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification` フローでは、現行の journal contract のみ受け付ける
 - 旧成果物は Image ID 照合に進む前に、未対応の journal contract として失敗し得る
 - `DEFAULT_POC_IMAGE_ID` はテスト用定数で、期待 Image ID の解決経路には現れない（マッピングが source of truth）
 

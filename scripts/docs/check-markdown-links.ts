@@ -16,9 +16,22 @@ const EXCLUDED_DIRECTORIES = new Set([
   'test-results',
 ]);
 
+const REVIEWED_HISTORICAL_REFERENCES_PATH = 'scripts/docs/reviewed-historical-markdown-references.json';
+
 interface MarkdownReference {
   destination: string;
   line: number;
+}
+
+interface ReviewedHistoricalReference {
+  sourcePath: string;
+  line: number;
+  destination: string;
+}
+
+interface ReviewedHistoricalReferenceManifest {
+  historicalRoots: string[];
+  references: ReviewedHistoricalReference[];
 }
 
 export interface MarkdownLinkProblem {
@@ -30,6 +43,97 @@ export interface MarkdownLinkProblem {
 
 function compareText(left: string, right: string): number {
   return left.localeCompare(right, 'en');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expectedKeys: readonly string[]): boolean {
+  return Object.keys(value).sort(compareText).join('\0') === [...expectedKeys].sort(compareText).join('\0');
+}
+
+function reviewedHistoricalReferenceKey(reference: ReviewedHistoricalReference): string {
+  return `${reference.sourcePath}\0${reference.line}\0${reference.destination}`;
+}
+
+function parseReviewedHistoricalReference(value: unknown, index: number): ReviewedHistoricalReference {
+  const location = `${REVIEWED_HISTORICAL_REFERENCES_PATH}.references[${index}]`;
+  if (!isRecord(value) || !hasExactKeys(value, ['destination', 'line', 'sourcePath'])) {
+    throw new Error(`${location} must contain exactly sourcePath, line, and destination`);
+  }
+
+  const sourcePath = value['sourcePath'];
+  const line = value['line'];
+  const destination = value['destination'];
+  if (typeof sourcePath !== 'string' || path.posix.normalize(sourcePath) !== sourcePath || /[*?[\]]/.test(sourcePath)) {
+    throw new Error(`${location}.sourcePath must be an exact normalized repository path`);
+  }
+  if (typeof line !== 'number' || !Number.isInteger(line) || line < 1) {
+    throw new Error(`${location}.line must be a positive integer`);
+  }
+  if (typeof destination !== 'string' || destination.length === 0 || /[*?[\]]/.test(destination)) {
+    throw new Error(`${location}.destination must be an exact non-empty link destination`);
+  }
+
+  return { sourcePath, line, destination };
+}
+
+function parseHistoricalRoot(value: unknown, index: number): string {
+  const location = `${REVIEWED_HISTORICAL_REFERENCES_PATH}.historicalRoots[${index}]`;
+  if (
+    typeof value !== 'string' ||
+    !value.endsWith('/') ||
+    path.posix.normalize(value) !== value ||
+    /[*?[\]]/.test(value)
+  ) {
+    throw new Error(`${location} must be an exact normalized repository directory prefix`);
+  }
+  return value;
+}
+
+function loadReviewedHistoricalReferenceManifest(root: string): ReviewedHistoricalReferenceManifest {
+  const manifestPath = path.join(root, REVIEWED_HISTORICAL_REFERENCES_PATH);
+  if (!existsSync(manifestPath)) {
+    return { historicalRoots: [], references: [] };
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(manifestPath, 'utf8')) as unknown;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${REVIEWED_HISTORICAL_REFERENCES_PATH} is not valid JSON: ${message}`);
+  }
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['historicalRoots', 'references']) ||
+    !Array.isArray(value['historicalRoots']) ||
+    !Array.isArray(value['references'])
+  ) {
+    throw new Error(
+      `${REVIEWED_HISTORICAL_REFERENCES_PATH} must contain exactly historicalRoots and references arrays`,
+    );
+  }
+
+  const historicalRoots = value['historicalRoots'].map(parseHistoricalRoot);
+  const references = value['references'].map(parseReviewedHistoricalReference);
+  for (const reference of references) {
+    if (!historicalRoots.some((historicalRoot) => reference.sourcePath.startsWith(historicalRoot))) {
+      throw new Error(
+        `${REVIEWED_HISTORICAL_REFERENCES_PATH}: reviewed historical reference source must be under an approved historical root`,
+      );
+    }
+  }
+  const keys = new Set<string>();
+  for (const reference of references) {
+    const key = reviewedHistoricalReferenceKey(reference);
+    if (keys.has(key)) {
+      throw new Error(`${REVIEWED_HISTORICAL_REFERENCES_PATH} contains a duplicate reviewed reference`);
+    }
+    keys.add(key);
+  }
+  return { historicalRoots, references };
 }
 
 function toRepoPath(root: string, absolutePath: string): string {
@@ -245,6 +349,7 @@ export function findBrokenMarkdownLinks(rootPath: string): MarkdownLinkProblem[]
     throw new Error(`Markdown link root is not a directory: ${root}`);
   }
 
+  const { references: reviewedHistoricalReferences } = loadReviewedHistoricalReferenceManifest(root);
   const problems: MarkdownLinkProblem[] = [];
   const anchorCache = new Map<string, Set<string>>();
 
@@ -312,12 +417,28 @@ export function findBrokenMarkdownLinks(rootPath: string): MarkdownLinkProblem[]
     }
   }
 
-  return problems.sort((left, right) => {
-    const pathOrder = compareText(left.sourcePath, right.sourcePath);
-    if (pathOrder !== 0) return pathOrder;
-    if (left.line !== right.line) return left.line - right.line;
-    return compareText(left.destination, right.destination);
-  });
+  const reviewableProblems = new Set(
+    problems
+      .filter((problem) => problem.reason === 'missing-target' || problem.reason === 'missing-anchor')
+      .map(reviewedHistoricalReferenceKey),
+  );
+  for (const reference of reviewedHistoricalReferences) {
+    if (!reviewableProblems.has(reviewedHistoricalReferenceKey(reference))) {
+      throw new Error(
+        `${REVIEWED_HISTORICAL_REFERENCES_PATH}: stale reviewed historical reference ${reference.sourcePath}:${reference.line} -> ${reference.destination}`,
+      );
+    }
+  }
+
+  const reviewedKeys = new Set(reviewedHistoricalReferences.map(reviewedHistoricalReferenceKey));
+  return problems
+    .filter((problem) => !reviewedKeys.has(reviewedHistoricalReferenceKey(problem)))
+    .sort((left, right) => {
+      const pathOrder = compareText(left.sourcePath, right.sourcePath);
+      if (pathOrder !== 0) return pathOrder;
+      if (left.line !== right.line) return left.line - right.line;
+      return compareText(left.destination, right.destination);
+    });
 }
 
 export function assertMarkdownLinksValid(rootPath: string): void {

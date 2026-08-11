@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 import { createTestJournal, createTestVoteWithProof } from '@stark-ballot/test-support/testing/test-helpers';
-import type { FinalizationScenarioContext } from '@stark-ballot/domain/types/server';
+import type { FinalizationScenarioContext } from '@stark-ballot/application/finalize/finalization-types';
 import {
   buildFinalizationResultFromJournal,
   hasConsistentPublicAuditArtifacts,
@@ -20,8 +20,8 @@ import {
   type ZkVMInput,
   type ZkVMJournal,
 } from '@stark-ballot/zkvm-contract/zkvm/types';
-import { resolveCurrentContractGeneration } from '@stark-ballot/domain/contract';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import { sanitizeFinalizationResultVerificationStatus } from '@stark-ballot/verification/fail-closed-status';
 
 function createAuthoritativePublicInputArtifact(
   journal: Pick<
@@ -60,8 +60,8 @@ describe('buildFinalizationResultFromJournal', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 61,
-      missingIndices: 1,
-      invalidIndices: 2,
+      missingSlots: 1,
+      invalidPresentedSlots: 2,
     });
 
     const result = buildFinalizationResultFromJournal({
@@ -80,9 +80,9 @@ describe('buildFinalizationResultFromJournal', () => {
     expect(result.tally.tamperedCount).toBe(journal.excludedSlots);
     expect(result.tamperDetected).toBe(true);
     expect(result).not.toHaveProperty('s3BundleKey');
-    expect(result).not.toHaveProperty('s3UploadedAt');
+    expect(result).not.toHaveProperty('s3UploadedAtMs');
     expect(result.imageId).toBe('image-id-123');
-    expect(result).not.toHaveProperty('verificationExecutionId');
+    expect(result).not.toHaveProperty('finalizationId');
     expect(result.electionManifest).toBeUndefined();
     expect(result.closeStatement).toBeUndefined();
     expect(result.journal).toEqual(journal);
@@ -131,8 +131,8 @@ describe('buildFinalizationResultFromJournal', () => {
     const journal = createTestJournal({
       totalExpected: 3,
       validVotes: 3,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
     });
 
     const scenarioContext: FinalizationScenarioContext = {
@@ -178,8 +178,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 60,
-      missingIndices: 2,
-      invalidIndices: 2,
+      missingSlots: 2,
+      invalidPresentedSlots: 2,
     });
 
     const partialResult = {
@@ -215,13 +215,13 @@ describe('hydrateFinalizationResultFromJournal', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 64,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
     });
 
     const publicInputArtifact = createTestPublicInputArtifact({
       source: 'bundle',
-      executionId: 'exec-1',
+      finalizationId: 'exec-1',
       bundleKey: 'sessions/session-1/exec-1/bundle.zip',
       typedAuthority: {
         electionId: journal.electionId,
@@ -261,8 +261,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 64,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
     });
 
     const publicInputArtifact = createTestPublicInputArtifact({
@@ -312,17 +312,17 @@ describe('hydrateFinalizationResultFromJournal', () => {
     expect(hydrated?.closeStatement).toEqual(closeStatement);
   });
 
-  it('accepts generated public input summary when sync authority matches execution and bundle identity', () => {
+  it('accepts generated public input summary when sync authority matches finalization and bundle identity', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 64,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
     });
 
     const publicInputArtifact = createTestPublicInputArtifact({
       source: 'generated',
-      executionId: 'exec-1',
+      finalizationId: 'exec-1',
       bundleKey: 'sessions/session-1/exec-1/bundle.zip',
       typedAuthority: {
         electionId: journal.electionId,
@@ -373,8 +373,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 64,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
     });
 
     const closeStatement = buildCloseStatement({
@@ -403,7 +403,7 @@ describe('hydrateFinalizationResultFromJournal', () => {
       },
       publicInputArtifact: createTestPublicInputArtifact({
         source: 'generated',
-        executionId: 'stale-exec',
+        finalizationId: 'stale-exec',
         bundleKey: 'sessions/session-1/stale-exec/bundle.zip',
         typedAuthority: {
           electionId: journal.electionId,
@@ -423,7 +423,7 @@ describe('hydrateFinalizationResultFromJournal', () => {
 
     expect(hydrated?.publicInputArtifact?.provenance).toMatchObject({
       source: 'generated',
-      executionId: 'stale-exec',
+      finalizationId: 'stale-exec',
       bundleKey: 'sessions/session-1/stale-exec/bundle.zip',
     });
   });
@@ -432,8 +432,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 64,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
     });
 
     const hydrated = hydrateFinalizationResultFromJournal({
@@ -452,7 +452,7 @@ describe('hydrateFinalizationResultFromJournal', () => {
       },
       publicInputArtifact: createTestPublicInputArtifact({
         source: 'bundle',
-        executionId: 'exec-1',
+        finalizationId: 'exec-1',
         bundleKey: 'sessions/session-1/exec-1/bundle.zip',
         typedAuthority: {
           votesCount: 64,
@@ -472,8 +472,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 64,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
     });
 
     const hydrated = hydrateFinalizationResultFromJournal({
@@ -499,8 +499,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 61,
-      missingIndices: 1,
-      invalidIndices: 2,
+      missingSlots: 1,
+      invalidPresentedSlots: 2,
     });
 
     const hydrated = hydrateFinalizationResultFromJournal({
@@ -556,8 +556,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
       ...createTestJournal({
         totalExpected: 64,
         validVotes: 61,
-        missingIndices: 1,
-        invalidIndices: 2,
+        missingSlots: 1,
+        invalidPresentedSlots: 2,
       }),
       imageId: '0x' + '9'.repeat(64),
     };
@@ -578,7 +578,7 @@ describe('hydrateFinalizationResultFromJournal', () => {
     };
     const publicInputArtifact = createTestPublicInputArtifact({
       source: 'bundle',
-      executionId: 'exec-1',
+      finalizationId: 'exec-1',
       bundleKey: 'sessions/session-1/exec-1/bundle.zip',
       typedAuthority: {
         electionId: journal.electionId,
@@ -653,7 +653,7 @@ describe('hydrateFinalizationResultFromJournal', () => {
       seal: 'base64-seal',
       journal: 'base64-journal',
     });
-    expect(hydrated).not.toHaveProperty('verificationExecutionId');
+    expect(hydrated).not.toHaveProperty('finalizationId');
     expect(hydrated).not.toHaveProperty('receiptRaw');
   });
 
@@ -662,8 +662,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
       ...createTestJournal({
         totalExpected: 64,
         validVotes: 61,
-        missingIndices: 1,
-        invalidIndices: 2,
+        missingSlots: 1,
+        invalidPresentedSlots: 2,
       }),
       missingIndices: 99,
       invalidIndices: 98,
@@ -691,12 +691,12 @@ describe('hydrateFinalizationResultFromJournal', () => {
     expect(hydrated).toBeUndefined();
   });
 
-  it('downgrades persisted verification success when canonical journal shows excluded votes', () => {
+  it('keeps verification separate and downgrades success when canonical journal shows excluded votes', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 61,
-      missingIndices: 1,
-      invalidIndices: 2,
+      missingSlots: 1,
+      invalidPresentedSlots: 2,
     });
 
     const hydrated = hydrateFinalizationResultFromJournal({
@@ -714,20 +714,24 @@ describe('hydrateFinalizationResultFromJournal', () => {
         tamperedCount: 3,
       },
       publicInputArtifact: createAuthoritativePublicInputArtifact(journal),
-      verificationResult: {
-        status: 'success',
-      },
     });
 
-    expect(hydrated?.verificationResult?.status).toBe('failed');
+    expect(hydrated).not.toHaveProperty('verificationResult');
+    const sanitized = hydrated
+      ? sanitizeFinalizationResultVerificationStatus({
+          ...hydrated,
+          verificationResult: { status: 'success' },
+        })
+      : undefined;
+    expect(sanitized?.verificationResult.status).toBe('failed');
   });
 
   it('fails closed when a current-method journal is missing seenBitmapRoot', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 64,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
       seenIndicesCount: 64,
     });
     const unsupportedJournal = {
@@ -754,13 +758,13 @@ describe('hydrateFinalizationResultFromJournal', () => {
     expect(hydrated).toBeUndefined();
   });
 
-  it('keeps persisted STARK verification success when only the claimed tally disagrees with verified tally', () => {
+  it('keeps separate STARK verification success when only the claimed tally disagrees with verified tally', () => {
     const journal = {
       ...createTestJournal({
         totalExpected: 3,
         validVotes: 3,
-        missingIndices: 0,
-        invalidIndices: 0,
+        missingSlots: 0,
+        invalidPresentedSlots: 0,
       }),
       verifiedTally: [1, 0, 1, 0, 1],
     };
@@ -780,12 +784,16 @@ describe('hydrateFinalizationResultFromJournal', () => {
         tamperedCount: 1,
       },
       publicInputArtifact: createAuthoritativePublicInputArtifact(journal),
-      verificationResult: {
-        status: 'success',
-      },
     });
 
-    expect(hydrated?.verificationResult?.status).toBe('success');
+    expect(hydrated).not.toHaveProperty('verificationResult');
+    const sanitized = hydrated
+      ? sanitizeFinalizationResultVerificationStatus({
+          ...hydrated,
+          verificationResult: { status: 'success' },
+        })
+      : undefined;
+    expect(sanitized?.verificationResult.status).toBe('success');
   });
 
   it('fails closed when the persisted journal methodVersion is unsupported', () => {
@@ -815,8 +823,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 61,
-      missingIndices: 1,
-      invalidIndices: 2,
+      missingSlots: 1,
+      invalidPresentedSlots: 2,
     });
 
     const hydrated = hydrateFinalizationResultFromJournal({
@@ -864,8 +872,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 64,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
     });
 
     const hydrated = hydrateFinalizationResultFromJournal({
@@ -911,8 +919,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 64,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
     });
 
     const driftedCloseStatement = buildCloseStatement({
@@ -946,8 +954,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
     const journal = createTestJournal({
       totalExpected: 64,
       validVotes: 64,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
     });
     const bundleKey = 'sessions/session-1/exec-1/bundle.zip';
     const electionManifest = buildElectionManifest(journal.electionId, buildDefaultElectionConfig());
@@ -966,7 +974,7 @@ describe('hydrateFinalizationResultFromJournal', () => {
       },
       publicInputArtifact: createTestPublicInputArtifact({
         source: 'generated',
-        executionId: 'exec-1',
+        finalizationId: 'exec-1',
         bundleKey,
         typedAuthority: {
           electionId: journal.electionId,
@@ -986,17 +994,16 @@ describe('hydrateFinalizationResultFromJournal', () => {
     };
 
     expect(hasConsistentPublicAuditArtifacts(result)).toBe(true);
-    expect(
-      hasConsistentPublicAuditArtifacts({
-        ...result,
-        verificationResult: {
-          status: 'success',
-        },
-      }),
-    ).toBe(true);
+    const resultWithNestedVerification = {
+      ...result,
+      verificationResult: {
+        status: 'success',
+      },
+    } as unknown as Parameters<typeof hasConsistentPublicAuditArtifacts>[0];
+    expect(hasConsistentPublicAuditArtifacts(resultWithNestedVerification)).toBe(true);
   });
 
-  it('does not treat local bundle artifacts as authoritative when bundlePath execution mismatches expected authority', async () => {
+  it('does not treat local bundle artifacts as authoritative when bundlePath finalization mismatches expected authority', async () => {
     const previousVerifierWorkDir = process.env['VERIFIER_WORK_DIR'];
     const verifierWorkDir = await fs.mkdtemp(path.join(os.tmpdir(), 'finalization-result-'));
     process.env['VERIFIER_WORK_DIR'] = verifierWorkDir;
@@ -1040,8 +1047,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
           electionId,
           totalExpected: zkvmInput.totalExpected,
           validVotes: 1,
-          missingIndices: zkvmInput.totalExpected - 1,
-          invalidIndices: 0,
+          missingSlots: zkvmInput.totalExpected - 1,
+          invalidPresentedSlots: 0,
         }),
         electionConfigHash: zkvmInput.electionConfigHash,
         bulletinRoot: zkvmInput.bulletinRoot,
@@ -1065,7 +1072,6 @@ describe('hydrateFinalizationResultFromJournal', () => {
           {
             schema: 'stark-ballot.public_input',
             version: '1.1',
-            contractGeneration: resolveCurrentContractGeneration(),
             electionId: zkvmInput.electionId,
             electionConfigHash: zkvmInput.electionConfigHash,
             bulletinRoot: zkvmInput.bulletinRoot,
@@ -1099,9 +1105,6 @@ describe('hydrateFinalizationResultFromJournal', () => {
       expect(
         hasConsistentPublicAuditArtifacts({
           journal,
-          verificationResult: {
-            status: 'success',
-          },
         }),
       ).toBe(false);
     } finally {
@@ -1155,8 +1158,8 @@ describe('hydrateFinalizationResultFromJournal', () => {
           electionId,
           totalExpected: zkvmInput.totalExpected,
           validVotes: 1,
-          missingIndices: zkvmInput.totalExpected - 1,
-          invalidIndices: 0,
+          missingSlots: zkvmInput.totalExpected - 1,
+          invalidPresentedSlots: 0,
         }),
         electionConfigHash: zkvmInput.electionConfigHash,
         bulletinRoot: zkvmInput.bulletinRoot,
@@ -1181,7 +1184,6 @@ describe('hydrateFinalizationResultFromJournal', () => {
           {
             schema: 'stark-ballot.public_input',
             version: '1.1',
-            contractGeneration: resolveCurrentContractGeneration(),
             electionId: zkvmInput.electionId,
             electionConfigHash: zkvmInput.electionConfigHash,
             bulletinRoot: zkvmInput.bulletinRoot,
@@ -1216,9 +1218,6 @@ describe('hydrateFinalizationResultFromJournal', () => {
       expect(
         hasConsistentPublicAuditArtifacts({
           journal,
-          verificationResult: {
-            status: 'success',
-          },
         }),
       ).toBe(false);
     } finally {

@@ -1,5 +1,11 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { DynamoServerRateLimiter, DynamoVoteRateLimiter } from './dynamoRateLimit';
+import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import {
+  resetSharedDynamoDocumentClientForTests,
+  setSharedDynamoDocumentClientForTests,
+} from '@stark-ballot/aws-adapters/aws/dynamodbConfig';
+import { targetRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { createDynamoServerRateLimiter, DynamoServerRateLimiter, DynamoVoteRateLimiter } from './dynamoRateLimit';
 import type { RateLimitStore } from './dynamoRateLimitStore';
 
 class FakeRateLimitStore implements RateLimitStore {
@@ -140,5 +146,36 @@ describe('DynamoServerRateLimiter (store-backed)', () => {
     const result = await limiter.checkGlobalLimit('hourly');
     expect(result.allowed).toBe(false);
     expect(result.retryAfter).toBeGreaterThan(0);
+  });
+});
+
+describe('Dynamo rate-limit target composition', () => {
+  afterEach(() => {
+    resetSharedDynamoDocumentClientForTests();
+    vi.unstubAllEnvs();
+  });
+
+  it('uses the profile-resolved counters table instead of ambient table configuration', async () => {
+    const profile = targetRuntimeProfile();
+    if (profile.external.kind !== 'aws') {
+      throw new Error('Expected target runtime profile');
+    }
+    const inputs: Record<string, unknown>[] = [];
+    const documentClient = {
+      send: vi.fn((command: { input: Record<string, unknown> }) => {
+        inputs.push(command.input);
+        return Promise.resolve({});
+      }),
+    } as unknown as DynamoDBDocumentClient;
+    setSharedDynamoDocumentClientForTests(documentClient);
+    vi.stubEnv('RATE_LIMIT_COUNTERS_TABLE', 'untrusted-counters');
+
+    await createDynamoServerRateLimiter(profile).checkGlobalLimit('daily');
+
+    expect(inputs).toEqual([
+      expect.objectContaining({
+        TableName: profile.external.dynamo.rateLimitCountersTable,
+      }),
+    ]);
   });
 });

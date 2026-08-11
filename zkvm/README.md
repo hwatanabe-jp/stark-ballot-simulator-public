@@ -27,23 +27,26 @@ The workspace separates contract-critical code from runtime-specific concerns:
 - `methods-minimal/` and `benchmarks/` provide supporting workspace targets.
 - `verifier-service/` owns receipt discovery, report shaping, and
   `Receipt::verify(expected_image_id)`.
-- `infra/docker/entrypoint.sh` owns async artifact conversion, public bundle
-  packaging, private artifact promotion, and S3 upload.
+- `packages/verification/src/verification/public-bundle-manifest.json` owns
+  public bundle membership and private-artifact exclusion policy.
+- `infra/docker/entrypoint.sh` owns async bundle construction and policy
+  enforcement, private artifact promotion, and S3 upload.
 
 See [`shared-core-law-inventory.md`](./shared-core-law-inventory.md) for the
 shared-core laws and their Rust-side evidence.
 
 Current contract authorities:
 
-| Concern                                     | Authority                                    |
-| ------------------------------------------- | -------------------------------------------- |
-| Rust input/journal types and method version | `contract-core/src/types.rs`                 |
-| TypeScript input/journal types              | `packages/zkvm-contract/src/zkvm/types.ts`   |
-| TypeScript-to-host JSON conversion          | `packages/zkvm-contract/src/zkvm/host-io.ts` |
-| Guest tally behavior                        | `methods/guest/src/tally.rs`                 |
-| Host CLI and raw artifacts                  | `host/src/main.rs`                           |
-| Expected ImageIDs and provenance            | `public/imageId-mapping.json`                |
-| Async public bundle                         | `infra/docker/entrypoint.sh`                 |
+| Concern                                     | Authority                                                            |
+| ------------------------------------------- | -------------------------------------------------------------------- |
+| Rust input/journal types and method version | `contract-core/src/types.rs`                                         |
+| TypeScript input/journal types              | `packages/zkvm-contract/src/zkvm/types.ts`                           |
+| TypeScript-to-host JSON conversion          | `packages/zkvm-contract/src/zkvm/host-io.ts`                         |
+| Guest tally behavior                        | `methods/guest/src/tally.rs`                                         |
+| Host CLI and raw artifacts                  | `host/src/main.rs`                                                   |
+| Expected ImageIDs and provenance            | `public/imageId-mapping.json`                                        |
+| Async public bundle policy                  | `packages/verification/src/verification/public-bundle-manifest.json` |
+| Async construction and enforcement          | `infra/docker/entrypoint.sh`                                         |
 
 Current cross-language and formal evidence includes:
 
@@ -368,13 +371,18 @@ writes:
 }
 ```
 
-The two bitmap files support server-side `/api/bitmap-proof` queries and
-session restoration. They are private artifacts and must not enter the public
-verification bundle.
+The two bitmap files support server-side
+`/api/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex`
+queries and session restoration. They are private artifacts and must not enter
+the public verification bundle.
 
 ## Async Bundle Boundary
 
-The ECS entrypoint converts raw host artifacts into application-level names:
+`packages/verification/src/verification/public-bundle-manifest.json` is the
+authority for public bundle membership and private-artifact exclusions. The
+ECS entrypoint enforces that policy while constructing the async bundle,
+promoting private supporting artifacts, and uploading results. It converts raw
+host artifacts into application-level names:
 
 - `*-receipt.json` becomes `receipt.json`.
 - `*-output.json` becomes `journal.json`.

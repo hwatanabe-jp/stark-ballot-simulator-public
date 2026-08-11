@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig/test-browser.json",
+  "files": ["vitest/setup-web.ts"],
+  "include": []
+}

@@ -9,8 +9,12 @@
 
 ## 最終判定の種類
 
-検証パイプラインの結果は、主経路では `deriveVerificationSummary` によって集約され、UI 上は次のステータスに整理されます。
-ただし、`/verify` ページには STARK タイムアウト時の失敗表示など、集約結果に対する限定的な上書きがあります。
+検証パイプラインの最終表示は shared
+`deriveVerificationPresentationPolicy` が一元的に決定します。この policy は
+`deriveVerificationSummary` の集約結果に、evidence availability、hard failure、
+明示的な server failure、表示 sequence の readiness を合わせ、UI 上の次の
+ステータスと「Verified」表示資格を返します。API と browser は同じ policy を使い、
+UI は policy が許可した最終表示だけを描画します。
 
 | 表示ステータス      | 主な条件                                                                                                    | UI 表示 |
 | ------------------- | ----------------------------------------------------------------------------------------------------------- | ------- |
@@ -43,8 +47,12 @@ Verified の必要条件は [不変条件のまとめ](#不変条件のまとめ
 未知チェックが既知チェックと混在する場合も、summary は `missing_evidence` になります。
 これは将来のチェック追加や API drift を成功として解釈しないための fail-closed ルールです。
 
-現行 `/verify` ページでは、`pending` / `running` のチェックが残っている間は最終サマリー自体を表示せず、ステップ表示が完了したあとに summary を表示します。
-UI レベルの最終表示は (1) 明示的なサーバー失敗、(2) hard-failure fallback、(3) summary、(4) pending warning の順で解決されます。
+shared policy の readiness は、検証開始済み、表示 sequence 完了、check の
+`pending` / `running` 解消がそろうまで `renderedStatus` を返しません。表示 source
+は (1) 明示的な server failure、(2) hard-failure fallback、(3) summary、
+(4) pending warning の順で policy 内で解決されます。`/verify` ページは timeout
+や sequence failure を明示的な server failure input として渡し、独自の
+「Verified」override は持ちません。
 
 ## STARK 検証のゲーティング
 
@@ -58,9 +66,7 @@ STARK 検証は整合性検証とは独立に評価されます。
 | `not_run`        | 未実行                       | `missing_evidence`（Warning）扱い。Verified をブロック                                   |
 | `running`        | 実行中                       | `in_progress`（Warning）扱い。Verified をブロック                                        |
 
-`stark_receipt_verify` は required check ですが、単独では十分条件ではありません。
-`stark_receipt_verify=success` でも、他の required checks（`stark_image_id_match`、`counted_my_vote_included` / `counted_input_commitment_match`、各段階の required checks）のいずれかが失敗、未実行、または進行中なら fully verified にはなりません。
-STARK が `not_run` のまま、または整合性チェックだけで Verified に到達する経路もありません（[不変条件のまとめ](#不変条件のまとめ)を参照）。
+`stark_receipt_verify=success` でも、他の required checks のいずれかが失敗、未実行、または進行中なら fully verified にはなりません（[不変条件のまとめ](#不変条件のまとめ)を参照）。
 
 ### zkGate: STARK 結果に基づく Counted チェックの制御
 
@@ -75,7 +81,7 @@ STARK 検証の結果は、Counted-as-Recorded 段階のチェック評価にも
 | `success`              | ゲートなしで通常評価     |
 
 core evaluator では、`dev_mode` は事前に `success` または `not_run` に正規化されてから zkGate に入力されます。
-一方、現行 `/api/verify` の表示用ステータス組み立てでは、dev mode が許可されていない場合は [fail-closed](../appendix/glossary.md#fail-closed) の `failed` として反映されます。
+一方、現行の `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` の表示用ステータス組み立てでは、dev mode が許可されていない場合は [fail-closed](../appendix/glossary.md#fail-closed) の `failed` として反映されます。
 
 ## ステップとチェックの対応関係
 
@@ -111,14 +117,8 @@ UI に表示される 4 つのステップは、現行実装では 22 個のチ�
 
 - `counted_as_recorded` は `journal` が存在しない場合、required チェックに `failed` がない限り `not_run` に補正されます。
 - `recorded_as_cast` は `userVote.proof.treeSize` がない場合、`not_run` に補正されます。
-- `/api/verify` は `castSource='client'` で `verificationSteps` / `verificationChecks` を組み立てるため、API 応答上の Cast-as-Intended はいったん `not_run` です。
+- `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` は `castSource='client'` で `verificationSteps` / `verificationChecks` を組み立てるため、API 応答上の Cast-as-Intended はいったん `not_run` です。
   その後ブラウザ側で保存済みセッション情報から Cast チェックを再評価して上書きし、最終的な UI 表示と summary にはそのローカル結果が反映されます。
-
-## 補助判定のゲーティング（`validateVotingIntegrity`）
-
-`validateVotingIntegrity` は、現行 `/verify` の最終判定では使われない内部 helper です。
-この helper は、整合性証明、完全性、第三者 STH 合意、ユーザーインデックス範囲を順に評価し、いずれかが失敗すれば `canShowVerified = false` を返します。
-意味論は [チェック一覧](checks-catalog.md) の `recorded_index_in_range` / `recorded_consistency_proof` / `counted_missing_indices_zero` / `counted_expected_vs_tree_size` / `recorded_sth_third_party` に対応します。
 
 検証実行と UI 表示の時系列（ポーリングとステップ表示の順序）は [設計と実行フロー](design-and-flow.md) を参照してください。
 
@@ -143,9 +143,9 @@ UI に表示される 4 つのステップは、現行実装では 22 個のチ�
 | 非公開アーティファクトをバンドルに含めない                                                                   | 投票の秘匿性を維持                                    |
 
 これらの不変条件は、改ざんシナリオ（S0〜S5）の検出を保証する基盤です。
-各シナリオがどの不変条件によって検出されるかは、[改ざんシナリオ](../tamper/index.md) を参照してください。
+各シナリオがどのチェックで検出されるかは、[検出メカニズム](../tamper/detection-mechanism.md) を参照してください。
 
 この fail-closed モデルは、[単体、結合、E2E テスト](../quality/unit-integration-e2e.md) で「Verified を誤表示しない」ケースを継続的に検査しています。
 形式化側では [Lean による形式化](../quality/lean-formalization.md) の verification summary / display vectors を通じて、モデルと実装の対応を確認します。
 
-<!-- source: apps/api/src/server/api/handlers/verify.ts, apps/web/src/routes/verify/hooks/useVerificationData.ts, apps/web/src/routes/verify/lib/overall-status.ts, packages/verification/src/verification/consistency-verifier.ts:validateVotingIntegrity, packages/verification/src/verification/verification-summary.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/engine/derive-stages.ts -->
+<!-- source: apps/api/src/server/api/handlers/verify.ts, apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/hooks/useVerificationData.ts, apps/web/src/routes/verify/lib/verification-presentation.ts, packages/verification/src/verification/verification-presentation-policy.ts, packages/verification/src/verification/verification-summary.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/engine/derive-stages.ts -->

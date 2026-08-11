@@ -1,0 +1,4 @@
+{
+  "extends": "../../tooling/tsconfig/vite.json",
+  "include": ["src/env/browserRuntime.ts"]
+}

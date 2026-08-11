@@ -20,8 +20,10 @@ the Public Specs. Keep the source and both images synchronized:
 - page `Runtime Architecture` → `public-book/src/aws/images/aws-architecture-overview.png`
 - page `Deployment Control` → `public-book/src/aws/images/aws-deployment-control.png`
 
-Export each page as PNG at 2x zoom with a white background, cropped to the
-diagram content, then reduce it to a 256-color palette PNG (for example
+Export each page as PNG at 2x zoom with a white background and a 40px border
+around the diagram content (for example
+`drawio -x -f png -p <page> -s 2 -b 40 -o page.png <source>.drawio`), then
+reduce it to a 256-color palette PNG (for example
 `convert page.png -strip +dither -colors 256 png8:out.png`) so the committed
 images stay small without visible quality loss.
 
@@ -51,10 +53,12 @@ The proof and verification model is deliberately inspectable:
 
 ## Hono API Boundary
 
-Hono is the retained API runtime. The framework-neutral route inventory is
-`apps/api/src/server/api/routes/definitions.ts`; Hono binding lives in
-`apps/api/src/server/api/routes/hono.ts`; request behavior belongs in
-`apps/api/src/server/api/handlers/` and reusable packages.
+Hono is the retained API runtime. The schema-carrying route inventory is
+`packages/api-contract/src/routes/inventory.ts`;
+`apps/api/src/server/api/routes/definitions.ts` selects runtime route sets, and
+`apps/api/src/server/api/routes/hono.ts` binds handlers and performs transport
+admission. Request behavior belongs in `apps/api/src/server/api/handlers/` and
+reusable packages.
 
 Session-scoped operations require capability-token validation. Deployment
 values must remain placeholders in public documentation, and operational

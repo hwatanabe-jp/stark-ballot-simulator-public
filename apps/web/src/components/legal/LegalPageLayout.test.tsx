@@ -47,7 +47,11 @@ describe('LegalPageLayout', () => {
     mockGetSessionData.mockReturnValue({
       sessionId: 'session-1',
       capabilityToken: 'test-capability-token',
+      electionId: '550e8400-e29b-41d4-a716-446655440000',
+      electionConfigHash: `0x${'a'.repeat(64)}`,
+      logId: `0x${'b'.repeat(64)}`,
       lastActivity: Date.now(),
+      expiresAt: Date.now() + 60_000,
       phase: 'voting',
     });
 
@@ -68,8 +72,12 @@ describe('LegalPageLayout', () => {
     mockGetSessionData.mockReturnValue({
       sessionId: 'session-2',
       capabilityToken: 'test-capability-token',
+      electionId: '550e8400-e29b-41d4-a716-446655440000',
+      electionConfigHash: `0x${'a'.repeat(64)}`,
+      logId: `0x${'b'.repeat(64)}`,
       lastActivity: Date.now(),
-      phase: 'verifying',
+      expiresAt: Date.now() + 60_000,
+      phase: 'finalizing',
     });
 
     const closeSpy = vi.spyOn(window, 'close').mockImplementation(() => {});

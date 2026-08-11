@@ -339,32 +339,20 @@ projections were removed.
   or keeps remaining visible on canonical internal proof objects and
   browser-local knowledge.
 
-### Legacy count aliases still shape internal app and verification code
+### Legacy count aliases are rejected rather than normalized
 
 - The current canonical vocabulary from 05 is slot/record based:
   `missingSlots`, `invalidPresentedSlots`, `rejectedRecords`,
   `excludedSlots`, plus proof-bound journal counts such as
   `validVotes`.
-- Legacy aliases such as `missingIndices`, `invalidIndices`,
-  `countedIndices`, and `excludedCount` still appear in route schemas,
-  client verification payloads, knowledge storage, summary logic,
-  fail-closed helpers, stage evaluators, tamper helpers, fixtures, and
-  test utilities.
-- Those aliases also still survive on canonical-adjacent journal
-  surfaces such as `ZkVMJournal`, the current journal route schemas, and
-  shared compatibility helpers like `journal-count-compat`.
-- The same aliases also still shape browser-side restored finalization
-  snapshots and `/verify` payload parsing, so the residue is not only a
-  server or docs problem.
-- Current route schemas also still expose those aliases, but that is a
-  public-boundary concern, not something the default internal 06 track
-  should remove implicitly.
-- The repository therefore still carries a mixed internal vocabulary
-  even though 05 already fixed the current semantics.
-- 06 therefore still needs one explicit decision for the journal
-  contract surface itself:
-  whether legacy aliases survive only at parse or projection boundaries,
-  or keep remaining visible on the canonical runtime journal types.
+- The public-boundary cutover removed `missingIndices`, `invalidIndices`,
+  `countedIndices`, and `excludedCount` from current route, browser, and
+  verification payloads.
+- The runtime-profile cutover removed the shared `journal-count-compat` fallback helper and moved
+  shared test fixtures to the current semantic fields.
+- Remaining occurrences are fail-closed rejection keys, security scans,
+  historical discussion, or tests that deliberately construct unsupported
+  shapes. They are not accepted as a current journal representation.
 
 ### Browser-local knowledge still persists legacy names
 

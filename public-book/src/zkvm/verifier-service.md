@@ -110,11 +110,13 @@ exit code とレポート出力の関係は次のとおりです。
 
 ### ステータスの意味づけ
 
-| ステータス | 意味                                 | UI への影響               |
-| ---------- | ------------------------------------ | ------------------------- |
-| `success`  | STARK 検証が成功し、Image ID も一致  | STARK Verified を表示可能 |
-| `failed`   | Image ID 不一致または STARK 検証失敗 | 検証失敗として表示        |
-| `dev_mode` | 開発モードのフェイクレシート         | 開発モード警告を表示      |
+| ステータス | 意味                                 |
+| ---------- | ------------------------------------ |
+| `success`  | STARK 検証が成功し、Image ID も一致  |
+| `failed`   | Image ID 不一致または STARK 検証失敗 |
+| `dev_mode` | 開発モードのフェイクレシート         |
+
+各ステータスが最終表示に与える影響は [ゲーティングロジック > STARK 検証のゲーティング](../verification/gating-logic.md#stark-検証のゲーティング) を参照してください。
 
 ## デプロイメントモデル
 
@@ -122,25 +124,36 @@ exit code とレポート出力の関係は次のとおりです。
 
 ### 呼び出しパターン
 
-検証サービスの呼び出しは 3 分類で、明示的 S3 実行が target / direct の 2 経路に分かれるため、実行経路としては下表の 4 行になります。
+検証サービスの呼び出しは 3 分類です。
 明示的検証はいずれも、サーバー側で保持している finalization result に紐付いた **権威ある bundle locator** だけを使います。
 クライアントが任意の S3 キーや local パスを指定し、検証サービスに検証させることはできません。
 
-| パターン                 | トリガー                                 | 説明                                                                                               |
-| ------------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| 同期実行                 | 同期 finalization (`POST /api/finalize`) | real executor 時のみ実行。mock executor 時は `verifier-service` を呼ばず `dev_mode` 扱いとして帰る |
-| 明示的 S3 実行（target） | クライアントが検証を要求                 | `POST /api/verification/run` が検証 work を SQS に積み、`verification-worker` が後続で処理する     |
-| 明示的 S3 実行（direct） | クライアントが検証を要求                 | non-target S3 実行では API が `verification-worker` Lambda を同期呼び出しする                      |
-| 明示的 local 実行        | クライアントが検証を要求                 | `POST /api/verification/run` が信頼済み local bundle を API サーバープロセス内で直接検証する       |
+| パターン           | トリガー                                                          | 説明                                                                                                                                         |
+| ------------------ | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| 同期実行           | 同期 finalization (`POST /api/sessions/:sessionId/finalizations`) | real executor 時のみ実行。mock executor 時は `verifier-service` を呼ばず `dev_mode` 扱いとして帰る                                           |
+| target S3 実行     | クライアントが検証を要求                                          | `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification` が検証 work を SQS に積み、`verification-worker` が後続で処理する |
+| trusted local 実行 | クライアントが検証を要求                                          | 信頼済み local bundle を API サーバープロセス内で直接検証する                                                                                |
+
+S3 artifact backend は target profile 専用で、API が `verification-worker` Lambda
+を同期 invoke する non-target S3 経路や backend fallback はありません。
 
 非同期 finalization のコールバック Lambda は、結果の復元と保存を担当します。
-STARK 検証は自動実行されず、`POST /api/verification/run` で実行します。
-target AWS runtime では、この POST は `verifier-service` の完了を待たず、`verificationResult.status=running` を保存して SQS work を発行します。
-`verification-worker` は SQS event を受け取り、S3 bundle を展開して `verifier-service` を実行し、`verification.json` の report locator と terminal `verificationResult` をセッションストアへ保存します。
+STARK 検証は自動実行されず、`POST /api/sessions/:sessionId/finalizations/:finalizationId/verification` で実行します。
+target AWS runtime での流れは次のとおりです。
 
-`verificationResult.status` が `success` / `failed` / `dev_mode` のような終端状態にある場合、`POST /api/verification/run` は再検証せず idempotent な応答を返します。
-`running` の場合も実行中として idempotent に扱いますが、target AWS runtime で queue marker が未保存なら同じ execution の SQS work を補修発行します。
-status 未設定または `not_run` のときだけ、新しい検証実行または検証 work の enqueue に進みます。
+1. この POST は `verifier-service` の完了を待たず、`verificationResult.status=running` を保存して SQS work を発行する
+2. `verification-worker` が SQS event を受け取り、S3 bundle を検査・展開して `verifier-service` を実行する
+3. 検証が完了した場合は、`verification.json` の report locator と report を含む terminal `verificationResult` を finalization-scoped な独立 record としてセッションストアへ保存する
+4. S3 の取得、bundle の検査、`verifier-service` の起動、artifact の upload などの infrastructure failure は SQS で再試行する
+5. 3 回目の受信でも失敗した場合は terminal `failed` と internal-only の `failureCategory` を保存する。この終端失敗には verifier report がないため、report locator も保存しない
+
+既存の `verificationResult.status` ごとの `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification` の挙動は次のとおりです。
+
+| 既存 status                               | POST の挙動                                                                                                                 |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `success` / `failed` / `dev_mode`（終端） | 再検証せず idempotent な応答を返す                                                                                          |
+| `running`                                 | 実行中として idempotent に扱う。target AWS runtime で queue marker が未保存なら同じ finalization の SQS work を補修発行する |
+| 未設定 / `not_run`                        | 新しい検証実行または検証 work の enqueue に進む                                                                             |
 
 ### 実行シーケンス（補足）
 
@@ -156,11 +169,11 @@ sequenceDiagram
   participant S3 as S3
   participant STORE as セッションストア
 
-  C->>API: POST /api/verification/run
+  C->>API: POST /api/sessions/:sessionId/finalizations/:finalizationId/verification
   API->>API: session capability と finalization result を確認
   alt target AWS runtime + S3 bundle locator がある
     API->>STORE: verificationResult を running に更新
-    API->>Q: 検証 work を送信（sessionId, executionId, bundleKey, expectedImageId）
+    API->>Q: 検証 work を送信（recordType, sessionId, finalizationId, queuedAtMs, bundleKey, expectedImageId）
     API-->>C: running
     Q-->>RUNNER: SQS event
     RUNNER->>S3: bundle.zip を取得・展開
@@ -169,14 +182,6 @@ sequenceDiagram
     VS-->>RUNNER: 検証レポート
     RUNNER->>S3: public bundle.zip / verification.json / sidecar を保存
     RUNNER->>STORE: report locator と terminal verificationResult を保存
-  else non-target S3 bundle locator がある
-    API->>RUNNER: 同期実行要求（sessionId, executionId, bundleKey, expectedImageId）
-    RUNNER->>S3: bundle.zip を取得・展開
-    RUNNER->>VS: bundle ディレクトリ + 期待 Image ID + reportPath
-    VS-->>RUNNER: 検証レポート
-    RUNNER-->>API: 検証レポート + S3 report locator
-    API->>STORE: verificationResult / execution 状態を更新
-    API-->>C: 検証結果
   else 信頼済み local bundle がある
     API->>VS: bundle ディレクトリ + 期待 Image ID + reportPath
     VS->>VS: STARK 検証実行 + verification.json 書き出し

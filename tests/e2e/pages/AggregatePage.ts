@@ -1,6 +1,7 @@
 import { expect, type Page, type Locator } from '@playwright/test';
-import { getStringProperty } from '@stark-ballot/domain/utils/guards';
+import { getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 import { BasePage } from './BasePage';
+import { PLAYWRIGHT_RUNTIME_PROFILE } from '../runtime-profile';
 
 export type TamperScenario = 'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5';
 
@@ -46,22 +47,24 @@ export class AggregatePage extends BasePage {
     await expect(this.runButton).toBeEnabled();
 
     // Determine timeout based on zkVM mode
-    const isRealZkVM = process.env['USE_REAL_ZKVM'] === 'true' || process.env['USE_MOCK_ZKVM'] === 'false';
-    const isProductionMode = isRealZkVM && process.env['RISC0_DEV_MODE'] !== '1';
-    const apiTimeout = isProductionMode
-      ? 150000 // 2.5 minutes for production STARK proofs
-      : isRealZkVM
-        ? 30000 // 30 seconds for dev mode
-        : 15000; // 15 seconds for mock mode
+    const proofEvidence = PLAYWRIGHT_RUNTIME_PROFILE.proof.evidence;
+    const apiTimeout =
+      proofEvidence === 'production'
+        ? 150000 // 2.5 minutes for production STARK proofs
+        : proofEvidence === 'development'
+          ? 30000 // 30 seconds for dev mode
+          : 15000; // 15 seconds for mock mode
 
-    console.log(
-      `    [AggregatePage] zkVM mode: ${isProductionMode ? 'production' : isRealZkVM ? 'dev' : 'mock'} (timeout: ${apiTimeout}ms)`,
-    );
+    console.log(`    [AggregatePage] proof evidence: ${proofEvidence} (timeout: ${apiTimeout}ms)`);
 
     // Set up response listener before clicking
-    const responsePromise = this.page.waitForResponse((response) => response.url().includes('/api/finalize'), {
-      timeout: apiTimeout,
-    });
+    const responsePromise = this.page.waitForResponse(
+      (response) => {
+        const url = new URL(response.url());
+        return response.request().method() === 'POST' && /^\/api\/sessions\/[^/]+\/finalizations$/.test(url.pathname);
+      },
+      { timeout: apiTimeout },
+    );
 
     // Click the run button
     await this.runButton.click();
@@ -70,31 +73,10 @@ export class AggregatePage extends BasePage {
     // Wait for finalize API response
     try {
       const response = await responsePromise;
-      console.log(`    [AggregatePage] Finalize API response: ${response.status()}`);
+      console.log(`    [AggregatePage] Finalization API response: ${response.status()}`);
 
       if (response.ok()) {
-        // Success - parse the response to confirm zkVM execution completed
-        try {
-          const responseData: unknown = await response.json();
-          console.log(`    [AggregatePage] zkVM execution completed successfully`);
-
-          // Store the response data in localStorage for verification page
-          await this.page.evaluate((data) => {
-            const isRecordValue = (value: unknown): value is Record<string, unknown> =>
-              typeof value === 'object' && value !== null;
-            const sessionData = localStorage.getItem('starkBallotSession');
-            if (sessionData) {
-              const parsed: unknown = JSON.parse(sessionData);
-              if (isRecordValue(parsed)) {
-                const payload = isRecordValue(data) && isRecordValue(data['data']) ? data['data'] : data;
-                parsed['finalizeResult'] = payload;
-                localStorage.setItem('starkBallotSession', JSON.stringify(parsed));
-              }
-            }
-          }, responseData);
-        } catch {
-          console.log('    [AggregatePage] Could not parse response data');
-        }
+        console.log(`    [AggregatePage] Finalization request completed successfully`);
       } else {
         // Error response
         const body = await response.text().catch(() => 'Could not read response body');
@@ -103,7 +85,7 @@ export class AggregatePage extends BasePage {
         // Try to parse error details
         try {
           const errorPayload: unknown = JSON.parse(body);
-          const errorCode = getStringProperty(errorPayload, 'error');
+          const errorCode = getStringProperty(getRecordProperty(errorPayload, 'error'), 'code');
           if (errorCode) {
             throw new Error(`API error: ${errorCode}`);
           }

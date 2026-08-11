@@ -1,23 +1,11 @@
-async function shouldUseMockApi(): Promise<boolean> {
-  if (!import.meta.env.DEV || import.meta.env['VITE_USE_MOCK_API'] !== 'true') {
-    return false;
-  }
-  if (typeof window === 'undefined') {
-    return true;
-  }
-  const { MOCK_API_STORAGE_KEY } = await import('@stark-ballot/web/mock-api/config');
-  const stored = window.localStorage.getItem(MOCK_API_STORAGE_KEY);
-  if (stored === 'true') {
-    return true;
-  }
-  if (stored === 'false') {
-    return false;
-  }
-  return true;
+import { resolveBrowserRuntimeProfile } from '@stark-ballot/runtime-config/env/public-runtime-config';
+
+function shouldUseMockApi(): boolean {
+  return resolveBrowserRuntimeProfile().apiMode === 'mock';
 }
 
 export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  if (await shouldUseMockApi()) {
+  if (shouldUseMockApi()) {
     const { handleLocalApiRequest } = await import('@stark-ballot/web/mock-api/fetcher');
     return handleLocalApiRequest(input, init);
   }

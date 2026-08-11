@@ -1,10 +1,9 @@
 import { createHmac } from 'crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
-import { createMockVoteStore } from '@stark-ballot/test-support/testing/mockVoteStore';
+import { createMockVoteStore } from '../../__tests__/support/mockVoteStore';
 import { parseFinalizationStateUpdatePayload } from '@stark-ballot/aws-adapters/finalize/finalizationStateUpdateAdmission';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
-import { UnsupportedCurrentArtifactBoundaryError } from '@stark-ballot/domain/contract';
 
 const emitCanonicalEventMock = vi.hoisted(() => vi.fn());
 
@@ -13,21 +12,49 @@ vi.mock('@stark-ballot/diagnostics/canonicalEvents', async (importOriginal) => (
   emitCanonicalEvent: emitCanonicalEventMock,
 }));
 
-import { finalizeCallbackHandler } from './finalizeCallback';
+import {
+  admitFinalizationCallbackRequest,
+  finalizeCallbackHandler as admittedFinalizeCallbackHandler,
+} from './finalizeCallback';
+import type { ApiContextStore } from '../context';
+
+async function finalizeCallbackHandler({
+  request,
+  store,
+}: {
+  request: Request;
+  store: ApiContextStore;
+}): Promise<Response> {
+  const input = await admitFinalizationCallbackRequest(request);
+  if (input instanceof Response) {
+    return input;
+  }
+  const pathMatch = new URL(request.url).pathname.match(
+    /^\/api\/internal\/sessions\/([^/]+)\/finalizations\/([^/]+)\/callback$/,
+  );
+  if (!pathMatch?.[1] || !pathMatch[2]) {
+    throw new Error('Callback test request must use the canonical internal route');
+  }
+  return admittedFinalizeCallbackHandler({
+    rawBody: input.rawBody,
+    sessionId: decodeURIComponent(pathMatch[1]),
+    finalizationId: decodeURIComponent(pathMatch[2]),
+    store,
+  });
+}
 
 describe('parseFinalizationStateUpdatePayload', () => {
   const basePayload = {
     sessionId: '550e8400-e29b-41d4-a716-446655440000',
-    executionId: 'exec-123456',
-    contractGeneration: '2026-04-zkvm-current-v1',
+    finalizationId: 'exec-123456',
     status: 'FAILED',
-    queuedAt: 1730000000000,
+    queuedAtMs: 1730000000000,
   } as const;
 
   it.each(['bad/segment-123', 'bad.segment-123', 'https://example.invalid/execution'])(
-    'rejects unsafe executionId %s',
-    (executionId) => {
-      expect(parseFinalizationStateUpdatePayload({ ...basePayload, executionId })).toBeUndefined();
+    'rejects unsafe finalizationId %s',
+    (finalizationId) => {
+      expect(parseFinalizationStateUpdatePayload({ ...basePayload, finalizationId })).toBeUndefined();
     },
   );
 
@@ -54,20 +81,20 @@ describe('parseFinalizationStateUpdatePayload', () => {
 describe('finalizeCallbackHandler', () => {
   const secret = 'test-finalization-writer-secret-0123456789abcdef';
   const sessionId = '550e8400-e29b-41d4-a716-446655440000';
-  const executionId = 'exec-123456';
-  const validFailedBody = JSON.stringify({
+  const finalizationId = 'exec-123456';
+  const validFailedPayload = {
     sessionId,
-    executionId,
-    contractGeneration: '2026-04-zkvm-current-v1',
+    finalizationId,
     status: 'FAILED',
-    queuedAt: 1730000000000,
-    failedAt: 1730000000100,
+    queuedAtMs: 1730000000000,
+    failedAtMs: 1730000000100,
     error: {
       code: 'PROVER_TASK_FAILED',
       message: 'Finalization failed',
       category: 'prover_execution',
     },
-  });
+  } as const;
+  const validFailedBody = JSON.stringify(validFailedPayload);
 
   beforeEach(() => {
     emitCanonicalEventMock.mockClear();
@@ -78,14 +105,18 @@ describe('finalizeCallbackHandler', () => {
   });
 
   function signedRequest(
-    rawBody: string,
+    rawBody: string | Uint8Array,
     options: { timestamp?: string; signature?: string; headers?: Record<string, string> } = {},
   ): Request {
     const timestamp = options.timestamp ?? new Date().toISOString();
-    const signature = options.signature ?? createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex');
-    return new Request('http://localhost/api/finalize/callback', {
+    const rawBodyBytes = typeof rawBody === 'string' ? new TextEncoder().encode(rawBody) : rawBody;
+    const signature =
+      options.signature ??
+      createHmac('sha256', secret).update(timestamp).update('.').update(rawBodyBytes).digest('hex');
+    const requestBody = typeof rawBody === 'string' ? rawBody : new Uint8Array(rawBody).buffer;
+    return new Request(`http://localhost/api/internal/sessions/${sessionId}/finalizations/${finalizationId}/callback`, {
       method: 'POST',
-      body: rawBody,
+      body: requestBody,
       headers: {
         'content-type': 'application/json',
         'x-finalization-writer-timestamp': timestamp,
@@ -98,7 +129,7 @@ describe('finalizeCallbackHandler', () => {
   function expectUpdateEvent(
     outcome_code: string,
     auth_result: string,
-    correlation?: { sessionId: string; executionId: string },
+    correlation?: { sessionId: string; finalizationId: string },
   ): void {
     expect(emitCanonicalEventMock).toHaveBeenCalledWith({
       event: 'finalization_update_received',
@@ -108,7 +139,7 @@ describe('finalizeCallbackHandler', () => {
       ...(correlation
         ? {
             session_id_hash: hashSessionIdForLogging(correlation.sessionId),
-            execution_id: correlation.executionId,
+            finalization_id: correlation.finalizationId,
           }
         : {}),
     });
@@ -116,26 +147,14 @@ describe('finalizeCallbackHandler', () => {
 
   it('rejects a signed payload with unexpected top-level fields before applying it', async () => {
     vi.stubEnv('FINALIZE_CALLBACK_SECRET', secret);
-    const markFinalizationFailed = vi.fn(() =>
-      Promise.resolve({
-        status: 'failed' as const,
-        executionId: 'exec-123456',
-        queuedAt: 1730000000000,
-        failedAt: 1730000000100,
-        error: {
-          code: 'TEST_FAILURE',
-          message: 'test failure',
-        },
-      }),
-    );
+    const markFinalizationFailed = vi.fn();
     const store = createMockVoteStore({ markFinalizationFailed });
     const rawBody = JSON.stringify({
       sessionId: '550e8400-e29b-41d4-a716-446655440000',
-      executionId: 'exec-123456',
-      contractGeneration: '2026-04-zkvm-current-v1',
+      finalizationId: 'exec-123456',
       status: 'FAILED',
-      queuedAt: 1730000000000,
-      failedAt: 1730000000100,
+      queuedAtMs: 1730000000000,
+      failedAtMs: 1730000000100,
       error: {
         code: 'TEST_FAILURE',
         message: 'test failure',
@@ -162,11 +181,10 @@ describe('finalizeCallbackHandler', () => {
     const store = createMockVoteStore({ markFinalizationFailed });
     const rawBody = JSON.stringify({
       sessionId: '550e8400-e29b-41d4-a716-446655440000',
-      executionId: 'exec-123456',
-      contractGeneration: '2026-04-zkvm-current-v1',
+      finalizationId: 'exec-123456',
       status: 'FAILED',
-      queuedAt: 1730000000000,
-      failedAt: 1730000000100,
+      queuedAtMs: 1730000000000,
+      failedAtMs: 1730000000100,
       error: {
         code: 'TEST_FAILURE',
       },
@@ -184,13 +202,46 @@ describe('finalizeCallbackHandler', () => {
     expectUpdateEvent('payload_invalid', 'passed');
   });
 
+  it('authenticates exact raw bytes before decoding an invalid UTF-8 body', async () => {
+    vi.stubEnv('FINALIZE_CALLBACK_SECRET', secret);
+    const rawBody = Uint8Array.from([0xff]);
+
+    const response = await finalizeCallbackHandler({
+      request: signedRequest(rawBody),
+      store: createMockVoteStore(),
+    });
+    const payload = await readJsonRecord(response, 'invalid UTF-8 callback response');
+
+    expect(response.status).toBe(400);
+    expect(payload['error']).toBe('Invalid JSON payload');
+    expectUpdateEvent('payload_invalid', 'passed');
+  });
+
+  it('rejects an invalid signature before inspecting malformed JSON', async () => {
+    vi.stubEnv('FINALIZE_CALLBACK_SECRET', secret);
+    const malformedJson = '{';
+
+    const response = await finalizeCallbackHandler({
+      request: signedRequest(malformedJson, { signature: 'f'.repeat(64) }),
+      store: createMockVoteStore(),
+    });
+    const payload = await readJsonRecord(response, 'invalid callback signature response');
+
+    expect(response.status).toBe(401);
+    expect(payload['error']).toBe('Invalid callback signature');
+    expectUpdateEvent('signature_invalid', 'failed');
+  });
+
   it('records early callback authentication and admission refusals without sensitive inputs', async () => {
     const privateSignature = 'f'.repeat(64);
     const cases = [
       {
         name: 'secret unavailable',
         prepare: () => vi.stubEnv('FINALIZE_CALLBACK_SECRET', ''),
-        request: () => new Request('http://localhost/api/finalize/callback', { method: 'POST' }),
+        request: () =>
+          new Request(`http://localhost/api/internal/sessions/${sessionId}/finalizations/${finalizationId}/callback`, {
+            method: 'POST',
+          }),
         outcome: 'secret_unavailable',
         auth: 'not_checked',
         status: 500,
@@ -198,7 +249,11 @@ describe('finalizeCallbackHandler', () => {
       {
         name: 'signature headers missing',
         prepare: () => vi.stubEnv('FINALIZE_CALLBACK_SECRET', secret),
-        request: () => new Request('http://localhost/api/finalize/callback', { method: 'POST', body: validFailedBody }),
+        request: () =>
+          new Request(`http://localhost/api/internal/sessions/${sessionId}/finalizations/${finalizationId}/callback`, {
+            method: 'POST',
+            body: validFailedBody,
+          }),
         outcome: 'signature_headers_missing',
         auth: 'failed',
         status: 401,
@@ -240,6 +295,37 @@ describe('finalizeCallbackHandler', () => {
     }
   });
 
+  it('rejects missing callback authority before applying body-limit admission', async () => {
+    vi.stubEnv('FINALIZE_CALLBACK_BODY_LIMIT_BYTES', '1');
+    const oversizedBody = 'private-body-that-exceeds-the-limit';
+    const callbackUrl = `http://localhost/api/internal/sessions/${sessionId}/finalizations/${finalizationId}/callback`;
+
+    vi.stubEnv('FINALIZE_CALLBACK_SECRET', '');
+    const missingSecret = await finalizeCallbackHandler({
+      request: new Request(callbackUrl, {
+        method: 'POST',
+        body: oversizedBody,
+      }),
+      store: createMockVoteStore(),
+    });
+    expect(missingSecret.status).toBe(500);
+    expectUpdateEvent('secret_unavailable', 'not_checked');
+    expect(emitCanonicalEventMock).toHaveBeenCalledTimes(1);
+
+    emitCanonicalEventMock.mockClear();
+    vi.stubEnv('FINALIZE_CALLBACK_SECRET', secret);
+    const missingHeaders = await finalizeCallbackHandler({
+      request: new Request(callbackUrl, {
+        method: 'POST',
+        body: oversizedBody,
+      }),
+      store: createMockVoteStore(),
+    });
+    expect(missingHeaders.status).toBe(401);
+    expectUpdateEvent('signature_headers_missing', 'failed');
+    expect(emitCanonicalEventMock).toHaveBeenCalledTimes(1);
+  });
+
   it('records body-limit and timestamp-skew configuration refusals', async () => {
     vi.stubEnv('FINALIZE_CALLBACK_SECRET', secret);
     vi.stubEnv('FINALIZE_CALLBACK_BODY_LIMIT_BYTES', '1');
@@ -272,7 +358,39 @@ describe('finalizeCallbackHandler', () => {
     expectUpdateEvent('skew_config_invalid', 'not_checked');
   });
 
-  it('records transition-store refusal, artifact rejection, unexpected failure, and success', async () => {
+  it('preserves the callback-specific body read failure response', async () => {
+    vi.stubEnv('FINALIZE_CALLBACK_SECRET', secret);
+    const timestamp = new Date().toISOString();
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error('callback body stream failed'));
+      },
+    });
+    const request = new Request(
+      `http://localhost/api/internal/sessions/${sessionId}/finalizations/${finalizationId}/callback`,
+      {
+        method: 'POST',
+        body,
+        duplex: 'half',
+        headers: {
+          'x-finalization-writer-timestamp': timestamp,
+          'x-finalization-writer-signature': '0'.repeat(64),
+        },
+      } as RequestInit & { duplex: 'half' },
+    );
+
+    const response = await finalizeCallbackHandler({
+      request,
+      store: createMockVoteStore(),
+    });
+    const payload = await readJsonRecord(response, 'callback body read failure');
+
+    expect(response.status).toBe(400);
+    expect(payload['error']).toBe('Invalid callback payload');
+    expectUpdateEvent('payload_read_failed', 'not_checked');
+  });
+
+  it('records transition-store refusal, strict retired-shape rejection, unexpected failure, and success', async () => {
     vi.stubEnv('FINALIZE_CALLBACK_SECRET', secret);
     const unavailableStore = createMockVoteStore();
     Object.assign(unavailableStore, { markAwsFinalizationRunning: undefined });
@@ -282,23 +400,24 @@ describe('finalizeCallbackHandler', () => {
       store: unavailableStore,
     });
     expect(unavailable.status).toBe(501);
-    expectUpdateEvent('transition_store_unavailable', 'passed', { sessionId, executionId });
+    expectUpdateEvent('transition_store_unavailable', 'passed', { sessionId, finalizationId });
 
-    const boundaryError = new UnsupportedCurrentArtifactBoundaryError({
-      runtimeContractGeneration: '2026-04-zkvm-current-v1',
-      persistedContractGeneration: 'legacy',
-      carriedContractGeneration: 'legacy',
+    const retiredShapeBody = JSON.stringify({
+      ...validFailedPayload,
+      contractGeneration: 'legacy',
     });
     emitCanonicalEventMock.mockClear();
-    const artifactStore = createMockVoteStore({
-      markAwsFinalizationFailed: vi.fn().mockRejectedValue(boundaryError),
+    const markRetiredShapeFailed = vi.fn();
+    const retiredShapeStore = createMockVoteStore({
+      markAwsFinalizationFailed: markRetiredShapeFailed,
     });
-    const artifact = await finalizeCallbackHandler({
-      request: signedRequest(validFailedBody),
-      store: artifactStore,
+    const retiredShape = await finalizeCallbackHandler({
+      request: signedRequest(retiredShapeBody),
+      store: retiredShapeStore,
     });
-    expect(artifact.status).toBe(409);
-    expectUpdateEvent('artifact_rejected', 'passed', { sessionId, executionId });
+    expect(retiredShape.status).toBe(400);
+    expect(markRetiredShapeFailed).not.toHaveBeenCalled();
+    expectUpdateEvent('payload_invalid', 'passed');
 
     emitCanonicalEventMock.mockClear();
     const unexpectedStore = createMockVoteStore({
@@ -307,15 +426,15 @@ describe('finalizeCallbackHandler', () => {
     await expect(
       finalizeCallbackHandler({ request: signedRequest(validFailedBody), store: unexpectedStore }),
     ).rejects.toThrow('private database failure detail');
-    expectUpdateEvent('application_failed', 'passed', { sessionId, executionId });
+    expectUpdateEvent('application_failed', 'passed', { sessionId, finalizationId });
     expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain('private database failure detail');
 
     emitCanonicalEventMock.mockClear();
     const failedState = {
       status: 'failed' as const,
-      executionId,
-      queuedAt: 1730000000000,
-      failedAt: 1730000000100,
+      finalizationId,
+      queuedAtMs: 1730000000000,
+      failedAtMs: 1730000000100,
       error: {
         code: 'PROVER_EXECUTION_FAILED',
         message: 'Finalization failed',
@@ -324,12 +443,28 @@ describe('finalizeCallbackHandler', () => {
     };
     const successStore = createMockVoteStore({
       markAwsFinalizationFailed: vi.fn().mockResolvedValue(failedState),
+      getFinalizationRecord: vi.fn().mockResolvedValue({
+        sessionId,
+        finalizationId,
+        scenarioContext: {
+          scenarios: [],
+          tamperMode: 'none',
+          claimedCounts: { A: 0, B: 0, C: 0, D: 0, E: 0 },
+          claimedTotalVotes: 0,
+          summary: {
+            ignoredCount: 0,
+            recountedCount: 0,
+            userRecountChoice: null,
+          },
+        },
+        state: failedState,
+      }),
     });
     const applied = await finalizeCallbackHandler({
       request: signedRequest(validFailedBody),
       store: successStore,
     });
     expect(applied.status).toBe(200);
-    expectUpdateEvent('applied', 'passed', { sessionId, executionId });
+    expectUpdateEvent('applied', 'passed', { sessionId, finalizationId });
   });
 });

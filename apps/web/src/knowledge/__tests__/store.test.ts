@@ -10,8 +10,8 @@ import {
   getKnowledgeItems,
   mergeKnowledgeFromApi,
 } from '../store';
-import { resolveBrowserCurrentContractGeneration as resolveCurrentContractGeneration } from '@stark-ballot/web/session/browserContractGeneration';
-import { clearSession, generateSessionId } from '@stark-ballot/web/session/client';
+import { clearSession, initializeSession } from '@stark-ballot/web/session/client';
+import type { ServerIssuedSessionIdentity } from '@stark-ballot/web/session/types';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
@@ -22,9 +22,35 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   return value;
 }
 
-describe('Knowledge Store', () => {
-  const currentGeneration = resolveCurrentContractGeneration();
+const ELECTION_ID = '123e4567-e89b-42d3-a456-426614174000';
+const ELECTION_CONFIG_HASH = `0x${'a'.repeat(64)}`;
+const LOG_ID = `0x${'b'.repeat(64)}`;
 
+function sessionIdentity(sessionId: string, capabilityToken: string): ServerIssuedSessionIdentity {
+  return {
+    sessionId,
+    capabilityToken,
+    electionId: ELECTION_ID,
+    electionConfigHash: ELECTION_CONFIG_HASH,
+    logId: LOG_ID,
+  };
+}
+
+function initializeTestSession(sessionId: string, capabilityToken: string): void {
+  initializeSession(sessionIdentity(sessionId, capabilityToken));
+}
+
+function storedVotingSession(sessionId: string, capabilityToken: string): Record<string, unknown> {
+  const now = Date.now();
+  return {
+    ...sessionIdentity(sessionId, capabilityToken),
+    phase: 'voting',
+    lastActivity: now,
+    expiresAt: now + 30 * 60 * 1000,
+  };
+}
+
+describe('Knowledge Store', () => {
   beforeEach(() => {
     // Clear localStorage before each test
     localStorage.clear();
@@ -77,6 +103,102 @@ describe('Knowledge Store', () => {
       expect(data?.electionId).toBe('test-election');
     });
 
+    it.each([
+      [
+        'fractional tally counts',
+        {
+          tally: {
+            counts: { A: 0.5, B: 0, C: 0, D: 0, E: 0 },
+            totalVotes: 0.5,
+          },
+        },
+      ],
+      ['a negative count', { missingSlots: -1 }],
+      [
+        'an unknown verification step',
+        {
+          verificationSteps: [{ id: 'future_stage', status: 'success', inputs: [] }],
+        },
+      ],
+      [
+        'a malformed inclusion proof',
+        {
+          'user.merklePath': {
+            leafIndex: 0,
+            treeSize: 1,
+            merklePath: ['not-hex'],
+            bulletinRootAtCast: `0x${'1'.repeat(64)}`,
+          },
+        },
+      ],
+    ] satisfies Array<[string, Record<string, unknown>]>)(
+      'rejects an API patch with %s before writing',
+      (_label, patch) => {
+        saveKnowledgeData({ sessionId: 'test-session', electionId: 'test-election' });
+        const listener = vi.fn();
+        const unsubscribe = subscribeToKnowledge(listener);
+        const before = localStorage.getItem('stark-ballot-knowledge');
+
+        const newItems = mergeKnowledgeFromApi('result', patch);
+
+        expect(newItems).toEqual([]);
+        expect(localStorage.getItem('stark-ballot-knowledge')).toBe(before);
+        expect(getKnowledgeData()).toEqual({ sessionId: 'test-session', electionId: 'test-election' });
+        expect(listener).not.toHaveBeenCalled();
+        unsubscribe();
+      },
+    );
+
+    it('stores only the admitted knowledge summary from a full verifier report', () => {
+      saveKnowledgeData({ sessionId: 'test-session', electionId: 'test-election' });
+
+      const newItems = mergeKnowledgeFromApi('verify', {
+        verificationReport: {
+          status: 'success',
+          verifier_version: 'test-verifier',
+          verified_at: '2026-08-02T00:00:00.000Z',
+          duration_ms: 5000,
+          expected_image_id: `0x${'1'.repeat(64)}`,
+          receipt_image_id: `0x${'1'.repeat(64)}`,
+          dev_mode_receipt: false,
+          errors: ['diagnostic'],
+        },
+      });
+
+      expect(newItems).toHaveLength(1);
+      expect(getKnowledgeData()).toEqual({
+        sessionId: 'test-session',
+        electionId: 'test-election',
+        'verification.reportSummary': {
+          status: 'success',
+          duration_ms: 5000,
+          errors: ['diagnostic'],
+        },
+      });
+    });
+
+    it('stores the exact current receipt publication with its optional timestamp', () => {
+      saveKnowledgeData({ sessionId: 'test-session', electionId: 'test-election' });
+      const receiptPublication = {
+        receiptHash: `0x${'c'.repeat(64)}`,
+        boardIndex: 7,
+        timestamp: 1_700_000_000_000,
+      };
+
+      const newItems = mergeKnowledgeFromApi('result', {
+        receiptPublication,
+        tally: {
+          counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
+          totalVotes: 1,
+        },
+      });
+
+      expect(newItems.map((item) => item.key)).toEqual(
+        expect.arrayContaining(['receiptPublication', 'tally.counts', 'tally.totalVotes']),
+      );
+      expect(getKnowledgeData()).toMatchObject({ receiptPublication });
+    });
+
     it('should return new items array', () => {
       const newItems = saveKnowledgeData({ sessionId: 'test', electionId: 'election' });
 
@@ -110,7 +232,7 @@ describe('Knowledge Store', () => {
     });
 
     it('should bind writes to the active session when sessionId is omitted', () => {
-      generateSessionId('active-session', 'capability-token');
+      initializeTestSession('active-session', 'capability-token');
 
       saveKnowledgeData({ 'user.choice': 'B' });
 
@@ -120,10 +242,10 @@ describe('Knowledge Store', () => {
     });
 
     it('should reject writes when expectedSessionId no longer matches the active session', () => {
-      generateSessionId('session-a', 'capability-a');
+      initializeTestSession('session-a', 'capability-a');
       saveKnowledgeData({ sessionId: 'session-a', 'user.choice': 'A' });
 
-      generateSessionId('session-b', 'capability-b');
+      initializeTestSession('session-b', 'capability-b');
       saveKnowledgeData({ 'user.choice': 'B' }, { expectedSessionId: 'session-a' });
 
       expect(getKnowledgeData()).toBeNull();
@@ -134,18 +256,10 @@ describe('Knowledge Store', () => {
     });
 
     it('should reject writes when another tab replaces the active session and the local lock becomes stale', () => {
-      generateSessionId('session-a', 'capability-a');
+      initializeTestSession('session-a', 'capability-a');
       saveKnowledgeData({ sessionId: 'session-a', electionId: 'election-a' });
 
-      localStorage.setItem(
-        'starkBallotSession',
-        JSON.stringify({
-          ...omitUndefinedProperties({ sessionId: 'session-b' }),
-          capabilityToken: 'capability-b',
-          contractGeneration: currentGeneration,
-          lastActivity: Date.now(),
-        }),
-      );
+      localStorage.setItem('starkBallotSession', JSON.stringify(storedVotingSession('session-b', 'capability-b')));
       localStorage.setItem(
         'stark-ballot-knowledge',
         JSON.stringify({
@@ -184,7 +298,7 @@ describe('Knowledge Store', () => {
       expect(data?.sessionId).toBe('test');
     });
 
-    it('drops retired aliases, delivery keys, and proofMode on read', () => {
+    it('rejects a retired or unknown stored shape without repairing it', () => {
       localStorage.setItem(
         'stark-ballot-knowledge',
         JSON.stringify({
@@ -207,31 +321,37 @@ describe('Knowledge Store', () => {
         }),
       );
 
-      const data = getKnowledgeData();
-      const persisted = JSON.parse(localStorage.getItem('stark-ballot-knowledge') ?? '{}') as Record<string, unknown>;
-
-      expect(data).toEqual(
-        expect.objectContaining({
-          ...omitUndefinedProperties({ sessionId: 'legacy-session' }),
-        }),
-      );
-      expect(data).not.toHaveProperty('missingIndices');
-      expect(data).not.toHaveProperty('invalidIndices');
-      expect(data).not.toHaveProperty('countedIndices');
-      expect(data).not.toHaveProperty('excludedCount');
-      expect(data).not.toHaveProperty('missingSlots');
-      expect(data).not.toHaveProperty('invalidPresentedSlots');
-      expect(data).not.toHaveProperty('validVotes');
-      expect(data).not.toHaveProperty('excludedSlots');
-      expect(data).not.toHaveProperty('user.merklePath');
-      expect(data).not.toHaveProperty('s3BundleUrl');
-      expect(data).not.toHaveProperty('s3BundleExpiresAt');
-      expect(data).not.toHaveProperty('proofMode');
-      expect(data).not.toHaveProperty('unknownKey');
-      expect(persisted).toEqual(data);
+      expect(getKnowledgeData()).toBeNull();
+      expect(localStorage.getItem('stark-ballot-knowledge')).toBeNull();
     });
 
-    it('clears stale knowledge when the shared storage schema version changes', () => {
+    it.each([
+      ['negative leaf index', { leafIndex: -1 }],
+      ['fractional leaf index', { leafIndex: 0.5 }],
+      ['empty tree', { treeSize: 0 }],
+      ['leaf outside the tree', { leafIndex: 1 }],
+      ['non-hex Merkle path', { merklePath: ['not-hex'] }],
+      ['non-hex bulletin root', { bulletinRootAtCast: 'not-hex' }],
+    ])('rejects a current-shape inclusion proof with %s', (_label, proofPatch) => {
+      localStorage.setItem(
+        'stark-ballot-knowledge',
+        JSON.stringify({
+          sessionId: 'test-session',
+          'user.merklePath': {
+            leafIndex: 0,
+            treeSize: 1,
+            merklePath: [],
+            bulletinRootAtCast: `0x${'1'.repeat(64)}`,
+            ...proofPatch,
+          },
+        }),
+      );
+
+      expect(getKnowledgeData()).toBeNull();
+      expect(localStorage.getItem('stark-ballot-knowledge')).toBeNull();
+    });
+
+    it('does not consult the retired storage schema marker', () => {
       localStorage.setItem('starkBallotSessionSchemaVersion', 'stale-schema');
       localStorage.setItem(
         'stark-ballot-knowledge',
@@ -241,13 +361,15 @@ describe('Knowledge Store', () => {
         }),
       );
 
-      expect(getKnowledgeData()).toBeNull();
-      expect(localStorage.getItem('stark-ballot-knowledge')).toBeNull();
-      expect(localStorage.getItem('starkBallotSessionSchemaVersion')).not.toBe('stale-schema');
+      expect(getKnowledgeData()).toEqual({
+        ...omitUndefinedProperties({ sessionId: 'stale-session' }),
+        electionId: 'stale-election',
+      });
+      expect(localStorage.getItem('starkBallotSessionSchemaVersion')).toBe('stale-schema');
     });
 
     it('hides knowledge for another session without deleting the shared snapshot', () => {
-      generateSessionId('active-session', 'capability-token');
+      initializeTestSession('active-session', 'capability-token');
       localStorage.setItem(
         'stark-ballot-knowledge',
         JSON.stringify({
@@ -263,8 +385,22 @@ describe('Knowledge Store', () => {
       });
     });
 
+    it('does not repair or delete an invalid replacement snapshot from a stale tab', () => {
+      initializeTestSession('session-a', 'capability-a');
+      localStorage.setItem('starkBallotSession', JSON.stringify(storedVotingSession('session-b', 'capability-b')));
+      const replacementSnapshot = JSON.stringify({
+        ...omitUndefinedProperties({ sessionId: 'session-b' }),
+        electionId: 'election-b',
+        unknownKey: 'must-remain-owned-by-session-b',
+      });
+      localStorage.setItem('stark-ballot-knowledge', replacementSnapshot);
+
+      expect(getKnowledgeData()).toBeNull();
+      expect(localStorage.getItem('stark-ballot-knowledge')).toBe(replacementSnapshot);
+    });
+
     it('clears session-less knowledge once an active session exists', () => {
-      generateSessionId('active-session', 'capability-token');
+      initializeTestSession('active-session', 'capability-token');
       localStorage.setItem(
         'stark-ballot-knowledge',
         JSON.stringify({
@@ -291,16 +427,8 @@ describe('Knowledge Store', () => {
     });
 
     it('returns undefined in a stale tab without deleting the current snapshot', () => {
-      generateSessionId('session-a', 'capability-a');
-      localStorage.setItem(
-        'starkBallotSession',
-        JSON.stringify({
-          ...omitUndefinedProperties({ sessionId: 'session-b' }),
-          capabilityToken: 'capability-b',
-          contractGeneration: currentGeneration,
-          lastActivity: Date.now(),
-        }),
-      );
+      initializeTestSession('session-a', 'capability-a');
+      localStorage.setItem('starkBallotSession', JSON.stringify(storedVotingSession('session-b', 'capability-b')));
       localStorage.setItem(
         'stark-ballot-knowledge',
         JSON.stringify({
@@ -436,13 +564,13 @@ describe('Knowledge Store', () => {
       expect(items.find((i) => i.key === 'electionId')?.value).toBe('election');
     });
 
-    it('should filter out undefined/null values', () => {
+    it('fails closed on a stored null or unknown key', () => {
       localStorage.setItem('stark-ballot-knowledge', JSON.stringify({ sessionId: 'test', nullField: null }));
 
       const items = getKnowledgeItems();
 
-      expect(items).toHaveLength(1);
-      expect(strictDefined(items[0]).key).toBe('sessionId');
+      expect(items).toEqual([]);
+      expect(localStorage.getItem('stark-ballot-knowledge')).toBeNull();
     });
   });
 

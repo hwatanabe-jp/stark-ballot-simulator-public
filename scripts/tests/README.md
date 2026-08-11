@@ -55,7 +55,7 @@ pnpm test:cli:real-prod:s0
 pnpm test:cli:real-prod:all -- --user-choice B --skip-build
 ```
 
-The harness runs `pnpm build:ci`, then spawns `scripts/dev/static-hono-server.ts` directly unless
+The harness runs `pnpm build:local-mock`, then spawns `scripts/dev/static-hono-server.ts` directly unless
 `STARK_BALLOT_CLI_BASE_URL` is already set. `pnpm start` is the equivalent manual wrapper. Pass
 `--skip-build` only when a fresh enough Vite `dist/` output already exists.
 
@@ -82,8 +82,8 @@ nor `.env.local` already provides one. When reusing a long-lived server, set
 - logs under `LOG_DIR` (default: `.tmp/test-logs/<date>/`)
 - a 60-second pause between invocations
 
-The wrapper passes `--skip-build`, so create a current `pnpm build:ci` output and build the real host and
-verifier service before starting it.
+The wrapper passes `--skip-build`, so create a current `pnpm build:local-mock` output and build the real
+host and verifier service before starting it.
 
 ```bash
 ./scripts/tests/run-all-real-tests.sh
@@ -132,11 +132,14 @@ For every scenario, the runner:
 
 - resolves the independent expected ImageID from the current `default` entry in
   `public/imageId-mapping.json` and compares the API ImageID projections with it
-- explicitly starts `POST /api/verification/run`, requires a newly queued durable AWS verification
-  run, and polls `/api/verify` to success
+- explicitly starts
+  `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification` with the strict empty
+  body, requires newly queued durable AWS verification work, and polls
+  `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` to success
 - requires every server-projected cast-as-intended check to remain `not_run`; it evaluates those checks
   locally from the retained vote opening and fresh receipt fields, merges the local results with the
-  server checks, and only then derives the overall verdict
+  grouped `verification.checks`, and only then derives the overall verdict through the shared
+  presentation policy
 - checks wrong-capability rejection on the authenticated bundle and report endpoints
 - downloads the public bundle, rejects `input.json`, `verification.json`, `included-bitmap.json`, and
   `seen-bitmap.json`, and validates the bundled `receipt.json` when present before using it for
@@ -165,8 +168,8 @@ pnpm test:develop:gated-smoke
 The operator-gated command does not require `STARK_BALLOT_SESSION_TURNSTILE_TOKEN`,
 `STARK_BALLOT_VOTE_TURNSTILE_TOKEN`, or `STARK_BALLOT_FINALIZE_TURNSTILE_TOKEN`. In target develop, the
 API skips server-side session, vote, and finalize Turnstile checks only after the outer CloudFront
-operator gate and origin verification admit the request. Browser bypass flags such as
-`VITE_TURNSTILE_BYPASS` remain disabled in target static artifacts.
+operator gate and origin verification admit the request. The local-profile Turnstile bypass is not
+projected into target static artifacts.
 
 Do not put private key material, raw origin-header secrets, unsigned policy payloads, or full
 signed-cookie values in tracked docs, logs, public handoff summaries, or release artifacts. Live
@@ -198,6 +201,13 @@ additional fields.
 The successful startup probe uses `HOST_BIN=/bin/true`; the failure-marker probe deliberately uses
 `/bin/false`. Neither probe proves a real receipt, ImageID correctness, scan/signing status, promotion,
 deployed task posture, or live S0 behavior; those remain release/app evidence.
+
+Because the successful stub host deliberately produces no proof artifacts, the entrypoint emits its exact
+`No output artifacts detected` warning. The smoke captures and requires that one expected signal, rejects
+any additional warning, and republishes only the remaining informational output so candidate build logs stay
+warning-free without weakening the entrypoint's runtime diagnostic. The deliberate failure-marker probe
+similarly captures and requires its exact prover-execution error plus structured error summary, rejects any
+additional warning or error, and emits only a clean harness confirmation after the marker is admitted.
 
 This smoke requires `python3`, Docker, and a built candidate image for the target architecture. Its local
 contract test uses a fake Docker executable and does not build or run a real image:
@@ -323,10 +333,11 @@ receipt, and bitmap artifacts.
 
 ## Regression Coverage
 
-### CLI and fixture tests
+### Focused `scripts/tests` coverage
 
 The focused tests under `scripts/tests/__tests__/` are:
 
+- `batch-processor.test.ts`
 - `cli-regression.test.ts`
 - `cli-merkle-enforcement.test.ts`
 - `read-image-id.test.ts`

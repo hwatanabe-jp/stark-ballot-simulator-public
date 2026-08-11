@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RuntimeConfigValidationError } from '@stark-ballot/runtime-config/env/configValidationError';
+import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { TransientBundleRestoreError } from '@stark-ballot/aws-adapters/aws/bundle-restore';
 
@@ -35,20 +36,17 @@ vi.mock('@stark-ballot/aws-adapters/finalize/finalizationStateUpdateAdmission', 
 }));
 
 vi.mock('@stark-ballot/aws-adapters/finalize/async-prover-artifacts', () => ({
-  buildAsyncProverArtifactKeys: vi.fn((sessionId: string, executionId: string) => ({
-    inputS3Key: `sessions/${sessionId}/${executionId}/input.json`,
-    outputS3Prefix: `sessions/${sessionId}/${executionId}/`,
-    bundleS3Key: `sessions/${sessionId}/${executionId}/bundle.zip`,
-  })),
   buildFinalizationResultFromS3Bundle: vi.fn(),
   readAsyncProverFailureCategory: vi.fn(),
-  validateAsyncProverBundleKey: vi.fn((sessionId: string, executionId: string, bundleS3Key: string) => {
-    const expected = `sessions/${sessionId}/${executionId}/bundle.zip`;
-    if (bundleS3Key !== expected) {
-      throw new Error('Async prover bundle key must match the canonical session/execution S3 layout');
-    }
-    return expected;
-  }),
+  validateAsyncProverBundleKey: vi.fn(
+    (_profile: unknown, sessionId: string, finalizationId: string, bundleS3Key: string) => {
+      const expected = `sessions/${sessionId}/${finalizationId}/bundle.zip`;
+      if (bundleS3Key !== expected) {
+        throw new Error('Async prover bundle key must match the canonical session/finalization S3 layout');
+      }
+      return expected;
+    },
+  ),
 }));
 
 const callbackModule = await import('@stark-ballot/aws-adapters/finalize/applyFinalizationStateUpdate');
@@ -62,15 +60,9 @@ const { handler } = await import('./handler');
 describe('target finalization-writer handler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_MOCK_STORE'] = 'false';
-    process.env['USE_S3'] = 'true';
-    process.env['AWS_ACCOUNT_ID'] = '123456789012';
-    process.env['AWS_REGION'] = 'ap-northeast-1';
-    process.env['DYNAMODB_SESSIONS_TABLE'] = 'sessions';
-    process.env['DYNAMODB_VOTES_TABLE'] = 'votes';
-    process.env['S3_PROOF_BUCKET'] = 'proofs';
-    process.env['S3_PROOF_PREFIX'] = 'sessions';
+    delete process.env['VITE_SESSION_CREATE_TURNSTILE_REQUIRED'];
+    delete process.env['SESSION_CAPABILITY_SECRET'];
+    Object.assign(process.env, targetRuntimeProfileEnv());
   });
 
   it('rejects invalid direct callback payloads so Step Functions observes failure', async () => {
@@ -99,7 +91,6 @@ describe('target finalization-writer handler', () => {
     const resolutionError = new Error(`failed to resolve ${secretValue}`);
     vi.mocked(resolverModule.ensureAwsRuntimeConfigReferencesLoaded).mockImplementationOnce(
       async (_entrypoint, options) => {
-        if (!options) throw new Error('Expected runtime-reference resolver options');
         options.invalidNameCollector?.add('VOTE_SECRET_ENCRYPTION_KEY_REF');
         await Promise.reject(resolutionError);
       },
@@ -121,15 +112,15 @@ describe('target finalization-writer handler', () => {
     errorSpy.mockRestore();
   });
 
-  it('reports only the invalid finalization-writer config name', async () => {
+  it('reports only the immutable runtime-profile selector when selection changes', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
-    delete process.env['S3_PROOF_BUCKET'];
+    process.env['RUNTIME_PROFILE'] = 'local-demo';
 
     await expect(handler({ malformed: true })).rejects.toThrow('Runtime configuration validation failed');
 
     expect(errorSpy).toHaveBeenCalledWith('Runtime configuration is invalid', {
       event: 'config_invalid',
-      invalid_names: ['S3_PROOF_BUCKET'],
+      invalid_names: ['RUNTIME_PROFILE'],
     });
     expect(envModule.validateEnv).not.toHaveBeenCalled();
     expect(admissionModule.parseFinalizationStateUpdatePayload).not.toHaveBeenCalled();
@@ -163,9 +154,9 @@ describe('target finalization-writer handler', () => {
 
   it('validates target env before restoring a successful S3 bundle', async () => {
     const envError = new RuntimeConfigValidationError(
-      ['ALLOW_INSECURE_ZKVM'],
+      ['RUNTIME_PROFILE'],
       undefined,
-      'ALLOW_INSECURE_ZKVM is not allowed when TARGET_AWS_RUNTIME=1',
+      'Target runtime profile selection is invalid',
     );
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
 
@@ -179,15 +170,14 @@ describe('target finalization-writer handler', () => {
         executionArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:machine:exec-1',
         payload: {
           sessionId: '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b',
-          executionId: '01HVN5WA1CEH94868G90QGJ7HX',
-          contractGeneration: '2026-04-zkvm-current-v1',
-          queuedAt: 1_700_000_000_000,
+          finalizationId: '01HVN5WA1CEH94868G90QGJ7HX',
+          queuedAtMs: 1_700_000_000_000,
         },
       }),
     ).rejects.toMatchObject({
       name: 'RuntimeConfigValidationError',
       message: 'Runtime configuration validation failed',
-      invalidNames: ['ALLOW_INSECURE_ZKVM'],
+      invalidNames: ['RUNTIME_PROFILE'],
     });
 
     expect(artifactsModule.buildFinalizationResultFromS3Bundle).not.toHaveBeenCalled();
@@ -195,21 +185,21 @@ describe('target finalization-writer handler', () => {
     expect(callbackModule.applyAwsFinalizationStateUpdatePayload).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith('Runtime configuration is invalid', {
       event: 'config_invalid',
-      invalid_names: ['ALLOW_INSECURE_ZKVM'],
+      invalid_names: ['RUNTIME_PROFILE'],
     });
     errorSpy.mockRestore();
   });
 
   it('marks successful prover callbacks failed when durable bundle restoration fails', async () => {
     const sessionId = '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b';
-    const executionId = '01HVN5WA1CEH94868G90QGJ7HX';
-    const queuedAt = 1_700_000_000_000;
+    const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
+    const queuedAtMs = 1_700_000_000_000;
     const failedPayload = {
       sessionId,
-      executionId,
-      contractGeneration: '2026-04-zkvm-current-v1',
+      finalizationId,
       status: 'FAILED' as const,
-      queuedAt,
+      queuedAtMs,
+      failedAtMs: Date.parse('2026-06-17T00:00:05.000Z'),
       stepFunctionsArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:machine:exec-1',
       error: {
         code: 'FINALIZATION_BUNDLE_RESTORE_FAILED',
@@ -230,8 +220,8 @@ describe('target finalization-writer handler', () => {
       expect(payload).toEqual(
         expect.objectContaining({
           sessionId,
-          executionId,
-          queuedAt,
+          finalizationId,
+          queuedAtMs,
           status: 'FAILED',
           error: expectedRestoreError,
         }),
@@ -247,11 +237,12 @@ describe('target finalization-writer handler', () => {
       handler({
         status: 'SUCCEEDED',
         executionArn: failedPayload.stepFunctionsArn,
+        completedAtIso: '2026-06-17T00:00:05.000Z',
         payload: {
           sessionId,
-          executionId,
-          contractGeneration: failedPayload.contractGeneration,
-          queuedAt,
+          finalizationId,
+          queuedAtMs,
+          bundleS3Key: `sessions/${sessionId}/${finalizationId}/bundle.zip`,
         },
       }),
     ).resolves.toEqual({
@@ -265,7 +256,7 @@ describe('target finalization-writer handler', () => {
       auth_result: 'not_applicable',
       outcome_code: 'applied',
       session_id_hash: hashSessionIdForLogging(sessionId),
-      execution_id: executionId,
+      finalization_id: finalizationId,
     });
     expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(sessionId);
     expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain('bundle.zip');
@@ -273,7 +264,7 @@ describe('target finalization-writer handler', () => {
 
   it('rethrows transient bundle restoration failures for the Step Functions retry path', async () => {
     const sessionId = '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b';
-    const executionId = '01HVN5WA1CEH94868G90QGJ7HX';
+    const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
     const privateDetail = 's3://private-bucket/sessions/private-session/bundle.zip';
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     vi.mocked(artifactsModule.buildFinalizationResultFromS3Bundle).mockRejectedValue(new TransientBundleRestoreError());
@@ -282,11 +273,12 @@ describe('target finalization-writer handler', () => {
       handler({
         status: 'SUCCEEDED',
         executionArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:machine:exec-1',
+        completedAtIso: '2026-06-17T00:00:05.000Z',
         payload: {
           sessionId,
-          executionId,
-          contractGeneration: '2026-04-zkvm-current-v1',
-          queuedAt: 1_700_000_000_000,
+          finalizationId,
+          queuedAtMs: 1_700_000_000_000,
+          bundleS3Key: `sessions/${sessionId}/${finalizationId}/bundle.zip`,
           proverResult: {
             privateDetail,
           },
@@ -305,7 +297,7 @@ describe('target finalization-writer handler', () => {
       auth_result: 'not_applicable',
       outcome_code: 'application_failed',
       session_id_hash: hashSessionIdForLogging(sessionId),
-      execution_id: executionId,
+      finalization_id: finalizationId,
     });
     expect(emitCanonicalEventMock).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith('Finalization bundle restoration is temporarily unavailable', {
@@ -321,13 +313,13 @@ describe('target finalization-writer handler', () => {
 
   it('rejects store update failures instead of returning an error payload', async () => {
     const sessionId = '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b';
-    const executionId = '01HVN5WA1CEH94868G90QGJ7HX';
+    const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
     vi.mocked(admissionModule.parseFinalizationStateUpdatePayload).mockReturnValue({
       sessionId,
-      executionId,
-      contractGeneration: '2026-04-zkvm-current-v1',
+      finalizationId,
       status: 'FAILED',
-      queuedAt: 1_700_000_000_000,
+      queuedAtMs: 1_700_000_000_000,
+      failedAtMs: 1_700_000_000_100,
       error: {
         code: 'PROVER_TASK_FAILED',
         message: 'Target prover task failed',
@@ -343,23 +335,23 @@ describe('target finalization-writer handler', () => {
       auth_result: 'not_applicable',
       outcome_code: 'application_failed',
       session_id_hash: hashSessionIdForLogging(sessionId),
-      execution_id: executionId,
+      finalization_id: finalizationId,
     });
     expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(sessionId);
   });
 
   it('surfaces only the closed private prover marker category on failed direct updates', async () => {
     const sessionId = '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b';
-    const executionId = '01HVN5WA1CEH94868G90QGJ7HX';
+    const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
     const privateCause = 's3://private-bucket/raw-session/input.json';
     vi.mocked(artifactsModule.readAsyncProverFailureCategory).mockResolvedValue('upload');
     vi.mocked(admissionModule.parseFinalizationStateUpdatePayload).mockImplementation((payload) => {
       expect(payload).toEqual({
         sessionId,
-        executionId,
-        contractGeneration: '2026-04-zkvm-current-v1',
+        finalizationId,
         status: 'FAILED',
-        queuedAt: 1_700_000_000_000,
+        queuedAtMs: 1_700_000_000_000,
+        failedAtMs: 1_700_000_000_100,
         error: {
           code: 'PROVER_TASK_FAILED',
           message: 'Target prover task failed',
@@ -373,11 +365,11 @@ describe('target finalization-writer handler', () => {
     await expect(
       handler({
         status: 'FAILED',
+        failedAtMs: 1_700_000_000_100,
         payload: {
           sessionId,
-          executionId,
-          contractGeneration: '2026-04-zkvm-current-v1',
-          queuedAt: 1_700_000_000_000,
+          finalizationId,
+          queuedAtMs: 1_700_000_000_000,
         },
         error: {
           code: 'PROVER_TASK_FAILED',
@@ -386,22 +378,26 @@ describe('target finalization-writer handler', () => {
       }),
     ).rejects.toThrow('Invalid direct finalize callback event');
 
-    expect(artifactsModule.readAsyncProverFailureCategory).toHaveBeenCalledWith(sessionId, executionId);
+    expect(artifactsModule.readAsyncProverFailureCategory).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'target-aws-async' }),
+      sessionId,
+      finalizationId,
+    );
   });
 
   it.each(['PROVER_IMAGE_SIGNATURE_FAILED', 'PROVER_CAPACITY_WAIT_TIMEOUT'] as const)(
     'does not consult prover failure markers for %s',
     async (failureCode) => {
       const sessionId = '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b';
-      const executionId = '01HVN5WA1CEH94868G90QGJ7HX';
+      const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
       vi.mocked(artifactsModule.readAsyncProverFailureCategory).mockResolvedValue('upload');
       vi.mocked(admissionModule.parseFinalizationStateUpdatePayload).mockImplementation((payload) => {
         expect(payload).toEqual({
           sessionId,
-          executionId,
-          contractGeneration: '2026-04-zkvm-current-v1',
+          finalizationId,
           status: 'FAILED',
-          queuedAt: 1_700_000_000_000,
+          queuedAtMs: 1_700_000_000_000,
+          failedAtMs: 1_700_000_000_100,
           error: {
             code: failureCode,
             message: 'Finalization failed',
@@ -413,11 +409,11 @@ describe('target finalization-writer handler', () => {
       await expect(
         handler({
           status: 'FAILED',
+          failedAtMs: 1_700_000_000_100,
           payload: {
             sessionId,
-            executionId,
-            contractGeneration: '2026-04-zkvm-current-v1',
-            queuedAt: 1_700_000_000_000,
+            finalizationId,
+            queuedAtMs: 1_700_000_000_000,
           },
           error: {
             code: failureCode,
@@ -432,7 +428,7 @@ describe('target finalization-writer handler', () => {
 
   it('rejects callback-supplied foreign bundle keys before restoring artifacts', async () => {
     const sessionId = '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b';
-    const executionId = '01HVN5WA1CEH94868G90QGJ7HX';
+    const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
 
     await expect(
       handler({
@@ -440,13 +436,12 @@ describe('target finalization-writer handler', () => {
         executionArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:machine:exec-1',
         payload: {
           sessionId,
-          executionId,
-          contractGeneration: '2026-04-zkvm-current-v1',
-          queuedAt: 1_700_000_000_000,
-          bundleS3Key: `sessions/9f61dd4f-3194-4a79-a00f-9025062c8e83/${executionId}/bundle.zip`,
+          finalizationId,
+          queuedAtMs: 1_700_000_000_000,
+          bundleS3Key: `sessions/9f61dd4f-3194-4a79-a00f-9025062c8e83/${finalizationId}/bundle.zip`,
         },
       }),
-    ).rejects.toThrow('Async prover bundle key must match the canonical session/execution S3 layout');
+    ).rejects.toThrow('Async prover bundle key must match the canonical session/finalization S3 layout');
 
     expect(artifactsModule.buildFinalizationResultFromS3Bundle).not.toHaveBeenCalled();
     expect(admissionModule.parseFinalizationStateUpdatePayload).not.toHaveBeenCalled();
@@ -457,28 +452,26 @@ describe('target finalization-writer handler', () => {
       auth_result: 'not_applicable',
       outcome_code: 'payload_invalid',
       session_id_hash: hashSessionIdForLogging(sessionId),
-      execution_id: executionId,
+      finalization_id: finalizationId,
     });
     expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain('bundle.zip');
   });
 
   it.each(['bad/segment-123', 'bad.segment-123', 'https://example.invalid/execution'])(
-    'rejects unsafe execution id %s before deriving default bundle keys',
-    async (executionId) => {
+    'rejects unsafe finalization ID %s before reading bundle keys',
+    async (finalizationId) => {
       await expect(
         handler({
           status: 'SUCCEEDED',
           executionArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:machine:exec-1',
           payload: {
             sessionId: '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b',
-            executionId,
-            contractGeneration: '2026-04-zkvm-current-v1',
-            queuedAt: 1_700_000_000_000,
+            finalizationId,
+            queuedAtMs: 1_700_000_000_000,
           },
         }),
       ).rejects.toThrow(/safe single path segment/);
 
-      expect(artifactsModule.buildAsyncProverArtifactKeys).not.toHaveBeenCalled();
       expect(artifactsModule.buildFinalizationResultFromS3Bundle).not.toHaveBeenCalled();
       expect(admissionModule.parseFinalizationStateUpdatePayload).not.toHaveBeenCalled();
       expect(callbackModule.applyAwsFinalizationStateUpdatePayload).not.toHaveBeenCalled();
@@ -488,12 +481,12 @@ describe('target finalization-writer handler', () => {
         auth_result: 'not_applicable',
         outcome_code: 'payload_invalid',
       });
-      expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(executionId);
+      expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(finalizationId);
     },
   );
 
-  it('retains the outcome event but omits a 129-character execution correlation', async () => {
-    const overlengthExecutionId = 'e'.repeat(129);
+  it('retains the outcome event but omits a 129-character finalization correlation', async () => {
+    const overlengthFinalizationId = 'e'.repeat(129);
     vi.mocked(admissionModule.parseFinalizationStateUpdatePayload).mockReturnValue(undefined);
 
     await expect(
@@ -501,10 +494,9 @@ describe('target finalization-writer handler', () => {
         status: 'RUNNING',
         payload: {
           sessionId: '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b',
-          executionId: overlengthExecutionId,
-          contractGeneration: '2026-04-zkvm-current-v1',
-          queuedAt: 1_700_000_000_000,
-          startedAt: 1_700_000_001_000,
+          finalizationId: overlengthFinalizationId,
+          queuedAtMs: 1_700_000_000_000,
+          startedAtMs: 1_700_000_001_000,
         },
       }),
     ).rejects.toThrow('Invalid direct finalize callback event');
@@ -515,20 +507,19 @@ describe('target finalization-writer handler', () => {
       auth_result: 'not_applicable',
       outcome_code: 'payload_invalid',
     });
-    expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(overlengthExecutionId);
+    expect(JSON.stringify(emitCanonicalEventMock.mock.calls)).not.toContain(overlengthFinalizationId);
   });
 
   it('preserves Step Functions timeout identity for timed-out callbacks', async () => {
     const sessionId = '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b';
-    const executionId = '01HVN5WA1CEH94868G90QGJ7HX';
-    const timeoutAt = '2026-06-12T00:00:00.000Z';
+    const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
+    const timeoutAtIso = '2026-06-12T00:00:00.000Z';
     const timeoutPayload = {
       sessionId,
-      executionId,
-      contractGeneration: '2026-04-zkvm-current-v1',
+      finalizationId,
       status: 'TIMED_OUT' as const,
-      queuedAt: 1_700_000_000_000,
-      timeoutAt: Date.parse(timeoutAt),
+      queuedAtMs: 1_700_000_000_000,
+      timeoutAtMs: Date.parse(timeoutAtIso),
       stepFunctionsArn: 'arn:aws:states:ap-northeast-1:123456789012:execution:machine:exec-1',
     };
     const timeoutState = { status: 'timeout' } as Awaited<
@@ -536,7 +527,7 @@ describe('target finalization-writer handler', () => {
     >['state'];
 
     vi.mocked(admissionModule.parseFinalizationStateUpdatePayload).mockImplementation((payload) => {
-      expect(payload).toEqual(expect.objectContaining({ timeoutAt: Date.parse(timeoutAt) }));
+      expect(payload).toEqual(expect.objectContaining({ timeoutAtMs: Date.parse(timeoutAtIso) }));
       return timeoutPayload;
     });
     vi.mocked(callbackModule.applyAwsFinalizationStateUpdatePayload).mockResolvedValue({
@@ -548,12 +539,11 @@ describe('target finalization-writer handler', () => {
       handler({
         status: 'TIMED_OUT',
         executionArn: timeoutPayload.stepFunctionsArn,
-        timeoutAt,
+        timeoutAtIso,
         payload: {
           sessionId,
-          executionId,
-          contractGeneration: timeoutPayload.contractGeneration,
-          queuedAt: timeoutPayload.queuedAt,
+          finalizationId,
+          queuedAtMs: timeoutPayload.queuedAtMs,
         },
       }),
     ).resolves.toEqual(

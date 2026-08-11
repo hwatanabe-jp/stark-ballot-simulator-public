@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionData, VoteData } from '@stark-ballot/domain/types/server';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SessionVotingRecord, StoredVoteRecord } from '@stark-ballot/domain/types/sessionRecords';
+import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import type { FinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-types';
 import type {
   ProofBundleService,
@@ -15,10 +16,11 @@ import {
 import { finalizeSync } from '@stark-ballot/application/finalize/usecases/finalize-sync';
 import { ApplicationErrorCode } from '@stark-ballot/application/finalize/finalization-types';
 import { parseFinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-storage';
-import { createMockVoteStore, type MockVoteStore } from '@stark-ballot/test-support/testing/mockVoteStore';
+import { parseFinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
+import { createMockVoteStore, type MockVoteStore } from '../__tests__/support/mockVoteStore';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
-import { resolveCurrentContractGeneration } from '@stark-ballot/domain/contract';
+import { logger } from '@stark-ballot/diagnostics/logger';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -28,6 +30,8 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
 }
 
 const TEST_ELECTION_ID = '550e8400-e29b-41d4-a716-446655440000';
+const FINALIZATION_ID = '01JCGXZ8M00000000000000000';
+const QUEUED_AT_MS = 1_730_000_000_000;
 
 const { buildUserVoteArtifactsMock, UserVoteArtifactsUnavailableErrorMock } = vi.hoisted(() => ({
   buildUserVoteArtifactsMock: vi.fn(),
@@ -72,25 +76,23 @@ vi.mock('@stark-ballot/application/finalize/usecases/user-vote-artifacts', () =>
   UserVoteArtifactsUnavailableError: UserVoteArtifactsUnavailableErrorMock,
 }));
 
-const createVote = (vote: VoteData['vote']): VoteData => ({
+const createVote = (vote: StoredVoteRecord['vote']): StoredVoteRecord => ({
+  voteId: '00000000-0000-4000-8000-000000000001',
   vote,
   rand: '0x' + '1'.repeat(64),
   commit: '0x' + '2'.repeat(64),
-  path: [],
+  timestamp: QUEUED_AT_MS - 1,
+  rootAtCast: '0x' + 'a'.repeat(64),
 });
 
-const createSession = (votes: Map<number, VoteData>): SessionData => ({
+const createSession = (votes: Map<number, StoredVoteRecord>): SessionVotingRecord => ({
   sessionId: 'session-1',
-  contractGeneration: resolveCurrentContractGeneration(),
-  electionId: TEST_ELECTION_ID,
-  electionConfigHash: getDefaultElectionConfigHash(),
-  electionConfig: buildDefaultElectionConfig(),
   votes,
+  bulletin: new SimpleBulletinBoard('0x' + 'b'.repeat(64)),
+  bulletinRootHistory: [],
   botCount: 64,
-  finalized: false,
-  createdAt: Date.now(),
-  lastActivity: Date.now(),
-  userVoteIndex: 0,
+  userParticipation: { status: 'cast', voteIndex: 0 },
+  lastActivityMs: QUEUED_AT_MS,
 });
 
 const createZkvmInput = (): ZkVMInput => ({
@@ -169,11 +171,11 @@ const createVerificationResult = (
 
 const createProofBundleSuccess = (
   verificationOverrides: Partial<ProofBundleVerificationResult> = {},
-  executionId = 'exec-1',
+  finalizationId = FINALIZATION_ID,
 ): Awaited<ReturnType<ProofBundleService['createBundle']>> => ({
   ok: true,
   verificationResult: createVerificationResult(verificationOverrides),
-  executionId,
+  finalizationId,
 });
 
 function assertAuthorityResult(result: unknown): asserts result is FinalizationResultAuthority {
@@ -182,14 +184,29 @@ function assertAuthorityResult(result: unknown): asserts result is FinalizationR
   }
 }
 
+function readStoredAuthority(record: unknown): FinalizationResultAuthority {
+  const parsed = parseFinalizationRecord(record);
+  if (!parsed || parsed.state.status !== 'succeeded' || !parsed.finalizationResult) {
+    throw new Error('Expected exact succeeded finalization record');
+  }
+  const { finalizationId, ...authority } = parsed.finalizationResult;
+  expect(finalizationId).toBe(FINALIZATION_ID);
+  assertAuthorityResult(authority);
+  return authority;
+}
+
 describe('finalizeSync (scenario overrides)', () => {
   beforeEach(() => {
     buildUserVoteArtifactsMock.mockReset();
     buildUserVoteArtifactsMock.mockImplementation(() => createUserVoteArtifacts());
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('does not override missing/invalid for claim tampering', async () => {
-    const votes = new Map<number, VoteData>([[0, createVote('A')]]);
+    const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
     const zkvmInput = createZkvmInput();
     const zkvmResult = createZkvmResult();
@@ -208,8 +225,9 @@ describe('finalizeSync (scenario overrides)', () => {
     const result = await finalizeSync(
       {
         sessionId: 'session-1',
-        session,
-        contractGeneration: session.contractGeneration as string,
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        voting: session,
         zkvmInput,
         electionConfig: buildDefaultElectionConfig(),
         expectedImageId: zkvmResult.imageId ?? '',
@@ -243,7 +261,7 @@ describe('finalizeSync (scenario overrides)', () => {
   });
 
   it('returns finalization facts for claim tampering responses', async () => {
-    const votes = new Map<number, VoteData>([[0, createVote('A')]]);
+    const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
     const zkvmInput = createZkvmInput();
     const zkvmResult = createZkvmResult();
@@ -258,12 +276,14 @@ describe('finalizeSync (scenario overrides)', () => {
       scenarioResult: null,
     };
     const createBundle = vi.fn<ProofBundleService['createBundle']>().mockResolvedValue(createProofBundleSuccess());
+    const store = createMockVoteStore();
 
     const result = await finalizeSync(
       {
         sessionId: 'session-1',
-        session,
-        contractGeneration: session.contractGeneration as string,
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        voting: session,
         zkvmInput,
         electionConfig: buildDefaultElectionConfig(),
         expectedImageId: zkvmResult.imageId ?? '',
@@ -272,7 +292,7 @@ describe('finalizeSync (scenario overrides)', () => {
         debugFinalize: false,
       },
       {
-        store: createMockVoteStore(),
+        store,
         getExecutor: () =>
           Promise.resolve({
             type: 'mock',
@@ -285,15 +305,16 @@ describe('finalizeSync (scenario overrides)', () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.finalizationResult.verificationResult).toMatchObject({
-        status: 'dev_mode',
-      });
+      expect(result.value.finalizationResult).not.toHaveProperty('verificationResult');
       expect(result.value.finalizationResult.tally.counts).toEqual(scenario.claimedCounts);
     }
+    await expect(store.getVerificationResultRecord('session-1', FINALIZATION_ID)).resolves.toMatchObject({
+      verificationResult: { status: 'dev_mode' },
+    });
   });
 
   it('persists tamperDetected when rejected records are present without excluded slots', async () => {
-    const votes = new Map<number, VoteData>([[0, createVote('A')]]);
+    const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
     const zkvmInput = createZkvmInput();
     const zkvmResult = {
@@ -304,15 +325,15 @@ describe('finalizeSync (scenario overrides)', () => {
       rejectedRecords: 1,
       excludedSlots: 0,
     } satisfies ZkVMExecutionResult;
-    const finalizeSession = vi.fn<NonNullable<MockVoteStore['finalizeSession']>>().mockResolvedValue(undefined);
-    const store = createMockVoteStore({ finalizeSession });
+    const store = createMockVoteStore();
     const createBundle = vi.fn<ProofBundleService['createBundle']>().mockResolvedValue(createProofBundleSuccess());
 
     const result = await finalizeSync(
       {
         sessionId: 'session-1',
-        session,
-        contractGeneration: session.contractGeneration as string,
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        voting: session,
         zkvmInput,
         electionConfig: buildDefaultElectionConfig(),
         expectedImageId: zkvmResult.imageId ?? '',
@@ -341,33 +362,48 @@ describe('finalizeSync (scenario overrides)', () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(finalizeSession).toHaveBeenCalledOnce();
-    const [calledSessionId, calledResult] = strictDefined(finalizeSession.mock.calls[0]);
-    expect(calledSessionId).toBe('session-1');
-    assertAuthorityResult(calledResult);
+    const storedRecord = strictDefined(await store.getCurrentFinalizationRecord('session-1'));
+    const calledResult = readStoredAuthority(storedRecord);
+    expect(storedRecord.sessionId).toBe('session-1');
     expect(calledResult.tamperDetected).toBe(true);
     expect(calledResult.journal.rejectedRecords).toBe(1);
     expect(calledResult.journal.excludedSlots).toBe(0);
   });
 
-  it('uses atomic finalization with receipt publication when the store supports it', async () => {
-    const votes = new Map<number, VoteData>([[0, createVote('A')]]);
+  it('commits receipt publication, sync verification, and bitmap disposition through one required primitive', async () => {
+    const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
     const zkvmResult = createZkvmResult();
-    const finalizeSession = vi.fn<NonNullable<MockVoteStore['finalizeSession']>>().mockResolvedValue(undefined);
-    const finalizeSessionWithReceiptPublication = vi
-      .fn<NonNullable<MockVoteStore['finalizeSessionWithReceiptPublication']>>()
-      .mockResolvedValue({
-        receiptHash: '0x' + '12'.repeat(32),
-        boardIndex: 100,
-      });
+    const receiptPublication = {
+      receiptHash: '0x' + '12'.repeat(32),
+      boardIndex: 100,
+      timestamp: 1234,
+    };
+    const commitSuccessfulFinalization = vi
+      .fn<MockVoteStore['commitSuccessfulFinalization']>()
+      .mockImplementation((input) =>
+        Promise.resolve({
+          record: {
+            ...input.record,
+            finalizationResult: {
+              ...input.record.finalizationResult,
+              receiptPublication,
+            },
+          },
+          bitmap: input.bitmap,
+          receiptPublication,
+        }),
+      );
     const createBundle = vi.fn<ProofBundleService['createBundle']>().mockResolvedValue(createProofBundleSuccess());
+    const store = createMockVoteStore();
+    Reflect.set(store, 'commitSuccessfulFinalization', commitSuccessfulFinalization);
 
     const result = await finalizeSync(
       {
         sessionId: 'session-1',
-        session,
-        contractGeneration: session.contractGeneration as string,
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        voting: session,
         zkvmInput: createZkvmInput(),
         electionConfig: buildDefaultElectionConfig(),
         expectedImageId: zkvmResult.imageId ?? '',
@@ -384,10 +420,7 @@ describe('finalizeSync (scenario overrides)', () => {
         debugFinalize: false,
       },
       {
-        store: createMockVoteStore({
-          finalizeSession,
-          finalizeSessionWithReceiptPublication,
-        }),
+        store,
         getExecutor: () =>
           Promise.resolve({
             type: 'mock',
@@ -400,31 +433,44 @@ describe('finalizeSync (scenario overrides)', () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(finalizeSessionWithReceiptPublication).toHaveBeenCalledOnce();
-    expect(finalizeSession).not.toHaveBeenCalled();
-    const [sessionId, storedResult, contractGeneration, receipt] = strictDefined(
-      finalizeSessionWithReceiptPublication.mock.calls[0],
-    );
-    expect(sessionId).toBe('session-1');
-    expect(contractGeneration).toBe(session.contractGeneration);
-    expect(receipt.timestamp).toBe(1234);
-    assertAuthorityResult(storedResult);
-    expect(storedResult.receiptPublication).toMatchObject({
-      receiptHash: '0x' + '12'.repeat(32),
-      boardIndex: 100,
-      timestamp: 1234,
+    expect(commitSuccessfulFinalization).toHaveBeenCalledOnce();
+    const [commitInput] = strictDefined(commitSuccessfulFinalization.mock.calls[0]);
+    const storedRecord = commitInput.record;
+    expect(storedRecord).toMatchObject({
+      sessionId: 'session-1',
+      finalizationId: FINALIZATION_ID,
+      scenarioContext: {
+        scenarios: ['S0'],
+        tamperMode: 'none',
+      },
+      state: {
+        status: 'succeeded',
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        startedAtMs: 1234,
+        completedAtMs: 1234,
+      },
     });
+    expect(storedRecord.finalizationResult.finalizationId).toBe(FINALIZATION_ID);
+    expect(typeof commitInput.receipt?.receipt).toBe('string');
+    expect(commitInput.receipt?.timestamp).toBe(1234);
+    expect(commitInput).toMatchObject({
+      bitmap: { availability: 'unavailable' },
+      verificationResult: { status: 'dev_mode' },
+    });
+    readStoredAuthority(storedRecord);
     if (result.ok) {
       expect(result.value.finalizationResult.receiptPublication).toEqual({
         receiptHash: '0x' + '12'.repeat(32),
         boardIndex: 100,
         timestamp: 1234,
       });
+      expect(result.value.state).toEqual(storedRecord.state);
     }
   });
 
   it('does not mutate proof-derived counts for input tampering before bundle creation', async () => {
-    const votes = new Map<number, VoteData>([[0, createVote('A')]]);
+    const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
     const zkvmInput = createZkvmInput();
     const zkvmResult = {
@@ -453,8 +499,9 @@ describe('finalizeSync (scenario overrides)', () => {
     const result = await finalizeSync(
       {
         sessionId: 'session-1',
-        session,
-        contractGeneration: session.contractGeneration as string,
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        voting: session,
         zkvmInput,
         electionConfig: buildDefaultElectionConfig(),
         expectedImageId: zkvmResult.imageId ?? '',
@@ -485,8 +532,8 @@ describe('finalizeSync (scenario overrides)', () => {
     expect(bundleOptions.zkvmResult.excludedSlots).toBe(0);
   });
 
-  it('projects fail-closed verification status and strips verifier-only report fields from the sync response', async () => {
-    const votes = new Map<number, VoteData>([[0, createVote('A')]]);
+  it('keeps verifier status separate from the sync finalization response', async () => {
+    const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
     const zkvmInput = createZkvmInput();
     const zkvmResult = {
@@ -513,12 +560,14 @@ describe('finalizeSync (scenario overrides)', () => {
         },
       }),
     );
+    const store = createMockVoteStore();
 
     const result = await finalizeSync(
       {
         sessionId: 'session-1',
-        session,
-        contractGeneration: session.contractGeneration as string,
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        voting: session,
         zkvmInput,
         electionConfig: buildDefaultElectionConfig(),
         expectedImageId: zkvmResult.imageId ?? '',
@@ -535,7 +584,7 @@ describe('finalizeSync (scenario overrides)', () => {
         debugFinalize: false,
       },
       {
-        store: createMockVoteStore(),
+        store,
         getExecutor: () =>
           Promise.resolve({
             type: 'real',
@@ -548,16 +597,17 @@ describe('finalizeSync (scenario overrides)', () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.finalizationResult.verificationResult).toMatchObject({
-        status: 'success',
-      });
+      expect(result.value.finalizationResult).not.toHaveProperty('verificationResult');
     }
+    await expect(store.getVerificationResultRecord('session-1', FINALIZATION_ID)).resolves.toMatchObject({
+      verificationResult: { status: 'success' },
+    });
   });
 
   it('fails closed on an unsupported zkVM journal contract before persisting success', async () => {
-    const votes = new Map<number, VoteData>([[0, createVote('A')]]);
+    const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
-    const finalizeSession = vi.fn<NonNullable<MockVoteStore['finalizeSession']>>().mockResolvedValue(undefined);
+    const commitSuccessfulFinalization = vi.fn<MockVoteStore['commitSuccessfulFinalization']>();
     const createBundle = vi.fn();
     const zkvmResult = {
       ...createZkvmResult(),
@@ -577,8 +627,9 @@ describe('finalizeSync (scenario overrides)', () => {
     const result = await finalizeSync(
       {
         sessionId: 'session-1',
-        session,
-        contractGeneration: session.contractGeneration as string,
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        voting: session,
         zkvmInput: createZkvmInput(),
         electionConfig: buildDefaultElectionConfig(),
         expectedImageId: zkvmResult.imageId ?? '',
@@ -587,7 +638,7 @@ describe('finalizeSync (scenario overrides)', () => {
         debugFinalize: false,
       },
       {
-        store: createMockVoteStore({ finalizeSession }),
+        store: createMockVoteStore({ commitSuccessfulFinalization }),
         getExecutor: () =>
           Promise.resolve({
             type: 'real',
@@ -607,19 +658,15 @@ describe('finalizeSync (scenario overrides)', () => {
       }
     }
     expect(createBundle).not.toHaveBeenCalled();
-    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(commitSuccessfulFinalization).not.toHaveBeenCalled();
   });
 
   it('fails before verifier, publication, persistence, or bitmap side effects when exact user vote artifacts are unavailable', async () => {
-    const votes = new Map<number, VoteData>([[0, createVote('A')]]);
+    const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
-    const finalizeSession = vi.fn<NonNullable<MockVoteStore['finalizeSession']>>().mockResolvedValue(undefined);
     const createBundle = vi.fn<ProofBundleService['createBundle']>();
-    const finalizeSessionWithReceiptPublication = vi.fn().mockResolvedValue({
-      receiptHash: 'receipt-hash',
-      boardIndex: 0,
-    });
-    const saveBitmapData = vi.fn().mockResolvedValue(undefined);
+    const store = createMockVoteStore();
+    const commitSuccessfulFinalization = vi.spyOn(store, 'commitSuccessfulFinalization');
     const zkvmResult = createZkvmResult();
 
     buildUserVoteArtifactsMock.mockImplementationOnce(() => {
@@ -629,8 +676,9 @@ describe('finalizeSync (scenario overrides)', () => {
     const result = await finalizeSync(
       {
         sessionId: 'session-1',
-        session,
-        contractGeneration: session.contractGeneration as string,
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        voting: session,
         zkvmInput: createZkvmInput(),
         electionConfig: buildDefaultElectionConfig(),
         expectedImageId: zkvmResult.imageId ?? '',
@@ -647,7 +695,7 @@ describe('finalizeSync (scenario overrides)', () => {
         debugFinalize: false,
       },
       {
-        store: createMockVoteStore({ finalizeSession, finalizeSessionWithReceiptPublication, saveBitmapData }),
+        store,
         getExecutor: () =>
           Promise.resolve({
             type: 'real',
@@ -667,33 +715,30 @@ describe('finalizeSync (scenario overrides)', () => {
       }
     }
     expect(createBundle).not.toHaveBeenCalled();
-    expect(finalizeSessionWithReceiptPublication).not.toHaveBeenCalled();
-    expect(finalizeSession).not.toHaveBeenCalled();
-    expect(saveBitmapData).not.toHaveBeenCalled();
-    expect(session.finalizationResult).toBeUndefined();
+    expect(commitSuccessfulFinalization).not.toHaveBeenCalled();
+    expect(session.votes.size).toBe(1);
   });
 
   it('returns an internal error when unexpected user vote artifact assembly fails', async () => {
-    const votes = new Map<number, VoteData>([[0, createVote('A')]]);
+    const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
-    const finalizeSession = vi.fn<NonNullable<MockVoteStore['finalizeSession']>>().mockResolvedValue(undefined);
     const createBundle = vi.fn<ProofBundleService['createBundle']>();
-    const finalizeSessionWithReceiptPublication = vi.fn().mockResolvedValue({
-      receiptHash: 'receipt-hash',
-      boardIndex: 0,
-    });
-    const saveBitmapData = vi.fn().mockResolvedValue(undefined);
+    const store = createMockVoteStore();
+    const commitSuccessfulFinalization = vi.spyOn(store, 'commitSuccessfulFinalization');
     const zkvmResult = createZkvmResult();
+    const unexpectedError = new Error('unexpected artifact failure');
+    const errorLog = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
 
     buildUserVoteArtifactsMock.mockImplementationOnce(() => {
-      throw new Error('unexpected artifact failure');
+      throw unexpectedError;
     });
 
     const result = await finalizeSync(
       {
         sessionId: 'session-1',
-        session,
-        contractGeneration: session.contractGeneration as string,
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        voting: session,
         zkvmInput: createZkvmInput(),
         electionConfig: buildDefaultElectionConfig(),
         expectedImageId: zkvmResult.imageId ?? '',
@@ -710,7 +755,7 @@ describe('finalizeSync (scenario overrides)', () => {
         debugFinalize: false,
       },
       {
-        store: createMockVoteStore({ finalizeSession, finalizeSessionWithReceiptPublication, saveBitmapData }),
+        store,
         getExecutor: () =>
           Promise.resolve({
             type: 'real',
@@ -730,21 +775,21 @@ describe('finalizeSync (scenario overrides)', () => {
       }
     }
     expect(createBundle).not.toHaveBeenCalled();
-    expect(finalizeSessionWithReceiptPublication).not.toHaveBeenCalled();
-    expect(finalizeSession).not.toHaveBeenCalled();
-    expect(saveBitmapData).not.toHaveBeenCalled();
-    expect(session.finalizationResult).toBeUndefined();
+    expect(commitSuccessfulFinalization).not.toHaveBeenCalled();
+    expect(session.votes.size).toBe(1);
+    expect(errorLog).toHaveBeenCalledOnce();
+    expect(errorLog).toHaveBeenCalledWith('[API] Failed to build exact user vote artifacts', unexpectedError);
   });
 
   it('returns verifier failures with safe public details only', async () => {
-    const votes = new Map<number, VoteData>([[0, createVote('A')]]);
+    const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
     const zkvmResult = createZkvmResult();
     const createBundle = vi.fn<ProofBundleService['createBundle']>().mockResolvedValue({
       ok: false,
       error: {
         type: 'verifier_failed',
-        executionId: 'exec-1',
+        finalizationId: 'exec-1',
         status: 'failed',
         report: {
           status: 'failed',
@@ -762,8 +807,9 @@ describe('finalizeSync (scenario overrides)', () => {
     const result = await finalizeSync(
       {
         sessionId: 'session-1',
-        session,
-        contractGeneration: session.contractGeneration as string,
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        voting: session,
         zkvmInput: createZkvmInput(),
         electionConfig: buildDefaultElectionConfig(),
         expectedImageId: zkvmResult.imageId ?? '',
@@ -798,7 +844,7 @@ describe('finalizeSync (scenario overrides)', () => {
         expect(result.error.code).toBe(ApplicationErrorCode.VERIFICATION_FAILED);
         expect(result.error.details).toMatchObject({
           status: 'failed',
-          verificationExecutionId: 'exec-1',
+          finalizationId: 'exec-1',
           verificationReport: {
             status: 'failed',
             verifier_version: '0.1.0',
@@ -816,12 +862,12 @@ describe('finalizeSync (scenario overrides)', () => {
   });
 
   it('persists the exact included and seen bitmaps for real flows', async () => {
-    const votes = new Map<number, VoteData>([[0, createVote('A')]]);
+    const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
     const zkvmInput = createZkvmInput();
     const exactBitmap = [false, true, true, true];
     const seenBitmap = [true, true, true, true];
-    const saveBitmapData = vi.fn().mockResolvedValue(undefined);
+    const store = createMockVoteStore();
     const zkvmResult = {
       ...createZkvmResult(),
       treeSize: exactBitmap.length,
@@ -852,8 +898,9 @@ describe('finalizeSync (scenario overrides)', () => {
     const result = await finalizeSync(
       {
         sessionId: 'session-1',
-        session,
-        contractGeneration: session.contractGeneration as string,
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        voting: session,
         zkvmInput: { ...zkvmInput, treeSize: exactBitmap.length },
         electionConfig: buildDefaultElectionConfig(),
         expectedImageId: zkvmResult.imageId ?? '',
@@ -862,7 +909,7 @@ describe('finalizeSync (scenario overrides)', () => {
         debugFinalize: false,
       },
       {
-        store: createMockVoteStore({ saveBitmapData }),
+        store,
         getExecutor: () =>
           Promise.resolve({
             type: 'real',
@@ -876,25 +923,21 @@ describe('finalizeSync (scenario overrides)', () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(saveBitmapData).toHaveBeenCalledWith(
-      'session-1',
-      expect.objectContaining({
-        includedBitmap: exactBitmap,
-        includedBitmapRoot: computeIncludedBitmapRoot(exactBitmap),
-        seenBitmap,
-        seenBitmapRoot: computeIncludedBitmapRoot(seenBitmap),
-        treeSize: exactBitmap.length,
-      }),
-    );
+    await expect(store.getBitmapData('session-1', FINALIZATION_ID)).resolves.toMatchObject({
+      includedBitmap: exactBitmap,
+      includedBitmapRoot: computeIncludedBitmapRoot(exactBitmap),
+      seenBitmap,
+      seenBitmapRoot: computeIncludedBitmapRoot(seenBitmap),
+      treeSize: exactBitmap.length,
+    });
     if (result.ok) {
       expect(result.value.finalizationResult.journal.seenBitmapRoot).toBe(computeIncludedBitmapRoot(seenBitmap));
     }
   });
 
   it('stores a sanitized journal while keeping bitmap data separate', async () => {
-    const votes = new Map<number, VoteData>([[0, createVote('A')]]);
+    const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
-    const finalizeSession = vi.fn<NonNullable<MockVoteStore['finalizeSession']>>().mockResolvedValue(undefined);
     const exactBitmap = [true];
     const zkvmResult = {
       ...createZkvmResult(),
@@ -912,12 +955,14 @@ describe('finalizeSync (scenario overrides)', () => {
       scenarioResult: null,
     };
     const createBundle = vi.fn<ProofBundleService['createBundle']>().mockResolvedValue(createProofBundleSuccess());
+    const store = createMockVoteStore();
 
     const result = await finalizeSync(
       {
         sessionId: 'session-1',
-        session,
-        contractGeneration: session.contractGeneration as string,
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        voting: session,
         zkvmInput: createZkvmInput(),
         electionConfig: buildDefaultElectionConfig(),
         expectedImageId: zkvmResult.imageId ?? '',
@@ -926,7 +971,7 @@ describe('finalizeSync (scenario overrides)', () => {
         debugFinalize: false,
       },
       {
-        store: createMockVoteStore({ finalizeSession }),
+        store,
         getExecutor: () =>
           Promise.resolve({
             type: 'mock',
@@ -938,32 +983,31 @@ describe('finalizeSync (scenario overrides)', () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(finalizeSession).toHaveBeenCalledOnce();
-    const [sessionId, storedResult] = strictDefined(finalizeSession.mock.calls[0]);
-    expect(sessionId).toBe('session-1');
-
-    assertAuthorityResult(storedResult);
-    const authority = storedResult;
+    const storedRecord = strictDefined(await store.getCurrentFinalizationRecord('session-1'));
+    expect(storedRecord.sessionId).toBe('session-1');
+    const authority = readStoredAuthority(storedRecord);
     expect(authority.journal.includedBitmapRoot).toBe(computeIncludedBitmapRoot(exactBitmap));
-    expect(Object.hasOwn(authority.verificationResult ?? {}, 'executionId')).toBe(false);
-    expect(Object.hasOwn(authority.verificationResult ?? {}, 's3BundleKey')).toBe(false);
-    expect(strictDefined(finalizeSession.mock.calls[0])[3]).toBe('exec-1');
+    expect(authority).not.toHaveProperty('verificationResult');
+    expect(storedRecord.state).toMatchObject({
+      status: 'succeeded',
+      finalizationId: FINALIZATION_ID,
+      queuedAtMs: QUEUED_AT_MS,
+    });
     if (result.ok) {
-      expect(result.value.verificationExecutionId).toBe('exec-1');
+      expect(result.value.finalizationId).toBe(FINALIZATION_ID);
     }
     expect(authority.bitmapData).toBeUndefined();
+    await expect(store.getBitmapData('session-1', FINALIZATION_ID)).resolves.toMatchObject({
+      includedBitmap: exactBitmap,
+      includedBitmapRoot: computeIncludedBitmapRoot(exactBitmap),
+    });
     expect('includedBitmap' in authority.journal).toBe(false);
   });
 
-  it('fails closed before persistence when bundle creation returns a missing top-level execution authority', async () => {
-    const votes = new Map<number, VoteData>([[0, createVote('A')]]);
+  it('fails closed before persistence when bundle creation returns a missing top-level finalization authority', async () => {
+    const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
-    const finalizeSession = vi.fn<NonNullable<MockVoteStore['finalizeSession']>>().mockResolvedValue(undefined);
-    const finalizeSessionWithReceiptPublication = vi.fn().mockResolvedValue({
-      receiptHash: 'receipt-hash',
-      boardIndex: 0,
-    });
-    const saveBitmapData = vi.fn().mockResolvedValue(undefined);
+    const commitSuccessfulFinalization = vi.fn<MockVoteStore['commitSuccessfulFinalization']>();
     const createBundle = vi
       .fn<ProofBundleService['createBundle']>()
       .mockResolvedValue(createProofBundleSuccess({}, ''));
@@ -971,8 +1015,9 @@ describe('finalizeSync (scenario overrides)', () => {
     const result = await finalizeSync(
       {
         sessionId: 'session-1',
-        session,
-        contractGeneration: session.contractGeneration as string,
+        finalizationId: FINALIZATION_ID,
+        queuedAtMs: QUEUED_AT_MS,
+        voting: session,
         zkvmInput: createZkvmInput(),
         electionConfig: buildDefaultElectionConfig(),
         expectedImageId: createZkvmResult().imageId ?? '',
@@ -989,7 +1034,7 @@ describe('finalizeSync (scenario overrides)', () => {
         debugFinalize: false,
       },
       {
-        store: createMockVoteStore({ finalizeSession, finalizeSessionWithReceiptPublication, saveBitmapData }),
+        store: createMockVoteStore({ commitSuccessfulFinalization }),
         getExecutor: () =>
           Promise.resolve({
             type: 'mock',
@@ -1004,11 +1049,9 @@ describe('finalizeSync (scenario overrides)', () => {
     if (!result.ok) {
       expect(result.error.kind).toBe('api');
       if (result.error.kind === 'api') {
-        expect(result.error.code).toBe(ApplicationErrorCode.CORRUPT_OR_UNREADABLE_FINALIZED_STATE);
+        expect(result.error.code).toBe(ApplicationErrorCode.INVALID_FINALIZATION_ARTIFACT);
       }
     }
-    expect(finalizeSession).not.toHaveBeenCalled();
-    expect(finalizeSessionWithReceiptPublication).not.toHaveBeenCalled();
-    expect(saveBitmapData).not.toHaveBeenCalled();
+    expect(commitSuccessfulFinalization).not.toHaveBeenCalled();
   });
 });

@@ -1,11 +1,11 @@
 output "app_state_identity" {
   description = "Account-aware Terraform state identity for the skeletal app lane."
-  value       = "${var.account_alias}/${var.deployment_environment}/${var.state_scope}"
+  value       = local.app_lane_authority.stateIdentity
 }
 
 output "app_state_backend_key" {
   description = "Terraform remote state key for the skeletal app lane."
-  value       = var.state_backend_key
+  value       = local.app_lane_authority.backendKey
 }
 
 output "app_lane_scope" {
@@ -104,12 +104,12 @@ output "dynamodb_table_inventory" {
       pitr_enabled                    = true
       sse_kms_key_arn                 = aws_kms_key.app_data.arn
       deletion_protection             = var.enable_dynamodb_deletion_protection
-      owner_role_arns                 = { for key in ["public_api", "finalization_writer", "proof_dispatcher"] : key => aws_iam_role.target_lambda[key].arn }
+      owner_role_arns                 = { for key in ["public_api", "finalization_writer", "proof_dispatcher", "verification_worker"] : key => aws_iam_role.target_lambda[key].arn }
       read_throttle_alarm_name        = aws_cloudwatch_metric_alarm.dynamodb_read_throttle_events["sessions"].alarm_name
       read_throttle_alarm_arn         = aws_cloudwatch_metric_alarm.dynamodb_read_throttle_events["sessions"].arn
       write_throttle_alarm_name       = aws_cloudwatch_metric_alarm.dynamodb_write_throttle_events["sessions"].alarm_name
       write_throttle_alarm_arn        = aws_cloudwatch_metric_alarm.dynamodb_write_throttle_events["sessions"].arn
-      least_privilege_access_decision = "Session-table runtime access is limited by aws_iam_policy_document.target_lambda_session_store_runtime statements UseSessionTable and UseSessionVoteTransactions for the Hono API, finalize callback, and prover dispatch roles; KMS use is constrained by UseAppDataKey to this table name."
+      least_privilege_access_decision = "Base session-table access is limited by UseSessionTable for the public API, finalization writer, proof dispatcher, and verification worker; transactional condition checks and deletes are limited by role-specific UseSessionConditionChecks and UseSessionDeletes statements; KMS use is constrained by UseAppDataKey to this table name."
     }
     votes = {
       table_name                      = local.active_votes_table_name
@@ -121,12 +121,12 @@ output "dynamodb_table_inventory" {
       pitr_enabled                    = true
       sse_kms_key_arn                 = aws_kms_key.app_data.arn
       deletion_protection             = var.enable_dynamodb_deletion_protection
-      owner_role_arns                 = { for key in ["public_api", "finalization_writer", "proof_dispatcher"] : key => aws_iam_role.target_lambda[key].arn }
+      owner_role_arns                 = { for key in ["public_api", "finalization_writer", "proof_dispatcher", "verification_worker"] : key => aws_iam_role.target_lambda[key].arn }
       read_throttle_alarm_name        = aws_cloudwatch_metric_alarm.dynamodb_read_throttle_events["votes"].alarm_name
       read_throttle_alarm_arn         = aws_cloudwatch_metric_alarm.dynamodb_read_throttle_events["votes"].arn
       write_throttle_alarm_name       = aws_cloudwatch_metric_alarm.dynamodb_write_throttle_events["votes"].alarm_name
       write_throttle_alarm_arn        = aws_cloudwatch_metric_alarm.dynamodb_write_throttle_events["votes"].arn
-      least_privilege_access_decision = "Vote-table runtime access is limited by aws_iam_policy_document.target_lambda_session_store_runtime statements UseVoteTable and UseSessionVoteTransactions for the Hono API, finalize callback, and prover dispatch roles; no voteId-index ARN is granted for target acceptance, and KMS use is constrained by UseAppDataKey to this table name."
+      least_privilege_access_decision = "Base vote-table access is limited by UseVoteTable for the public API, finalization writer, proof dispatcher, and verification worker; transactional TTL updates are limited by UseVoteTtlUpdates to the public API and finalization writer; no voteId-index ARN is granted for target acceptance, and KMS use is constrained by UseAppDataKey to this table name."
     }
     rate_limit_events = {
       table_name                      = aws_dynamodb_table.rate_limit_events.name
@@ -191,16 +191,24 @@ output "runtime_non_secret_parameter_names" {
 }
 
 output "observability_detection_inventory" {
-  description = "Safe-name inventory for passive detectors, the compact dashboard, and the invariant-only notification surface."
+  description = "Safe-name inventory for passive detectors, measurement-only views, and isolated invariant/actionable notification surfaces."
   value = {
-    metric_namespace              = local.observability_metric_namespace
-    dashboard_name                = aws_cloudwatch_dashboard.observability.dashboard_name
-    invariant_alarm_name          = aws_cloudwatch_metric_alarm.verification_invariant_contradiction.alarm_name
-    notification_topic_name       = aws_sns_topic.verification_invariant_alerts.name
-    email_parameter_name          = local.invariant_email_parameter_name
-    email_subscription_configured = local.invariant_email_parameter_present
+    metric_namespace                   = local.observability_metric_namespace
+    dashboard_name                     = aws_cloudwatch_dashboard.observability.dashboard_name
+    invariant_alarm_name               = aws_cloudwatch_metric_alarm.verification_invariant_contradiction.alarm_name
+    notification_topic_name            = aws_sns_topic.verification_invariant_alerts.name
+    email_parameter_name               = local.invariant_email_parameter_name
+    email_subscription_configured      = local.invariant_email_parameter_present
+    actionable_notification_topic_name = aws_sns_topic.ops_actionable.name
+    actionable_email_parameter_name    = local.ops_actionable_email_parameter_name
+    actionable_email_configured        = local.ops_actionable_email_parameter_present
+    finalization_query_definition_names = {
+      completion_cohort = aws_cloudwatch_query_definition.finalization_completion_cohort.name
+      terminal_reasons  = aws_cloudwatch_query_definition.finalization_terminal_reasons.name
+    }
     metric_filter_names = {
       dispatch_dropped                = aws_cloudwatch_log_metric_filter.dispatch_dropped.name
+      finalization_admissions         = aws_cloudwatch_log_metric_filter.finalization_admissions.name
       finalization_terminal_outcomes  = sort(values(aws_cloudwatch_log_metric_filter.finalization_terminal_outcomes)[*].name)
       verification_failure_categories = aws_cloudwatch_log_metric_filter.verification_failure_categories.name
       invariant_contradiction         = aws_cloudwatch_log_metric_filter.verification_invariant_contradiction.name
@@ -211,6 +219,19 @@ output "observability_detection_inventory" {
       api_gateway_5xx          = aws_cloudwatch_metric_alarm.target_api_gateway_5xx.alarm_name
       work_queue_age           = sort(values(aws_cloudwatch_metric_alarm.work_queue_oldest_message_age)[*].alarm_name)
     }
+    actionable_alarm_names = {
+      dlq_depth       = sort(values(aws_cloudwatch_metric_alarm.actionable_dlq_depth)[*].alarm_name)
+      work_queue_age  = sort(values(aws_cloudwatch_metric_alarm.actionable_work_queue_age)[*].alarm_name)
+      api_gateway_5xx = aws_cloudwatch_metric_alarm.actionable_api_5xx.alarm_name
+    }
+    actionable_event_rule_names = merge(
+      {
+        for key, rule in aws_cloudwatch_event_rule.ops_actionable_alarm : key => rule.name
+      },
+      {
+        pipeline_failed = aws_cloudwatch_event_rule.ops_actionable_pipeline_failed.name
+      },
+    )
   }
 }
 

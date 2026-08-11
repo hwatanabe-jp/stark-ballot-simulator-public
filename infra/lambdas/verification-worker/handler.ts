@@ -1,31 +1,38 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { s, type Schema } from '@stark-ballot/validation/schema';
+import { s, type Infer, type Schema } from '@stark-ballot/validation/schema';
 import { downloadFromS3 } from '@stark-ballot/aws-adapters/aws/s3-download';
 import { validateAsyncProverBundleKey } from '@stark-ballot/aws-adapters/finalize/async-prover-artifacts';
 import { getGlobalStore } from '@stark-ballot/aws-adapters/store/storeInstance';
-import { parseAwsPersistedFinalizationResult } from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
 import { parseVerificationWorkMessage } from '@stark-ballot/aws-adapters/sqs/verificationWorkMessage';
 import { extractZipFromBuffer } from '@stark-ballot/node-adapters/zip';
+import { inspectVerificationBundleArchiveBuffer } from '@stark-ballot/node-adapters/verification-bundle';
 import { invokeVerifierService } from '@stark-ballot/node-adapters/verifier-service-client';
 import type { VerificationWorkerResponse } from '@stark-ballot/aws-adapters/lambda/verification-worker-contract';
 import { ensureAwsRuntimeConfigReferencesLoaded } from '@stark-ballot/aws-adapters/config/awsRuntimeConfigReferenceResolver';
 import { validateEnv } from '@stark-ballot/runtime-config/env/validate';
 import { validateTargetObservabilityEnv } from '@stark-ballot/runtime-config/env/observability';
-import { isTargetAwsRuntime } from '@stark-ballot/runtime-config/env/targetRuntime';
+import {
+  resolveRuntimeProfile,
+  type ResolvedRuntimeProfile,
+  validateRuntimeProfileSelection,
+} from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashKeyPrefixForLogging, hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { SAFE_VERIFIER_SEGMENT_PATTERN } from '@stark-ballot/validation/safe-verifier-segment';
+import { resolvePublicBundlePolicy } from '@stark-ballot/verification/public-bundle-manifest';
 import type { VerificationFailureCategory, VerificationStatus } from '@stark-ballot/verification/shared/types';
-import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/domain/utils/hex';
+import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { uploadVerificationBundleToS3 } from './verificationBundleS3Upload.js';
-import { RuntimeConfigValidationError, bootstrapLambdaRuntime, type RuntimeConfigName } from '../runtimeBootstrap.js';
+import { RuntimeConfigValidationError, bootstrapLambdaRuntime } from '../runtimeBootstrap.js';
 
 const INVALID_PAYLOAD_DETAILS = 'Invalid verifier invocation payload';
 const VERIFIER_EXECUTION_FAILURE_DETAILS = 'Verifier service execution failed';
 const MAX_VERIFIER_STDERR_DIAGNOSTIC_BYTES = 4 * 1024;
 const VERIFIER_STDERR_DIAGNOSTIC_CATEGORIES = new Set(['none', 'present', 'truncated']);
+const ASYNC_PUBLIC_BUNDLE_POLICY = resolvePublicBundlePolicy('async');
+let resolvedRuntimeProfile: ResolvedRuntimeProfile | undefined;
 
 class VerificationInfrastructureError extends Error {
   readonly failureCategory: VerificationFailureCategory;
@@ -99,7 +106,7 @@ function readOwnDataProperty(value: unknown, key: string): unknown {
 }
 
 function emitVerifierServiceDiagnostics(
-  input: Pick<HandlerEvent, 'sessionId' | 'executionId'>,
+  input: Pick<HandlerEvent, 'sessionId' | 'finalizationId'>,
   diagnostics: unknown,
 ): void {
   const category = readOwnDataProperty(diagnostics, 'stderrCategory');
@@ -117,24 +124,12 @@ function emitVerifierServiceDiagnostics(
   logger.info('[VerificationWorker] verifier-service diagnostics', {
     event: 'verifier_service_diagnostic',
     session_id_hash: hashSessionIdForLogging(input.sessionId),
-    execution_id: input.executionId,
+    finalization_id: input.finalizationId,
     stderr_category: valid ? category : 'none',
     stderr_bytes: valid ? bytes : 0,
     stderr_truncated: valid ? truncated : false,
   });
 }
-
-type HandlerEvent = {
-  mode: 's3_bundle';
-  sessionId: string;
-  executionId: string;
-  bundleKey: string;
-  expectedImageId: string;
-  options?: {
-    uploadToS3?: boolean;
-    workDir?: string;
-  };
-};
 
 type SqsEvent = {
   Records: unknown[];
@@ -157,7 +152,7 @@ interface RunVerificationPayloadOptions {
   retryInfrastructureErrors?: boolean;
 }
 
-type VerificationWorkDisposition = 'process' | 'duplicate_terminal' | 'stale_execution';
+type VerificationWorkDisposition = 'process' | 'duplicate_terminal' | 'stale_finalization';
 
 const VERIFICATION_WORK_MAX_RECEIVE_COUNT = 3;
 
@@ -187,17 +182,21 @@ const s3BundleSchema = s
   .object({
     mode: s.literal('s3_bundle'),
     sessionId: s.string().uuid().regex(SAFE_VERIFIER_SEGMENT_PATTERN),
-    executionId: s.string().regex(SAFE_VERIFIER_SEGMENT_PATTERN),
+    finalizationId: s.string().regex(SAFE_VERIFIER_SEGMENT_PATTERN),
     bundleKey: s.string().min(1),
     expectedImageId: hexStringSchema(32, 'expectedImageId'),
     options: runnerOptionsSchema,
   })
   .strict();
 
-const eventSchema: Schema<HandlerEvent> = s.typed(s3BundleSchema);
+type HandlerEvent = Infer<typeof s3BundleSchema>;
+const eventSchema = s3BundleSchema;
 
-function rejectUnsafeTargetOptions(input: HandlerEvent): VerificationWorkerResponse | null {
-  if (!isTargetAwsRuntime()) {
+function rejectUnsafeTargetOptions(
+  profile: ResolvedRuntimeProfile,
+  input: HandlerEvent,
+): VerificationWorkerResponse | null {
+  if (profile.target.kind !== 'aws') {
     return null;
   }
 
@@ -205,7 +204,7 @@ function rejectUnsafeTargetOptions(input: HandlerEvent): VerificationWorkerRespo
     return {
       status: 'error',
       message: 'Invalid verifier invocation payload',
-      details: 'workDir is not allowed when TARGET_AWS_RUNTIME=1',
+      details: 'workDir is not allowed by the target AWS runtime profile',
     };
   }
 
@@ -213,7 +212,7 @@ function rejectUnsafeTargetOptions(input: HandlerEvent): VerificationWorkerRespo
     return {
       status: 'error',
       message: 'Invalid verifier invocation payload',
-      details: 'uploadToS3=false is not allowed when TARGET_AWS_RUNTIME=1',
+      details: 'uploadToS3=false is not allowed by the target AWS runtime profile',
     };
   }
 
@@ -221,10 +220,11 @@ function rejectUnsafeTargetOptions(input: HandlerEvent): VerificationWorkerRespo
 }
 
 async function runVerificationPayload(
+  profile: ResolvedRuntimeProfile,
   input: HandlerEvent,
   options: RunVerificationPayloadOptions = {},
 ): Promise<VerificationWorkerResponse> {
-  const unsafeOptions = rejectUnsafeTargetOptions(input);
+  const unsafeOptions = rejectUnsafeTargetOptions(profile, input);
   if (unsafeOptions) {
     return unsafeOptions;
   }
@@ -235,11 +235,11 @@ async function runVerificationPayload(
   try {
     let bundleKey: string;
     try {
-      bundleKey = validateAsyncProverBundleKey(input.sessionId, input.executionId, input.bundleKey);
+      bundleKey = validateAsyncProverBundleKey(profile, input.sessionId, input.finalizationId, input.bundleKey);
     } catch {
       throw infrastructureFailure('corrupt_bundle');
     }
-    const bundlePath = path.join(workDir, input.sessionId, input.executionId);
+    const bundlePath = path.join(workDir, input.sessionId, input.finalizationId);
     try {
       await fs.mkdir(bundlePath, { recursive: true });
     } catch {
@@ -248,11 +248,12 @@ async function runVerificationPayload(
 
     let zipBuffer: Buffer;
     try {
-      zipBuffer = await downloadFromS3(bundleKey);
+      zipBuffer = await downloadFromS3(profile, bundleKey);
     } catch (error) {
       throw infrastructureFailure(classifyS3Failure(error));
     }
     try {
+      await inspectVerificationBundleArchiveBuffer(zipBuffer, ASYNC_PUBLIC_BUNDLE_POLICY);
       await extractZipFromBuffer(zipBuffer, { destination: bundlePath });
     } catch {
       throw infrastructureFailure('corrupt_bundle');
@@ -275,7 +276,7 @@ async function runVerificationPayload(
     let s3Result: Awaited<ReturnType<typeof uploadVerificationBundleToS3>> | undefined;
     if (input.options?.uploadToS3 ?? true) {
       try {
-        s3Result = await uploadVerificationBundleToS3(bundlePath, input.sessionId, input.executionId);
+        s3Result = await uploadVerificationBundleToS3(profile, bundlePath, input.sessionId, input.finalizationId);
       } catch (error) {
         throw infrastructureFailure(classifyS3Failure(error));
       }
@@ -284,7 +285,7 @@ async function runVerificationPayload(
     return {
       status: 'success',
       sessionId: input.sessionId,
-      executionId: input.executionId,
+      finalizationId: input.finalizationId,
       verifierStatus: invocation.status,
       verificationReport: invocation.report,
       ...(s3Result
@@ -292,7 +293,7 @@ async function runVerificationPayload(
             s3: omitUndefinedProperties({
               bundleKey: s3Result.s3BundleKey,
               reportKey: s3Result.s3ReportKey,
-              uploadedAt: s3Result.s3UploadedAt,
+              uploadedAtMs: s3Result.s3UploadedAtMs,
             }),
           }
         : {}),
@@ -302,7 +303,7 @@ async function runVerificationPayload(
       '[VerificationWorker] Verifier service execution failed',
       {
         session_id_hash: hashSessionIdForLogging(input.sessionId),
-        executionId: input.executionId,
+        finalizationId: input.finalizationId,
         bundle_key_prefix: hashKeyPrefixForLogging(input.bundleKey),
         failure_category: resolveInfrastructureFailureCategory(error),
       },
@@ -345,55 +346,13 @@ function logInvalidSqsInvocation(reason: 'event_shape_invalid' | 'record_body_in
   });
 }
 
-function validateVerificationWorkerConfig(): void {
-  const invalidNames: RuntimeConfigName[] = [];
-  const requireValue = (name: RuntimeConfigName): string | undefined => {
-    const value = process.env[name]?.trim();
-    if (!value) invalidNames.push(name);
-    return value;
-  };
-
-  if (process.env['TARGET_AWS_RUNTIME'] !== '1') invalidNames.push('TARGET_AWS_RUNTIME');
-  if (process.env['USE_MOCK_STORE'] !== 'false') invalidNames.push('USE_MOCK_STORE');
-  if (process.env['USE_S3'] !== 'true') invalidNames.push('USE_S3');
-  const accountId = requireValue('AWS_ACCOUNT_ID');
-  if (accountId && !/^[0-9]{12}$/.test(accountId)) invalidNames.push('AWS_ACCOUNT_ID');
-  if (!process.env['AWS_REGION']?.trim() && !process.env['AWS_DEFAULT_REGION']?.trim()) {
-    invalidNames.push('AWS_REGION');
-  }
-  requireValue('DYNAMODB_SESSIONS_TABLE');
-  requireValue('DYNAMODB_VOTES_TABLE');
-  requireValue('S3_PROOF_BUCKET');
-  requireValue('S3_PROOF_PREFIX');
-  for (const [name, invalid] of [
-    ['USE_MOCK_ZKVM', process.env['USE_MOCK_ZKVM'] === 'true'],
-    ['RISC0_DEV_MODE', process.env['RISC0_DEV_MODE'] === '1'],
-    ['FORCE_DEV_MODE', process.env['FORCE_DEV_MODE'] === '1' || process.env['FORCE_DEV_MODE'] === 'true'],
-    [
-      'ALLOW_INSECURE_ZKVM',
-      process.env['ALLOW_INSECURE_ZKVM'] === '1' || process.env['ALLOW_INSECURE_ZKVM'] === 'true',
-    ],
-    [
-      'ALLOW_DEV_MODE_VERIFICATION',
-      process.env['ALLOW_DEV_MODE_VERIFICATION'] === '1' || process.env['ALLOW_DEV_MODE_VERIFICATION'] === 'true',
-    ],
-  ] as const satisfies ReadonlyArray<readonly [RuntimeConfigName, boolean]>) {
-    if (invalid) {
-      invalidNames.push(name);
-    }
-  }
-
-  if (invalidNames.length > 0) {
-    const primaryName = invalidNames[0];
-    const messages: Partial<Record<RuntimeConfigName, string>> = {
-      USE_MOCK_ZKVM: 'USE_MOCK_ZKVM=true is not allowed when TARGET_AWS_RUNTIME=1.',
-      RISC0_DEV_MODE: 'RISC0_DEV_MODE=1 is not allowed when TARGET_AWS_RUNTIME=1.',
-      FORCE_DEV_MODE: 'FORCE_DEV_MODE is not allowed when TARGET_AWS_RUNTIME=1.',
-      ALLOW_INSECURE_ZKVM: 'ALLOW_INSECURE_ZKVM is not allowed when TARGET_AWS_RUNTIME=1.',
-      ALLOW_DEV_MODE_VERIFICATION: 'ALLOW_DEV_MODE_VERIFICATION is not allowed when TARGET_AWS_RUNTIME=1.',
-    };
-    const message = messages[primaryName ?? ''] ?? 'Verification worker runtime configuration is invalid';
-    throw new RuntimeConfigValidationError(invalidNames, undefined, message);
+function validateVerificationWorkerConfig(profile: ResolvedRuntimeProfile): void {
+  if (profile.name !== 'target-aws-async') {
+    throw new RuntimeConfigValidationError(
+      ['RUNTIME_PROFILE'],
+      undefined,
+      'RUNTIME_PROFILE=target-aws-async is required for verification worker execution',
+    );
   }
 }
 
@@ -420,47 +379,39 @@ async function persistTerminalFailureAfterRetryExhaustion(
   store: ReturnType<typeof getGlobalStore>,
   message: {
     sessionId: string;
-    executionId: string;
+    finalizationId: string;
   },
   failureCategory: VerificationFailureCategory,
 ): Promise<void> {
-  await store.completeVerificationResult(message.sessionId, {
-    executionId: message.executionId,
-    verificationResult: {
-      status: 'failed',
-      failureCategory,
-    },
+  await store.completeVerificationResult(message.sessionId, message.finalizationId, {
+    status: 'failed',
+    failureCategory,
   });
 }
 
 async function resolveVerificationWorkDisposition(
   store: ReturnType<typeof getGlobalStore>,
   sessionId: string,
-  executionId: string,
+  finalizationId: string,
 ): Promise<VerificationWorkDisposition> {
-  const session = await store.getSession(sessionId);
-  const finalizationResult = parseAwsPersistedFinalizationResult(session?.finalizationResult);
-  if (!finalizationResult) {
+  const currentFinalization = await store.getCurrentFinalizationRecord(sessionId);
+  if (!currentFinalization) {
     return 'process';
   }
-  const currentExecutionId =
-    finalizationResult.verificationExecutionId ?? finalizationResult.verificationResult?.executionId;
-  if (currentExecutionId && currentExecutionId !== executionId) {
-    return 'stale_execution';
+  if (currentFinalization.finalizationId !== finalizationId) {
+    return 'stale_finalization';
   }
-  if (
-    finalizationResult.verificationResult?.executionId === executionId &&
-    isTerminalVerificationStatus(finalizationResult.verificationResult.status)
-  ) {
+  const verificationRecord = await store.getVerificationResultRecord(sessionId, finalizationId);
+  if (isTerminalVerificationStatus(verificationRecord?.verificationResult.status)) {
     return 'duplicate_terminal';
   }
   return 'process';
 }
 
-async function handleSqsEvent(rawEvent: SqsEvent): Promise<SqsBatchResponse> {
+async function handleSqsEvent(profile: ResolvedRuntimeProfile, rawEvent: SqsEvent): Promise<SqsBatchResponse> {
   const batchItemFailures: Array<{ itemIdentifier: string }> = [];
   const processedWorkKeys = new Set<string>();
-  const store = getGlobalStore();
+  const store = getGlobalStore(profile);
 
   for (const rawRecord of rawEvent.Records) {
     if (!isSqsRecord(rawRecord)) {
@@ -483,25 +434,26 @@ async function handleSqsEvent(rawEvent: SqsEvent): Promise<SqsBatchResponse> {
 
     try {
       const message = parsedMessage;
-      const workKey = `${message.sessionId}/${message.executionId}`;
+      const workKey = `${message.sessionId}/${message.finalizationId}`;
       if (processedWorkKeys.has(workKey)) {
         continue;
       }
       processedWorkKeys.add(workKey);
-      const disposition = await resolveVerificationWorkDisposition(store, message.sessionId, message.executionId);
+      const disposition = await resolveVerificationWorkDisposition(store, message.sessionId, message.finalizationId);
       if (disposition !== 'process') {
         logger.info('[VerificationWorker] Skipping idempotent SQS verification work', {
           session_id_hash: hashSessionIdForLogging(message.sessionId),
-          executionId: message.executionId,
+          finalizationId: message.finalizationId,
           disposition,
         });
         continue;
       }
       const response = await runVerificationPayload(
+        profile,
         {
           mode: 's3_bundle',
           sessionId: message.sessionId,
-          executionId: message.executionId,
+          finalizationId: message.finalizationId,
           bundleKey: message.bundleKey,
           expectedImageId: message.expectedImageId,
         },
@@ -511,28 +463,22 @@ async function handleSqsEvent(rawEvent: SqsEvent): Promise<SqsBatchResponse> {
       );
 
       if (response.status !== 'success') {
-        await store.completeVerificationResult(message.sessionId, {
-          executionId: message.executionId,
-          verificationResult: {
-            status: 'failed',
-            failureCategory: 'unknown',
-          },
+        await store.completeVerificationResult(message.sessionId, message.finalizationId, {
+          status: 'failed',
+          failureCategory: 'unknown',
         });
         continue;
       }
 
-      await store.recordAwsVerificationDeliveryMetadata(message.sessionId, message.executionId, {
+      await store.recordAwsVerificationDeliveryMetadata(message.sessionId, message.finalizationId, {
         s3BundleKey: response.s3?.bundleKey ?? message.bundleKey,
         ...(response.s3?.reportKey ? { s3ReportKey: response.s3.reportKey } : {}),
-        ...(response.s3?.uploadedAt ? { s3UploadedAt: response.s3.uploadedAt } : {}),
+        ...(response.s3?.uploadedAtMs ? { s3UploadedAtMs: response.s3.uploadedAtMs } : {}),
       });
-      await store.completeVerificationResult(message.sessionId, {
-        executionId: message.executionId,
-        verificationResult: {
-          status: toVerificationStatus(response.verifierStatus),
-          report: response.verificationReport,
-          failureCategory: 'none',
-        },
+      await store.completeVerificationResult(message.sessionId, message.finalizationId, {
+        status: toVerificationStatus(response.verifierStatus),
+        report: response.verificationReport,
+        failureCategory: 'none',
       });
     } catch (error) {
       logger.error('[VerificationWorker] SQS verification work failed', { itemIdentifier }, error);
@@ -549,7 +495,7 @@ async function handleSqsEvent(rawEvent: SqsEvent): Promise<SqsBatchResponse> {
             {
               itemIdentifier,
               session_id_hash: hashSessionIdForLogging(parsedMessage.sessionId),
-              executionId: parsedMessage.executionId,
+              finalizationId: parsedMessage.finalizationId,
             },
             persistenceError,
           );
@@ -565,26 +511,37 @@ async function handleSqsEvent(rawEvent: SqsEvent): Promise<SqsBatchResponse> {
 }
 
 export const handler = async (rawEvent: unknown): Promise<VerificationWorkerResponse | SqsBatchResponse> => {
+  const env = process.env;
+  const runtimeProfile = (resolvedRuntimeProfile ??= resolveRuntimeProfile(env));
   await bootstrapLambdaRuntime({
     serviceName: 'verification-worker',
+    runtimeProfile,
     resolveRuntimeReferences: async (invalidNameCollector) => {
-      await ensureAwsRuntimeConfigReferencesLoaded('verification_worker', { invalidNameCollector });
+      await ensureAwsRuntimeConfigReferencesLoaded('verification_worker', {
+        profile: runtimeProfile,
+        invalidNameCollector,
+        env,
+      });
     },
     validationSteps: [
       {
-        validate: validateTargetObservabilityEnv,
+        validate: () => validateRuntimeProfileSelection(runtimeProfile, env),
       },
       {
-        validate: validateVerificationWorkerConfig,
+        validate: () => validateTargetObservabilityEnv(runtimeProfile, env),
       },
       {
-        validate: validateEnv,
+        validate: () => validateVerificationWorkerConfig(runtimeProfile),
+      },
+      {
+        validate: () => validateEnv(runtimeProfile, env),
       },
     ],
+    env,
   });
 
   if (isSqsEvent(rawEvent)) {
-    return await handleSqsEvent(rawEvent);
+    return await handleSqsEvent(runtimeProfile, rawEvent);
   }
   if (hasSqsRecordsField(rawEvent)) {
     logInvalidSqsInvocation('event_shape_invalid');
@@ -604,7 +561,7 @@ export const handler = async (rawEvent: unknown): Promise<VerificationWorkerResp
     };
   }
 
-  return await runVerificationPayload(input);
+  return await runVerificationPayload(runtimeProfile, input);
 };
 
 export type { HandlerEvent };

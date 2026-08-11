@@ -4,13 +4,15 @@
 `/verify` 画面の最終判定を完全に再現する手順ではなく、下表の不変条件を確認する手順です。
 
 > **公開 snapshot に関する注意**
-> ZIP の展開（Step 3）はダウンロード済み ZIP のみで実行できます。それ以外の Step は、検証対象リリースと対応する公開 repository snapshot が必要です。
+> すべての Step には、検証対象リリースと対応する公開 repository snapshot が必要です。
+> 加えて、ZIP の admission と展開を行う Step 3 以降には、ダウンロード済み ZIP が必要です。
 
 **`bundle.zip` 単体では揃わないもの**（検証材料として ZIP に入らないもの）：
 
-- `/api/verify` が返す claimed tally、`verificationChecks`、`verificationSteps`
+- `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` が返す claimed tally
+  （`presentation.tally`）、`verification.checks`、`verification.steps`
 - 投票者端末に残る投票意図、乱数、投票レシート
-- `/verify` の Recorded-as-Cast 判定に使う session-scoped な本人票 receipt / root-at-cast proof state と、サーバー側の整合性評価結果
+- `/verify` の Recorded-as-Cast 判定に使う session-scoped な自票 receipt / root-at-cast proof state と、サーバー側の整合性評価結果
 - 自票 inclusion 用のビットマップ証明
 - 有効化されている場合の第三者 STH ソース照合
 
@@ -28,7 +30,9 @@
 - 前提：Ubuntu 系 Linux と `jq`、`unzip` などの基本 CLI、対応する公開リポジトリ snapshot へのアクセス。
   詳細は [はじめに](../introduction.md#公開状態) を参照してください。
 
-## 本章で扱わないもの
+<a id="本章で扱わないもの"></a>
+
+## この部で扱わないもの
 
 - `/verify` UI 最終判定の完全再現と、投票者端末のローカル証跡を使った Cast-as-Intended 検証（必要な材料は上の「`bundle.zip` 単体では揃わないもの」を参照）
 - AWS インフラのデプロイと運用手順
@@ -59,4 +63,4 @@
 | 公開監査アーティファクト  | `election-manifest.json` と `close-statement.json` の自己整合と相互整合が成立                          |
 | 入力整合性                | `inputCommitment` の再計算値が `journal.json` と一致                                                   |
 
-<!-- source: apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/lib/verification-data.ts, apps/web/src/routes/verify/lib/download.ts, apps/api/src/server/api/handlers/verify.ts, apps/api/src/server/api/handlers/verificationBundles.ts, packages/verification/src/verification/verification-bundle.ts, packages/verification/src/verification/public-audit-artifacts.ts, packages/verification/src/verification/public-input-contract.ts, packages/verification/src/verification/journal-parser.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/verification-summary.ts, packages/zkvm-contract/src/zkvm/types.ts, verifier-service/src/lib.rs, public/imageId-mapping.json -->
+<!-- source: apps/web/src/api/artifacts.ts, apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/lib/verification-data.ts, apps/api/src/server/api/handlers/verify.ts, apps/api/src/server/api/handlers/verificationBundles.ts, packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/verification.ts, packages/verification/src/verification/local-cast-checks.ts, packages/verification/src/verification/public-bundle-manifest.json, packages/verification/src/verification/verification-bundle.ts, packages/verification/src/verification/public-audit-artifacts.ts, packages/verification/src/verification/public-input-contract.ts, packages/verification/src/verification/journal-parser.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/verification-presentation-policy.ts, packages/verification/src/verification/verification-summary.ts, packages/zkvm-contract/src/zkvm/types.ts, verifier-service/src/lib.rs, public/imageId-mapping.json -->

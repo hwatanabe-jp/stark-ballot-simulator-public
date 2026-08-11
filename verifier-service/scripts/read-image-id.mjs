@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import {
   resolveConfiguredImageIdVariant,
   resolveExpectedImageIdFromMapping,
-} from '../../packages/verification/src/verification/image-id-policy.js';
+} from '../../packages/validation/src/image-id-policy.js';
 
 function usage() {
   console.error('usage: node verifier-service/scripts/read-image-id.mjs <json-path> [--variant default|x86_64]');
@@ -20,7 +20,7 @@ function isRecord(value) {
 
 /**
  * @param {unknown} payload
- * @param {import('../../packages/verification/src/verification/image-id-policy.js').ImageIdVariant} variant
+ * @param {import('../../packages/validation/src/image-id-policy.js').ImageIdVariant} variant
  * @returns {string | null}
  */
 function resolveImageId(payload, variant) {
@@ -38,7 +38,7 @@ function resolveImageId(payload, variant) {
 
   if (typeof payload['current'] === 'string' && isRecord(payload['mappings'])) {
     return resolveExpectedImageIdFromMapping(
-      /** @type {import('../../packages/verification/src/verification/image-id-types.ts').ImageIdMapping} */ (
+      /** @type {import('../../packages/validation/src/image-id-policy.js').ImageIdMapping} */ (
         /** @type {unknown} */ (payload)
       ),
       undefined,
@@ -51,7 +51,7 @@ function resolveImageId(payload, variant) {
 
 /**
  * @param {string[]} argv
- * @returns {{ filePath: string; variant: import('../../packages/verification/src/verification/image-id-policy.js').ImageIdVariant }}
+ * @returns {{ filePath: string; variant: import('../../packages/validation/src/image-id-policy.js').ImageIdVariant }}
  */
 function parseArgs(argv) {
   let filePath = '';

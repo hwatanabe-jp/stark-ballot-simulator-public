@@ -3,7 +3,7 @@
 import { performance } from 'node:perf_hooks';
 import { DuplicateDetector } from '@stark-ballot/validation/duplicate-detector';
 import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
-import { BatchProcessor } from '@stark-ballot/domain/performance/batch-processor';
+import { BatchProcessor } from './batch-processor';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {

@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { buildRequestLogContext, resolveUntrustedClientRequestId, withTrustedRequestIdHeader } from './requestLogging';
 import { hashIpForLogging } from '@stark-ballot/diagnostics/logging';
+import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+
+const runtimeProfile = localRuntimeProfile();
 
 describe('buildRequestLogContext', () => {
   beforeEach(() => {
@@ -14,7 +17,7 @@ describe('buildRequestLogContext', () => {
 
   it('uses only the supplied trusted request ID and a route template', () => {
     const request = new Request(
-      'https://ballot.example.com/api/verification/bundles/550e8400-e29b-41d4-a716-446655440000/execution-1?raw=private',
+      'https://ballot.example.com/api/sessions/550e8400-e29b-41d4-a716-446655440000/finalizations/finalization-1/artifacts/bundle?raw=private',
       {
         method: 'GET',
         headers: {
@@ -27,14 +30,14 @@ describe('buildRequestLogContext', () => {
       },
     );
 
-    const context = buildRequestLogContext(request, {
+    const context = buildRequestLogContext(runtimeProfile, request, {
       requestId: 'trusted-gateway-request-id',
-      routePath: '/api/verification/bundles/:sessionId/:executionId',
+      routePath: '/api/sessions/:sessionId/finalizations/:finalizationId/artifacts/bundle',
     });
 
     expect(context.requestId).toBe('trusted-gateway-request-id');
     expect(context.http?.method).toBe('GET');
-    expect(context.http?.path).toBe('/api/verification/bundles/:sessionId/:executionId');
+    expect(context.http?.path).toBe('/api/sessions/:sessionId/finalizations/:finalizationId/artifacts/bundle');
     expect(context.http).not.toHaveProperty('host');
     expect(context.http).not.toHaveProperty('x_forwarded_host');
     expect(context.http).not.toHaveProperty('referer');
@@ -51,13 +54,13 @@ describe('buildRequestLogContext', () => {
       },
     });
 
-    const context = buildRequestLogContext(request, { fallbackIp: '203.0.113.9' });
+    const context = buildRequestLogContext(runtimeProfile, request, { fallbackIp: '203.0.113.9' });
 
     expect(context.http?.source_ip_hash).toBe(hashIpForLogging('203.0.113.9'));
   });
 
   it('generates a trusted local request ID instead of trusting request headers', () => {
-    const request = new Request('http://localhost/api/progress', {
+    const request = new Request('http://localhost/api/sessions/session-123/progress', {
       headers: {
         'x-request-id': 'forged-client-request-id',
         'x-amzn-requestid': 'also-forged',
@@ -65,7 +68,9 @@ describe('buildRequestLogContext', () => {
       },
     });
 
-    const context = buildRequestLogContext(request, { routePath: '/api/progress' });
+    const context = buildRequestLogContext(runtimeProfile, request, {
+      routePath: '/api/sessions/:sessionId/progress',
+    });
 
     expect(context.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     expect(context.requestId).not.toContain('forged');
@@ -78,8 +83,8 @@ describe('buildRequestLogContext', () => {
 
     for (const unsafeValue of [
       '550e8400-e29b-41d4-a716-446655440000',
-      '/api/sessions/550e8400-e29b-41d4-a716-446655440000/status',
-      '/api/verification/bundles/550e8400-e29b-41d4-a716-446655440000/execution-1',
+      '/api/sessions/550e8400-e29b-41d4-a716-446655440000/finalizations/current',
+      '/api/sessions/550e8400-e29b-41d4-a716-446655440000/finalizations/finalization-1/artifacts/bundle',
       'session-550e8400-e29b-41d4-a716-446655440000',
       'v1.ABCDEFGHIJKLMNOP.QRSTUVWXYZabcdef',
       'x'.repeat(129),

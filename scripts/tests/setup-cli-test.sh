@@ -1,9 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Simplified setup script for CLI E2E testing.
 # Starts the Vite dev server under tmux with mock store defaults.
 
 set -euo pipefail
+IFS=$'\n\t'
 
 print_usage() {
     cat <<'EOF'
@@ -66,7 +67,7 @@ wait_for_port() {
 
     echo -n "Waiting for $service"
     for _ in $(seq 1 "$retries"); do
-        if nc -z $host_port >/dev/null 2>&1; then
+        if nc -z "$host_port" >/dev/null 2>&1; then
             echo " - ready"
             return 0
         fi
@@ -85,14 +86,12 @@ fi
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
-export USE_MOCK_STORE=true
-
 if [[ "$MODE" == "real" ]]; then
-    export USE_MOCK_ZKVM=false
-    unset RISC0_DEV_MODE
+    export RUNTIME_PROFILE=local-proof-production
+    export VITE_RUNTIME_PROFILE=local-proof-production
 else
-    export USE_MOCK_ZKVM=true
-    export RISC0_DEV_MODE=1
+    export RUNTIME_PROFILE=local-demo
+    export VITE_RUNTIME_PROFILE=local-demo
 fi
 
 if [[ -n "$OVERRIDE_IMAGE_ID" ]]; then

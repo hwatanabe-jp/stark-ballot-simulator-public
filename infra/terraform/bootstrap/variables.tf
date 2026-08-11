@@ -1,7 +1,6 @@
 variable "aws_region" {
   description = "AWS Region for bootstrap resources."
   type        = string
-  default     = "ap-northeast-1"
 
   validation {
     condition     = can(regex("^[a-z]{2}-[a-z]+-[0-9]{1}$", var.aws_region))
@@ -56,7 +55,6 @@ variable "deployment_environment" {
 variable "state_scope" {
   description = "Terraform state scope. This bootstrap root supports bootstrap only."
   type        = string
-  default     = "bootstrap"
 
   validation {
     condition     = var.state_scope == "bootstrap"
@@ -67,7 +65,6 @@ variable "state_scope" {
 variable "project_name" {
   description = "Project name used for names and tags."
   type        = string
-  default     = "stark-ballot-simulator"
 }
 
 variable "state_bucket_name" {
@@ -83,11 +80,6 @@ variable "state_bucket_name" {
 variable "state_backend_key" {
   description = "Expected S3 backend key for this bootstrap state."
   type        = string
-
-  validation {
-    condition     = can(regex("^stark-ballot-simulator/[a-z][a-z0-9-]*/(develop|main)/bootstrap/terraform\\.tfstate$", var.state_backend_key))
-    error_message = "state_backend_key must use stark-ballot-simulator/<account-alias>/<environment>/bootstrap/terraform.tfstate."
-  }
 }
 
 variable "state_kms_key_id" {
@@ -132,7 +124,6 @@ variable "enable_development_pipeline" {
 variable "github_full_repository_id" {
   description = "GitHub repository in owner/name form for the source connection."
   type        = string
-  default     = "hwatanabe-jp/stark-ballot-simulator"
 
   validation {
     condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_full_repository_id))
@@ -143,7 +134,6 @@ variable "github_full_repository_id" {
 variable "source_branch" {
   description = "Source branch used by the development bootstrap pipeline."
   type        = string
-  default     = "develop"
 
   validation {
     condition     = can(regex("^[A-Za-z0-9._/-]+$", var.source_branch)) && !can(regex("\\.\\.", var.source_branch))
@@ -151,31 +141,24 @@ variable "source_branch" {
   }
 }
 
-variable "terraform_version" {
-  description = "Terraform CLI version installed by pipeline CodeBuild jobs."
+variable "control_source_sha" {
+  description = "Exact reviewed Bootstrap source revision currently applied to source-bound repository tooling."
   type        = string
-  default     = "1.15.5"
 
   validation {
-    condition     = can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", var.terraform_version))
-    error_message = "terraform_version must be a semantic version such as 1.15.5."
+    condition     = can(regex("^[0-9a-f]{40}$", var.control_source_sha))
+    error_message = "control_source_sha must be a full lowercase 40-character Git commit SHA."
   }
 }
 
-variable "pipeline_artifact_bucket_name" {
-  description = "Optional explicit S3 bucket name for development pipeline artifacts."
+variable "terraform_version" {
+  description = "Terraform CLI version installed by pipeline CodeBuild jobs."
   type        = string
-  default     = null
+  default     = "1.15.8"
 
   validation {
-    condition = (
-      var.pipeline_artifact_bucket_name == null
-      || (
-        can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.pipeline_artifact_bucket_name))
-        && !can(regex("\\.\\.", var.pipeline_artifact_bucket_name))
-      )
-    )
-    error_message = "pipeline_artifact_bucket_name must be a valid S3 bucket name when set."
+    condition     = var.terraform_version == "1.15.8"
+    error_message = "terraform_version must be the exact reviewed Terraform version 1.15.8."
   }
 }
 
@@ -183,40 +166,6 @@ variable "enable_development_app_pipeline" {
   description = "Whether to manage the skeletal development app saved-plan pipeline from bootstrap state."
   type        = bool
   default     = false
-}
-
-variable "app_pipeline_artifact_bucket_name" {
-  description = "Optional explicit S3 bucket name for development app pipeline artifacts."
-  type        = string
-  default     = null
-
-  validation {
-    condition = (
-      var.app_pipeline_artifact_bucket_name == null
-      || (
-        can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.app_pipeline_artifact_bucket_name))
-        && !can(regex("\\.\\.", var.app_pipeline_artifact_bucket_name))
-      )
-    )
-    error_message = "app_pipeline_artifact_bucket_name must be a valid S3 bucket name when set."
-  }
-}
-
-variable "foundation_release_manifest_bucket_name" {
-  description = "Optional explicit foundation-owned S3 bucket name that stores immutable release manifests consumed by the app pipeline."
-  type        = string
-  default     = null
-
-  validation {
-    condition = (
-      var.foundation_release_manifest_bucket_name == null
-      || (
-        can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.foundation_release_manifest_bucket_name))
-        && !can(regex("\\.\\.", var.foundation_release_manifest_bucket_name))
-      )
-    )
-    error_message = "foundation_release_manifest_bucket_name must be a valid S3 bucket name when set."
-  }
 }
 
 variable "development_app_public_hostname" {
@@ -253,21 +202,4 @@ variable "enable_development_foundation_pipeline" {
   description = "Whether to manage the development foundation saved-plan pipeline from bootstrap state."
   type        = bool
   default     = false
-}
-
-variable "foundation_pipeline_artifact_bucket_name" {
-  description = "Optional explicit S3 bucket name for development foundation pipeline artifacts."
-  type        = string
-  default     = null
-
-  validation {
-    condition = (
-      var.foundation_pipeline_artifact_bucket_name == null
-      || (
-        can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.foundation_pipeline_artifact_bucket_name))
-        && !can(regex("\\.\\.", var.foundation_pipeline_artifact_bucket_name))
-      )
-    )
-    error_message = "foundation_pipeline_artifact_bucket_name must be a valid S3 bucket name when set."
-  }
 }

@@ -1,17 +1,19 @@
 import { describe, it, expect } from 'vitest';
 import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
-import type { VoteData } from '@stark-ballot/domain/types/server';
+import type { StoredVoteRecord } from '@stark-ballot/domain/types/sessionRecords';
 import { applyFinalizeScenarios } from '@stark-ballot/domain/finalize/scenario-application';
 
-const createVote = (vote: VoteChoice): VoteData => ({
+const createVote = (vote: VoteChoice, index: number): StoredVoteRecord => ({
+  voteId: `00000000-0000-4000-8000-${index.toString().padStart(12, '0')}`,
   vote,
   rand: '0x' + '1'.repeat(64),
   commit: '0x' + '2'.repeat(64),
-  path: [],
+  timestamp: index + 1,
+  rootAtCast: '0x' + '3'.repeat(64),
 });
 
-const makeVotes = (choices: VoteChoice[]): Map<number, VoteData> => {
-  return new Map(choices.map((choice, index) => [index, createVote(choice)]));
+const makeVotes = (choices: VoteChoice[]): Map<number, StoredVoteRecord> => {
+  return new Map(choices.map((choice, index) => [index, createVote(choice, index)]));
 };
 
 describe('applyFinalizeScenarios', () => {

@@ -1,12 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
 import path from 'path';
-import {
-  buildVerificationBundleArtifacts,
-  PUBLIC_BUNDLE_ALLOWLIST,
-  REQUIRED_PUBLIC_BUNDLE_ARTIFACTS,
-} from '../verification-bundle';
+import { buildVerificationBundleArtifacts } from '../verification-bundle';
 import type { VerificationBundleArtifactContext } from '../verification-bundle';
+import { resolvePublicBundlePolicy } from '../public-bundle-manifest';
 import {
   asUnixTimestampMillis,
   computeInputCommitment,
@@ -21,7 +18,7 @@ import {
   getRecordProperty,
   getStringProperty,
   isRecord,
-} from '@stark-ballot/verification/shared/guards';
+} from '@stark-ballot/validation/unknown-value-guards';
 import { extractZipFromFile } from '@stark-ballot/node-adapters/zip';
 import { buildCloseStatement, buildElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
 import { parsePublicInputArtifact } from '@stark-ballot/verification/public-input';
@@ -46,7 +43,7 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   return value;
 }
 
-const TEST_CONTRACT_GENERATION = 'test-contract-generation';
+const TEST_FINALIZATION_ID = 'test-finalization-id';
 
 interface VerificationBundleContext extends Omit<VerificationBundleArtifactContext, 'createdAt'> {
   verifierWorkDir?: string;
@@ -60,6 +57,7 @@ async function persistVerificationBundle(context: VerificationBundleContext) {
   });
   const persisted = await persistVerificationBundleArtifacts({
     sessionId: context.sessionId,
+    finalizationId: TEST_FINALIZATION_ID,
     ...omitUndefinedProperties({ verifierWorkDir: verifierWorkDir }),
     artifacts,
   });
@@ -73,14 +71,13 @@ async function persistVerificationBundle(context: VerificationBundleContext) {
     metadataPath: path.join(persisted.bundlePath, 'metadata.json'),
     reportPath: path.join(persisted.bundlePath, 'verification.json'),
     sessionId: persisted.sessionId,
-    executionId: persisted.executionId,
+    finalizationId: persisted.finalizationId,
   };
 }
 
 function createVerificationBundleArchive(bundlePath: string): Promise<string> {
   return createNodeVerificationBundleArchive(bundlePath, {
-    publicBundleAllowlist: PUBLIC_BUNDLE_ALLOWLIST,
-    requiredPublicBundleArtifacts: REQUIRED_PUBLIC_BUNDLE_ARTIFACTS,
+    policy: resolvePublicBundlePolicy('sync'),
   });
 }
 
@@ -205,7 +202,6 @@ describe('verification-bundle', () => {
       });
       const context: VerificationBundleContext = {
         sessionId: 'test-session-123',
-        contractGeneration: TEST_CONTRACT_GENERATION,
         ...omitUndefinedProperties({ verifierWorkDir: testWorkDir }),
         zkvmInput,
         electionConfig: defaultElectionConfig,
@@ -248,7 +244,7 @@ describe('verification-bundle', () => {
       expect(result.metadataPath).toContain('metadata.json');
       expect(result.reportPath).toContain('verification.json');
       expect(result.sessionId).toBe('test-session-123');
-      expect(result.executionId).toBeDefined();
+      expect(result.finalizationId).toBeDefined();
 
       // Verify files exist
       await expect(fs.access(result.bundlePath)).resolves.toBeUndefined();
@@ -312,7 +308,7 @@ describe('verification-bundle', () => {
       const publicInputData = parseJsonRecord(publicInputContent, 'public input');
       expect(getStringProperty(publicInputData, 'schema')).toBe('stark-ballot.public_input');
       expect(getStringProperty(publicInputData, 'version')).toBe('1.1');
-      expect(getStringProperty(publicInputData, 'contractGeneration')).toBe(TEST_CONTRACT_GENERATION);
+      expect(publicInputData).not.toHaveProperty('contractGeneration');
       expect(getNumberProperty(publicInputData, 'methodVersion')).toBe(CURRENT_METHOD_VERSION);
       const parsedPublicInput = parsePublicInputArtifact(publicInputData, {
         source: 'generated',
@@ -369,7 +365,6 @@ describe('verification-bundle', () => {
       const zkvmInput = buildZkvmInput({ timestamp: Date.now() });
       const context: VerificationBundleContext = {
         sessionId: 'test-session-no-receipt',
-        contractGeneration: TEST_CONTRACT_GENERATION,
         ...omitUndefinedProperties({ verifierWorkDir: testWorkDir }),
         zkvmInput,
         electionConfig: defaultElectionConfig,
@@ -410,7 +405,6 @@ describe('verification-bundle', () => {
       });
       const context: VerificationBundleContext = {
         sessionId: 'test-session-drifted-input',
-        contractGeneration: TEST_CONTRACT_GENERATION,
         ...omitUndefinedProperties({ verifierWorkDir: testWorkDir }),
         zkvmInput,
         electionConfig: defaultElectionConfig,
@@ -436,7 +430,6 @@ describe('verification-bundle', () => {
     it('fails closed when a provided election manifest drifts from the authoritative context', async () => {
       const context: VerificationBundleContext = {
         sessionId: 'test-session-drifted-manifest',
-        contractGeneration: TEST_CONTRACT_GENERATION,
         ...omitUndefinedProperties({ verifierWorkDir: testWorkDir }),
         zkvmInput: buildZkvmInput(),
         electionConfig: defaultElectionConfig,
@@ -475,7 +468,6 @@ describe('verification-bundle', () => {
       });
       const context: VerificationBundleContext = {
         sessionId: 'test-session-custom-config',
-        contractGeneration: TEST_CONTRACT_GENERATION,
         ...omitUndefinedProperties({ verifierWorkDir: testWorkDir }),
         zkvmInput,
         electionConfig: customElectionConfig,
@@ -529,7 +521,6 @@ describe('verification-bundle', () => {
       });
       const context: VerificationBundleContext = {
         sessionId: 'test-session-missing-config',
-        contractGeneration: TEST_CONTRACT_GENERATION,
         ...omitUndefinedProperties({ verifierWorkDir: testWorkDir }),
         zkvmInput,
         electionConfig: defaultElectionConfig,
@@ -564,7 +555,6 @@ describe('verification-bundle', () => {
       const zkvmInput = buildZkvmInput({ timestamp: Date.now() });
       const context: VerificationBundleContext = {
         sessionId: 'test-session-invalid',
-        contractGeneration: TEST_CONTRACT_GENERATION,
         ...omitUndefinedProperties({ verifierWorkDir: testWorkDir }),
         zkvmInput,
         electionConfig: defaultElectionConfig,
@@ -584,6 +574,24 @@ describe('verification-bundle', () => {
   });
 
   describe('createVerificationBundleArchive', () => {
+    it('fails closed when sync metadata is missing', async () => {
+      const bundleDir = path.join(testWorkDir, 'missing-sync-metadata');
+      await fs.mkdir(bundleDir, { recursive: true });
+      for (const fileName of [
+        'public-input.json',
+        'election-manifest.json',
+        'close-statement.json',
+        'receipt.json',
+        'journal.json',
+      ]) {
+        await fs.writeFile(path.join(bundleDir, fileName), JSON.stringify({}), 'utf-8');
+      }
+
+      await expect(createVerificationBundleArchive(bundleDir)).rejects.toThrow(
+        'Missing required public bundle member(s): metadata.json',
+      );
+    });
+
     it('fails closed when a required public artifact is missing', async () => {
       const bundleDir = path.join(testWorkDir, 'missing-required-artifact');
       await fs.mkdir(bundleDir, { recursive: true });
@@ -591,7 +599,7 @@ describe('verification-bundle', () => {
       await fs.writeFile(path.join(bundleDir, 'journal.json'), JSON.stringify({}), 'utf-8');
 
       await expect(createVerificationBundleArchive(bundleDir)).rejects.toThrow(
-        'Missing required public bundle artifact(s)',
+        'Missing required public bundle member(s)',
       );
     });
 
@@ -599,7 +607,6 @@ describe('verification-bundle', () => {
       const zkvmInput = buildZkvmInput({ timestamp: Date.now() });
       const context: VerificationBundleContext = {
         sessionId: 'zip-session',
-        contractGeneration: TEST_CONTRACT_GENERATION,
         ...omitUndefinedProperties({ verifierWorkDir: testWorkDir }),
         zkvmInput,
         electionConfig: defaultElectionConfig,

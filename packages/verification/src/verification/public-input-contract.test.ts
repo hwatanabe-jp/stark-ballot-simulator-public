@@ -7,8 +7,6 @@ import {
   parsePublicInputArtifact,
 } from '@stark-ballot/verification/public-input';
 
-const TEST_CONTRACT_GENERATION = 'test-contract-generation';
-
 const baseInput: ZkVMInput = {
   electionId: '550e8400-e29b-41d4-a716-446655440000',
   electionConfigHash: getDefaultElectionConfigHash(),
@@ -29,26 +27,26 @@ const baseInput: ZkVMInput = {
 };
 
 describe('public-input contract', () => {
-  it('separates typed authority, compatibility marker, and provenance', () => {
-    const artifact = buildPublicInputArtifactFromZkvmInput(baseInput, CURRENT_METHOD_VERSION, TEST_CONTRACT_GENERATION);
+  it('separates the governed artifact format, typed authority, and provenance', () => {
+    const artifact = buildPublicInputArtifactFromZkvmInput(baseInput, CURRENT_METHOD_VERSION);
     const parsed = parsePublicInputArtifact(artifact, {
       source: 'generated',
-      executionId: 'exec-1',
+      finalizationId: 'exec-1',
       bundleKey: 'sessions/session-1/exec-1/bundle.zip',
     });
 
     expect(artifact.votes[0]).not.toHaveProperty('choice');
     expect(artifact.votes[0]).not.toHaveProperty('random');
+    expect(artifact).not.toHaveProperty('contractGeneration');
 
     expect(parsed.valid).toBe(true);
-    expect(parsed.compatibilityMarker).toEqual({
+    expect(parsed.format).toEqual({
       schema: 'stark-ballot.public_input',
       version: '1.1',
-      contractGeneration: TEST_CONTRACT_GENERATION,
     });
     expect(parsed.provenance).toEqual({
       source: 'generated',
-      executionId: 'exec-1',
+      finalizationId: 'exec-1',
       bundleKey: 'sessions/session-1/exec-1/bundle.zip',
     });
     expect(parsed.typedAuthority).toMatchObject({
@@ -70,34 +68,35 @@ describe('public-input contract', () => {
     expect(parsed.typedAuthority?.votesCount).toBe(1);
   });
 
-  it('keeps contractGeneration as a compatibility-only marker', () => {
-    const artifact = {
-      ...buildPublicInputArtifactFromZkvmInput(baseInput, CURRENT_METHOD_VERSION, '2026-04-zkvm-current-v2'),
-      contractGeneration: '2026-04-zkvm-current-v2',
-    };
+  it('rejects the retired repository-owned generation marker', () => {
+    const artifact = buildPublicInputArtifactFromZkvmInput(baseInput, CURRENT_METHOD_VERSION);
 
-    const parsed = parsePublicInputArtifact(artifact, {
-      source: 'bundle',
-      executionId: 'exec-2',
-    });
+    const parsed = parsePublicInputArtifact(
+      {
+        ...artifact,
+        contractGeneration: 'retired-generation',
+      },
+      {
+        source: 'bundle',
+        finalizationId: 'exec-2',
+      },
+    );
 
-    expect(parsed.valid).toBe(true);
-    expect(parsed.compatibilityMarker.contractGeneration).toBe('2026-04-zkvm-current-v2');
-    expect(parsed.typedAuthority).toBeDefined();
-    expect(parsed.typedAuthority).not.toHaveProperty('contractGeneration');
+    expect(parsed.valid).toBe(false);
+    expect(parsed.errors).toContain('unexpected_key:contractGeneration');
+    expect(parsed.typedAuthority).toBeUndefined();
   });
 
-  it('retains compatibility markers when the artifact becomes unsupported', () => {
+  it('retains observed governed format when the artifact is unsupported', () => {
     const parsed = parsePublicInputArtifact({
-      ...buildPublicInputArtifactFromZkvmInput(baseInput, CURRENT_METHOD_VERSION, TEST_CONTRACT_GENERATION),
+      ...buildPublicInputArtifactFromZkvmInput(baseInput, CURRENT_METHOD_VERSION),
       version: '0.9',
     });
 
     expect(parsed.valid).toBe(false);
-    expect(parsed.compatibilityMarker).toEqual({
+    expect(parsed.format).toEqual({
       schema: 'stark-ballot.public_input',
       version: '0.9',
-      contractGeneration: TEST_CONTRACT_GENERATION,
     });
     expect(parsed.observed.electionId).toBe(baseInput.electionId);
     expect(parsed.typedAuthority).toBeUndefined();

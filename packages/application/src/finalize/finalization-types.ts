@@ -1,12 +1,23 @@
-import type { FinalizationScenarioContext as DomainFinalizationScenarioContext } from '@stark-ballot/domain/types/server';
 import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
+import type { ScenarioTamperMode } from '@stark-ballot/domain/types/scenario';
 import type { CloseStatement, ElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
 import type { ReceiptWithImageId } from '@stark-ballot/verification/image-id-types';
 import type { SupportedPublicInputArtifact } from '@stark-ballot/verification/public-input';
 import type { VerificationResult } from '@stark-ballot/verification/shared/types';
 import type { ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
 
-export type FinalizationScenarioContext = DomainFinalizationScenarioContext;
+export interface FinalizationScenarioContext {
+  scenarios: string[];
+  tamperMode: ScenarioTamperMode;
+  claimedCounts: Record<VoteChoice, number>;
+  claimedTotalVotes: number;
+  summary: {
+    ignoredCount: number;
+    recountedCount: number;
+    userRecountChoice: VoteChoice | null;
+    affectedBotIds?: number[];
+  };
+}
 export type BitmapProofSource = 'mock' | 'real';
 
 /**
@@ -14,7 +25,7 @@ export type BitmapProofSource = 'mock' | 'real';
  * It gates stale async updates. Concrete delivery/runtime envelopes that carry
  * locators are owned by adapter/API/Lambda boundaries.
  */
-export type FinalizationExecutionId = string;
+export type FinalizationId = string;
 
 export interface FinalizationTally {
   counts: Record<VoteChoice, number>;
@@ -34,8 +45,11 @@ export interface FinalizationBitmapData {
   seenBitmap?: boolean[];
   seenBitmapRoot?: string;
   treeSize: number;
-  finalizedAt: number;
+  finalizedAtMs: number;
 }
+
+export type FinalizationBitmapDisposition =
+  { availability: 'available'; data: FinalizationBitmapData } | { availability: 'unavailable' };
 
 export interface FinalizationTamperSummary {
   ignoredVotes: number;
@@ -49,8 +63,7 @@ export const ApplicationErrorCode = {
   SESSION_ALREADY_FINALIZED: 'SESSION_ALREADY_FINALIZED',
   USER_NOT_VOTED: 'USER_NOT_VOTED',
   VOTING_NOT_COMPLETE: 'VOTING_NOT_COMPLETE',
-  UNSUPPORTED_CURRENT_ARTIFACT: 'UNSUPPORTED_CURRENT_ARTIFACT',
-  CORRUPT_OR_UNREADABLE_FINALIZED_STATE: 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE',
+  INVALID_FINALIZATION_ARTIFACT: 'INVALID_FINALIZATION_ARTIFACT',
   VERIFICATION_FAILED: 'VERIFICATION_FAILED',
 } as const;
 
@@ -89,28 +102,28 @@ export type ProverFailureCategory = (typeof PROVER_FAILURE_CATEGORY_VALUES)[numb
 export type FinalizationState =
   | {
       status: 'pending';
-      executionId: FinalizationExecutionId;
-      queuedAt: number;
+      finalizationId: FinalizationId;
+      queuedAtMs: number;
     }
   | {
       status: 'running';
-      executionId: FinalizationExecutionId;
-      queuedAt: number;
-      startedAt: number;
+      finalizationId: FinalizationId;
+      queuedAtMs: number;
+      startedAtMs: number;
     }
   | {
       status: 'succeeded';
-      executionId: FinalizationExecutionId;
-      queuedAt: number;
-      startedAt: number;
-      completedAt: number;
+      finalizationId: FinalizationId;
+      queuedAtMs: number;
+      startedAtMs: number;
+      completedAtMs: number;
     }
   | {
       status: 'failed';
-      executionId: FinalizationExecutionId;
-      queuedAt: number;
-      startedAt?: number;
-      failedAt: number;
+      finalizationId: FinalizationId;
+      queuedAtMs: number;
+      startedAtMs?: number;
+      failedAtMs: number;
       error: {
         code: string;
         message: string;
@@ -120,10 +133,10 @@ export type FinalizationState =
     }
   | {
       status: 'timeout';
-      executionId: FinalizationExecutionId;
-      queuedAt: number;
-      startedAt?: number;
-      timeoutAt: number;
+      finalizationId: FinalizationId;
+      queuedAtMs: number;
+      startedAtMs?: number;
+      timeoutAtMs: number;
     };
 
 export interface FinalizationResultAuthority {
@@ -137,7 +150,6 @@ export interface FinalizationResultAuthority {
   closeStatement?: CloseStatement;
   bitmapProofSource?: BitmapProofSource;
   bitmapData?: FinalizationBitmapData;
-  verificationResult?: VerificationResult;
   tamperDetected?: boolean;
   scenarios?: string[];
   tamperSummary?: FinalizationTamperSummary;
@@ -165,14 +177,17 @@ export type UserVotePayload = {
 };
 
 export type FinalizeAcceptedPayload = {
-  executionId: FinalizationExecutionId;
+  finalizationId: FinalizationId;
   state: FinalizationState;
 };
 
 export type FinalizeSyncPayload = {
   sessionId: string;
-  verificationExecutionId: FinalizationExecutionId;
+  finalizationId: FinalizationId;
+  state: Extract<FinalizationState, { status: 'succeeded' }>;
   finalizationResult: FinalizationResultAuthority;
+  verificationResult: VerificationResult;
+  bitmapDisposition: FinalizationBitmapDisposition;
   bulletinRoot: string;
   voteReceipt: VoteReceiptPayload;
   receipt: ReceiptWithImageId;

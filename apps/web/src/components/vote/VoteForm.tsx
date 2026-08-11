@@ -8,20 +8,17 @@ import { InlineAlert } from '@stark-ballot/web/components/ui/InlineAlert';
 import { RadioGroup } from '@stark-ballot/web/components/ui/RadioGroup';
 import { useTranslation } from '@stark-ballot/web/hooks';
 import { generateCommitment } from '@stark-ballot/web/vote/commitment';
-import { getSessionAuthHeaders, getSessionData, saveSessionData } from '@stark-ballot/web/session';
+import {
+  captureSessionIdentity,
+  getSessionDataForIdentity,
+  saveSessionDataForIdentity,
+} from '@stark-ballot/web/session';
 import { saveKnowledgeData } from '@stark-ballot/web/knowledge';
 import type { VoteChoice } from '@stark-ballot/web/session/types';
 import { isValidVoteId } from '@stark-ballot/web/vote/voteIdValidation';
-import { isValidHexString } from '@stark-ballot/verification/shared/hex';
-import { resolveApiUrl } from '@stark-ballot/web/api/apiBaseUrl';
-import { apiFetch } from '@stark-ballot/web/api/apiFetch';
-import { VoteResponseSchema } from '@stark-ballot/api-contract/validation/apiSchemas';
-import {
-  admitApiResponse,
-  readApiJson,
-  readStandardApiError,
-  readStandardApiErrorCode,
-} from '@stark-ballot/web/api/responseAdmission';
+import { isValidHexString } from '@stark-ballot/crypto-primitives';
+import { submitVote } from '@stark-ballot/web/api/votes';
+import { resolveApiClientErrorCode } from '@stark-ballot/web/api/client';
 
 interface VoteFormProps {
   /** Callback when vote is successfully submitted */
@@ -51,6 +48,7 @@ const VOTE_OPTIONS: VoteChoice[] = ['A', 'B', 'C', 'D', 'E'];
  */
 export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.ReactElement {
   const { t } = useTranslation();
+  const [mountedSessionIdentity] = useState(() => captureSessionIdentity());
   const [selectedOption, setSelectedOption] = useState<VoteChoice | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,10 +75,12 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
     (value: VoteChoice) => {
       setSelectedOption(value);
       setError(null);
-      saveKnowledgeData({ 'user.choice': value });
+      if (mountedSessionIdentity) {
+        saveKnowledgeData({ 'user.choice': value }, { expectedSessionId: mountedSessionIdentity.sessionId });
+      }
       scrollToBottom();
     },
-    [scrollToBottom],
+    [mountedSessionIdentity, scrollToBottom],
   );
 
   const handleSubmit = async () => {
@@ -97,58 +97,56 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
     let didSucceed = false;
 
     try {
-      const sessionData = getSessionData();
+      if (!mountedSessionIdentity) {
+        throw new Error('Session not found');
+      }
+      const sessionData = getSessionDataForIdentity(mountedSessionIdentity);
       if (!sessionData?.sessionId) {
         throw new Error('Session not found');
       }
-      const sessionAuthHeaders = getSessionAuthHeaders(sessionData);
-      if (!sessionAuthHeaders['X-Session-ID'] || !sessionAuthHeaders['X-Session-Capability']) {
-        throw new Error('Session not found');
-      }
+      if (!sessionData.capabilityToken) throw new Error('Session not found');
       if (!sessionData.electionId) {
         throw new Error('Election ID missing');
       }
 
       // Generate commitment
       const { commitment, randomValue } = await generateCommitment(selectedOption, sessionData.electionId);
+      const sessionDataBeforeSubmit = getSessionDataForIdentity(mountedSessionIdentity);
+      if (!sessionDataBeforeSubmit) {
+        throw new Error('Session not found');
+      }
 
       // Save vote data to session
-      saveSessionData({
+      saveSessionDataForIdentity(mountedSessionIdentity, {
         myVote: selectedOption,
         myCommit: commitment,
         myRand: randomValue,
       });
 
       // Submit vote to API
-      const response = await apiFetch(resolveApiUrl('/api/vote'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...sessionAuthHeaders,
-        },
-        body: JSON.stringify({
+      let result;
+      try {
+        result = await submitVote(sessionDataBeforeSubmit, {
           commitment,
           vote: selectedOption,
           rand: randomValue,
           ...(turnstileToken ? { turnstileToken } : {}),
-        }),
-      });
-
-      if (!response.ok) {
-        const errorPayload = await readStandardApiError(response);
-
-        if (readStandardApiErrorCode(errorPayload) === 'CAPTCHA_FAILED') {
+        });
+        if (!getSessionDataForIdentity(mountedSessionIdentity)) {
+          throw new Error('Session not found');
+        }
+      } catch (requestError) {
+        if (resolveApiClientErrorCode(requestError) === 'CAPTCHA_FAILED') {
           const msg = t('errors.captchaFailed');
           setError(msg);
           setTurnstileToken(null);
           onError?.(msg);
           return;
         }
-        throw new Error('API error');
+        throw requestError;
       }
 
-      const payload = admitApiResponse(VoteResponseSchema, await readApiJson(response), 'vote response');
-      const { voteId, bulletinIndex, bulletinRootAtCast, timestamp: voteTimestamp } = payload.data;
+      const { voteId, bulletinIndex, bulletinRootAtCast, castAtMs } = result;
 
       // Validate response
       if (
@@ -162,22 +160,25 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
       }
 
       // Save vote receipt data
-      saveSessionData({
+      saveSessionDataForIdentity(mountedSessionIdentity, {
         voteId,
         bulletinIndex,
         bulletinRootAtCast,
       });
 
       // Update knowledge store with vote info (after API success)
-      saveKnowledgeData({
-        'user.choice': selectedOption,
-        'user.random': randomValue,
-        'user.commitment': commitment,
-        'user.voteId': voteId,
-        'user.bulletinIndex': bulletinIndex,
-        'user.bulletinRootAtCast': bulletinRootAtCast,
-        ...(typeof voteTimestamp === 'number' ? { 'user.voteTimestamp': voteTimestamp } : {}),
-      });
+      saveKnowledgeData(
+        {
+          'user.choice': selectedOption,
+          'user.random': randomValue,
+          'user.commitment': commitment,
+          'user.voteId': voteId,
+          'user.bulletinIndex': bulletinIndex,
+          'user.bulletinRootAtCast': bulletinRootAtCast,
+          ...(typeof castAtMs === 'number' ? { 'user.castAtMs': castAtMs } : {}),
+        },
+        { expectedSessionId: mountedSessionIdentity.sessionId },
+      );
 
       // Notify completion
       onVoteComplete({

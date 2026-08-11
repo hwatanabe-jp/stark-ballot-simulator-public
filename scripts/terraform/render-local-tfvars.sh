@@ -107,6 +107,22 @@ require_digest() {
   fi
 }
 
+normalize_sha256_digest() {
+  local value="$1"
+
+  node --input-type=module - "$value" <<'NODE'
+import { pathToFileURL } from 'node:url';
+
+const { parseSha256 } = await import(pathToFileURL(process.env.DEPLOYMENT_AUTHORITY_PATH).href);
+const value = process.argv[2];
+try {
+  process.stdout.write(`sha256:${parseSha256(value, 'Prover digest')}`);
+} catch {
+  process.stdout.write(value);
+}
+NODE
+}
+
 has_nonempty_csv_value() {
   local raw="$1"
   local -a values=()
@@ -227,8 +243,10 @@ if [ -z "$env_name" ]; then
   exit 2
 fi
 
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
+export DEPLOYMENT_AUTHORITY_PATH="$repo_root/packages/deployment-authority/src/index.js"
+test -f "$DEPLOYMENT_AUTHORITY_PATH"
 
 if [ -z "$output_file" ]; then
   output_file="infra/terraform/legacy/${env_name}.local.tfvars"
@@ -245,7 +263,6 @@ fi
 
 env_upper="${env_name^^}"
 aws_region="$(first_nonempty "TERRAFORM_AWS_REGION_${env_upper}" TERRAFORM_AWS_REGION AWS_REGION AWS_DEFAULT_REGION || true)"
-aws_region="${aws_region:-ap-northeast-1}"
 project_name="$(first_nonempty "TERRAFORM_PROJECT_NAME_${env_upper}" TERRAFORM_PROJECT_NAME PROJECT_NAME || true)"
 project_name="${project_name:-stark-ballot-simulator}"
 account_id="$(first_nonempty "TERRAFORM_AWS_ACCOUNT_ID_${env_upper}" TERRAFORM_AWS_ACCOUNT_ID AWS_ACCOUNT_ID || true)"
@@ -253,8 +270,8 @@ account_id="$(first_nonempty "TERRAFORM_AWS_ACCOUNT_ID_${env_upper}" TERRAFORM_A
 ecs_image_uri="$(first_nonempty "TERRAFORM_ECS_IMAGE_URI_${env_upper}" TERRAFORM_ECS_IMAGE_URI || true)"
 if [ -z "$ecs_image_uri" ]; then
   prover_digest="$(first_nonempty "TERRAFORM_ZKVM_PROVER_DIGEST_${env_upper}" TERRAFORM_ZKVM_PROVER_DIGEST || true)"
-  if [[ "$prover_digest" =~ ^[0-9a-f]{64}$ ]]; then
-    prover_digest="sha256:${prover_digest}"
+  if [ -n "$prover_digest" ]; then
+    prover_digest="$(normalize_sha256_digest "$prover_digest")"
   fi
   if [ -n "$account_id" ] && [ -n "$prover_digest" ]; then
     ecs_image_uri="${account_id}.dkr.ecr.${aws_region}.amazonaws.com/${project_name}/zkvm-prover-${env_name}@${prover_digest}"
@@ -291,6 +308,9 @@ codebuild_source_location="$(
 s3_cors_allowed_origins="$(first_nonempty "TERRAFORM_S3_CORS_ALLOWED_ORIGINS_${env_upper}" TERRAFORM_S3_CORS_ALLOWED_ORIGINS || true)"
 
 missing=()
+if [ -z "$aws_region" ]; then
+  missing+=("TERRAFORM_AWS_REGION_${env_upper}, TERRAFORM_AWS_REGION, AWS_REGION, or AWS_DEFAULT_REGION")
+fi
 if [ -z "$ecs_image_uri" ]; then
   missing+=("TERRAFORM_ECS_IMAGE_URI_${env_upper} or TERRAFORM_ZKVM_PROVER_DIGEST_${env_upper}")
 fi

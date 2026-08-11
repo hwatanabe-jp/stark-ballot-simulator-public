@@ -4,6 +4,7 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { createHonoApp, type ApiRouteMode } from '@stark-ballot/api/server';
 import { configureLogger, logger, parseLogFormat, parseLogLevel } from '@stark-ballot/diagnostics/logger';
+import { resolveRuntimeProfile, type ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 const DEFAULT_PORT = 3000;
 const DIST_DIR = resolve(process.cwd(), 'dist');
@@ -124,9 +125,12 @@ function configureStaticServerLogger(): void {
   });
 }
 
-export function createStaticHonoServer(distDir = DIST_DIR): Server {
+export function createStaticHonoServer(
+  distDir = DIST_DIR,
+  runtimeProfile: ResolvedRuntimeProfile = resolveRuntimeProfile(process.env),
+): Server {
   configureStaticServerLogger();
-  const honoApp = createHonoApp({ basePath: '/api', mode: STATIC_API_ROUTE_MODE });
+  const honoApp = createHonoApp({ basePath: '/api', mode: STATIC_API_ROUTE_MODE, runtimeProfile });
   return createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (isApiRequestPath(url.pathname)) {

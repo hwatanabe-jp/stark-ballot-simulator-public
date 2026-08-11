@@ -2,32 +2,33 @@
   "name": "@stark-ballot/domain",
   "private": true,
   "type": "module",
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec eslint packages/domain",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/domain",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./bot/*": "./src/lib/bot/*",
     "./bulletin/*": "./src/lib/bulletin/*",
     "./constants/*": "./src/shared/*",
-    "./contract": "./src/lib/contract/index.ts",
-    "./contract/*": "./src/lib/contract/*",
-    "./crypto/*": "./src/lib/crypto/*",
+    "./crypto/sha256Commitment": "./src/lib/crypto/sha256Commitment.ts",
     "./finalize/*": "./src/lib/finalize/*",
-    "./http/*": "./src/lib/http/*",
-    "./performance/*": "./src/lib/performance/*",
     "./scenarios/*": "./src/lib/scenarios/*",
     "./security/sessionCapabilityToken": "./src/lib/security/sessionCapabilityToken.ts",
     "./session/*": "./src/lib/session/*",
     "./shared/*": "./src/shared/*",
     "./types/*": "./src/types/*",
-    "./utils/guards": "./src/lib/utils/guards.ts",
     "./utils/hex": "./src/lib/utils/hex.ts",
     "./vote/*": "./src/lib/vote/*"
   },
   "dependencies": {
-    "@noble/hashes": "2.2.0",
+    "@noble/hashes": "catalog:crypto-testing",
+    "@stark-ballot/crypto-primitives": "workspace:*",
     "@stark-ballot/merkle": "workspace:*",
     "@stark-ballot/validation": "workspace:*"
   },
   "devDependencies": {
-    "vitest": "4.1.10"
+    "vitest": "catalog:testing"
   }
 }

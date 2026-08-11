@@ -1,1700 +1,684 @@
 /**
- * File-based mock session store for testing in production mode
- * Persists session data to disk to enable sharing across server workers
+ * File-backed session store for local production-build tests.
+ *
+ * The file contains one exact snapshot with separate record families. It does
+ * not serialize or reconstruct the retired aggregate session authority.
  */
 
-import type { VoteData, SessionData, AddVoteResult } from '@stark-ballot/domain/types/server';
+import crypto from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { setTimeout as wait } from 'node:timers/promises';
 import type {
+  FinalizationBitmapData,
   FinalizationFailedPayload,
   FinalizationQueuedPayload,
   FinalizationRunningPayload,
+  FinalizationStore,
+  SuccessfulFinalizationCommitInput,
+  SuccessfulFinalizationCommitResult,
   FinalizationSucceededPayload,
   FinalizationTimedOutPayload,
 } from '@stark-ballot/application/finalize/finalization-store';
-import type {
-  CompleteVerificationResultPayload,
-  MarkVerificationRunningPayload,
-  RollbackVerificationResultPayload,
+import {
+  admitFinalizationBitmapDisposition,
+  admitPersistedFinalizationBitmapData,
+} from '@stark-ballot/application/finalize/finalization-bitmap-admission';
+import {
+  admitSuccessfulFinalizationReceipt,
+  admitSuccessfulFinalizationCommitRecord,
+  assertSuccessfulFinalizationLifecycleAdmission,
+  assertDirectSuccessfulFinalizationPayload,
+  buildDirectSuccessfulFinalizationCommitRecord,
+  cloneSuccessfulFinalizationRecord,
+  isSuccessfulFinalizationRecord,
+} from '@stark-ballot/application/finalize/successful-finalization-commit-admission';
+import {
+  parseFinalizationRecord,
+  type FinalizationRecord,
+} from '@stark-ballot/application/finalize/finalization-record';
+import {
+  parseVerificationResultRecord,
+  type VerificationResultRecord,
+  type VerificationResultStore,
 } from '@stark-ballot/application/finalize/finalization-result-store';
+import {
+  evaluateFinalizationTransition,
+  type FinalizationTransitionCommand,
+  type FinalizationTransitionOutcome,
+} from '@stark-ballot/application/finalize/finalization-transition-policy';
+import type { FinalizationId, FinalizationState } from '@stark-ballot/application/finalize/finalization-types';
+import {
+  buildSessionRecords,
+  evaluateSessionVoteMutation,
+} from '@stark-ballot/application/session/session-mutation-policy';
 import type {
-  FinalizationResultAuthority,
-  FinalizationState,
-} from '@stark-ballot/application/finalize/finalization-types';
-import { parseFinalizationState } from '@stark-ballot/application/finalize/finalization-storage';
-import {
-  admitAwsPersistedFinalizationResultBranch,
-  admitAwsPersistedFinalizationStateBranch,
-  mergeAwsProofBundleDeliveryMetadata,
-  parseAwsFinalizationRuntimeState,
-  parseAwsPersistedFinalizationResult,
-  updateAwsFinalizationResultVerificationState,
-  type AwsPersistedFinalizationResult,
-  type AwsPersistedVerificationResult,
-} from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
-import {
-  InMemoryAwsVerificationDeliveryMetadataStore,
-  type AwsFinalizationDeliveryMetadataStore,
-  type AwsVerificationDeliveryMetadataInput,
+  AwsFinalizationDeliveryMetadataStore,
+  AwsVerificationDeliveryMetadataInput,
 } from '@stark-ballot/aws-adapters/finalize/finalizationDeliveryMetadataStore';
+import { parseAwsFinalizationRuntimeMetadata } from '@stark-ballot/aws-adapters/finalize/finalizationMetadataAdmission';
 import {
   assertNoAwsRuntimeTransitionMetadata,
   type AwsFinalizationFailedPayload,
   type AwsFinalizationRunningPayload,
+  type AwsFinalizationRuntimeMetadata,
+  type AwsFinalizationRuntimeMetadataStore,
   type AwsFinalizationRuntimeTransitionStore,
   type AwsFinalizationSucceededPayload,
   type AwsFinalizationTimedOutPayload,
-  type AwsRuntimeTransitionMetadata,
   type AwsSucceededTransitionMetadata,
 } from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
 import { recordFinalizationStorePersistenceOutcome } from '@stark-ballot/aws-adapters/finalize/finalizationTransitionObservability';
-import type { SessionStoreUpdate, VoteStore } from '@stark-ballot/domain/types/voteStore';
-import crypto from 'crypto';
+import { deriveExactCtProof } from '@stark-ballot/aws-adapters/store/ct-proof';
+import { logger } from '@stark-ballot/diagnostics/logger';
+import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
+import type {
+  AddVoteResult,
+  SessionIdentityRecord,
+  SessionVotingRecord,
+  StoredVoteRecord,
+  VoteData,
+} from '@stark-ballot/domain/types/sessionRecords';
+import { parseSessionIdentityRecord } from '@stark-ballot/domain/types/sessionRecords';
+import type { SessionVotingSummary, VoteStore } from '@stark-ballot/domain/types/voteStore';
+import {
+  parseVerificationObservation,
+  parseVerificationObservationWrite,
+  resolveVerificationObservationRecord,
+  type RecordVerificationObservationResult,
+  type VerificationObservation,
+  type VerificationObservationWrite,
+} from '@stark-ballot/domain/types/verificationObservation';
 import { generateVoteId } from '@stark-ballot/domain/vote/voteId';
-import { createElectionId } from '@stark-ballot/zkvm-contract/zkvm/types';
+import type { VerificationReport, VerificationResult } from '@stark-ballot/verification/shared/types';
 import {
   buildDefaultElectionConfig,
   getDefaultElectionConfigHash,
 } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import { generateLogId } from '@stark-ballot/zkvm-contract/zkvm/log-id';
-import { deriveExactCtProof } from '@stark-ballot/aws-adapters/store/ct-proof';
+import { createElectionId } from '@stark-ballot/zkvm-contract/zkvm/types';
+import { computeSuccessfulFinalizationReceiptHash } from './successfulFinalizationReceipt';
 import {
-  applyCanonicalCtSessionProjection,
-  assertCanonicalUserVoteIndexForBotVotes,
-  buildCanonicalCtSessionProjection,
-} from '@stark-ballot/domain/bulletin/ctSessionState';
-import { stageCtVoteWrites } from '@stark-ballot/aws-adapters/store/stagedCtWrite';
-import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
-import { normalizeHex } from '@stark-ballot/domain/utils/hex';
-import { logger } from '@stark-ballot/diagnostics/logger';
-import { hashKeyPrefixForLogging, hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
-import path from 'node:path';
-import type {
-  BitmapData,
-  FileMockDiagnostics,
-  ReceiptEntry,
-  SerializableSessionData,
-} from '@stark-ballot/aws-adapters/store/fileMock/types';
-import { parseBitmapData, parseReceiptEntries } from '@stark-ballot/aws-adapters/store/fileMock/parsers';
-import { deserializeSession, serializeSession } from '@stark-ballot/aws-adapters/store/fileMock/sessionSerde';
-import { formatVoteData } from '@stark-ballot/aws-adapters/store/fileMock/voteUtils';
-import {
-  assertAdmissibleFinalizationArtifactPatch,
-  assertWritableFinalizationArtifact,
-  assertWritableBitmapSidecarOwner,
-  buildFailClosedFinalizationState,
-  canRecoverFinalizationArtifactWithPatch,
-  clearRecoveredFinalizationArtifactState,
-  resolveFailClosedFinalizationArtifactState,
-} from '@stark-ballot/aws-adapters/store/finalizationArtifactAdmission';
-import {
-  rebuildSessionCacheFromSerialized,
-  recordCacheAccess,
-  snapshotCachedSessions,
-  updateCacheDiagnostics,
-  type FileMockCacheState,
-} from '@stark-ballot/aws-adapters/store/fileMock/cache';
-import {
-  buildUnsupportedCurrentArtifactDetails,
-  classifyAuthoritativeWriteContract,
-  hasSessionFinalizationBranch,
-  isRecoverableCurrentLiveSession,
-  UnsupportedCurrentArtifactBoundaryError,
-  resolveAuthoritativeWriteContractGeneration,
-  resolveCurrentContractGeneration,
-} from '@stark-ballot/domain/contract';
-import {
-  requireVerificationObservation,
-  resolveVerificationObservationRecord,
-  type RecordVerificationObservationResult,
-  type VerificationObservation,
-} from '@stark-ballot/domain/types/verificationObservation';
+  createEmptyFileStoreState,
+  parseFileStoreSnapshot,
+  serializeFileStoreState,
+  type FileStoreState,
+} from './fileMock/sessionSerde';
 
-import * as fs from 'node:fs';
-import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
-
-type WriteJsonOptions = {
-  spaces?: number;
+type AppliedFinalizationTransition = {
+  record: FinalizationRecord;
+  mutated: boolean;
+  outcome: Exclude<FinalizationTransitionOutcome, { kind: 'invalid' }>;
+  before: FinalizationRecord | null;
 };
 
-function readJsonFileSync(filePath: string): unknown {
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-}
+type MutationResult<T> = {
+  value: T;
+  dirty: boolean;
+};
 
-async function readJsonFile(filePath: string): Promise<unknown> {
-  return JSON.parse(await readFile(filePath, 'utf8'));
-}
-
-function stringifyJson(value: unknown, options: WriteJsonOptions = {}): string {
-  return `${JSON.stringify(value, null, options.spaces ?? 0)}\n`;
-}
-
-async function writeJsonFile(filePath: string, value: unknown, options?: WriteJsonOptions): Promise<void> {
-  await writeFile(filePath, stringifyJson(value, options), 'utf8');
-}
-
-async function moveFile(
-  sourcePath: string,
-  destinationPath: string,
-  options: { overwrite?: boolean } = {},
-): Promise<void> {
-  if (options.overwrite) {
-    await rm(destinationPath, { force: true });
-  }
-  await rename(sourcePath, destinationPath);
-}
-
-async function acquireExclusiveFileLock(lockPath: string): Promise<Awaited<ReturnType<typeof open>>> {
-  const deadline = Date.now() + 5_000;
-  for (;;) {
-    try {
-      return await open(lockPath, 'wx');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-        throw error;
-      }
-      if (Date.now() >= deadline) {
-        throw new Error('Timed out acquiring verification observation file lock');
-      }
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 10);
-      });
-    }
-  }
-}
-
-function requireAwsPersistedFinalizationResult(
-  result: FinalizationResultAuthority | AwsPersistedFinalizationResult,
-  executionId: string,
-  deliveryMetadata?: AwsVerificationDeliveryMetadataInput,
-): AwsPersistedFinalizationResult {
-  const persisted = mergeAwsProofBundleDeliveryMetadata(result, { executionId, ...deliveryMetadata });
-  if (!persisted) {
-    throw new Error('Invalid finalization result persistence payload');
-  }
-  return persisted;
-}
-
-type AwsMetadataMode = 'pure' | 'aws';
-
-const SESSION_UPDATE_KEYS = new Set<keyof SessionStoreUpdate>([
-  'electionId',
-  'electionConfigHash',
-  'electionConfig',
-  'logId',
+const FIVE_MINUTES_MS = 5 * 60 * 1000;
+const LOCK_TIMEOUT_MS = 5_000;
+const LOCK_RETRY_MS = 10;
+const FINALIZATION_QUEUED_PAYLOAD_KEYS = new Set(['finalizationId', 'queuedAtMs', 'scenarioContext', 'observability']);
+const FINALIZATION_RUNNING_PAYLOAD_KEYS = new Set([
+  'finalizationId',
+  'queuedAtMs',
+  'startedAtMs',
+  'scenarioContext',
+  'observability',
 ]);
+const FINALIZATION_SUCCEEDED_PAYLOAD_KEYS = new Set([
+  'finalizationId',
+  'queuedAtMs',
+  'startedAtMs',
+  'completedAtMs',
+  'scenarioContext',
+  'finalizationResult',
+  'observability',
+]);
+const FINALIZATION_FAILED_PAYLOAD_KEYS = new Set([
+  'finalizationId',
+  'queuedAtMs',
+  'startedAtMs',
+  'failedAtMs',
+  'scenarioContext',
+  'error',
+  'observability',
+]);
+const FINALIZATION_TIMED_OUT_PAYLOAD_KEYS = new Set([
+  'finalizationId',
+  'queuedAtMs',
+  'startedAtMs',
+  'timeoutAtMs',
+  'scenarioContext',
+  'observability',
+]);
+const AWS_RUNNING_PAYLOAD_KEYS = new Set([...FINALIZATION_RUNNING_PAYLOAD_KEYS, 'stepFunctionsArn']);
+const AWS_SUCCEEDED_PAYLOAD_KEYS = new Set([
+  ...FINALIZATION_SUCCEEDED_PAYLOAD_KEYS,
+  'stepFunctionsArn',
+  'bundleMetadata',
+]);
+const AWS_FAILED_PAYLOAD_KEYS = new Set([...FINALIZATION_FAILED_PAYLOAD_KEYS, 'stepFunctionsArn']);
+const AWS_TIMED_OUT_PAYLOAD_KEYS = new Set([...FINALIZATION_TIMED_OUT_PAYLOAD_KEYS, 'stepFunctionsArn']);
 
-function assertSessionUpdateContainsOnlyAllowedFields(data: SessionStoreUpdate): void {
-  const record = data as Record<string, unknown>;
-  for (const key of Object.keys(record)) {
-    if (!SESSION_UPDATE_KEYS.has(key as keyof SessionStoreUpdate)) {
-      throw new Error(`Session field must be updated through a dedicated store capability: ${key}`);
-    }
+function scopedKey(sessionId: string, finalizationId: string): string {
+  return `${sessionId}\u0000${finalizationId}`;
+}
+
+function assertAllowedPayloadKeys(value: object, allowed: ReadonlySet<string>, label: string): void {
+  if (Object.keys(value).some((key) => !allowed.has(key))) {
+    throw new Error(`Invalid ${label} payload`);
   }
 }
 
-function buildVerificationSnapshotKey(sessionId: string, executionId: string): string {
-  return `${sessionId}:${executionId}`;
+function cloneIdentity(identity: SessionIdentityRecord): SessionIdentityRecord {
+  return {
+    ...identity,
+    electionConfig: {
+      ...identity.electionConfig,
+      choices: [...identity.electionConfig.choices],
+    },
+  };
 }
 
-function isTerminalVerificationStatus(status: AwsPersistedVerificationResult['status'] | undefined): boolean {
+function cloneVoting(voting: SessionVotingRecord): SessionVotingRecord {
+  const bulletin = new SimpleBulletinBoard(voting.bulletin.getLogId());
+  for (const [, vote] of Array.from(voting.votes.entries()).sort(([left], [right]) => left - right)) {
+    bulletin.appendVote(vote.voteId, vote.commit.slice(2));
+  }
+  return {
+    ...voting,
+    votes: new Map(Array.from(voting.votes, ([index, vote]) => [index, { ...vote }])),
+    bulletin,
+    bulletinRootHistory: voting.bulletinRootHistory.map((snapshot) => ({ ...snapshot })),
+    userParticipation: { ...voting.userParticipation },
+  };
+}
+
+function requestedStatus(command: FinalizationTransitionCommand): FinalizationState['status'] {
+  switch (command.kind) {
+    case 'queue':
+      return 'pending';
+    case 'start':
+      return 'running';
+    case 'succeed':
+      return 'succeeded';
+    case 'fail':
+    case 'cancel':
+      return 'failed';
+    case 'time_out':
+      return 'timeout';
+  }
+}
+
+function isTerminalVerificationStatus(status: VerificationResult['status']): boolean {
   return status === 'success' || status === 'failed' || status === 'dev_mode';
 }
 
-function shouldIgnoreVerificationCompletion(current: AwsPersistedFinalizationResult, executionId: string): boolean {
-  const currentExecutionId = current.verificationExecutionId ?? current.verificationResult?.executionId;
-  if (currentExecutionId && currentExecutionId !== executionId) {
-    return true;
-  }
-  return (
-    current.verificationResult?.executionId === executionId &&
-    isTerminalVerificationStatus(current.verificationResult.status)
-  );
-}
-
-function parsePersistedFinalizationState(value: unknown): FinalizationState | undefined {
-  return parseAwsFinalizationRuntimeState(value) ?? parseFinalizationState(value);
-}
-
-/**
- * File-based implementation of a session store for E2E testing in production mode.
- * Persists sessions and voteId index to .tmp/mock-sessions/ (or FILE_MOCK_STORE_DIR override)
- * to enable sharing across workers.
- */
-export class FileMockSessionStore
-  implements VoteStore, AwsFinalizationRuntimeTransitionStore, AwsFinalizationDeliveryMetadataStore
-{
-  private static diagnostics: FileMockDiagnostics = {
-    sessionDiskReads: 0,
-    cacheSize: 0,
-    cacheEvictions: 0,
+function cloneRuntimeMetadata(metadata: AwsFinalizationRuntimeMetadata): AwsFinalizationRuntimeMetadata {
+  return {
+    ...metadata,
+    ...(metadata.bundleMetadata ? { bundleMetadata: { ...metadata.bundleMetadata } } : {}),
   };
+}
 
-  private sessions: Map<string, SessionData> = new Map();
-  private serializedSessions: Map<string, SerializableSessionData> = new Map();
-  private dirtySessionIds: Set<string> = new Set();
-  private voteIdIndex: Map<string, { sessionId: string; index: number }> = new Map();
-  private deliveryMetadata = new InMemoryAwsVerificationDeliveryMetadataStore();
-  private verificationRollbackSnapshots = new Map<
-    string,
-    {
-      verificationResult?: AwsPersistedVerificationResult;
-      verificationExecutionId?: string;
-    }
-  >();
-  private readonly storageDir = (() => {
-    const override = process.env['FILE_MOCK_STORE_DIR'];
-    if (override && override.trim().length > 0) {
-      return path.resolve(override);
-    }
-    return path.join(process.cwd(), '.tmp', 'mock-sessions');
-  })();
-  private readonly sessionsFile = path.join(this.storageDir, 'sessions.json');
-  private readonly voteIdIndexFile = path.join(this.storageDir, 'voteIdIndex.json');
+function cloneDeliveryMetadata(metadata: AwsVerificationDeliveryMetadataInput): AwsVerificationDeliveryMetadataInput {
+  return { ...metadata };
+}
 
-  // Storage for bitmap data by session ID
-  private bitmapDataBySession: Map<string, BitmapData> = new Map();
-  private readonly bitmapsFile = path.join(this.storageDir, 'bitmaps.json');
-  private readonly legacyBitmapFile = path.join(this.storageDir, 'bitmap.json');
-
-  // Storage for receipts
-  private receipts: Map<string, ReceiptEntry> = new Map();
-  private receiptCounter = 100;
-  private readonly receiptsFile = path.join(this.storageDir, 'receipts.json');
-
-  private lastKnownSessionSignature: string | null = null;
-  private readonly cacheEnabled = process.env['DISABLE_FILE_STORE_CACHE'] !== '1';
-  private readonly cacheLimit = (() => {
-    const raw = process.env['FILE_STORE_CACHE_LIMIT'];
-    if (raw === undefined) {
-      return 32;
+function buildFinalizationCommand(
+  sessionId: string,
+  payload:
+    | FinalizationQueuedPayload
+    | FinalizationRunningPayload
+    | FinalizationSucceededPayload
+    | FinalizationFailedPayload
+    | FinalizationTimedOutPayload,
+  kind: 'queue' | 'start' | 'succeed' | 'fail' | 'time_out',
+): FinalizationTransitionCommand {
+  const reason = payload.observability?.reason;
+  switch (kind) {
+    case 'queue': {
+      const queued = payload as FinalizationQueuedPayload;
+      return {
+        kind,
+        sessionId,
+        finalizationId: queued.finalizationId,
+        queuedAtMs: queued.queuedAtMs,
+        scenarioContext: queued.scenarioContext,
+        ...(reason ? { reason } : {}),
+      };
     }
-    const parsed = Number(raw);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      return 32;
+    case 'start': {
+      const running = payload as FinalizationRunningPayload;
+      return {
+        kind,
+        sessionId,
+        finalizationId: running.finalizationId,
+        queuedAtMs: running.queuedAtMs,
+        startedAtMs: running.startedAtMs,
+        ...(running.scenarioContext ? { scenarioContext: running.scenarioContext } : {}),
+        ...(reason ? { reason } : {}),
+      };
     }
-    return parsed;
-  })();
+    case 'succeed': {
+      const succeeded = payload as FinalizationSucceededPayload;
+      return {
+        kind,
+        sessionId,
+        finalizationId: succeeded.finalizationId,
+        queuedAtMs: succeeded.queuedAtMs,
+        startedAtMs: succeeded.startedAtMs,
+        completedAtMs: succeeded.completedAtMs,
+        finalizationResult: succeeded.finalizationResult,
+        ...(succeeded.scenarioContext ? { scenarioContext: succeeded.scenarioContext } : {}),
+        ...(reason ? { reason } : {}),
+      };
+    }
+    case 'fail': {
+      const failed = payload as FinalizationFailedPayload;
+      if (failed.error.code === 'USER_CANCELLED') {
+        return {
+          kind: 'cancel',
+          sessionId,
+          finalizationId: failed.finalizationId,
+          queuedAtMs: failed.queuedAtMs,
+          ...(failed.startedAtMs === undefined ? {} : { startedAtMs: failed.startedAtMs }),
+          failedAtMs: failed.failedAtMs,
+          message: failed.error.message,
+          ...(failed.scenarioContext ? { scenarioContext: failed.scenarioContext } : {}),
+          ...(reason ? { reason } : {}),
+        };
+      }
+      return {
+        kind,
+        sessionId,
+        finalizationId: failed.finalizationId,
+        queuedAtMs: failed.queuedAtMs,
+        ...(failed.startedAtMs === undefined ? {} : { startedAtMs: failed.startedAtMs }),
+        failedAtMs: failed.failedAtMs,
+        error: failed.error,
+        ...(failed.scenarioContext ? { scenarioContext: failed.scenarioContext } : {}),
+        ...(reason ? { reason } : {}),
+      };
+    }
+    case 'time_out': {
+      const timedOut = payload as FinalizationTimedOutPayload;
+      return {
+        kind,
+        sessionId,
+        finalizationId: timedOut.finalizationId,
+        queuedAtMs: timedOut.queuedAtMs,
+        ...(timedOut.startedAtMs === undefined ? {} : { startedAtMs: timedOut.startedAtMs }),
+        timeoutAtMs: timedOut.timeoutAtMs,
+        ...(timedOut.scenarioContext ? { scenarioContext: timedOut.scenarioContext } : {}),
+        ...(reason ? { reason } : {}),
+      };
+    }
+  }
+}
+
+export class FileMockSessionStore
+  implements
+    VoteStore,
+    FinalizationStore,
+    VerificationResultStore,
+    AwsFinalizationRuntimeTransitionStore,
+    AwsFinalizationRuntimeMetadataStore,
+    AwsFinalizationDeliveryMetadataStore
+{
+  private state: FileStoreState = createEmptyFileStoreState();
+  private verificationRollbackSnapshots = new Map<string, VerificationResultRecord | null>();
+  private loadedSignature: string | null = null;
+
+  private readonly storageDir: string;
+  private readonly snapshotFile: string;
+  private readonly temporarySnapshotFile: string;
+  private readonly lockDirectory: string;
 
   constructor() {
-    this.loadSessionsFromDisk();
+    const configuredDirectory = process.env['FILE_MOCK_STORE_DIR'];
+    this.storageDir = configuredDirectory
+      ? path.resolve(configuredDirectory)
+      : path.join(process.cwd(), '.tmp', 'mock-sessions');
+    this.snapshotFile = path.join(this.storageDir, 'sessions.json');
+    this.temporarySnapshotFile = `${this.snapshotFile}.tmp`;
+    this.lockDirectory = path.join(this.storageDir, 'sessions.lock');
+    mkdirSync(this.storageDir, { recursive: true });
+    this.loadFromDisk(true);
   }
 
-  private getCacheState(): FileMockCacheState {
-    return {
-      sessions: this.sessions,
-      serializedSessions: this.serializedSessions,
-      dirtySessionIds: this.dirtySessionIds,
-      cacheEnabled: this.cacheEnabled,
-      cacheLimit: this.cacheLimit,
-      diagnostics: FileMockSessionStore.diagnostics,
-    };
+  private computeSignature(): string | null {
+    if (!existsSync(this.snapshotFile)) {
+      return null;
+    }
+    const stats = statSync(this.snapshotFile);
+    return `${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`;
   }
 
-  /**
-   * Load all data from disk on startup
-   */
-  private loadSessionsFromDisk(): void {
-    FileMockSessionStore.diagnostics.sessionDiskReads++;
-
-    const debugEnabled = process.env['DEBUG_FILE_STORE'] === '1';
-
+  private loadFromDisk(force = false): void {
+    const signature = this.computeSignature();
+    if (!force && signature === this.loadedSignature) {
+      return;
+    }
+    if (signature === null) {
+      this.state = createEmptyFileStoreState();
+      this.loadedSignature = null;
+      return;
+    }
     try {
-      fs.mkdirSync(this.storageDir, { recursive: true });
-
-      if (debugEnabled) {
-        logger.debug('[FileMockStore][DEBUG] loadSessionsFromDisk() called', {
-          mapSizeBefore: this.sessions.size,
-          sessionsFilePath: this.sessionsFile,
-        });
+      const parsed: unknown = JSON.parse(readFileSync(this.snapshotFile, 'utf8'));
+      const admitted = parseFileStoreSnapshot(parsed);
+      if (!admitted) {
+        throw new Error('File store snapshot does not match the exact record layout');
       }
-
-      if (fs.existsSync(this.sessionsFile)) {
-        const fileStats = fs.statSync(this.sessionsFile);
-        const data = readJsonFileSync(this.sessionsFile) as SerializableSessionData[];
-
-        if (debugEnabled) {
-          logger.debug('[FileMockStore][DEBUG] sessions.json metadata', {
-            mtimeMs: fileStats.mtimeMs,
-            mtime: fileStats.mtime.toISOString(),
-            size: fileStats.size,
-            sessionCount: data.length,
-          });
-        }
-
-        this.serializedSessions = new Map(data.map((session) => [session.sessionId, session]));
-        this.dirtySessionIds.clear();
-        this.lastKnownSessionSignature = this.computeSessionsSignature(fileStats);
-
-        if (this.cacheEnabled) {
-          rebuildSessionCacheFromSerialized(this.getCacheState(), deserializeSession);
-        } else {
-          this.sessions.clear();
-          for (const sessionData of data) {
-            const session = deserializeSession(sessionData);
-            this.sessions.set(session.sessionId, session);
-          }
-          updateCacheDiagnostics(this.getCacheState());
-        }
-
-        logger.info('[FileMockStore] Loaded sessions from disk:', this.serializedSessions.size);
-
-        if (debugEnabled) {
-          logger.debug('[FileMockStore][DEBUG] loadSessionsFromDisk() completed', {
-            cachedSessions: this.sessions.size,
-            serializedCount: this.serializedSessions.size,
-          });
-        }
-      } else {
-        this.serializedSessions.clear();
-        this.sessions.clear();
-        this.dirtySessionIds.clear();
-        this.lastKnownSessionSignature = null;
-        updateCacheDiagnostics(this.getCacheState());
-      }
-
-      if (fs.existsSync(this.voteIdIndexFile)) {
-        try {
-          const data = readJsonFileSync(this.voteIdIndexFile) as Record<string, { sessionId: string; index: number }>;
-          this.voteIdIndex = new Map(Object.entries(data));
-          logger.info('[FileMockStore] Loaded voteId index from disk:', this.voteIdIndex.size);
-        } catch {
-          logger.warn('[FileMockStore] Failed to parse voteIdIndex.json, using empty state');
-          this.voteIdIndex.clear();
-        }
-      }
-
-      if (fs.existsSync(this.legacyBitmapFile)) {
-        fs.rmSync(this.legacyBitmapFile, { force: true });
-        logger.warn('[FileMockStore] Removed legacy bitmap.json artifact during reset');
-      }
-
-      this.loadBitmapsFromDiskSync();
-
-      if (this.bitmapDataBySession.size > 0) {
-        logger.info('[FileMockStore] Loaded bitmap data from disk:', this.bitmapDataBySession.size);
-      }
-
-      if (fs.existsSync(this.receiptsFile)) {
-        try {
-          const data = parseReceiptEntries(readJsonFileSync(this.receiptsFile));
-          if (!data) {
-            throw new Error('invalid receipt entries');
-          }
-          this.receipts = new Map(Object.entries(data));
-          if (this.receipts.size > 0) {
-            const maxIndex = Math.max(...Array.from(this.receipts.values()).map((r) => r.boardIndex));
-            this.receiptCounter = maxIndex + 1;
-          }
-          logger.info('[FileMockStore] Loaded receipts from disk:', this.receipts.size);
-        } catch {
-          logger.warn('[FileMockStore] Failed to parse receipts.json, using empty state');
-          this.receipts.clear();
-        }
-      }
+      this.state = admitted;
     } catch (error) {
-      logger.error('[FileMockStore] Failed to load from disk:', error);
-      // Continue with empty state on error
-    }
-  }
-
-  /**
-   * Save sessions to disk (atomic write via temp file)
-   */
-  private async saveSessions(): Promise<void> {
-    try {
-      await mkdir(this.storageDir, { recursive: true });
-      snapshotCachedSessions(this.getCacheState(), serializeSession);
-      const serializable = Array.from(this.serializedSessions.values());
-      const tempFile = `${this.sessionsFile}.tmp`;
-      await writeJsonFile(tempFile, serializable, { spaces: 2 });
-      await moveFile(tempFile, this.sessionsFile, { overwrite: true });
-      this.dirtySessionIds.clear();
-      logger.info('[FileMockStore] Saved sessions to disk:', this.serializedSessions.size);
-      this.refreshCacheAfterWrite();
-    } catch (error) {
-      logger.error('[FileMockStore] Failed to save sessions:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Save voteId index to disk (atomic write via temp file)
-   */
-  private async saveVoteIdIndex(): Promise<void> {
-    try {
-      await mkdir(this.storageDir, { recursive: true });
-      const serializable = Object.fromEntries(this.voteIdIndex);
-      const tempFile = `${this.voteIdIndexFile}.tmp`;
-      await writeJsonFile(tempFile, serializable, { spaces: 2 });
-      await moveFile(tempFile, this.voteIdIndexFile, { overwrite: true });
-      logger.info('[FileMockStore] Saved voteId index to disk:', this.voteIdIndex.size);
-    } catch (error) {
-      logger.error('[FileMockStore] Failed to save voteId index:', error);
-      throw error;
-    }
-  }
-
-  private async saveReceipts(): Promise<void> {
-    try {
-      await mkdir(this.storageDir, { recursive: true });
-      const tempFile = `${this.receiptsFile}.tmp`;
-      await writeJsonFile(tempFile, Object.fromEntries(this.receipts), { spaces: 2 });
-      await moveFile(tempFile, this.receiptsFile, { overwrite: true });
-    } catch (error) {
-      logger.error('[FileMockStore] Failed to save receipts:', error);
-      throw error;
-    }
-  }
-
-  private parseBitmapMap(raw: unknown): Map<string, BitmapData> {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      throw new Error('Invalid bitmaps payload');
-    }
-
-    const parsed = new Map<string, BitmapData>();
-    for (const [sessionId, value] of Object.entries(raw)) {
-      const bitmapData = parseBitmapData(value);
-      if (!bitmapData) {
-        logger.warn('[FileMockStore] Skipping invalid bitmap entry', {
-          session_id_hash: hashSessionIdForLogging(sessionId),
-        });
-        continue;
-      }
-      if (bitmapData.sessionId !== sessionId) {
-        logger.warn('[FileMockStore] Skipping bitmap entry with mismatched sessionId', {
-          key_session_id_hash: hashSessionIdForLogging(sessionId),
-          value_session_id_hash: hashSessionIdForLogging(bitmapData.sessionId),
-        });
-        continue;
-      }
-
-      parsed.set(sessionId, {
-        ...bitmapData,
-        includedBitmap: [...bitmapData.includedBitmap],
+      logger.warn('[FileMockStore] File snapshot failed closed', {
+        error: error instanceof Error ? error.message : String(error),
       });
+      this.state = createEmptyFileStoreState();
     }
-
-    return parsed;
+    this.loadedSignature = signature;
   }
 
-  private loadBitmapsFromDiskSync(): void {
-    if (!fs.existsSync(this.bitmapsFile)) {
-      this.bitmapDataBySession.clear();
-      return;
-    }
-
-    try {
-      const raw: unknown = readJsonFileSync(this.bitmapsFile);
-      this.bitmapDataBySession = this.parseBitmapMap(raw);
-    } catch {
-      logger.warn('[FileMockStore] Failed to parse bitmaps.json, resetting bitmap cache');
-      this.bitmapDataBySession.clear();
-    }
+  private ensureFresh(): void {
+    this.loadFromDisk(false);
   }
 
-  private async loadBitmapsFromDisk(): Promise<void> {
-    if (!fs.existsSync(this.bitmapsFile)) {
-      this.bitmapDataBySession.clear();
-      return;
-    }
-
-    try {
-      const raw: unknown = await readJsonFile(this.bitmapsFile);
-      this.bitmapDataBySession = this.parseBitmapMap(raw);
-    } catch {
-      logger.warn('[FileMockStore] Failed to parse bitmaps.json, resetting bitmap cache');
-      this.bitmapDataBySession.clear();
-    }
+  private async persistState(): Promise<void> {
+    const serialized = `${JSON.stringify(serializeFileStoreState(this.state), null, 2)}\n`;
+    await writeFile(this.temporarySnapshotFile, serialized, 'utf8');
+    await rename(this.temporarySnapshotFile, this.snapshotFile);
+    this.loadedSignature = this.computeSignature();
   }
 
-  private async saveBitmaps(): Promise<void> {
+  private async acquireLock(): Promise<() => Promise<void>> {
     await mkdir(this.storageDir, { recursive: true });
-    const tempFile = `${this.bitmapsFile}.tmp`;
-    await writeJsonFile(tempFile, Object.fromEntries(this.bitmapDataBySession), { spaces: 2 });
-    await moveFile(tempFile, this.bitmapsFile, { overwrite: true });
-  }
-
-  private refreshCacheAfterWrite(): void {
-    if (!this.cacheEnabled) {
-      return;
-    }
-    try {
-      if (!fs.existsSync(this.sessionsFile)) {
-        this.lastKnownSessionSignature = null;
-        return;
-      }
-      const stats = fs.statSync(this.sessionsFile);
-      this.lastKnownSessionSignature = this.computeSessionsSignature(stats);
-    } catch (error) {
-      logger.warn('[FileMockStore][Cache] Failed to refresh cache after write:', error);
-    }
-  }
-
-  private ensureSessionsFresh(): void {
-    if (!this.cacheEnabled) {
-      this.loadSessionsFromDisk();
-      return;
-    }
-
-    const debugEnabled = process.env['DEBUG_FILE_STORE'] === '1';
-
-    try {
-      if (!fs.existsSync(this.sessionsFile)) {
-        if (debugEnabled) {
-          logger.debug('[FileMockStore][Cache] sessions.json missing, clearing state');
+    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    for (;;) {
+      try {
+        await mkdir(this.lockDirectory);
+        return () => rm(this.lockDirectory, { recursive: true, force: true });
+      } catch (error) {
+        const code =
+          typeof error === 'object' && error !== null && 'code' in error
+            ? String((error as { code?: unknown }).code)
+            : '';
+        if (code !== 'EEXIST' || Date.now() >= deadline) {
+          throw error;
         }
-        this.serializedSessions.clear();
-        this.sessions.clear();
-        this.lastKnownSessionSignature = null;
-        updateCacheDiagnostics(this.getCacheState());
-        return;
+        await wait(LOCK_RETRY_MS);
       }
+    }
+  }
 
-      const stats = fs.statSync(this.sessionsFile);
-      const currentSignature = this.computeSessionsSignature(stats);
-
-      if (this.lastKnownSessionSignature && this.lastKnownSessionSignature === currentSignature) {
-        if (debugEnabled) {
-          logger.debug('[FileMockStore][Cache] Cache hit (mtime unchanged)');
-        }
-        return;
+  private async mutate<T>(mutation: () => MutationResult<T> | Promise<MutationResult<T>>): Promise<T> {
+    const release = await this.acquireLock();
+    try {
+      this.loadFromDisk(true);
+      const result = await mutation();
+      if (result.dirty) {
+        await this.persistState();
       }
-
-      if (debugEnabled) {
-        logger.debug('[FileMockStore][Cache] Cache miss, reloading', {
-          previous: this.lastKnownSessionSignature,
-          current: currentSignature,
-        });
-      }
-
-      this.loadSessionsFromDisk();
+      return result.value;
     } catch (error) {
-      if (debugEnabled) {
-        logger.warn('[FileMockStore][Cache] Failed to validate cache, forcing reload', error);
-      }
-      this.loadSessionsFromDisk();
+      this.loadFromDisk(true);
+      throw error;
+    } finally {
+      await release();
     }
   }
 
-  private computeSessionsSignature(stats: fs.Stats): string {
-    return `${stats.mtimeMs}:${stats.size}`;
+  private requireIdentity(sessionId: string): SessionIdentityRecord {
+    const identity = parseSessionIdentityRecord(this.state.identityRecords.get(sessionId));
+    if (!identity || identity.sessionId !== sessionId) {
+      throw new Error('Session identity is missing or invalid');
+    }
+    return identity;
   }
 
-  private updateFinalizationState(session: SessionData, nextState: FinalizationState | undefined): FinalizationState {
-    const current = parsePersistedFinalizationState(session.finalizationState);
-    if (!nextState) {
-      throw new Error('Finalization state invariant violated');
+  private requireVoting(sessionId: string): SessionVotingRecord {
+    this.requireIdentity(sessionId);
+    const voting = this.state.votingRecords.get(sessionId);
+    if (!voting || voting.sessionId !== sessionId) {
+      throw new Error('Session voting record is missing or invalid');
     }
-    const stickyTerminalState = this.getStickyTerminalFinalizationState(current, nextState.executionId);
-    if (stickyTerminalState) {
-      return stickyTerminalState;
-    }
-    if (current && current.executionId !== nextState.executionId) {
-      return current;
-    }
-    session.finalizationState = admitAwsPersistedFinalizationStateBranch(nextState);
-    session.lastActivity = Date.now();
-    this.markSessionDirty(session.sessionId);
-    return nextState;
+    return voting;
   }
 
-  private async observeFinalizationPersistence(
-    sessionId: string,
-    requestedTo: FinalizationState['status'],
-    payload: Pick<FinalizationQueuedPayload, 'executionId' | 'observability'>,
-    operation: () => Promise<FinalizationState>,
-  ): Promise<FinalizationState> {
-    this.ensureSessionsFresh();
-    const before = parsePersistedFinalizationState(this.sessions.get(sessionId)?.finalizationState);
-    const actual = await operation();
-    recordFinalizationStorePersistenceOutcome({
-      sessionId,
-      requestedExecutionId: payload.executionId,
-      requestedTo,
-      ...(before ? { before } : {}),
-      actual,
-      authoritativeWrite: true,
-      ...(payload.observability ? { metadata: payload.observability } : {}),
+  private currentFinalization(sessionId: string): FinalizationRecord | null {
+    const finalizationId = this.state.currentFinalizationIdBySession.get(sessionId);
+    if (!finalizationId) {
+      return null;
+    }
+    const record = parseFinalizationRecord(this.state.finalizationRecords.get(scopedKey(sessionId, finalizationId)));
+    if (!record || record.sessionId !== sessionId || record.finalizationId !== finalizationId) {
+      throw new Error('Current finalization record is missing or invalid');
+    }
+    return record;
+  }
+
+  private touchVotingRecord(sessionId: string, atMs = Date.now()): void {
+    const voting = this.requireVoting(sessionId);
+    this.state.votingRecords.set(sessionId, {
+      ...voting,
+      lastActivityMs: atMs,
     });
-    return actual;
   }
 
-  private getStickyTerminalFinalizationState(
-    current: FinalizationState | undefined,
-    executionId: string,
-  ): FinalizationState | undefined {
-    if (!current || current.executionId !== executionId) {
-      return undefined;
-    }
-    return current.status === 'succeeded' || current.status === 'failed' || current.status === 'timeout'
-      ? current
-      : undefined;
-  }
-
-  private generateSessionId(): string {
-    return typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
-  }
-
-  private hasContractGenerationMismatch(session: SessionData, contractGeneration: string | undefined): boolean {
-    return (
-      classifyAuthoritativeWriteContract(
-        omitUndefinedProperties({
-          persistedContractGeneration: resolveAuthoritativeWriteContractGeneration(session),
-          carriedContractGeneration: contractGeneration,
-        }),
-      ) !== 'supported'
-    );
-  }
-
-  private markSessionDirty(sessionId: string): void {
-    this.dirtySessionIds.add(sessionId);
-  }
-
-  private failCurrentArtifactExecution(
-    session: SessionData,
-    payload: {
-      executionId: string;
-      queuedAt: number;
-      contractGeneration?: string;
-      startedAt?: number;
-      stepFunctionsArn?: string;
-    },
-    artifactState: NonNullable<SessionData['finalizationArtifactState']> = 'unsupported_current_artifact',
-  ): FinalizationState {
-    const next = buildFailClosedFinalizationState(session, payload, artifactState, Date.now());
-    session.finalizationArtifactState = artifactState;
-    session.finalizationState = admitAwsPersistedFinalizationStateBranch(next);
-    session.lastActivity = Date.now();
-    this.markSessionDirty(session.sessionId);
-    return next;
-  }
-
-  async createSession(): Promise<SessionData> {
-    this.ensureSessionsFresh();
-    const sessionId = this.generateSessionId();
-    const electionId = createElectionId();
-    const electionConfigHash = getDefaultElectionConfigHash();
-    const logId = generateLogId(`mock-${sessionId}`);
-
-    const bulletin = new SimpleBulletinBoard(logId);
-
-    const sessionData: SessionData = {
-      sessionId,
-      contractGeneration: resolveCurrentContractGeneration(),
-      electionId,
-      electionConfigHash,
-      electionConfig: buildDefaultElectionConfig(),
-      logId,
-      votes: new Map(),
-      bulletin,
-      bulletinRootHistory: [],
-      botCount: 0,
-      finalized: false,
-      createdAt: Date.now(),
-      lastActivity: Date.now(),
-    };
-
-    recordCacheAccess(this.getCacheState(), sessionData, serializeSession);
-    this.serializedSessions.set(sessionId, serializeSession(sessionData));
-    this.markSessionDirty(sessionId);
-    logger.info('[FileMockStore] Created session', {
-      session_id_hash: hashSessionIdForLogging(sessionId),
+  async createSession(): Promise<SessionIdentityRecord> {
+    return this.mutate(() => {
+      const sessionId =
+        typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+      const createdAtMs = Date.now();
+      const records = buildSessionRecords({
+        sessionId,
+        electionId: createElectionId(),
+        electionConfigHash: getDefaultElectionConfigHash(),
+        electionConfig: buildDefaultElectionConfig(),
+        logId: generateLogId(`file-mock-${sessionId}`),
+        createdAtMs,
+        lastActivityMs: createdAtMs,
+      });
+      const identity = parseSessionIdentityRecord(records.identity);
+      if (!identity) {
+        throw new Error('Session creation produced invalid lifecycle records');
+      }
+      this.state.identityRecords.set(sessionId, identity);
+      this.state.votingRecords.set(sessionId, records.voting);
+      logger.info('[FileMockStore] Created session', {
+        session_id_hash: hashSessionIdForLogging(sessionId),
+      });
+      return {
+        value: cloneIdentity(identity),
+        dirty: true,
+      };
     });
-
-    await this.saveSessions();
-
-    return sessionData;
   }
 
-  getSession(sessionId: string): Promise<SessionData | null> {
-    const debugEnabled = process.env['DEBUG_FILE_STORE'] === '1';
+  async getSessionIdentity(sessionId: string): Promise<SessionIdentityRecord | null> {
+    await Promise.resolve();
+    this.ensureFresh();
+    const identity = parseSessionIdentityRecord(this.state.identityRecords.get(sessionId));
+    return identity?.sessionId === sessionId ? cloneIdentity(identity) : null;
+  }
 
-    if (debugEnabled) {
-      logger.debug('[FileMockStore][DEBUG] getSession() called', {
-        session_id_hash: hashSessionIdForLogging(sessionId),
-        mapSizeBefore: this.sessions.size,
-      });
-    } else {
-      logger.info('[FileMockStore] Getting session', {
-        session_id_hash: hashSessionIdForLogging(sessionId),
-      });
-    }
+  async getVotingRecord(sessionId: string): Promise<SessionVotingRecord | null> {
+    await Promise.resolve();
+    this.ensureFresh();
+    const identity = parseSessionIdentityRecord(this.state.identityRecords.get(sessionId));
+    const voting = this.state.votingRecords.get(sessionId);
+    return identity && voting?.sessionId === sessionId ? cloneVoting(voting) : null;
+  }
 
-    this.ensureSessionsFresh();
+  async getSessionVotingSummary(sessionId: string): Promise<SessionVotingSummary | null> {
+    const voting = await this.getVotingRecord(sessionId);
+    return voting
+      ? {
+          sessionId,
+          botCount: voting.botCount,
+          userParticipation: voting.userParticipation,
+        }
+      : null;
+  }
 
-    let session = this.sessions.get(sessionId);
-    if (!session && this.serializedSessions.has(sessionId)) {
-      const serialized = this.serializedSessions.get(sessionId);
-      if (!serialized) {
-        throw new Error('Serialized session missing for requested session');
-      }
-      session = deserializeSession(serialized);
-      recordCacheAccess(this.getCacheState(), session, serializeSession);
-    }
-
-    if (session) {
-      // Why not re-run canonical repair on every read? deserializeSession already
-      // fixes persisted metadata, and more aggressive read-time repair would hide
-      // broken in-memory CT state that should remain fail-closed.
-      if (debugEnabled) {
-        logger.debug('[FileMockStore][DEBUG] Session found', {
-          session_id_hash: hashSessionIdForLogging(sessionId),
-          finalized: session.finalized,
-          hasFinalizationResult: !!session.finalizationResult,
-          votesCount: session.votes.size,
-        });
-      } else {
-        logger.info('[FileMockStore] Session found', {
-          session_id_hash: hashSessionIdForLogging(sessionId),
-        });
-      }
-    } else {
-      logger.info('[FileMockStore] Session not found', {
-        session_id_hash: hashSessionIdForLogging(sessionId),
-      });
-      if (debugEnabled) {
-        logger.debug('[FileMockStore][DEBUG] Available session count:', this.sessions.size);
-      }
-    }
-    return Promise.resolve(session || null);
+  async touchSession(sessionId: string): Promise<void> {
+    await this.mutate(() => {
+      this.touchVotingRecord(sessionId);
+      return { value: undefined, dirty: true };
+    });
   }
 
   async addVote(sessionId: string, voteData: VoteData): Promise<AddVoteResult> {
-    logger.info('[FileMockStore] addVote called for session', {
-      session_id_hash: hashSessionIdForLogging(sessionId),
-    });
-    const session = await this.getSession(sessionId);
-
-    if (!session) {
-      throw new Error('Session not found');
-    }
-    if (session.finalized) {
-      throw new Error('Session already finalized');
-    }
-    if (!isRecoverableCurrentLiveSession(session)) {
-      throw new Error('Session not found');
-    }
-
-    const voteRecord: VoteData = { ...voteData };
-
-    if (!voteRecord.voteId) {
-      voteRecord.voteId = generateVoteId();
-    }
-
-    const formattedVote = formatVoteData(session, voteRecord);
-    const voteId = formattedVote.voteId;
-    if (!voteId) {
-      throw new Error('Vote ID missing after formatting');
-    }
-
-    const index = session.votes.size;
-    const stagedResult = stageCtVoteWrites(session, [{ index, vote: formattedVote }]);
-    const stagedWrite = stagedResult.votes[0];
-
-    let ctProof;
-    try {
-      const ctTreeSize = index + 1;
-      ctProof = stagedResult.bulletin.getInclusionProof(voteId, ctTreeSize);
-    } catch (error) {
-      if (process.env['NODE_ENV'] === 'development') {
-        logger.warn('[FileMockStore] CT proof derivation failed', {
-          voteId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
-      }
-      throw new Error('CT_PROOF_UNAVAILABLE');
-    }
-
-    if (!ctProof) {
-      throw new Error('CT_PROOF_UNAVAILABLE');
-    }
-
-    const merklePath = ctProof.proofNodes.map((node) => normalizeHex(node, { allowEmpty: true }));
-    if (!stagedWrite) {
-      throw new Error('Finalization state invariant violated');
-    }
-
-    session.bulletin = stagedResult.bulletin;
-    session.bulletinRootHistory = stagedResult.bulletinRootHistory;
-    session.votes.set(index, stagedWrite.storedVote);
-    if (index === 0) {
-      session.userVoteIndex = index;
-    }
-    this.voteIdIndex.set(voteId, { sessionId, index });
-
-    logger.info('[FileMockStore] User vote Merkle tree insert:', {
-      voteIndex: index,
-      treePosition: 0,
-      commitment: formattedVote.commit.slice(2, 10) + '...',
-      root: ctProof.rootHash.slice(0, 8) + '...',
-      pathLength: merklePath.length,
-      treeSize: ctProof.treeSize,
-    });
-
-    session.lastActivity = Date.now();
-    this.markSessionDirty(session.sessionId);
-
-    await this.saveSessions();
-    await this.saveVoteIdIndex();
-
-    const bulletinRootAtCast = stagedWrite.storedVote.rootAtCast;
-    if (!bulletinRootAtCast) {
-      throw new Error('CT_PROOF_UNAVAILABLE');
-    }
-
-    return {
-      leafIndex: index,
-      merklePath,
-      bulletinRootAtCast,
-    };
-  }
-
-  async updateSession(sessionId: string, data?: SessionStoreUpdate): Promise<SessionData | void> {
-    const session = await this.getSession(sessionId);
-
-    if (!session) {
-      throw new Error('Session not found');
-    }
-
-    if (data) {
-      assertSessionUpdateContainsOnlyAllowedFields(data);
-      Object.assign(session, data);
-    }
-    session.lastActivity = Date.now();
-    this.markSessionDirty(session.sessionId);
-
-    logger.info('[FileMockStore] updateSession called:', {
-      session_id_hash: hashSessionIdForLogging(sessionId),
-      hasPatch: Boolean(data),
-    });
-
-    await this.saveSessions();
-
-    if (data) {
-      return session;
-    }
-  }
-
-  async recordVerificationObservation(
-    sessionId: string,
-    input: VerificationObservation,
-  ): Promise<RecordVerificationObservationResult> {
-    const observation = requireVerificationObservation(input);
-    await mkdir(this.storageDir, { recursive: true });
-    const lockPath = `${this.sessionsFile}.verification-observation.lock`;
-    const lock = await acquireExclusiveFileLock(lockPath);
-    try {
-      this.loadSessionsFromDisk();
-      const session = await this.getSession(sessionId);
-      if (!session) {
-        throw new Error('Session not found');
-      }
-      const currentExecutionId = parseAwsPersistedFinalizationResult(
-        session.finalizationResult,
-      )?.verificationExecutionId;
-      const resolution = resolveVerificationObservationRecord(
-        currentExecutionId,
-        session.verificationObservation,
-        observation,
-      );
-      if (resolution.status === 'recorded') {
-        session.verificationObservation = observation;
-        session.lastActivity = Date.now();
-        this.markSessionDirty(session.sessionId);
-        await this.saveSessions();
-      }
-      return resolution;
-    } finally {
-      await lock.close();
-      await rm(lockPath, { force: true });
-    }
-  }
-
-  async updateFinalizationArtifactMetadata(
-    sessionId: string,
-    metadata: {
-      finalizationContractGeneration?: string;
-      hasPersistedFinalizationBranch?: boolean;
-      finalizationArtifactState?: SessionData['finalizationArtifactState'];
-    },
-  ): Promise<SessionData | void> {
-    const session = await this.getSession(sessionId);
-
-    if (!session) {
-      throw new Error('Session not found');
-    }
-
-    const currentArtifactState = resolveFailClosedFinalizationArtifactState(session);
-    const admittedMetadata = omitUndefinedProperties(metadata);
-    const repairingFailClosedArtifact =
-      currentArtifactState !== null &&
-      (canRecoverFinalizationArtifactWithPatch(session, admittedMetadata) ||
-        admittedMetadata.finalizationContractGeneration !== undefined);
-    if (!repairingFailClosedArtifact) {
-      assertWritableFinalizationArtifact(session);
-    }
-    Object.assign(session, admittedMetadata);
-    clearRecoveredFinalizationArtifactState(session, admittedMetadata);
-    session.lastActivity = Date.now();
-    this.markSessionDirty(session.sessionId);
-    await this.saveSessions();
-    return session;
-  }
-
-  recordAwsProofBundlePublication(
-    sessionId: string,
-    executionId: string,
-    metadata: AwsVerificationDeliveryMetadataInput,
-  ): Promise<void> {
-    this.deliveryMetadata.record(sessionId, executionId, metadata);
-    return Promise.resolve();
-  }
-
-  recordAwsVerificationDeliveryMetadata(
-    sessionId: string,
-    executionId: string,
-    metadata: AwsVerificationDeliveryMetadataInput,
-  ): Promise<void> {
-    this.deliveryMetadata.record(sessionId, executionId, metadata);
-    return Promise.resolve();
-  }
-
-  async repairFinalizationResult(sessionId: string): Promise<void> {
-    const session = await this.getSession(sessionId);
-    if (!session) {
-      throw new Error('Session not found');
-    }
-    const finalizationResult = parseAwsPersistedFinalizationResult(session.finalizationResult);
-    if (!finalizationResult) {
-      throw new Error('Invalid finalization result persistence payload');
-    }
-
-    assertWritableFinalizationArtifact(session);
-    session.finalizationResult = admitAwsPersistedFinalizationResultBranch(finalizationResult);
-    if (!session.finalizationContractGeneration) {
-      if (session.contractGeneration) {
-        session.finalizationContractGeneration = session.contractGeneration;
-      }
-    }
-    clearRecoveredFinalizationArtifactState(session, { finalizationResult });
-    session.lastActivity = Date.now();
-    this.markSessionDirty(session.sessionId);
-    await this.saveSessions();
-  }
-
-  async markVerificationRunning(sessionId: string, payload: MarkVerificationRunningPayload): Promise<void> {
-    const session = await this.getSession(sessionId);
-    if (!session) {
-      throw new Error('Session not found');
-    }
-    const current = parseAwsPersistedFinalizationResult(session.finalizationResult);
-    if (!current) {
-      throw new Error('Invalid finalization result persistence payload');
-    }
-    this.verificationRollbackSnapshots.set(buildVerificationSnapshotKey(sessionId, payload.executionId), {
-      ...(current.verificationResult ? { verificationResult: current.verificationResult } : {}),
-      ...(current.verificationExecutionId ? { verificationExecutionId: current.verificationExecutionId } : {}),
-    });
-    const deliveryMetadata = this.deliveryMetadata.get(sessionId, payload.executionId);
-    const runningVerificationResult: AwsPersistedVerificationResult = {
-      status: 'running',
-      ...(payload.report ? { report: payload.report } : {}),
-      executionId: payload.executionId,
-      ...((deliveryMetadata?.s3BundleKey ?? current.s3BundleKey)
-        ? { s3BundleKey: deliveryMetadata?.s3BundleKey ?? current.s3BundleKey }
-        : {}),
-      ...((deliveryMetadata?.s3UploadedAt ?? current.s3UploadedAt)
-        ? { s3UploadedAt: deliveryMetadata?.s3UploadedAt ?? current.s3UploadedAt }
-        : {}),
-      ...(payload.verificationWorkQueuedAt ? { verificationWorkQueuedAt: payload.verificationWorkQueuedAt } : {}),
-    };
-    const finalizationResult = updateAwsFinalizationResultVerificationState(current, {
-      verificationResult: runningVerificationResult,
-      verificationExecutionId: payload.executionId,
-      ...(runningVerificationResult.s3BundleKey ? { s3BundleKey: runningVerificationResult.s3BundleKey } : {}),
-      ...(runningVerificationResult.s3UploadedAt ? { s3UploadedAt: runningVerificationResult.s3UploadedAt } : {}),
-    });
-    this.persistVerificationResultUpdate(session, finalizationResult);
-    await this.saveSessions();
-  }
-
-  async rollbackVerificationResult(sessionId: string, payload: RollbackVerificationResultPayload): Promise<void> {
-    const session = await this.getSession(sessionId);
-    if (!session) {
-      throw new Error('Session not found');
-    }
-    const current = parseAwsPersistedFinalizationResult(session.finalizationResult);
-    if (!current) {
-      throw new Error('Invalid finalization result persistence payload');
-    }
-    const snapshotKey = buildVerificationSnapshotKey(sessionId, payload.executionId);
-    const snapshot = this.verificationRollbackSnapshots.get(snapshotKey);
-    this.verificationRollbackSnapshots.delete(snapshotKey);
-    const finalizationResult = updateAwsFinalizationResultVerificationState(
-      current,
-      omitUndefinedProperties({
-        verificationResult: snapshot?.verificationResult,
-        verificationExecutionId: snapshot?.verificationExecutionId,
-      }),
-    );
-    this.persistVerificationResultUpdate(session, finalizationResult);
-    await this.saveSessions();
-  }
-
-  async completeVerificationResult(sessionId: string, payload: CompleteVerificationResultPayload): Promise<void> {
-    const session = await this.getSession(sessionId);
-    if (!session) {
-      throw new Error('Session not found');
-    }
-    const current = parseAwsPersistedFinalizationResult(session.finalizationResult);
-    if (!current) {
-      throw new Error('Invalid finalization result persistence payload');
-    }
-    if (shouldIgnoreVerificationCompletion(current, payload.executionId)) {
-      return;
-    }
-    const deliveryMetadata = this.deliveryMetadata.take(sessionId, payload.executionId);
-    const verificationResult: AwsPersistedVerificationResult = {
-      ...payload.verificationResult,
-      executionId: payload.executionId,
-      ...((deliveryMetadata?.s3BundleKey ?? current.s3BundleKey)
-        ? { s3BundleKey: deliveryMetadata?.s3BundleKey ?? current.s3BundleKey }
-        : {}),
-      ...(deliveryMetadata?.s3ReportKey ? { s3ReportKey: deliveryMetadata.s3ReportKey } : {}),
-      ...((deliveryMetadata?.s3UploadedAt ?? current.s3UploadedAt)
-        ? { s3UploadedAt: deliveryMetadata?.s3UploadedAt ?? current.s3UploadedAt }
-        : {}),
-    };
-    const finalizationResult = updateAwsFinalizationResultVerificationState(current, {
-      verificationResult,
-      verificationExecutionId: payload.executionId,
-      ...(verificationResult.s3BundleKey ? { s3BundleKey: verificationResult.s3BundleKey } : {}),
-      ...(verificationResult.s3UploadedAt ? { s3UploadedAt: verificationResult.s3UploadedAt } : {}),
-    });
-    this.verificationRollbackSnapshots.delete(buildVerificationSnapshotKey(sessionId, payload.executionId));
-    this.persistVerificationResultUpdate(session, finalizationResult);
-    await this.saveSessions();
-  }
-
-  private persistVerificationResultUpdate(
-    session: SessionData,
-    finalizationResult: AwsPersistedFinalizationResult,
-  ): void {
-    assertWritableFinalizationArtifact(session);
-    session.finalizationResult = admitAwsPersistedFinalizationResultBranch(finalizationResult);
-    if (!session.finalizationContractGeneration) {
-      if (session.contractGeneration) {
-        session.finalizationContractGeneration = session.contractGeneration;
-      }
-    }
-    clearRecoveredFinalizationArtifactState(session, { finalizationResult });
-    session.lastActivity = Date.now();
-    this.markSessionDirty(session.sessionId);
-  }
-
-  async markFinalizationQueued(
-    sessionId: string,
-    payload: FinalizationQueuedPayload & {
-      scenarioContext?: SessionData['finalizationScenarioContext'] | null;
-    },
-  ): Promise<FinalizationState> {
-    return this.observeFinalizationPersistence(sessionId, 'pending', payload, () =>
-      this.applyFinalizationQueued(sessionId, payload),
-    );
-  }
-
-  private async applyFinalizationQueued(
-    sessionId: string,
-    payload: FinalizationQueuedPayload & {
-      scenarioContext?: SessionData['finalizationScenarioContext'] | null;
-    },
-  ): Promise<FinalizationState> {
-    const session = await this.getSession(sessionId);
-    if (!session) {
-      throw new Error('Session not found');
-    }
-    const currentState = parsePersistedFinalizationState(session.finalizationState);
-    const stickyTerminalState = this.getStickyTerminalFinalizationState(currentState, payload.executionId);
-    if (stickyTerminalState) {
-      return stickyTerminalState;
-    }
-    const hadFinalizationBranch = hasSessionFinalizationBranch(session);
-    const artifactState = resolveFailClosedFinalizationArtifactState(session);
-    if (artifactState) {
-      const next = this.failCurrentArtifactExecution(session, payload, artifactState);
-      await this.saveSessions();
-      return next;
-    }
-    if (this.hasContractGenerationMismatch(session, payload.contractGeneration)) {
-      const next = this.failCurrentArtifactExecution(session, payload);
-      await this.saveSessions();
-      return next;
-    }
-    if (currentState && currentState.executionId !== payload.executionId) {
-      return currentState;
-    }
-    assertWritableFinalizationArtifact(session, payload.contractGeneration);
-    if (!hadFinalizationBranch) {
-      session.finalizationContractGeneration = payload.contractGeneration;
-    }
-    if (payload.scenarioContext) {
-      session.finalizationScenarioContext = payload.scenarioContext;
-    }
-    const next = this.updateFinalizationState(session, {
-      status: 'pending',
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-    });
-    await this.saveSessions();
-    return next;
-  }
-
-  async markFinalizationRunning(
-    sessionId: string,
-    payload: FinalizationRunningPayload & {
-      scenarioContext?: SessionData['finalizationScenarioContext'] | null;
-    },
-  ): Promise<FinalizationState> {
-    return this.observeFinalizationPersistence(sessionId, 'running', payload, () =>
-      this.applyFinalizationRunning(sessionId, payload, 'pure'),
-    );
-  }
-
-  async markAwsFinalizationRunning(
-    sessionId: string,
-    payload: AwsFinalizationRunningPayload,
-  ): Promise<FinalizationState> {
-    return this.observeFinalizationPersistence(sessionId, 'running', payload, () =>
-      this.applyFinalizationRunning(sessionId, payload, 'aws'),
-    );
-  }
-
-  private async applyFinalizationRunning(
-    sessionId: string,
-    payload: FinalizationRunningPayload &
-      AwsRuntimeTransitionMetadata & {
-        scenarioContext?: SessionData['finalizationScenarioContext'] | null;
-      },
-    mode: AwsMetadataMode,
-  ): Promise<FinalizationState> {
-    if (mode === 'pure') {
-      assertNoAwsRuntimeTransitionMetadata(payload);
-    }
-    const session = await this.getSession(sessionId);
-    if (!session) {
-      throw new Error('Session not found');
-    }
-    const currentState = parsePersistedFinalizationState(session.finalizationState);
-    const stickyTerminalState = this.getStickyTerminalFinalizationState(currentState, payload.executionId);
-    if (stickyTerminalState) {
-      return stickyTerminalState;
-    }
-    const hadFinalizationBranch = hasSessionFinalizationBranch(session);
-    const artifactState = resolveFailClosedFinalizationArtifactState(session);
-    if (artifactState) {
-      const next = this.failCurrentArtifactExecution(session, payload, artifactState);
-      await this.saveSessions();
-      return next;
-    }
-    if (this.hasContractGenerationMismatch(session, payload.contractGeneration)) {
-      const next = this.failCurrentArtifactExecution(session, payload);
-      await this.saveSessions();
-      return next;
-    }
-    if (currentState && currentState.executionId !== payload.executionId) {
-      return currentState;
-    }
-    assertWritableFinalizationArtifact(session, payload.contractGeneration);
-    if (!hadFinalizationBranch) {
-      session.finalizationContractGeneration = payload.contractGeneration;
-    }
-    if (payload.scenarioContext) {
-      session.finalizationScenarioContext = payload.scenarioContext;
-    }
-    const next = this.updateFinalizationState(session, {
-      status: 'running',
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      startedAt: payload.startedAt,
-      ...(payload.stepFunctionsArn ? { stepFunctionsArn: payload.stepFunctionsArn } : {}),
-    });
-    await this.saveSessions();
-    return next;
-  }
-
-  async markFinalizationSucceeded(
-    sessionId: string,
-    payload: FinalizationSucceededPayload,
-  ): Promise<FinalizationState> {
-    return this.observeFinalizationPersistence(sessionId, 'succeeded', payload, () =>
-      this.applyFinalizationSucceeded(sessionId, payload, 'pure'),
-    );
-  }
-
-  async markAwsFinalizationSucceeded(
-    sessionId: string,
-    payload: AwsFinalizationSucceededPayload,
-  ): Promise<FinalizationState> {
-    return this.observeFinalizationPersistence(sessionId, 'succeeded', payload, () =>
-      this.applyFinalizationSucceeded(sessionId, payload, 'aws'),
-    );
-  }
-
-  private async applyFinalizationSucceeded(
-    sessionId: string,
-    payload: (FinalizationSucceededPayload | AwsFinalizationSucceededPayload) & AwsSucceededTransitionMetadata,
-    mode: AwsMetadataMode,
-  ): Promise<FinalizationState> {
-    if (mode === 'pure') {
-      assertNoAwsRuntimeTransitionMetadata(payload);
-    }
-    const session = await this.getSession(sessionId);
-    if (!session) {
-      throw new Error('Session not found');
-    }
-    const currentState = parsePersistedFinalizationState(session.finalizationState);
-    const stickyTerminalState = this.getStickyTerminalFinalizationState(currentState, payload.executionId);
-    if (stickyTerminalState) {
-      return stickyTerminalState;
-    }
-    const artifactState = resolveFailClosedFinalizationArtifactState(session);
-    if (artifactState) {
-      const next = this.failCurrentArtifactExecution(session, payload, artifactState);
-      await this.saveSessions();
-      return next;
-    }
-    if (this.hasContractGenerationMismatch(session, payload.contractGeneration)) {
-      const next = this.failCurrentArtifactExecution(session, payload);
-      await this.saveSessions();
-      return next;
-    }
-    if (currentState && currentState.executionId !== payload.executionId) {
-      return currentState;
-    }
-    const deliveryMetadata = omitUndefinedProperties({
-      ...payload.bundleMetadata,
-      ...this.deliveryMetadata.take(sessionId, payload.executionId),
-    });
-    const finalizationResult = requireAwsPersistedFinalizationResult(
-      payload.finalizationResult,
-      payload.executionId,
-      deliveryMetadata,
-    );
-    assertWritableFinalizationArtifact(session, payload.contractGeneration);
-    assertAdmissibleFinalizationArtifactPatch(
-      session,
-      {
-        finalized: true,
-        finalizationResult,
-        finalizationState: {
-          status: 'succeeded',
-          executionId: payload.executionId,
-          queuedAt: payload.queuedAt,
-          startedAt: payload.startedAt,
-          completedAt: payload.completedAt,
-          ...(payload.bundleMetadata ? { bundleMetadata: payload.bundleMetadata } : {}),
-          ...(payload.stepFunctionsArn ? { stepFunctionsArn: payload.stepFunctionsArn } : {}),
+    return this.mutate(() => {
+      const identity = this.requireIdentity(sessionId);
+      const voting = this.requireVoting(sessionId);
+      const mutation = evaluateSessionVoteMutation(
+        {
+          identity,
+          voting,
+          finalization: this.currentFinalization(sessionId),
         },
-        finalizationContractGeneration: payload.contractGeneration,
-      },
-      payload.contractGeneration,
-    );
-    if (!hasSessionFinalizationBranch(session)) {
-      session.finalizationContractGeneration = payload.contractGeneration;
-    }
-    session.finalized = true;
-    session.finalizationResult = admitAwsPersistedFinalizationResultBranch(finalizationResult);
-    const next = this.updateFinalizationState(session, {
-      status: 'succeeded',
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      startedAt: payload.startedAt,
-      completedAt: payload.completedAt,
-      ...(payload.bundleMetadata ? { bundleMetadata: payload.bundleMetadata } : {}),
-      ...(payload.stepFunctionsArn ? { stepFunctionsArn: payload.stepFunctionsArn } : {}),
-    });
-    await this.saveSessions();
-    return next;
-  }
-
-  async markFinalizationFailed(sessionId: string, payload: FinalizationFailedPayload): Promise<FinalizationState> {
-    return this.observeFinalizationPersistence(sessionId, 'failed', payload, () =>
-      this.applyFinalizationFailed(sessionId, payload, 'pure'),
-    );
-  }
-
-  async markAwsFinalizationFailed(
-    sessionId: string,
-    payload: AwsFinalizationFailedPayload,
-  ): Promise<FinalizationState> {
-    return this.observeFinalizationPersistence(sessionId, 'failed', payload, () =>
-      this.applyFinalizationFailed(sessionId, payload, 'aws'),
-    );
-  }
-
-  private async applyFinalizationFailed(
-    sessionId: string,
-    payload: FinalizationFailedPayload & AwsRuntimeTransitionMetadata,
-    mode: AwsMetadataMode,
-  ): Promise<FinalizationState> {
-    if (mode === 'pure') {
-      assertNoAwsRuntimeTransitionMetadata(payload);
-    }
-    const session = await this.getSession(sessionId);
-    if (!session) {
-      throw new Error('Session not found');
-    }
-    const currentState = parsePersistedFinalizationState(session.finalizationState);
-    const stickyTerminalState = this.getStickyTerminalFinalizationState(currentState, payload.executionId);
-    if (stickyTerminalState) {
-      return stickyTerminalState;
-    }
-    const artifactState = resolveFailClosedFinalizationArtifactState(session);
-    if (artifactState) {
-      const next = this.failCurrentArtifactExecution(session, payload, artifactState);
-      await this.saveSessions();
-      return next;
-    }
-    if (this.hasContractGenerationMismatch(session, payload.contractGeneration)) {
-      const next = this.failCurrentArtifactExecution(session, payload);
-      await this.saveSessions();
-      return next;
-    }
-    if (currentState && currentState.executionId !== payload.executionId) {
-      return currentState;
-    }
-    assertWritableFinalizationArtifact(session, payload.contractGeneration);
-    if (!hasSessionFinalizationBranch(session)) {
-      session.finalizationContractGeneration = payload.contractGeneration;
-    }
-    const next = this.updateFinalizationState(session, {
-      status: 'failed',
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      ...(payload.startedAt !== undefined ? { startedAt: payload.startedAt } : {}),
-      failedAt: payload.failedAt,
-      error: payload.error,
-      ...(payload.stepFunctionsArn ? { stepFunctionsArn: payload.stepFunctionsArn } : {}),
-    });
-    await this.saveSessions();
-    return next;
-  }
-
-  async markFinalizationTimedOut(sessionId: string, payload: FinalizationTimedOutPayload): Promise<FinalizationState> {
-    return this.observeFinalizationPersistence(sessionId, 'timeout', payload, () =>
-      this.applyFinalizationTimedOut(sessionId, payload, 'pure'),
-    );
-  }
-
-  async markAwsFinalizationTimedOut(
-    sessionId: string,
-    payload: AwsFinalizationTimedOutPayload,
-  ): Promise<FinalizationState> {
-    return this.observeFinalizationPersistence(sessionId, 'timeout', payload, () =>
-      this.applyFinalizationTimedOut(sessionId, payload, 'aws'),
-    );
-  }
-
-  private async applyFinalizationTimedOut(
-    sessionId: string,
-    payload: FinalizationTimedOutPayload & AwsRuntimeTransitionMetadata,
-    mode: AwsMetadataMode,
-  ): Promise<FinalizationState> {
-    if (mode === 'pure') {
-      assertNoAwsRuntimeTransitionMetadata(payload);
-    }
-    const session = await this.getSession(sessionId);
-    if (!session) {
-      throw new Error('Session not found');
-    }
-    const currentState = parsePersistedFinalizationState(session.finalizationState);
-    const stickyTerminalState = this.getStickyTerminalFinalizationState(currentState, payload.executionId);
-    if (stickyTerminalState) {
-      return stickyTerminalState;
-    }
-    const artifactState = resolveFailClosedFinalizationArtifactState(session);
-    if (artifactState) {
-      const next = this.failCurrentArtifactExecution(session, payload, artifactState);
-      await this.saveSessions();
-      return next;
-    }
-    if (this.hasContractGenerationMismatch(session, payload.contractGeneration)) {
-      const next = this.failCurrentArtifactExecution(session, payload);
-      await this.saveSessions();
-      return next;
-    }
-    if (currentState && currentState.executionId !== payload.executionId) {
-      return currentState;
-    }
-    assertWritableFinalizationArtifact(session, payload.contractGeneration);
-    if (!hasSessionFinalizationBranch(session)) {
-      session.finalizationContractGeneration = payload.contractGeneration;
-    }
-    const next = this.updateFinalizationState(session, {
-      status: 'timeout',
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      ...(payload.startedAt !== undefined ? { startedAt: payload.startedAt } : {}),
-      timeoutAt: payload.timeoutAt,
-      ...(payload.stepFunctionsArn ? { stepFunctionsArn: payload.stepFunctionsArn } : {}),
-    });
-    await this.saveSessions();
-    return next;
-  }
-
-  async getActiveSessionCount(): Promise<number> {
-    this.ensureSessionsFresh();
-    const now = Date.now();
-    let removed = 0;
-    for (const [id, session] of this.serializedSessions.entries()) {
-      if (now - session.lastActivity > 5 * 60 * 1000) {
-        logger.info('[FileMockStore] Removing expired session', {
-          session_id_hash: hashSessionIdForLogging(id),
-        });
-        this.serializedSessions.delete(id);
-        this.sessions.delete(id);
-        this.dirtySessionIds.delete(id);
-        removed += 1;
+        { kind: 'append_user_vote', vote: voteData },
+        {
+          generateVoteId,
+          nowMs: Date.now,
+        },
+      );
+      if (mutation.kind !== 'user_vote_appended') {
+        throw new Error('Session vote mutation invariant violated');
       }
-    }
-
-    if (removed > 0) {
-      await this.saveSessions();
-    }
-
-    const count = Array.from(this.serializedSessions.values()).filter((session) =>
-      isRecoverableCurrentLiveSession(omitUndefinedProperties(session)),
-    ).length;
-    logger.info('[FileMockStore] Active session count:', count);
-    return count;
+      this.state.votingRecords.set(sessionId, mutation.nextVoting);
+      for (const intent of mutation.indexIntents) {
+        this.state.voteIdIndex.set(intent.voteId, { sessionId, index: intent.index });
+      }
+      return { value: mutation.castResult, dirty: true };
+    });
   }
 
   async addBotVotes(sessionId: string, votes: VoteData[]): Promise<void> {
-    const session = await this.getSession(sessionId);
-
-    if (!session) {
-      throw new Error('Session not found');
-    }
-    if (session.finalized) {
-      throw new Error('Session already finalized');
-    }
-    if (!isRecoverableCurrentLiveSession(session)) {
-      throw new Error('Session not found');
-    }
-
-    const canonicalProjection = buildCanonicalCtSessionProjection(session);
-    if (session.botCount !== canonicalProjection.botCount) {
-      logger.warn('[FileMockStore] Reconciled stale botCount before appending bot votes', {
-        session_id_hash: hashSessionIdForLogging(sessionId),
-        persistedBotCount: session.botCount,
-        derivedBotCount: canonicalProjection.botCount,
-      });
-    }
-    if (session.userVoteIndex !== canonicalProjection.userVoteIndex) {
-      logger.warn('[FileMockStore] Reconciled stale userVoteIndex before appending bot votes', {
-        session_id_hash: hashSessionIdForLogging(sessionId),
-        persistedUserVoteIndex: session.userVoteIndex,
-        derivedUserVoteIndex: canonicalProjection.userVoteIndex,
-      });
-    }
-    applyCanonicalCtSessionProjection(session, canonicalProjection);
-    assertCanonicalUserVoteIndexForBotVotes(session.votes, session.userVoteIndex);
-
-    const stagedInputs = votes.map((voteData, offset) => {
-      const index = canonicalProjection.nextIndex + offset;
-      const record: VoteData = { ...voteData };
-      if (!record.voteId) {
-        record.voteId = generateVoteId();
-      }
-      const formattedVote = formatVoteData(session, record);
-      const voteId = formattedVote.voteId;
-      if (!voteId) {
-        throw new Error('Vote ID missing after formatting');
-      }
-      return { index, vote: formattedVote };
-    });
-    const stagedWrites = stageCtVoteWrites(session, stagedInputs);
-
-    session.bulletin = stagedWrites.bulletin;
-    session.bulletinRootHistory = stagedWrites.bulletinRootHistory;
-
-    for (const stagedWrite of stagedWrites.votes) {
-      session.votes.set(stagedWrite.index, stagedWrite.storedVote);
-      this.voteIdIndex.set(stagedWrite.voteId, { sessionId, index: stagedWrite.index });
-    }
-
-    session.botCount = canonicalProjection.botCount + stagedWrites.votes.length;
-    const firstStagedWrite = stagedWrites.votes[0];
-    const lastStagedWrite = stagedWrites.votes[stagedWrites.votes.length - 1];
-    if (firstStagedWrite && lastStagedWrite) {
-      logger.info('[FileMockStore] Bot votes added:', {
-        addedCount: stagedWrites.votes.length,
-        totalBotCount: session.botCount,
-        firstBotIndex: firstStagedWrite.index,
-        lastBotIndex: lastStagedWrite.index,
-        bulletinSize: session.bulletin.getSize(),
-        finalRoot: lastStagedWrite.storedVote.rootAtCast?.slice(0, 10),
-      });
-    }
-
-    session.lastActivity = Date.now();
-    this.markSessionDirty(session.sessionId);
-
-    await this.saveSessions();
-    await this.saveVoteIdIndex();
-  }
-
-  async finalizeSession(
-    sessionId: string,
-    result: FinalizationResultAuthority,
-    contractGeneration: string,
-    executionId: string,
-  ): Promise<void> {
-    const deliveryMetadata = this.deliveryMetadata.take(sessionId, executionId);
-    const finalizationResult = requireAwsPersistedFinalizationResult(result, executionId, deliveryMetadata);
-    const debugEnabled = process.env['DEBUG_FILE_STORE'] === '1';
-    const session = await this.getSession(sessionId);
-
-    if (!session) {
-      throw new Error('Session not found');
-    }
-
-    assertWritableFinalizationArtifact(session, contractGeneration);
-    if (this.hasContractGenerationMismatch(session, contractGeneration)) {
-      throw new UnsupportedCurrentArtifactBoundaryError(
-        buildUnsupportedCurrentArtifactDetails(session, contractGeneration),
+    await this.mutate(() => {
+      const identity = this.requireIdentity(sessionId);
+      const voting = this.requireVoting(sessionId);
+      const mutation = evaluateSessionVoteMutation(
+        {
+          identity,
+          voting,
+          finalization: this.currentFinalization(sessionId),
+        },
+        { kind: 'append_bot_votes', votes },
+        {
+          generateVoteId,
+          nowMs: Date.now,
+        },
       );
-    }
-    assertAdmissibleFinalizationArtifactPatch(
-      session,
-      {
-        finalized: true,
-        finalizationResult,
-        finalizationContractGeneration: contractGeneration,
-      },
-      contractGeneration,
-    );
+      if (mutation.kind !== 'bot_votes_appended') {
+        throw new Error('Session vote mutation invariant violated');
+      }
+      this.state.votingRecords.set(sessionId, mutation.nextVoting);
+      for (const intent of mutation.indexIntents) {
+        this.state.voteIdIndex.set(intent.voteId, { sessionId, index: intent.index });
+      }
+      if (mutation.indexIntents.length > 0) {
+        logger.info('[FileMockStore] Bot votes added', {
+          addedCount: mutation.indexIntents.length,
+          totalBotCount: mutation.nextVoting.botCount,
+          firstBotIndex: mutation.indexIntents[0]?.index,
+          lastBotIndex: mutation.indexIntents.at(-1)?.index,
+          bulletinSize: mutation.nextVoting.bulletin.getSize(),
+        });
+      }
+      return { value: undefined, dirty: true };
+    });
+  }
 
-    for (const [index, vote] of session.votes.entries()) {
-      try {
-        if (!session.bulletin || !vote.voteId) {
-          throw new Error('CT_PROOF_UNAVAILABLE');
+  async getActiveSessionCount(): Promise<number> {
+    return this.mutate(() => {
+      const now = Date.now();
+      let dirty = false;
+      for (const [sessionId, voting] of this.state.votingRecords) {
+        if (now - voting.lastActivityMs > FIVE_MINUTES_MS) {
+          this.deleteSessionRecords(sessionId);
+          dirty = true;
         }
-        const treeSize = session.bulletin.getSize();
-        const ctProof = session.bulletin.getInclusionProof(vote.voteId, treeSize);
-        if (!ctProof) {
-          throw new Error('CT_PROOF_UNAVAILABLE');
+      }
+      let count = 0;
+      for (const sessionId of this.state.identityRecords.keys()) {
+        if (this.state.votingRecords.has(sessionId)) {
+          count += 1;
         }
-        vote.path = ctProof.proofNodes.map((node) => normalizeHex(node, { allowEmpty: true }));
-        vote.treeSize = ctProof.treeSize;
-      } catch (error) {
-        logger.warn('[FileMockStore] Failed to compute Merkle path for vote', index, error);
+      }
+      return { value: count, dirty };
+    });
+  }
+
+  private deleteSessionRecords(sessionId: string): void {
+    this.state.identityRecords.delete(sessionId);
+    this.state.votingRecords.delete(sessionId);
+    this.state.currentFinalizationIdBySession.delete(sessionId);
+    for (const map of [
+      this.state.finalizationRecords,
+      this.state.verificationResultRecords,
+      this.state.verificationObservationRecords,
+      this.state.bitmapRecords,
+      this.state.runtimeMetadataRecords,
+      this.state.deliveryMetadataRecords,
+      this.state.receiptRecords,
+    ]) {
+      for (const key of map.keys()) {
+        if (key.startsWith(`${sessionId}\u0000`)) {
+          map.delete(key);
+        }
       }
     }
-
-    const hadFinalizationBranch = hasSessionFinalizationBranch(session);
-    session.finalized = true;
-    if (!hadFinalizationBranch) {
-      session.finalizationContractGeneration = contractGeneration;
-    }
-    session.finalizationResult = admitAwsPersistedFinalizationResultBranch(finalizationResult);
-    session.lastActivity = Date.now();
-    this.markSessionDirty(session.sessionId);
-    const journalForLog = (
-      finalizationResult as {
-        journal?: {
-          verifiedTally?: unknown;
-          missingSlots?: unknown;
-          invalidPresentedSlots?: unknown;
-        };
+    for (const [voteId, owner] of this.state.voteIdIndex) {
+      if (owner.sessionId === sessionId) {
+        this.state.voteIdIndex.delete(voteId);
       }
-    ).journal;
-
-    logger.info('[FileMockStore] Session finalized', {
-      session_id_hash: hashSessionIdForLogging(sessionId),
-    });
-    logger.info('[FileMockStore] finalizationResult set:', {
-      hasFinalizationResult: !!result,
-      verifiedTally: journalForLog?.verifiedTally,
-      missingSlots: journalForLog?.missingSlots,
-      invalidPresentedSlots: journalForLog?.invalidPresentedSlots,
-    });
-
-    if (debugEnabled) {
-      const finalizationState = parsePersistedFinalizationState(session.finalizationState);
-      logger.debug('[FileMockStore][DEBUG] Attempting to save finalized session', {
-        session_id_hash: hashSessionIdForLogging(sessionId),
-        executionId: finalizationState?.executionId,
-        finalized: session.finalized,
-      });
-    }
-
-    await this.saveSessions();
-
-    if (debugEnabled) {
-      logger.debug('[FileMockStore][DEBUG] saveSessions() completed successfully', {
-        session_id_hash: hashSessionIdForLogging(sessionId),
-        file_path_hash: hashKeyPrefixForLogging(this.sessionsFile),
-      });
     }
   }
 
-  async getVoteById(sessionId: string, voteId: string): Promise<{ voteData: VoteData; index: number } | null> {
-    const indexInfo = this.voteIdIndex.get(voteId);
-
-    if (!indexInfo || indexInfo.sessionId !== sessionId) {
+  async getVoteById(sessionId: string, voteId: string): Promise<{ voteData: StoredVoteRecord; index: number } | null> {
+    await Promise.resolve();
+    this.ensureFresh();
+    const owner = this.state.voteIdIndex.get(voteId);
+    if (!owner || owner.sessionId !== sessionId) {
       return null;
     }
-
-    const session = await this.getSession(sessionId);
-    if (!session) {
-      return null;
-    }
-
-    const voteData = session.votes.get(indexInfo.index);
-    if (!voteData) {
-      return null;
-    }
-
-    return {
-      voteData,
-      index: indexInfo.index,
-    };
+    const voting = this.state.votingRecords.get(sessionId);
+    const voteData = voting?.votes.get(owner.index);
+    return voteData ? { voteData: { ...voteData }, index: owner.index } : null;
   }
 
   async getVoteByIdWithProof(
     sessionId: string,
     voteId: string,
   ): Promise<{
-    voteData: VoteData;
+    voteData: StoredVoteRecord;
     leafIndex: number;
     merklePath: string[];
     bulletinRootAtCast: string;
     treeSize: number;
   } | null> {
     const voteInfo = await this.getVoteById(sessionId, voteId);
-
-    if (!voteInfo) {
+    const voting = await this.getVotingRecord(sessionId);
+    if (!voteInfo || !voting) {
       return null;
     }
-
-    const session = await this.getSession(sessionId);
-    if (!session) {
-      return null;
-    }
-    const exactCtProof = deriveExactCtProof(
-      omitUndefinedProperties({
-        bulletin: session.bulletin,
+    return {
+      voteData: voteInfo.voteData,
+      ...deriveExactCtProof({
+        bulletin: voting.bulletin,
         voteId: voteInfo.voteData.voteId,
         leafIndex: voteInfo.index,
         rootAtCast: voteInfo.voteData.rootAtCast,
       }),
-    );
-
-    return {
-      voteData: voteInfo.voteData,
-      ...exactCtProof,
     };
   }
 
@@ -1705,139 +689,657 @@ export class FileMockSessionStore
     treeSize: number;
     timestamp: number;
   } | null> {
-    this.ensureSessionsFresh();
-    const sessionIds = Array.from(this.serializedSessions.keys());
-    for (const sessionId of sessionIds) {
-      const voteInfo = await this.getVoteByIdWithProof(sessionId, voteId);
-
-      if (voteInfo) {
-        return {
-          leafIndex: voteInfo.leafIndex,
-          merklePath: voteInfo.merklePath,
-          bulletinRootAtCast: voteInfo.bulletinRootAtCast,
-          treeSize: voteInfo.treeSize,
-          timestamp: Date.now(),
-        };
-      }
-    }
-
-    return null;
-  }
-
-  async saveBitmapData(
-    sessionId: string,
-    bitmapData: {
-      includedBitmap: boolean[];
-      includedBitmapRoot: string;
-      seenBitmap?: boolean[];
-      seenBitmapRoot?: string;
-      treeSize: number;
-      finalizedAt: number;
-    },
-  ): Promise<void> {
-    const session = await this.getSession(sessionId);
-    assertWritableBitmapSidecarOwner(session);
-
-    await this.loadBitmapsFromDisk();
-
-    this.bitmapDataBySession.set(sessionId, {
-      sessionId,
-      ...bitmapData,
-      includedBitmap: [...bitmapData.includedBitmap],
-      ...(bitmapData.seenBitmap ? { seenBitmap: [...bitmapData.seenBitmap] } : {}),
-    });
-    await this.saveBitmaps();
-
-    session.lastActivity = Date.now();
-    this.markSessionDirty(session.sessionId);
-    await this.saveSessions();
-
-    logger.info('[FileMockStore] Saved bitmap data:', {
-      session_id_hash: hashSessionIdForLogging(sessionId),
-      bitmapSize: bitmapData.includedBitmap.length,
-      root: bitmapData.includedBitmapRoot.substring(0, 10) + '...',
-      ...(bitmapData.seenBitmapRoot ? { seenRoot: bitmapData.seenBitmapRoot.substring(0, 10) + '...' } : {}),
-      treeSize: bitmapData.treeSize,
-    });
-  }
-
-  async getBitmapData(sessionId: string): Promise<{
-    sessionId: string;
-    includedBitmap: boolean[];
-    includedBitmapRoot: string;
-    seenBitmap?: boolean[];
-    seenBitmapRoot?: string;
-    treeSize: number;
-    finalizedAt: number;
-  } | null> {
-    logger.info('[FileMockStore] Getting bitmap data for session', {
-      session_id_hash: hashSessionIdForLogging(sessionId),
-    });
-    await this.loadBitmapsFromDisk();
-
-    const bitmapData = this.bitmapDataBySession.get(sessionId);
-    if (!bitmapData) {
+    await Promise.resolve();
+    this.ensureFresh();
+    const owner = this.state.voteIdIndex.get(voteId);
+    if (!owner) {
       return null;
     }
-
-    return {
-      ...bitmapData,
-      includedBitmap: [...bitmapData.includedBitmap],
-      ...(bitmapData.seenBitmap ? { seenBitmap: [...bitmapData.seenBitmap] } : {}),
-    };
+    const proof = await this.getVoteByIdWithProof(owner.sessionId, voteId);
+    return proof
+      ? {
+          leafIndex: proof.leafIndex,
+          merklePath: proof.merklePath,
+          bulletinRootAtCast: proof.bulletinRootAtCast,
+          treeSize: proof.treeSize,
+          timestamp: proof.voteData.timestamp,
+        }
+      : null;
   }
 
-  async finalizeSessionWithReceiptPublication(
+  async getCurrentFinalizationRecord(sessionId: string): Promise<FinalizationRecord | null> {
+    await Promise.resolve();
+    this.ensureFresh();
+    this.requireIdentity(sessionId);
+    return this.currentFinalization(sessionId);
+  }
+
+  async getFinalizationRecord(sessionId: string, finalizationId: FinalizationId): Promise<FinalizationRecord | null> {
+    await Promise.resolve();
+    this.ensureFresh();
+    this.requireIdentity(sessionId);
+    const record = parseFinalizationRecord(this.state.finalizationRecords.get(scopedKey(sessionId, finalizationId)));
+    return record?.sessionId === sessionId && record.finalizationId === finalizationId ? record : null;
+  }
+
+  private async applyFinalizationCommand(
+    command: FinalizationTransitionCommand,
+    observability?: FinalizationQueuedPayload['observability'],
+    runtimeMetadata?: AwsFinalizationRuntimeMetadata,
+  ): Promise<AppliedFinalizationTransition> {
+    const applied = await this.mutate(() => {
+      this.requireIdentity(command.sessionId);
+      const before = this.currentFinalization(command.sessionId);
+      const outcome = evaluateFinalizationTransition({
+        authority: { currentRecord: before },
+        command,
+        evaluatedAtMs: Date.now(),
+      });
+      if (outcome.kind === 'invalid') {
+        throw new Error(`Invalid finalization transition: ${outcome.reason}`);
+      }
+      let record = before;
+      let mutated = false;
+      let dirty = false;
+      if (outcome.kind === 'applied') {
+        record = parseFinalizationRecord(outcome.mutations.nextRecord) ?? null;
+        if (!record) {
+          throw new Error('Finalization transition produced an invalid record');
+        }
+        this.state.finalizationRecords.set(scopedKey(command.sessionId, command.finalizationId), record);
+        this.state.currentFinalizationIdBySession.set(command.sessionId, command.finalizationId);
+        this.touchVotingRecord(command.sessionId);
+        mutated = true;
+        dirty = true;
+      }
+      if (!record) {
+        throw new Error(`Finalization transition was not applied: ${outcome.reason}`);
+      }
+      if (
+        runtimeMetadata &&
+        record.finalizationId === command.finalizationId &&
+        record.state.status === requestedStatus(command)
+      ) {
+        const key = scopedKey(command.sessionId, command.finalizationId);
+        this.state.runtimeMetadataRecords.set(key, cloneRuntimeMetadata(runtimeMetadata));
+        if (runtimeMetadata.bundleMetadata) {
+          this.state.deliveryMetadataRecords.set(key, {
+            ...(runtimeMetadata.bundleMetadata.s3BundleKey
+              ? { s3BundleKey: runtimeMetadata.bundleMetadata.s3BundleKey }
+              : {}),
+            ...(runtimeMetadata.bundleMetadata.s3UploadedAtMs === undefined
+              ? {}
+              : { s3UploadedAtMs: runtimeMetadata.bundleMetadata.s3UploadedAtMs }),
+          });
+        }
+        dirty = true;
+      }
+      return {
+        value: {
+          record,
+          mutated,
+          outcome,
+          before,
+        },
+        dirty,
+      };
+    });
+
+    recordFinalizationStorePersistenceOutcome({
+      sessionId: command.sessionId,
+      requestedFinalizationId: command.finalizationId,
+      requestedTo: requestedStatus(command),
+      ...(applied.before ? { before: applied.before.state } : {}),
+      actual: applied.record.state,
+      semanticReason: applied.outcome.reason,
+      authoritativeWrite: applied.mutated,
+      ...(observability ? { metadata: observability } : {}),
+    });
+    return applied;
+  }
+
+  async markFinalizationQueued(sessionId: string, payload: FinalizationQueuedPayload): Promise<FinalizationRecord> {
+    assertAllowedPayloadKeys(payload, FINALIZATION_QUEUED_PAYLOAD_KEYS, 'queued finalization');
+    return (
+      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, payload, 'queue'), payload.observability)
+    ).record;
+  }
+
+  async markFinalizationRunning(sessionId: string, payload: FinalizationRunningPayload): Promise<FinalizationRecord> {
+    assertAllowedPayloadKeys(payload, FINALIZATION_RUNNING_PAYLOAD_KEYS, 'running finalization');
+    assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
+    return (
+      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, payload, 'start'), payload.observability)
+    ).record;
+  }
+
+  async markFinalizationSucceeded(
     sessionId: string,
-    result: FinalizationResultAuthority,
-    contractGeneration: string,
-    receipt: { receipt: string; timestamp: number },
-    executionId: string,
-  ): Promise<{ receiptHash: string; boardIndex: number }> {
-    const hash = crypto.createHash('sha256');
-    hash.update(receipt.receipt);
-    hash.update(receipt.timestamp.toString());
-    const receiptHash = '0x' + hash.digest('hex');
-    const boardIndex = this.receiptCounter;
-    const deliveryMetadata = this.deliveryMetadata.take(sessionId, executionId);
-    const persisted = requireAwsPersistedFinalizationResult(result, executionId, deliveryMetadata);
-    const resultWithPublication: AwsPersistedFinalizationResult = {
-      ...persisted,
-      receiptPublication: {
-        receiptHash,
-        boardIndex,
-        timestamp: receipt.timestamp,
+    payload: FinalizationSucceededPayload,
+  ): Promise<FinalizationRecord> {
+    assertAllowedPayloadKeys(payload, FINALIZATION_SUCCEEDED_PAYLOAD_KEYS, 'succeeded finalization');
+    assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
+    assertDirectSuccessfulFinalizationPayload(payload);
+    const current = await this.getCurrentFinalizationRecord(sessionId);
+    const command = buildFinalizationCommand(sessionId, payload, 'succeed');
+    const admission = evaluateFinalizationTransition({
+      authority: { currentRecord: current },
+      command,
+      evaluatedAtMs: Date.now(),
+    });
+    if (admission.kind === 'invalid') {
+      throw new Error(`Invalid finalization transition: ${admission.reason}`);
+    }
+    if (
+      current &&
+      (current.finalizationId !== payload.finalizationId ||
+        current.state.status === 'failed' ||
+        current.state.status === 'timeout')
+    ) {
+      return (await this.applyFinalizationCommand(command, payload.observability)).record;
+    }
+    const committed = await this.commitSuccessfulFinalization({
+      record: buildDirectSuccessfulFinalizationCommitRecord(sessionId, payload, current),
+      bitmap: { availability: 'unavailable' },
+      ...(payload.observability ? { observability: payload.observability } : {}),
+    });
+    return committed.record;
+  }
+
+  async markFinalizationFailed(sessionId: string, payload: FinalizationFailedPayload): Promise<FinalizationRecord> {
+    assertAllowedPayloadKeys(payload, FINALIZATION_FAILED_PAYLOAD_KEYS, 'failed finalization');
+    assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
+    return (
+      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, payload, 'fail'), payload.observability)
+    ).record;
+  }
+
+  async markFinalizationTimedOut(sessionId: string, payload: FinalizationTimedOutPayload): Promise<FinalizationRecord> {
+    assertAllowedPayloadKeys(payload, FINALIZATION_TIMED_OUT_PAYLOAD_KEYS, 'timed-out finalization');
+    assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
+    return (
+      await this.applyFinalizationCommand(
+        buildFinalizationCommand(sessionId, payload, 'time_out'),
+        payload.observability,
+      )
+    ).record;
+  }
+
+  async markAwsFinalizationRunning(
+    sessionId: string,
+    payload: AwsFinalizationRunningPayload,
+  ): Promise<FinalizationState> {
+    assertAllowedPayloadKeys(payload, AWS_RUNNING_PAYLOAD_KEYS, 'AWS running finalization');
+    const { stepFunctionsArn, ...semanticPayload } = payload;
+    const applied = await this.applyFinalizationCommand(
+      buildFinalizationCommand(sessionId, semanticPayload, 'start'),
+      semanticPayload.observability,
+      {
+        ...(stepFunctionsArn ? { stepFunctionsArn } : {}),
       },
-    };
-
-    await this.finalizeSession(sessionId, resultWithPublication, contractGeneration, executionId);
-
-    this.receiptCounter += 1;
-    this.receipts.set(sessionId, {
-      receiptHash,
-      boardIndex,
-      receipt,
-    });
-    await this.saveReceipts();
-
-    logger.info('[FileMockStore] Atomically finalized receipt publication:', {
-      session_id_hash: hashSessionIdForLogging(sessionId),
-      receiptHash: receiptHash.substring(0, 10) + '...',
-      boardIndex,
-    });
-
-    return { receiptHash, boardIndex };
+    );
+    return applied.record.state;
   }
 
-  static __getDiagnosticsForTests(): FileMockDiagnostics {
-    return { ...FileMockSessionStore.diagnostics };
+  async markAwsFinalizationSucceeded(
+    sessionId: string,
+    payload: AwsFinalizationSucceededPayload,
+  ): Promise<FinalizationState> {
+    assertAllowedPayloadKeys(payload, AWS_SUCCEEDED_PAYLOAD_KEYS, 'AWS succeeded finalization');
+    const { stepFunctionsArn, bundleMetadata, finalizationResult, ...common } = payload;
+    const current = await this.getCurrentFinalizationRecord(sessionId);
+    if (
+      current &&
+      (current.finalizationId !== payload.finalizationId ||
+        (current.state.status !== 'pending' &&
+          current.state.status !== 'running' &&
+          current.state.status !== 'succeeded'))
+    ) {
+      return current.state;
+    }
+    const { bitmapData, ...semanticFinalizationResult } = finalizationResult;
+    const requested = parseFinalizationRecord({
+      sessionId,
+      finalizationId: payload.finalizationId,
+      scenarioContext: common.scenarioContext ?? current?.scenarioContext,
+      state: {
+        status: 'succeeded',
+        finalizationId: payload.finalizationId,
+        queuedAtMs: common.queuedAtMs,
+        startedAtMs: common.startedAtMs,
+        completedAtMs: common.completedAtMs,
+      },
+      finalizationResult: {
+        finalizationId: payload.finalizationId,
+        ...semanticFinalizationResult,
+      },
+    });
+    if (!requested || requested.state.status !== 'succeeded') {
+      throw new Error('Invalid AWS succeeded finalization record');
+    }
+    const runtimeMetadata =
+      stepFunctionsArn === undefined && bundleMetadata === undefined
+        ? undefined
+        : {
+            ...(stepFunctionsArn === undefined ? {} : { stepFunctionsArn }),
+            ...(bundleMetadata === undefined ? {} : { bundleMetadata }),
+          };
+    const committed = await this.commitSuccessfulFinalization({
+      record: requested as Extract<FinalizationRecord, { state: { status: 'succeeded' } }>,
+      bitmap: bitmapData ? { availability: 'available', data: bitmapData } : { availability: 'unavailable' },
+      ...(runtimeMetadata ? { runtimeMetadata } : {}),
+      ...(common.observability ? { observability: common.observability } : {}),
+    });
+    return committed.record.state;
   }
 
-  static __resetDiagnosticsForTests(): void {
-    FileMockSessionStore.diagnostics = {
-      sessionDiskReads: 0,
-      cacheSize: 0,
-      cacheEvictions: 0,
-    };
+  async markAwsFinalizationFailed(
+    sessionId: string,
+    payload: AwsFinalizationFailedPayload,
+  ): Promise<FinalizationState> {
+    assertAllowedPayloadKeys(payload, AWS_FAILED_PAYLOAD_KEYS, 'AWS failed finalization');
+    const { stepFunctionsArn, ...semanticPayload } = payload;
+    const applied = await this.applyFinalizationCommand(
+      buildFinalizationCommand(sessionId, semanticPayload, 'fail'),
+      semanticPayload.observability,
+      {
+        ...(stepFunctionsArn ? { stepFunctionsArn } : {}),
+      },
+    );
+    return applied.record.state;
+  }
+
+  async markAwsFinalizationTimedOut(
+    sessionId: string,
+    payload: AwsFinalizationTimedOutPayload,
+  ): Promise<FinalizationState> {
+    assertAllowedPayloadKeys(payload, AWS_TIMED_OUT_PAYLOAD_KEYS, 'AWS timed-out finalization');
+    const { stepFunctionsArn, ...semanticPayload } = payload;
+    const applied = await this.applyFinalizationCommand(
+      buildFinalizationCommand(sessionId, semanticPayload, 'time_out'),
+      semanticPayload.observability,
+      {
+        ...(stepFunctionsArn ? { stepFunctionsArn } : {}),
+      },
+    );
+    return applied.record.state;
+  }
+
+  async getAwsFinalizationRuntimeMetadata(
+    sessionId: string,
+    finalizationId: string,
+  ): Promise<AwsFinalizationRuntimeMetadata | undefined> {
+    await Promise.resolve();
+    this.ensureFresh();
+    const metadata = this.state.runtimeMetadataRecords.get(scopedKey(sessionId, finalizationId));
+    return metadata ? cloneRuntimeMetadata(metadata) : undefined;
+  }
+
+  async recordAwsProofBundlePublication(
+    sessionId: string,
+    finalizationId: string,
+    metadata: AwsVerificationDeliveryMetadataInput,
+  ): Promise<void> {
+    await this.mutate(() => {
+      this.requireIdentity(sessionId);
+      this.state.deliveryMetadataRecords.set(scopedKey(sessionId, finalizationId), cloneDeliveryMetadata(metadata));
+      return { value: undefined, dirty: true };
+    });
+  }
+
+  recordAwsVerificationDeliveryMetadata(
+    sessionId: string,
+    finalizationId: string,
+    metadata: AwsVerificationDeliveryMetadataInput,
+  ): Promise<void> {
+    return this.recordAwsProofBundlePublication(sessionId, finalizationId, metadata);
+  }
+
+  async getAwsVerificationDeliveryMetadata(
+    sessionId: string,
+    finalizationId: string,
+  ): Promise<AwsVerificationDeliveryMetadataInput | undefined> {
+    await Promise.resolve();
+    this.ensureFresh();
+    const metadata = this.state.deliveryMetadataRecords.get(scopedKey(sessionId, finalizationId));
+    return metadata ? cloneDeliveryMetadata(metadata) : undefined;
+  }
+
+  private requireSucceededFinalization(sessionId: string, finalizationId: string): FinalizationRecord {
+    const record = this.currentFinalization(sessionId);
+    if (!record || record.finalizationId !== finalizationId || record.state.status !== 'succeeded') {
+      throw new Error('Finalization is unavailable for verification');
+    }
+    return record;
+  }
+
+  async getVerificationResultRecord(
+    sessionId: string,
+    finalizationId: FinalizationId,
+  ): Promise<VerificationResultRecord | null> {
+    await Promise.resolve();
+    this.ensureFresh();
+    this.requireIdentity(sessionId);
+    const record = parseVerificationResultRecord(
+      this.state.verificationResultRecords.get(scopedKey(sessionId, finalizationId)),
+    );
+    return record?.sessionId === sessionId && record.finalizationId === finalizationId ? record : null;
+  }
+
+  async markVerificationRunning(
+    sessionId: string,
+    finalizationId: FinalizationId,
+    report?: VerificationReport,
+  ): Promise<VerificationResultRecord> {
+    return this.mutate(() => {
+      this.requireSucceededFinalization(sessionId, finalizationId);
+      const key = scopedKey(sessionId, finalizationId);
+      const current = parseVerificationResultRecord(this.state.verificationResultRecords.get(key)) ?? null;
+      if (current && isTerminalVerificationStatus(current.verificationResult.status)) {
+        return { value: current, dirty: false };
+      }
+      this.verificationRollbackSnapshots.set(key, current);
+      const record = parseVerificationResultRecord({
+        sessionId,
+        finalizationId,
+        verificationResult: {
+          status: 'running',
+          ...(report ? { report } : {}),
+        },
+      });
+      if (!record) {
+        throw new Error('Invalid verification result record');
+      }
+      this.state.verificationResultRecords.set(key, record);
+      this.touchVotingRecord(sessionId);
+      return { value: record, dirty: true };
+    });
+  }
+
+  async rollbackVerificationResult(sessionId: string, finalizationId: FinalizationId): Promise<void> {
+    await this.mutate(() => {
+      this.requireSucceededFinalization(sessionId, finalizationId);
+      const key = scopedKey(sessionId, finalizationId);
+      const snapshot = this.verificationRollbackSnapshots.get(key);
+      this.verificationRollbackSnapshots.delete(key);
+      if (snapshot) {
+        this.state.verificationResultRecords.set(key, snapshot);
+      } else {
+        this.state.verificationResultRecords.delete(key);
+      }
+      this.touchVotingRecord(sessionId);
+      return { value: undefined, dirty: true };
+    });
+  }
+
+  async completeVerificationResult(
+    sessionId: string,
+    finalizationId: FinalizationId,
+    verificationResult: VerificationResult,
+  ): Promise<VerificationResultRecord> {
+    return this.mutate(() => {
+      this.requireSucceededFinalization(sessionId, finalizationId);
+      const key = scopedKey(sessionId, finalizationId);
+      const current = parseVerificationResultRecord(this.state.verificationResultRecords.get(key)) ?? null;
+      if (current && isTerminalVerificationStatus(current.verificationResult.status)) {
+        return { value: current, dirty: false };
+      }
+      const record = parseVerificationResultRecord({
+        sessionId,
+        finalizationId,
+        verificationResult,
+      });
+      if (!record) {
+        throw new Error('Invalid verification result record');
+      }
+      this.state.verificationResultRecords.set(key, record);
+      this.verificationRollbackSnapshots.delete(key);
+      this.touchVotingRecord(sessionId);
+      return { value: record, dirty: true };
+    });
+  }
+
+  async recordVerificationObservation(
+    sessionId: string,
+    finalizationId: string,
+    input: VerificationObservationWrite,
+  ): Promise<RecordVerificationObservationResult> {
+    return this.mutate<RecordVerificationObservationResult>(() => {
+      this.requireIdentity(sessionId);
+      const observationWrite = parseVerificationObservationWrite(input);
+      if (!observationWrite) {
+        throw new Error('Invalid verification observation');
+      }
+      const requested = parseVerificationObservation({
+        finalizationId,
+        ...observationWrite,
+      });
+      if (!requested) {
+        throw new Error('Invalid verification observation');
+      }
+      const key = scopedKey(sessionId, finalizationId);
+      const existing = parseVerificationObservation(this.state.verificationObservationRecords.get(key));
+      const resolution = resolveVerificationObservationRecord(
+        this.state.currentFinalizationIdBySession.get(sessionId),
+        existing,
+        requested,
+      );
+      if (resolution.status !== 'recorded') {
+        return { value: resolution, dirty: false };
+      }
+      this.state.verificationObservationRecords.set(key, requested);
+      this.touchVotingRecord(sessionId, requested.observedAt);
+      return { value: resolution, dirty: true };
+    });
+  }
+
+  async getVerificationObservation(sessionId: string, finalizationId: string): Promise<VerificationObservation | null> {
+    await Promise.resolve();
+    this.ensureFresh();
+    const observation = parseVerificationObservation(
+      this.state.verificationObservationRecords.get(scopedKey(sessionId, finalizationId)),
+    );
+    return observation ?? null;
+  }
+
+  async getBitmapData(sessionId: string, finalizationId: FinalizationId): Promise<FinalizationBitmapData | null> {
+    await Promise.resolve();
+    this.ensureFresh();
+    this.requireIdentity(sessionId);
+    const key = scopedKey(sessionId, finalizationId);
+    const finalization = parseFinalizationRecord(this.state.finalizationRecords.get(key));
+    if (!finalization || finalization.state.status !== 'succeeded' || !finalization.finalizationResult) {
+      return null;
+    }
+    return admitPersistedFinalizationBitmapData(finalization, this.state.bitmapRecords.get(key)) ?? null;
+  }
+
+  async commitSuccessfulFinalization(
+    input: SuccessfulFinalizationCommitInput & { runtimeMetadata?: AwsFinalizationRuntimeMetadata },
+  ): Promise<SuccessfulFinalizationCommitResult> {
+    const requested = admitSuccessfulFinalizationCommitRecord(input.record);
+    const bitmap = admitFinalizationBitmapDisposition(requested, input.bitmap);
+    const receipt = admitSuccessfulFinalizationReceipt(input.receipt);
+    const verification = input.verificationResult
+      ? parseVerificationResultRecord({
+          sessionId: requested.sessionId,
+          finalizationId: requested.finalizationId,
+          verificationResult: input.verificationResult,
+        })
+      : undefined;
+    if (input.verificationResult && !verification) {
+      throw new Error('Invalid verification result record');
+    }
+    const runtimePatch =
+      input.runtimeMetadata === undefined ? undefined : parseAwsFinalizationRuntimeMetadata(input.runtimeMetadata);
+    if (input.runtimeMetadata !== undefined && !runtimePatch) {
+      throw new Error('Invalid AWS finalization runtime metadata');
+    }
+    const key = scopedKey(requested.sessionId, requested.finalizationId);
+    const result = await this.mutate<{
+      outcome: SuccessfulFinalizationCommitResult;
+      published: boolean;
+      before: FinalizationRecord | null;
+    }>(() => {
+      this.requireIdentity(requested.sessionId);
+      const existingReceipt = this.state.receiptRecords.get(key);
+      if (
+        existingReceipt &&
+        receipt &&
+        (!Number.isSafeInteger(this.state.receiptCounter) || this.state.receiptCounter <= existingReceipt.boardIndex)
+      ) {
+        throw new Error('Receipt board counter does not cover the persisted publication');
+      }
+      const existingRuntime = this.state.runtimeMetadataRecords.get(key);
+      const runtimeMetadata = runtimePatch
+        ? {
+            ...(existingRuntime ?? {}),
+            ...runtimePatch,
+            ...(existingRuntime?.bundleMetadata || runtimePatch.bundleMetadata
+              ? {
+                  bundleMetadata: {
+                    ...(existingRuntime?.bundleMetadata ?? {}),
+                    ...(runtimePatch.bundleMetadata ?? {}),
+                  },
+                }
+              : {}),
+          }
+        : undefined;
+      const existingDelivery = this.state.deliveryMetadataRecords.get(key);
+      const deliveryMetadata = runtimeMetadata?.bundleMetadata
+        ? {
+            ...(existingDelivery ?? {}),
+            ...(runtimeMetadata.bundleMetadata.s3BundleKey
+              ? { s3BundleKey: runtimeMetadata.bundleMetadata.s3BundleKey }
+              : {}),
+            ...(runtimeMetadata.bundleMetadata.s3UploadedAtMs === undefined
+              ? {}
+              : { s3UploadedAtMs: runtimeMetadata.bundleMetadata.s3UploadedAtMs }),
+          }
+        : undefined;
+      const receiptHash = receipt
+        ? (existingReceipt?.receiptHash ?? computeSuccessfulFinalizationReceiptHash(receipt))
+        : undefined;
+      const boardIndex = receipt ? (existingReceipt?.boardIndex ?? this.state.receiptCounter) : undefined;
+      const receiptPublication =
+        receipt && receiptHash !== undefined && boardIndex !== undefined
+          ? { receiptHash, boardIndex, timestamp: receipt.timestamp }
+          : undefined;
+      const committed = parseFinalizationRecord({
+        ...requested,
+        finalizationResult: {
+          ...requested.finalizationResult,
+          ...(receiptPublication ? { receiptPublication } : {}),
+        },
+      });
+      if (!committed || committed.state.status !== 'succeeded') {
+        throw new Error('Invalid successful finalization commit');
+      }
+      const successful = committed as Extract<FinalizationRecord, { state: { status: 'succeeded' } }>;
+      const outcome: SuccessfulFinalizationCommitResult = {
+        record: successful,
+        bitmap,
+        ...(receiptPublication ? { receiptPublication } : {}),
+      };
+      const before = this.currentFinalization(requested.sessionId);
+      assertSuccessfulFinalizationLifecycleAdmission(requested, before);
+      const hasExistingBitmap = this.state.bitmapRecords.has(key);
+      const hasExistingVerification = this.state.verificationResultRecords.has(key);
+      if (isSuccessfulFinalizationRecord(before)) {
+        const existingBitmap = hasExistingBitmap
+          ? admitPersistedFinalizationBitmapData(before, this.state.bitmapRecords.get(key))
+          : undefined;
+        if (hasExistingBitmap && !existingBitmap) {
+          throw new Error('Invalid persisted finalization bitmap');
+        }
+        const expectedBitmap =
+          bitmap.availability === 'available'
+            ? { sessionId: requested.sessionId, finalizationId: requested.finalizationId, ...bitmap.data }
+            : undefined;
+        const existingVerification = hasExistingVerification
+          ? parseVerificationResultRecord(this.state.verificationResultRecords.get(key))
+          : undefined;
+        if (hasExistingVerification && !existingVerification) {
+          throw new Error('Invalid persisted verification result record');
+        }
+        if (
+          !isDeepStrictEqual(before, successful) ||
+          !isDeepStrictEqual(existingReceipt?.receipt, receipt) ||
+          !isDeepStrictEqual(existingBitmap, expectedBitmap) ||
+          (verification !== undefined && !isDeepStrictEqual(existingVerification, verification)) ||
+          (runtimeMetadata !== undefined && !isDeepStrictEqual(existingRuntime, runtimeMetadata)) ||
+          (deliveryMetadata !== undefined && !isDeepStrictEqual(existingDelivery, deliveryMetadata))
+        ) {
+          throw new Error('Successful finalization commit conflicts with existing authority');
+        }
+        return { value: { outcome, published: false, before }, dirty: false };
+      }
+      if (hasExistingBitmap || hasExistingVerification) {
+        throw new Error('Successful finalization artifacts exist before terminal authority');
+      }
+      const { finalizationId: _finalizationId, ...authority } = successful.finalizationResult;
+      void _finalizationId;
+      const transition = evaluateFinalizationTransition({
+        authority: { currentRecord: before },
+        command: {
+          kind: 'succeed',
+          sessionId: successful.sessionId,
+          finalizationId: successful.finalizationId,
+          queuedAtMs: successful.state.queuedAtMs,
+          startedAtMs: successful.state.startedAtMs,
+          completedAtMs: successful.state.completedAtMs,
+          scenarioContext: successful.scenarioContext,
+          finalizationResult: authority,
+        },
+        evaluatedAtMs: Date.now(),
+      });
+      if (transition.kind !== 'applied') {
+        throw new Error('Successful finalization commit was not applied');
+      }
+      this.state.finalizationRecords.set(key, cloneSuccessfulFinalizationRecord(successful));
+      this.state.currentFinalizationIdBySession.set(successful.sessionId, successful.finalizationId);
+      if (receipt && receiptPublication) {
+        this.state.receiptRecords.set(key, {
+          sessionId: successful.sessionId,
+          finalizationId: successful.finalizationId,
+          receiptHash: receiptPublication.receiptHash,
+          boardIndex: receiptPublication.boardIndex,
+          receipt: { ...receipt },
+        });
+        this.state.receiptCounter += 1;
+      }
+      if (verification) {
+        this.state.verificationResultRecords.set(key, verification);
+      }
+      if (bitmap.availability === 'available') {
+        this.state.bitmapRecords.set(key, {
+          sessionId: successful.sessionId,
+          finalizationId: successful.finalizationId,
+          ...bitmap.data,
+          includedBitmap: [...bitmap.data.includedBitmap],
+          ...(bitmap.data.seenBitmap ? { seenBitmap: [...bitmap.data.seenBitmap] } : {}),
+        });
+      }
+      if (runtimeMetadata) {
+        this.state.runtimeMetadataRecords.set(key, cloneRuntimeMetadata(runtimeMetadata));
+      }
+      if (deliveryMetadata) {
+        this.state.deliveryMetadataRecords.set(key, cloneDeliveryMetadata(deliveryMetadata));
+      }
+      this.touchVotingRecord(successful.sessionId);
+      return { value: { outcome, published: true, before }, dirty: true };
+    });
+    if (result.published) {
+      recordFinalizationStorePersistenceOutcome({
+        sessionId: requested.sessionId,
+        requestedFinalizationId: requested.finalizationId,
+        requestedTo: 'succeeded',
+        ...(result.before ? { before: result.before.state } : {}),
+        actual: result.outcome.record.state,
+        authoritativeWrite: true,
+        metadata: input.observability ?? { source: 'finalize', reason: 'STATE_PERSISTED' },
+      });
+    }
+    return result.outcome;
   }
 }

@@ -6,6 +6,7 @@
  */
 
 import { CURRENT_METHOD_VERSION, type CurrentZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
+import { resolveFinalizationTamperDetected } from './finalization-tamper';
 
 const UINT32_BYTE_LENGTH = 4;
 const HASH_BYTE_LENGTH = 32;
@@ -87,7 +88,7 @@ export function parseJournalBytes(journalBytes: number[]): VerificationOutput {
     excludedSlots,
     inputCommitment: bytesToHex(inputCommitmentBytes),
     methodVersion: CURRENT_METHOD_VERSION,
-    tamperDetected: excludedSlots > 0 || rejectedRecords > 0,
+    tamperDetected: resolveFinalizationTamperDetected({ excludedSlots, rejectedRecords }),
   };
 }
 

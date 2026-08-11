@@ -1,10 +1,9 @@
 export {
   clearSession,
   captureSessionIdentity,
-  generateSessionId,
+  initializeSession,
   getSessionData,
   getSessionDataForIdentity,
-  getSessionAuthHeaders,
   isSessionReplaced,
   isSessionReplacedForIdentity,
   saveSessionData,
@@ -16,3 +15,4 @@ export {
 } from './client';
 
 export type { SessionIdentity } from './client';
+export type { ServerIssuedSessionIdentity, SessionData, SessionPhase, VoteChoice } from './types';

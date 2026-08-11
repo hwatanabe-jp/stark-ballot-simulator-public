@@ -363,9 +363,14 @@ theorem processVote_preserves_fold_invariant
         acceptVote_after_reservation_preserves_fold_invariant hInv hFresh.1 hFresh.2
   | rejected reason slotSeen commitmentReserved =>
       cases slotSeen
-      · cases commitmentReserved <;>
-          simpa [hOutcome, applyVoteOutcome, stateAfterOutcomeReservations] using
+      · cases commitmentReserved
+        · simpa [hOutcome, applyVoteOutcome, stateAfterOutcomeReservations] using
             rejectVote_preserves_fold_invariant (reason := reason) hInv
+        · have hInserted :
+              GuestStateFoldInvariant treeSize (insertCommitment state vote.commitment) :=
+            insertCommitment_preserves_fold_invariant hInv
+          simpa [hOutcome, applyVoteOutcome, stateAfterOutcomeReservations] using
+            rejectVote_preserves_fold_invariant (reason := reason) hInserted
       · have hFresh := classifyVote_rejected_seen_slot_fresh hOutcome
         have hMarked :
             GuestStateFoldInvariant treeSize (markSeenIndex state vote.index) :=

@@ -8,6 +8,7 @@ Usage:
   scripts/security/scan-public-safety.sh --staged
   scripts/security/scan-public-safety.sh --all
   scripts/security/scan-public-safety.sh --root <dir> --all
+  scripts/security/scan-public-safety.sh --framework --root <dir> --all
   scripts/security/scan-public-safety.sh --files <file>...
 
 Scans text files for high-confidence secrets and publishable-repo safety leaks.
@@ -18,6 +19,8 @@ EOF
 mode="staged"
 explicit_files=()
 scan_root=""
+framework_mode=false
+scanner_repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -36,6 +39,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --all)
       mode="all"
+      shift
+      ;;
+    --framework)
+      framework_mode=true
       shift
       ;;
     --files)
@@ -73,6 +80,11 @@ else
 fi
 cd "$repo_root"
 
+is_generated_public_snapshot=false
+if [ -f ".public-repository" ]; then
+  is_generated_public_snapshot=true
+fi
+
 should_skip_path() {
   local path="$1"
   case "$path" in
@@ -107,8 +119,8 @@ scan_file() {
     return 0
   fi
 
-  perl -Mstrict -Mwarnings - "$display_path" "$source_path" <<'PERL'
-my ($display_path, $source_path) = @ARGV;
+  perl -Mstrict -Mwarnings - "$display_path" "$source_path" "$is_generated_public_snapshot" <<'PERL'
+my ($display_path, $source_path, $is_generated_public_snapshot) = @ARGV;
 
 open my $fh, '<', $source_path or die "cannot open $source_path: $!";
 
@@ -168,6 +180,58 @@ my @resource_rules = (
 
 my @private_doc_prefixes = qw(docs/archive/ docs/internal/);
 
+my %public_documentation_paths = map { $_ => 1 } qw(
+  README.md
+  SECURITY.md
+  THIRD_PARTY_NOTICES.md
+  docs/README.md
+  docs/roadmap.md
+  scripts/README.md
+);
+
+my @public_documentation_prefixes = qw(
+  apps/
+  docs/architecture/
+  docs/formal/
+  docs/guides/
+  docs/infrastructure/
+  docs/licenses/
+  docs/runbooks/
+  docs/ui/
+  docs/verification/
+  docs/zkvm/
+  formal/
+  infra/docker/
+  infra/image-signature-verifier/
+  infra/lambdas/
+  packages/
+  public/
+  public-book/
+  scripts/api-contract/
+  scripts/build/
+  scripts/dev/
+  scripts/docs/
+  scripts/formal/
+  scripts/frontend/
+  scripts/security/
+  scripts/showcase/
+  scripts/stark-proofs/
+  scripts/terraform/
+  scripts/tests/
+  tests/
+  types/
+  verifier-service/
+  zkvm/
+);
+
+sub is_publishable_documentation_scope {
+  my ($path) = @_;
+  return 0 unless $path =~ /\.md$/;
+  return 1 if $is_generated_public_snapshot eq 'true';
+  return 1 if $public_documentation_paths{$path};
+  return scalar grep { index($path, $_) == 0 } @public_documentation_prefixes;
+}
+
 sub is_account_id_hygiene_scope {
   my ($path) = @_;
   return 1 if $path =~ /\.tfvars(?:\.json)?(?:\.example)?$/;
@@ -179,8 +243,41 @@ sub is_account_id_hygiene_scope {
 }
 
 my $strict_account_id_hygiene = is_account_id_hygiene_scope($display_path);
+my $publishable_documentation_scope = is_publishable_documentation_scope($display_path);
+my $private_source_deployment_target_configuration =
+  $is_generated_public_snapshot ne 'true'
+  && $display_path eq 'packages/deployment-authority/deployment-targets.json';
+my $s3_bucket_identifier = qr/[a-z0-9](?:[a-z0-9.-]{1,61})[a-z0-9]/;
+my @terraform_backend_bucket_rules = (
+  qr/(?i:\b(?:TERRAFORM_STATE_BUCKET|TERRAFORM_BACKEND_BUCKET|TF_BACKEND_BUCKET|terraform_state_bucket|terraform_backend_bucket|backend_bucket)\b)\s*(?:=|:)\s*["'\x60]?($s3_bucket_identifier)(?=["'\x60\s]|$)/,
+  qr/(?i:(?<![-A-Za-z0-9_])-backend-config(?:=|\s+)["']?bucket)\s*=\s*["']?($s3_bucket_identifier)(?=["'\x60\s,;)}\]]|$)/,
+  qr/(?i:\b(?:Terraform\s+)?(?:backend|remote[- ]state|state)\s+bucket(?:\s+name)?)\s*(?:=|:)\s*["'\x60]?($s3_bucket_identifier)(?=["'\x60\s]|$)/,
+);
+my $terraform_backend_block_bucket_rule =
+  qr/\bbucket\s*=\s*["'\x60]?($s3_bucket_identifier)(?=["'\x60\s,;)}\]]|$)/;
+my $s3_backend_block_depth = 0;
+
+sub hcl_brace_delta {
+  my ($text) = @_;
+  $text =~ s/"(?:\\.|[^"\\])*"//g;
+  $text =~ s/'(?:\\.|[^'\\])*'//g;
+  $text =~ s{//.*$}{};
+  $text =~ s/#.*$//;
+  my $open_count = () = $text =~ /\{/g;
+  my $close_count = () = $text =~ /\}/g;
+  return $open_count - $close_count;
+}
 
 while (my $line = <$fh>) {
+  my $line_is_s3_backend_context = $s3_backend_block_depth > 0;
+  if (!$line_is_s3_backend_context && $line !~ /^\s*(?:#|\/\/)/ && $line =~ /\bbackend\s+"s3"\s*(\{)/) {
+    $line_is_s3_backend_context = 1;
+    $s3_backend_block_depth = hcl_brace_delta(substr($line, $-[1]));
+  } elsif ($line_is_s3_backend_context) {
+    $s3_backend_block_depth += hcl_brace_delta($line);
+  }
+  $s3_backend_block_depth = 0 if $s3_backend_block_depth < 1;
+
   for my $rule (@simple_rules) {
     my ($name, $regex) = @$rule;
     if ($line =~ $regex) {
@@ -199,6 +296,7 @@ while (my $line = <$fh>) {
     while ($line =~ /$regex/g) {
       my $account_id = $1;
       next if $allowed_account_ids{$account_id};
+      next if $private_source_deployment_target_configuration && $name eq 'aws_account_id_label';
       print "$display_path:$.: $name\n";
     }
   }
@@ -227,6 +325,22 @@ while (my $line = <$fh>) {
     }
   }
 
+  if ($publishable_documentation_scope) {
+    my $terraform_backend_bucket_found = 0;
+    for my $regex (@terraform_backend_bucket_rules) {
+      if ($line =~ $regex) {
+        $terraform_backend_bucket_found = 1;
+        last;
+      }
+    }
+    if (!$terraform_backend_bucket_found && $line_is_s3_backend_context) {
+      $terraform_backend_bucket_found = 1 if $line =~ $terraform_backend_block_bucket_rule;
+    }
+    if ($terraform_backend_bucket_found) {
+      print "$display_path:$.: terraform_backend_bucket_identifier\n";
+    }
+  }
+
   while ($line =~ /\bstark-ballot-simulator-proof-bundles-([a-z0-9][a-z0-9-]*)\b/g) {
     my $suffix = $1;
     next if $suffix =~ /^(?:develop|main)$/;
@@ -237,7 +351,11 @@ PERL
 }
 
 issues_file="$(mktemp)"
-trap 'rm -f "$issues_file"' EXIT
+trap 'rm -f -- "$issues_file"' EXIT
+framework_issues_file="$(mktemp)"
+trap 'rm -f -- "$issues_file" "$framework_issues_file"' EXIT
+framework_errors_file="$(mktemp)"
+trap 'rm -f -- "$issues_file" "$framework_issues_file" "$framework_errors_file"' EXIT
 
 scan_worktree_path() {
   local path="$1"
@@ -308,6 +426,46 @@ case "$mode" in
     ;;
 esac
 
+if [ "$framework_mode" = true ]; then
+  if [ "$mode" != "all" ] || [ -z "$scan_root" ]; then
+    echo "--framework requires --root <dir> --all." >&2
+    exit 2
+  fi
+  if [ ! -f "$scanner_repository_root/scripts/security/framework-template-safety.ts" ]; then
+    echo "Framework mode is available only in the private source repository." >&2
+    exit 2
+  fi
+  framework_runner="$scanner_repository_root/node_modules/.bin/tsx"
+  if [ ! -x "$framework_runner" ]; then
+    echo "Framework template safety scan could not complete." >&2
+    exit 2
+  fi
+  framework_status=0
+  "$framework_runner" \
+    "$scanner_repository_root/scripts/security/framework-template-safety.ts" --root "$repo_root" \
+    >"$framework_issues_file" 2>"$framework_errors_file" || framework_status=$?
+  framework_success_marker='Framework template safety scan passed.'
+  if [ "$framework_status" -eq 0 ]; then
+    if [ -s "$framework_errors_file" ] || \
+      ! cmp -s <(printf '%s\n' "$framework_success_marker") "$framework_issues_file"; then
+      echo "Framework template safety scan could not complete." >&2
+      exit 2
+    fi
+  elif [ "$framework_status" -eq 1 ]; then
+    framework_finding_pattern='^.+:[1-9][0-9]* framework_[a-z0-9_]+$'
+    if [ -s "$framework_errors_file" ] || \
+      ! LC_ALL=C grep -Eq "$framework_finding_pattern" "$framework_issues_file" || \
+      LC_ALL=C grep -Evq "$framework_finding_pattern" "$framework_issues_file"; then
+      echo "Framework template safety scan could not complete." >&2
+      exit 2
+    fi
+    cat "$framework_issues_file" >>"$issues_file"
+  else
+    echo "Framework template safety scan could not complete." >&2
+    exit 2
+  fi
+fi
+
 if [ -s "$issues_file" ]; then
   echo "Public safety scan failed. Replace real values with placeholders before committing." >&2
   echo "Matched rule locations:" >&2
@@ -315,4 +473,8 @@ if [ -s "$issues_file" ]; then
   exit 1
 fi
 
-echo "Public safety scan passed ($mode)."
+if [ "$framework_mode" = true ]; then
+  echo "Public safety scan passed ($mode, framework)."
+else
+  echo "Public safety scan passed ($mode)."
+fi

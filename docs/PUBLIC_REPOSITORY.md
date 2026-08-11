@@ -3,9 +3,9 @@
 This repository is a generated public portfolio snapshot of STARK Ballot Simulator.
 
 - Public repository: https://github.com/hwatanabe-jp/stark-ballot-simulator-public
-- Source commit: `836677879ea327e933e98797f38f80694e88715c`
-- Generated at: `2026-07-29T10:46:33.447Z`
-- Copied source files: `1097`
+- Source commit: `c2b319dd92206a997e431b84c0c006988d462c6a`
+- Generated at: `2026-08-11T06:11:50.713Z`
+- Copied source files: `1281`
 
 The private repository remains the source of truth. Public-repository changes
 should normally be made in the private repository and released again as a new
@@ -29,15 +29,15 @@ The private source repository intentionally keeps broader working notes than the
 public portfolio snapshot needs. This export preserves that signal while
 publishing only the documentation that is safe and useful for readers.
 
-- Private source files under `docs/` tracked: `185`
+- Private source files under `docs/` tracked: `214`
 - Public source files under `docs/` copied: `58`
 - Generated public docs: `1`
-- Source files under `docs/` stripped: `127`
+- Source files under `docs/` stripped: `156`
 
 Stripped documentation categories:
 
 - Archived history and progress notes: `52` files from `docs/archive/`
-- Internal implementation notes: `75` files from `docs/internal/`
+- Internal implementation notes: `104` files from `docs/internal/`
 
 ## What Is Stripped
 
@@ -49,11 +49,20 @@ Stripped documentation categories:
 - `.github/workflows/* from the private repository`
 - `docs/archive/`
 - `docs/internal/`
+- `examples/hello-service/`
+- `infra/framework/`
 - `infra/terraform/** except .tf source and explicitly allowlisted public records`
+- `packages/deployment-authority/src/framework.{d.ts,js,test.ts}`
 - `scripts/monitoring/`
 - `scripts/public/`
+- `scripts/security/gitleaks/`
+- `scripts/security/__tests__/framework-template-safety.test.ts`
+- `scripts/security/framework-template-safety.ts`
+- `scripts/security/lib/framework-template-safety.ts`
+- `scripts/security/scan-framework-secrets.sh`
 - `scripts/aws/`
 - `scripts/skills/`
+- `tooling/** except explicitly allowlisted public configuration/runtime files`
 - `infra/terraform/legacy/main.tfvars`
 - `infra/terraform/legacy/develop.tfvars`
 - `input.json`

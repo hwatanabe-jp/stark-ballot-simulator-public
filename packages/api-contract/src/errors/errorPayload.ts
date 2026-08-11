@@ -1,29 +1,33 @@
-import { ApiError, ErrorCode, createErrorResponse, type ErrorDetails, type ApiErrorPayload } from './apiErrors';
+import { ApiError, ErrorCode, createApiErrorResult, type ApiErrorResult, type ErrorDetails } from './apiErrors';
 
 /**
- * Create a standardized error payload (framework-agnostic).
+ * Create a canonical error result (framework-agnostic).
  */
-export function toApiErrorPayload(error: ApiError | ErrorCode, details?: ErrorDetails): ApiErrorPayload {
-  return createErrorResponse(error, details);
+export function toApiErrorResult(
+  error: ApiError | ErrorCode,
+  requestId: string,
+  details?: ErrorDetails,
+): ApiErrorResult {
+  return createApiErrorResult(error, requestId, details);
 }
 
 /**
- * Handle unexpected errors and convert to standardized payload (framework-agnostic).
+ * Convert an unexpected failure into a canonical error result.
  */
-export function handleApiErrorPayload(error: unknown): ApiErrorPayload {
+export function handleApiErrorResult(error: unknown, requestId: string): ApiErrorResult {
   if (error instanceof ApiError) {
-    return error.toJSON();
+    return error.toResult(requestId);
   }
 
   if (error instanceof Error) {
     if (error.message.includes('SESSION_LIMIT_EXCEEDED')) {
-      return createErrorResponse(ErrorCode.SESSION_LIMIT_EXCEEDED);
+      return createApiErrorResult(ErrorCode.SESSION_LIMIT_EXCEEDED, requestId);
     }
 
     if (error.message.includes('SESSION_NOT_FOUND')) {
-      return createErrorResponse(ErrorCode.SESSION_NOT_FOUND);
+      return createApiErrorResult(ErrorCode.SESSION_NOT_FOUND, requestId);
     }
   }
 
-  return createErrorResponse(ErrorCode.INTERNAL_ERROR);
+  return createApiErrorResult(ErrorCode.INTERNAL_ERROR, requestId);
 }

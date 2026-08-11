@@ -2,13 +2,16 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   statement {
-    sid    = "AppOwnedS3Guardrail"
     effect = "Allow"
 
     actions = ["s3:*"]
     resources = [
-      "arn:aws:s3:::${local.app_pipeline_artifact_bucket_name}",
-      "arn:aws:s3:::${local.app_pipeline_artifact_bucket_name}/*",
+      local.app_retained_artifact_bucket_arn,
+      "${local.app_retained_artifact_bucket_arn}/*",
+      local.app_pipeline_execution_artifact_bucket_arn,
+      "${local.app_pipeline_execution_artifact_bucket_arn}/*",
+      local.app_static_fast_execution_artifact_bucket_arn,
+      "${local.app_static_fast_execution_artifact_bucket_arn}/*",
       local.app_target_proof_bucket_arn,
       "${local.app_target_proof_bucket_arn}/*",
       local.app_target_frontend_bucket_arn,
@@ -28,7 +31,6 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
   }
 
   statement {
-    sid     = "AppGeneratedReleaseAuthorityWriteGuardrail"
     effect  = "Allow"
     actions = ["s3:PutObject"]
     resources = [
@@ -57,7 +59,6 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
   }
 
   statement {
-    sid       = "AppStatePrefixList"
     effect    = "Allow"
     actions   = ["s3:ListBucket"]
     resources = ["arn:aws:s3:::${var.state_bucket_name}"]
@@ -85,7 +86,6 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
   }
 
   statement {
-    sid    = "AppSourceConnectionGuardrail"
     effect = "Allow"
 
     actions = [
@@ -120,7 +120,6 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
   }
 
   statement {
-    sid    = "AppInvariantNotificationGuardrail"
     effect = "Allow"
 
     actions = [
@@ -134,11 +133,10 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
       "sns:TagResource",
       "sns:UntagResource",
     ]
-    resources = [local.app_invariant_sns_topic_arn]
+    resources = local.app_observability_sns_topic_arns
   }
 
   statement {
-    sid    = "AppInvariantEmailSubscriptionGuardrail"
     effect = "Allow"
 
     actions = [
@@ -152,7 +150,6 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
   }
 
   statement {
-    sid    = "AppSelectedReleaseImageReadGuardrail"
     effect = "Allow"
     actions = [
       "ecr:BatchGetImage",
@@ -162,14 +159,12 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
   }
 
   statement {
-    sid       = "AppTargetEventBridgeGuardrail"
     effect    = "Allow"
     actions   = ["events:*"]
     resources = local.app_target_event_rule_arns
   }
 
   statement {
-    sid    = "AppRuntimeSecretReadGuardrail"
     effect = "Allow"
 
     actions = [
@@ -196,7 +191,6 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
   }
 
   statement {
-    sid    = "ReadImageSignatureVerifierExecutionBoundary"
     effect = "Allow"
     actions = [
       "iam:GetPolicy",
@@ -210,7 +204,6 @@ resource "aws_iam_policy" "app_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   depends_on = [
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_artifacts_management,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_pipeline_management,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management,

@@ -1,15 +1,19 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { capturePublicContractSnapshot, resolveCurrentSourceMetadata } from './public-contract-baseline';
+import { resolveCaptureOutputPath } from './lib/public-contract-cli';
 import {
-  capturePublicContractSnapshot,
   comparePublicContractSnapshots,
-  resolveCurrentSourceMetadata,
+  computePublicContractHash,
   type PublicContractSnapshot,
-} from './public-contract-baseline';
+} from './lib/public-contract-policy';
+import { PUBLIC_CONTRACT_CALLER_INVENTORY } from './public-contract-callers';
+import type { SchemaSemanticEvidence } from './schema-semantic-fingerprint';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -22,14 +26,34 @@ function cloneSnapshot(snapshot: PublicContractSnapshot): PublicContractSnapshot
   return JSON.parse(JSON.stringify(snapshot)) as PublicContractSnapshot;
 }
 
+function refreshContractHash(snapshot: PublicContractSnapshot): void {
+  snapshot.contractHash = computePublicContractHash(snapshot);
+}
+
+function classifyDrift(snapshot: PublicContractSnapshot, allowedDriftPaths: string[]) {
+  return {
+    comparatorType: 'public-contract-drift-classification' as const,
+    baselineContractHash: snapshot.contractHash,
+    baselineSourceSha: snapshot.sourceSha,
+    allowedDriftPaths,
+  };
+}
+
 function changeFirstRoutePath(snapshot: PublicContractSnapshot, routePath: string): string {
   const firstRoute = strictDefined(snapshot.routeContracts[0]);
   snapshot.routeContracts[0] = { ...firstRoute, path: routePath };
   return firstRoute.routeId;
 }
 
+function expectedProbeRequestId(probeId: string): string {
+  return `public-contract-baseline:${probeId}`;
+}
+
 const BASELINE_CAPTURED_AT = '2026-06-17T00:00:00.000Z';
 const baselineSnapshot = await capturePublicContractSnapshot({ capturedAt: BASELINE_CAPTURED_AT });
+const reviewedBaselineSnapshot = JSON.parse(
+  readFileSync(path.join(process.cwd(), 'scripts/api-contract/baselines/reviewed-public-contract.json'), 'utf8'),
+) as PublicContractSnapshot;
 
 function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = process.env): string {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8', env });
@@ -64,15 +88,30 @@ async function createSourceRefMountedBehaviorFixture(): Promise<{
   await writeSourceFile(
     repoRoot,
     'apps/api/src/server/api/routes/hono.ts',
-    `import { resolveCurrentContractGeneration } from '@stark-ballot/domain/contract';
-
-export function createHonoApp(): { request: () => Promise<Response> } {
+    `export function createHonoApp(): {
+  request: (
+    input: string,
+    init?: RequestInit,
+    env?: { requestContext?: { requestId?: string } },
+  ) => Promise<Response>;
+} {
   return {
-    request: async () =>
-      new Response(JSON.stringify({ generation: resolveCurrentContractGeneration() }), {
+    request: async (_input, _init, env) => {
+      const requestId = env?.requestContext?.requestId ?? 'missing-source-ref-request-id';
+      return new Response(
+        JSON.stringify({
+          data: { sourceMarker: 'source-ref-mounted-workspace' },
+          meta: { requestId },
+        }),
+        {
         status: 218,
-        headers: { 'content-type': 'application/json' },
-      }),
+          headers: {
+            'content-type': 'application/json',
+            'x-request-id': requestId,
+          },
+        },
+      );
+    },
   };
 }
 `,
@@ -80,24 +119,17 @@ export function createHonoApp(): { request: () => Promise<Response> } {
   await writeSourceFile(repoRoot, 'apps/api/src/server/api/routes/definitions.ts', `export const SOURCE_REF = true;\n`);
   await writeSourceFile(
     repoRoot,
-    'packages/api-contract/src/api-contract/routes.ts',
-    `export const TARGET_API_ROUTE_CONTRACTS = [] as const;\n`,
+    'packages/api-contract/src/routes/index.ts',
+    `export const API_ROUTES = {} as const;
+export const TARGET_API_ROUTE_CONTRACTS = [] as const;
+`,
   );
+  await writeSourceFile(repoRoot, 'packages/api-contract/src/schemas/index.ts', `export {};\n`);
   await writeSourceFile(
     repoRoot,
-    'packages/api-contract/src/validation/apiSchemas.ts',
-    `export const SourceRefMountedBehaviorSchema = { sourceRef: true };\n`,
-  );
-  await writeSourceFile(
-    repoRoot,
-    'packages/domain/package.json',
-    `{"name":"@stark-ballot/domain","private":true,"type":"module","exports":{"./contract":"./src/lib/contract/index.ts"}}\n`,
-  );
-  await writeSourceFile(
-    repoRoot,
-    'packages/domain/src/lib/contract/index.ts',
-    `export function resolveCurrentContractGeneration(): string {
-  return 'source-ref-mounted-workspace';
+    'scripts/api-contract/typed-route-baseline-projection.ts',
+    `export function projectTypedRoutesForBaseline(routes: readonly unknown[]): readonly unknown[] {
+  return routes;
 }
 `,
   );
@@ -117,8 +149,7 @@ export function createHonoApp(): { request: () => Promise<Response> } {
   });
   const committedFiles = runGit(repoRoot, ['ls-tree', '-r', '--name-only', 'HEAD']).split('\n');
   expect(committedFiles).toContain('apps/api/src/server/api/routes/hono.ts');
-  expect(committedFiles).toContain('packages/api-contract/src/api-contract/routes.ts');
-  expect(committedFiles).toContain('packages/domain/src/lib/contract/index.ts');
+  expect(committedFiles).toContain('packages/api-contract/src/routes/index.ts');
 
   return {
     repoRoot,
@@ -152,14 +183,163 @@ describe('public contract baseline comparator', () => {
     const snapshot = cloneSnapshot(baselineSnapshot);
 
     expect(snapshot.comparatorType).toBe('public-contract-baseline');
-    expect(snapshot.routeContracts.map((route) => route.routeId)).toContain('verification.bundle.get');
-    expect(snapshot.schemaExports).toContain('StandardErrorResponseSchema');
-    expect(strictDefined(snapshot.schemaFingerprints['StandardErrorResponseSchema'])).toMatch(/^[a-f0-9]{64}$/);
-    expect(snapshot.mountedRoutes.find((mode) => mode.mode === 'full')?.routeIds).toContain('finalizeCallback.post');
-    expect(snapshot.mountedRoutes.find((mode) => mode.mode === 'lambda')?.routeIds).not.toContain(
-      'finalizeCallback.post',
+    expect(snapshot.routeContracts.map((route) => route.routeId)).toContain(
+      'sessions.finalizations.artifacts.bundle.get',
     );
-    expect(snapshot.mountedRoutes.find((mode) => mode.mode === 'readonly')?.routeIds).toContain('verify.get');
+    expect(snapshot.routeContracts.find((route) => route.routeId === 'session.post')).toMatchObject({
+      method: 'POST',
+      path: '/sessions',
+      publicErrorShape: 'standard-error-envelope',
+    });
+    const schemaEvidence = (schemaName: string) => ({
+      algorithm: 'json-wire-admission',
+      fingerprint: strictDefined(snapshot.schemaSemantics.fingerprints[schemaName], schemaName),
+    });
+    const directSchemaEvidence = (
+      routeId: string,
+      location: 'params' | 'query' | 'headers' | 'body',
+    ): SchemaSemanticEvidence => {
+      const route = strictDefined(
+        snapshot.routeContracts.find((candidate) => candidate.routeId === routeId),
+        routeId,
+      );
+      const evidence = strictDefined(route.request[location], `${routeId}.${location}`);
+      expect(evidence.algorithm).toBe('json-wire-admission');
+      expect(evidence.fingerprint).toMatch(/^[a-f0-9]{64}$/u);
+      return evidence;
+    };
+    expect(snapshot.routeContracts.find((route) => route.routeId === 'vote.post')).toMatchObject({
+      method: 'POST',
+      path: '/sessions/:sessionId/votes',
+      authScope: 'path-session-capability',
+      request: {
+        params: schemaEvidence('SessionParamsSchema'),
+        headers: schemaEvidence('PathSessionCapabilityHeadersSchema'),
+        body: schemaEvidence('VoteRequestSchema'),
+      },
+      publicErrorShape: 'standard-error-envelope',
+    });
+    expect(snapshot.routeContracts.find((route) => route.routeId === 'progress.get')).toMatchObject({
+      method: 'GET',
+      path: '/sessions/:sessionId/progress',
+      authScope: 'path-session-capability',
+      request: {
+        params: schemaEvidence('SessionParamsSchema'),
+        headers: schemaEvidence('PathSessionCapabilityHeadersSchema'),
+      },
+      publicErrorShape: 'standard-error-envelope',
+    });
+    for (const [routeId, routePath, requestSchemaNames] of [
+      [
+        'sessions.bulletin.get',
+        '/sessions/:sessionId/bulletin',
+        {
+          params: 'SessionBulletinParamsSchema',
+          query: 'BulletinQuerySchema',
+          headers: 'PathSessionCapabilityHeadersSchema',
+        },
+      ],
+      [
+        'sessions.bulletin.consistencyProof.get',
+        '/sessions/:sessionId/bulletin/consistency-proof',
+        {
+          params: 'SessionBulletinParamsSchema',
+          query: 'ConsistencyProofQuerySchema',
+          headers: 'PathSessionCapabilityHeadersSchema',
+        },
+      ],
+      [
+        'sessions.votes.inclusionProof.get',
+        '/sessions/:sessionId/votes/:voteId/inclusion-proof',
+        {
+          params: 'SessionVoteInclusionProofParamsSchema',
+          headers: 'PathSessionCapabilityHeadersSchema',
+        },
+      ],
+      [
+        'sessions.bulletin.sth.get',
+        '/sessions/:sessionId/bulletin/sth',
+        {
+          params: 'SessionBulletinParamsSchema',
+          query: 'SthQuerySchema',
+          headers: null,
+        },
+      ],
+      [
+        'sessions.finalizations.current.bitmapProof.get',
+        '/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex',
+        {
+          params: 'CurrentFinalizationBitmapProofParamsSchema',
+          headers: null,
+        },
+      ],
+      [
+        'sessions.finalizations.current.inputCommitment.get',
+        '/sessions/:sessionId/finalizations/current/input-commitment',
+        {
+          params: 'CurrentFinalizationInputCommitmentParamsSchema',
+          headers: 'PathSessionCapabilityHeadersSchema',
+        },
+      ],
+    ] as const) {
+      const request = Object.fromEntries(
+        Object.entries(requestSchemaNames).map(([location, schemaName]) => [
+          location,
+          schemaName === null
+            ? directSchemaEvidence(routeId, location as 'params' | 'query' | 'headers' | 'body')
+            : schemaEvidence(schemaName),
+        ]),
+      );
+      expect(
+        snapshot.routeContracts.find((route) => route.routeId === routeId),
+        routeId,
+      ).toMatchObject({
+        method: 'GET',
+        path: routePath,
+        authScope: 'path-session-capability',
+        capabilityScope: 'path',
+        request,
+      });
+    }
+    for (const route of snapshot.routeContracts.filter((candidate) => candidate.lifecycle === 'active')) {
+      expect(route.publicErrorShape, route.routeId).toBe('standard-error-envelope');
+      expect(route.publicErrors.envelope, route.routeId).toBe('standard-error-envelope');
+    }
+    for (const routeId of ['session.post', 'vote.post', 'sessions.finalizations.post']) {
+      expect(
+        snapshot.routeContracts.find((route) => route.routeId === routeId)?.turnstile?.tokenLocations,
+        routeId,
+      ).toEqual(['body.turnstileToken']);
+    }
+    expect(snapshot.schemaExports).toContain('StandardErrorResponseSchema');
+    expect(snapshot.schemaExports).toContain('PathSessionCapabilityHeadersSchema');
+    expect(strictDefined(snapshot.schemaFingerprints['StandardErrorResponseSchema'])).toMatch(/^[a-f0-9]{64}$/);
+    expect(snapshot.schemaSemantics.algorithm).toBe('json-wire-admission');
+    expect(strictDefined(snapshot.schemaSemantics.fingerprints['StandardErrorResponseSchema'])).toMatch(
+      /^[a-f0-9]{64}$/,
+    );
+    expect(Object.keys(snapshot.schemaFingerprints).sort()).toEqual(snapshot.schemaExports);
+    expect(Object.keys(snapshot.schemaSemantics.fingerprints).sort()).toEqual(snapshot.schemaExports);
+    for (const authorityPath of [
+      'packages/api-contract/src/schemas/index.ts',
+      'packages/api-contract/src/schemas/errors.ts',
+      'packages/api-contract/src/schemas/verification.ts',
+      'packages/validation/src/safe-verifier-segment.ts',
+      'packages/validation/src/schema.ts',
+    ]) {
+      expect(strictDefined(snapshot.schemaAuthorityFingerprints[authorityPath], authorityPath)).toMatch(
+        /^[a-f0-9]{64}$/,
+      );
+    }
+    for (const mode of snapshot.mountedRoutes) {
+      expect(
+        mode.routes.some((route) => route.authScope === 'callback-authenticity'),
+        mode.mode,
+      ).toBe(false);
+    }
+    expect(snapshot.mountedRoutes.find((mode) => mode.mode === 'readonly')?.routeIds).toContain(
+      'sessions.finalizations.verification.get',
+    );
     expect(
       snapshot.mountedBehavior.find((probe) => probe.probeId === 'lambda.bundle.local-binary.no-store'),
     ).toMatchObject({
@@ -172,19 +352,17 @@ describe('public contract baseline comparator', () => {
     expect(
       snapshot.mountedBehavior.find((probe) => probe.probeId === 'lambda.bitmap.conditional.no-body'),
     ).toMatchObject({
+      path: `/api/sessions/session-baseline-mounted/finalizations/current/bitmap-proofs/included/0`,
       status: 304,
       body: {
         bytes: 0,
       },
     });
-    expect(
+    const unsatisfiedRangeProbe = strictDefined(
       snapshot.mountedBehavior.find((probe) => probe.probeId === 'lambda.bundle.range-unsatisfiable.416'),
-    ).toMatchObject({
-      status: 416,
-      headers: {
-        'content-range': 'bytes */6',
-      },
-    });
+    );
+    expect(unsatisfiedRangeProbe.status).toBe(416);
+    expect(unsatisfiedRangeProbe.headers['content-range']).toMatch(/^bytes \*\/[1-9]\d*$/u);
     expect(
       snapshot.mountedBehavior.find((probe) => probe.probeId === 'lambda.report.local-json.no-store'),
     ).toMatchObject({
@@ -195,7 +373,39 @@ describe('public contract baseline comparator', () => {
       },
     });
     expect(
-      snapshot.mountedBehavior.find((probe) => probe.probeId === 'lambda.session-status.finalized.no-store'),
+      snapshot.mountedBehavior.find(
+        (probe) => probe.probeId === 'full.finalization-callback.invalid-request.error-envelope',
+      ),
+    ).toMatchObject({
+      path: '/api/internal/sessions/session-baseline-mounted/finalizations/finalization-baseline-mounted/callback',
+      status: 401,
+      headers: {
+        'access-control-allow-origin': null,
+        vary: null,
+      },
+    });
+    expect(
+      snapshot.mountedBehavior.find(
+        (probe) => probe.probeId === 'full.finalization-callback.cors-preflight.not-public',
+      ),
+    ).toMatchObject({
+      path: '/api/internal/sessions/session-baseline-mounted/finalizations/finalization-baseline-mounted/callback',
+      status: 404,
+      headers: {
+        'access-control-allow-headers': null,
+        'access-control-allow-methods': null,
+        'access-control-allow-origin': null,
+        vary: null,
+      },
+    });
+    expect(
+      snapshot.mountedBehavior.find((probe) => probe.probeId === 'lambda.finalization-callback.not-mounted'),
+    ).toMatchObject({
+      path: '/api/internal/sessions/session-baseline-mounted/finalizations/finalization-baseline-mounted/callback',
+      status: 404,
+    });
+    expect(
+      snapshot.mountedBehavior.find((probe) => probe.probeId === 'lambda.current-finalization.succeeded.no-store'),
     ).toMatchObject({
       status: 200,
       headers: {
@@ -203,15 +413,34 @@ describe('public contract baseline comparator', () => {
         'cache-control': 'no-store',
       },
     });
+    for (const probe of snapshot.mountedBehavior) {
+      expect(probe.headers['x-request-id'], probe.probeId).toBe(expectedProbeRequestId(probe.probeId));
+    }
+    for (const probeId of [
+      'lambda.bitmap.etag.private-cache',
+      'lambda.bitmap.missing-capability.error-envelope',
+      'lambda.bundle.cross-session-capability-denied',
+      'lambda.bundle.missing-capability.error-envelope',
+      'lambda.bundle.range-unsatisfiable.416',
+      'lambda.current-finalization.succeeded.no-store',
+    ]) {
+      const probe = strictDefined(
+        snapshot.mountedBehavior.find((candidate) => candidate.probeId === probeId),
+        probeId,
+      );
+      expect(probe.body.jsonKeys, probeId).toEqual(expect.arrayContaining(['meta']));
+      expect(probe.body.jsonRequestId, probeId).toBe(expectedProbeRequestId(probeId));
+      expect(probe.body.jsonRequestId, probeId).toBe(probe.headers['x-request-id']);
+    }
     expect(snapshot.mountedBehaviorCoverage.map((entry) => entry.caseId)).toContain('bundle-range-unsatisfiable-416');
     expect(snapshot.mountedBehaviorCoverage.map((entry) => entry.caseId)).toEqual(
       expect.arrayContaining([
         'session-creation-success-flow',
         'vote-success-flow',
         'progress-read-flow',
-        'finalize-success-flow',
-        'session-status-finalized-flow',
-        'verify-finalized-flow',
+        'finalization-create-success-flow',
+        'current-finalization-succeeded-flow',
+        'verification-resource-flow',
         'verification-run-flow',
         'verification-observation-flow',
       ]),
@@ -221,32 +450,193 @@ describe('public contract baseline comparator', () => {
     });
   });
 
+  it('uses one semantic fingerprint authority for exported and route-bound schemas', () => {
+    const voteRoute = strictDefined(
+      baselineSnapshot.routeContracts.find((route) => route.routeId === 'vote.post'),
+      'vote route',
+    );
+    const requestBodyEvidence = strictDefined(voteRoute.request.body, 'vote request body evidence');
+
+    expect(requestBodyEvidence.algorithm).toBe(baselineSnapshot.schemaSemantics.algorithm);
+    expect(requestBodyEvidence.fingerprint).toBe(
+      strictDefined(baselineSnapshot.schemaSemantics.fingerprints['VoteRequestSchema']),
+    );
+  });
+
+  it('records exact first-party caller ownership or explicit absence for every route', () => {
+    const routeIds = baselineSnapshot.routeContracts.map((route) => route.routeId).sort();
+    expect(Object.keys(PUBLIC_CONTRACT_CALLER_INVENTORY).sort()).toEqual(routeIds);
+
+    for (const [routeId, callers] of Object.entries(PUBLIC_CONTRACT_CALLER_INVENTORY)) {
+      const callerSurfaces = [
+        ['browser', callers.browser],
+        ['mockApi', callers.mockApi],
+        ['cli', callers.cli],
+        ['lambda', callers.lambda],
+        ['stepFunctions', callers.stepFunctions],
+        ['internalCallbackProducer', callers.internalCallbackProducer],
+      ] as const;
+      for (const [surface, callerEvidence] of callerSurfaces) {
+        const callerPaths = callerEvidence.map((caller) => caller.path);
+        expect(new Set(callerPaths).size, `${routeId}.${surface} has duplicate callers`).toBe(callerPaths.length);
+        for (const caller of callerEvidence) {
+          const absolutePath = path.join(process.cwd(), caller.path);
+          expect(existsSync(absolutePath), `${routeId}.${surface}: ${caller.path}`).toBe(true);
+          expect(
+            caller.sourcePatterns.length,
+            `${routeId}.${surface}: ${caller.path} has no reviewed evidence`,
+          ).toBeGreaterThan(0);
+          const source = readFileSync(absolutePath, 'utf8');
+          for (const sourcePattern of caller.sourcePatterns) {
+            expect(
+              sourcePattern.global || sourcePattern.sticky,
+              `${routeId}.${surface}: ${caller.path} uses a stateful evidence pattern`,
+            ).toBe(false);
+            expect(source, `${routeId}.${surface}: ${caller.path} no longer matches ${sourcePattern}`).toMatch(
+              sourcePattern,
+            );
+          }
+        }
+      }
+      expect(callers.stepFunctions, `${routeId} unexpectedly has an HTTP Step Functions caller`).toEqual([]);
+      expect(callers.internalCallbackProducer, `${routeId} unexpectedly has a callback producer`).toEqual([]);
+    }
+
+    expect(
+      PUBLIC_CONTRACT_CALLER_INVENTORY['sessions.finalizations.verification.post'].browser.map((caller) => caller.path),
+    ).toEqual(['apps/web/src/api/verification.ts']);
+  });
+
+  it('binds every mounted-behavior exemption to existing focused evidence', () => {
+    for (const entry of baselineSnapshot.mountedBehaviorCoverage) {
+      if (entry.status !== 'exempt') {
+        continue;
+      }
+      const exemption = strictDefined(entry.exemption, `${entry.caseId} exemption`);
+      const evidencePaths = [...exemption.matchAll(/`([^`]+\.(?:json|sh|ts|tsx))`/gu)].map((match) =>
+        strictDefined(match[1], `${entry.caseId} evidence path`),
+      );
+      expect(evidencePaths.length, `${entry.caseId} has no exact evidence path`).toBeGreaterThan(0);
+      for (const evidencePath of evidencePaths) {
+        expect(existsSync(path.join(process.cwd(), evidencePath)), `${entry.caseId}: ${evidencePath}`).toBe(true);
+      }
+    }
+  });
+
   it('uses deterministic capture timestamps by default', async () => {
     const snapshot = await capturePublicContractSnapshot();
 
     expect(snapshot.capturedAt).toBe('1970-01-01T00:00:00.000Z');
+  }, 15_000);
+
+  it('requires source-ref captures to name a non-authority output path', () => {
+    expect(() => resolveCaptureOutputPath({ sourceRef: 'HEAD' })).toThrow(/explicit --out/u);
+    expect(resolveCaptureOutputPath({ sourceRef: 'HEAD', out: '/tmp/review.json' })).toBe('/tmp/review.json');
   });
+
+  it('captures identical mounted behavior for the same source tree', async () => {
+    const first = await capturePublicContractSnapshot({ capturedAt: BASELINE_CAPTURED_AT });
+    const second = await capturePublicContractSnapshot({ capturedAt: BASELINE_CAPTURED_AT });
+
+    expect(second.mountedBehavior).toEqual(first.mountedBehavior);
+    expect(second.contractHash).toBe(first.contractHash);
+  }, 15_000);
+
+  it('isolates mounted behavior from conflicting callback environment values', async () => {
+    const previousSecret = process.env['FINALIZE_CALLBACK_SECRET'];
+    const previousBodyLimit = process.env['FINALIZE_CALLBACK_BODY_LIMIT_BYTES'];
+    const previousSkew = process.env['FINALIZE_CALLBACK_MAX_SKEW_MS'];
+    try {
+      process.env['FINALIZE_CALLBACK_SECRET'] = 'ambient-secret-that-must-not-affect-the-baseline';
+      process.env['FINALIZE_CALLBACK_BODY_LIMIT_BYTES'] = '1';
+      process.env['FINALIZE_CALLBACK_MAX_SKEW_MS'] = '1';
+      const snapshot = await capturePublicContractSnapshot({ capturedAt: BASELINE_CAPTURED_AT });
+
+      expect(snapshot.mountedBehavior).toEqual(baselineSnapshot.mountedBehavior);
+      expect(snapshot.contractHash).toBe(baselineSnapshot.contractHash);
+    } finally {
+      if (previousSecret === undefined) delete process.env['FINALIZE_CALLBACK_SECRET'];
+      else process.env['FINALIZE_CALLBACK_SECRET'] = previousSecret;
+      if (previousBodyLimit === undefined) delete process.env['FINALIZE_CALLBACK_BODY_LIMIT_BYTES'];
+      else process.env['FINALIZE_CALLBACK_BODY_LIMIT_BYTES'] = previousBodyLimit;
+      if (previousSkew === undefined) delete process.env['FINALIZE_CALLBACK_MAX_SKEW_MS'];
+      else process.env['FINALIZE_CALLBACK_MAX_SKEW_MS'] = previousSkew;
+    }
+  }, 15_000);
 
   it('fails unclassified drift', () => {
     const baseline = cloneSnapshot(baselineSnapshot);
     const current = cloneSnapshot(baseline);
     changeFirstRoutePath(current, '/changed');
+    refreshContractHash(current);
 
     expect(comparePublicContractSnapshots(baseline, current).map((drift) => drift.path)).toContain(
       `${strictDefined(baseline.routeContracts[0]).routeId}.path`.replace(/^/, 'routeContracts.'),
     );
   });
 
-  it('fails unclassified schema body drift even when the export name is unchanged', () => {
+  it('fails unclassified schema wire-semantic drift even when the export name is unchanged', () => {
+    const baseline = cloneSnapshot(baselineSnapshot);
+    const current = cloneSnapshot(baseline);
+    const schemaSemantics = strictDefined(current.schemaSemantics);
+    current.schemaSemantics = {
+      ...schemaSemantics,
+      fingerprints: {
+        ...schemaSemantics.fingerprints,
+        StandardErrorResponseSchema: '0'.repeat(64),
+      },
+    };
+    refreshContractHash(current);
+
+    expect(comparePublicContractSnapshots(baseline, current).map((drift) => drift.path)).toContain(
+      'schemaSemantics.fingerprints.StandardErrorResponseSchema',
+    );
+  });
+
+  it('fails unclassified schema declaration drift even when wire semantics are unchanged', () => {
     const baseline = cloneSnapshot(baselineSnapshot);
     const current = cloneSnapshot(baseline);
     current.schemaFingerprints = {
       ...current.schemaFingerprints,
       StandardErrorResponseSchema: '0'.repeat(64),
     };
+    refreshContractHash(current);
 
     expect(comparePublicContractSnapshots(baseline, current).map((drift) => drift.path)).toContain(
       'schemaFingerprints.StandardErrorResponseSchema',
+    );
+  });
+
+  it('fails unclassified schema authority drift even when wire semantics are unchanged', () => {
+    const baseline = cloneSnapshot(baselineSnapshot);
+    const current = cloneSnapshot(baseline);
+    const firstAuthorityPath = strictDefined(Object.keys(current.schemaAuthorityFingerprints).sort()[0]);
+    current.schemaAuthorityFingerprints = {
+      ...current.schemaAuthorityFingerprints,
+      [firstAuthorityPath]: '1'.repeat(64),
+    };
+    refreshContractHash(current);
+
+    expect(comparePublicContractSnapshots(baseline, current).map((drift) => drift.path)).toContain(
+      `schemaAuthorityFingerprints.${firstAuthorityPath}`,
+    );
+  });
+
+  it('requires complete semantic evidence in the reviewed and current snapshots', () => {
+    expect(comparePublicContractSnapshots(reviewedBaselineSnapshot, baselineSnapshot)).toEqual([]);
+
+    const baselineWithoutSemantics = cloneSnapshot(reviewedBaselineSnapshot);
+    delete (baselineWithoutSemantics as Partial<PublicContractSnapshot>).schemaSemantics;
+    refreshContractHash(baselineWithoutSemantics);
+    expect(() => comparePublicContractSnapshots(baselineWithoutSemantics, baselineSnapshot)).toThrow(
+      /Baseline public-contract snapshot has no schema semantic evidence/u,
+    );
+
+    const currentWithoutSemantics = cloneSnapshot(baselineSnapshot);
+    delete (currentWithoutSemantics as Partial<PublicContractSnapshot>).schemaSemantics;
+    refreshContractHash(currentWithoutSemantics);
+    expect(() => comparePublicContractSnapshots(reviewedBaselineSnapshot, currentWithoutSemantics)).toThrow(
+      /Current public-contract snapshot has no schema semantic evidence/u,
     );
   });
 
@@ -255,6 +645,7 @@ describe('public contract baseline comparator', () => {
     const current = cloneSnapshot(baseline);
     const firstProbe = strictDefined(current.mountedBehavior[0]);
     current.mountedBehavior[0] = { ...firstProbe, status: 599 };
+    refreshContractHash(current);
 
     expect(comparePublicContractSnapshots(baseline, current).map((drift) => drift.path)).toContain(
       `mountedBehavior.${firstProbe.probeId}.status`,
@@ -269,28 +660,36 @@ describe('public contract baseline comparator', () => {
         sourceRepoRoot: fixture.repoRoot,
         capturedAt: '2026-06-17T00:00:00.000Z',
       });
-      const sourceRefBodyHash = createHash('sha256')
-        .update(JSON.stringify({ generation: 'source-ref-mounted-workspace' }))
-        .digest('hex');
-
       expect(snapshot.dirtyStatus).toBe('source-ref');
       expect(snapshot.mountedBehavior).not.toEqual([]);
       expect(snapshot.mountedBehavior.every((probe) => probe.status === 218)).toBe(true);
-      expect(snapshot.mountedBehavior.every((probe) => probe.body.sha256 === sourceRefBodyHash)).toBe(true);
+      for (const probe of snapshot.mountedBehavior) {
+        const requestId = expectedProbeRequestId(probe.probeId);
+        const sourceRefBodyHash = createHash('sha256')
+          .update(
+            JSON.stringify({
+              data: { sourceMarker: 'source-ref-mounted-workspace' },
+              meta: { requestId },
+            }),
+          )
+          .digest('hex');
+        expect(probe.headers['x-request-id']).toBe(requestId);
+        expect(probe.body.jsonRequestId).toBe(requestId);
+        expect(probe.body.sha256).toBe(sourceRefBodyHash);
+      }
     } finally {
       await fixture.cleanup();
     }
-  });
+  }, 15_000);
 
   it('allows explicitly classified drift paths', () => {
     const baseline = cloneSnapshot(baselineSnapshot);
     const current = cloneSnapshot(baseline);
     const routeId = changeFirstRoutePath(current, '/changed');
+    refreshContractHash(current);
 
     expect(
-      comparePublicContractSnapshots(baseline, current, {
-        allowedDriftPaths: [`routeContracts.${routeId}.path`],
-      }),
+      comparePublicContractSnapshots(baseline, current, classifyDrift(baseline, [`routeContracts.${routeId}.path`])),
     ).toEqual([]);
   });
 
@@ -301,12 +700,11 @@ describe('public contract baseline comparator', () => {
     current.routeContracts = [...current.routeContracts.slice(1), firstRoute];
     const changedRoute = strictDefined(current.routeContracts[0]);
     current.routeContracts[0] = { ...changedRoute, path: '/changed-after-reorder' };
+    refreshContractHash(current);
 
-    expect(
-      comparePublicContractSnapshots(baseline, current, {
-        allowedDriftPaths: ['routeContracts.0.path'],
-      }).map((drift) => drift.path),
-    ).toContain(`routeContracts.${changedRoute.routeId}.path`);
+    expect(() =>
+      comparePublicContractSnapshots(baseline, current, classifyDrift(baseline, ['routeContracts.0.path'])),
+    ).toThrow(/unused paths/u);
   });
 
   it('does not allow old numeric schema paths to hide unrelated schema insertion', () => {
@@ -317,12 +715,23 @@ describe('public contract baseline comparator', () => {
       'UnrelatedInsertedSchema',
       ...current.schemaExports.slice(10),
     ];
+    current.schemaFingerprints = {
+      ...current.schemaFingerprints,
+      UnrelatedInsertedSchema: '2'.repeat(64),
+    };
+    const schemaSemantics = strictDefined(current.schemaSemantics);
+    current.schemaSemantics = {
+      ...schemaSemantics,
+      fingerprints: {
+        ...schemaSemantics.fingerprints,
+        UnrelatedInsertedSchema: '3'.repeat(64),
+      },
+    };
+    refreshContractHash(current);
 
-    expect(
-      comparePublicContractSnapshots(baseline, current, {
-        allowedDriftPaths: ['schemaExports.10'],
-      }).map((drift) => drift.path),
-    ).toContain('schemaExports.UnrelatedInsertedSchema');
+    expect(() =>
+      comparePublicContractSnapshots(baseline, current, classifyDrift(baseline, ['schemaExports.10'])),
+    ).toThrow(/unused paths/u);
   });
 
   it('does not allow old numeric mounted behavior paths to hide probe reorder drift', () => {
@@ -332,11 +741,39 @@ describe('public contract baseline comparator', () => {
     current.mountedBehavior = [...current.mountedBehavior.slice(1), firstProbe];
     const changedProbe = strictDefined(current.mountedBehavior[0]);
     current.mountedBehavior[0] = { ...changedProbe, status: 599 };
+    refreshContractHash(current);
 
-    expect(
+    expect(() =>
+      comparePublicContractSnapshots(baseline, current, classifyDrift(baseline, ['mountedBehavior.0.status'])),
+    ).toThrow(/unused paths/u);
+  });
+
+  it('rejects invalid snapshot integrity and stale drift classifications', () => {
+    const baseline = cloneSnapshot(baselineSnapshot);
+    const current = cloneSnapshot(baseline);
+    changeFirstRoutePath(current, '/changed');
+    refreshContractHash(current);
+
+    const corruptBaseline = cloneSnapshot(baseline);
+    corruptBaseline.contractHash = '0'.repeat(64);
+    expect(() => comparePublicContractSnapshots(corruptBaseline, current)).toThrow(/contractHash/u);
+    const wrongComparator = cloneSnapshot(baseline);
+    (wrongComparator as { comparatorType: string }).comparatorType = 'other-comparator';
+    expect(() => comparePublicContractSnapshots(wrongComparator, current)).toThrow(/comparatorType/u);
+    expect(() =>
       comparePublicContractSnapshots(baseline, current, {
-        allowedDriftPaths: ['mountedBehavior.0.status'],
-      }).map((drift) => drift.path),
-    ).toContain(`mountedBehavior.${changedProbe.probeId}.status`);
+        ...classifyDrift(baseline, ['routeContracts.unused.path']),
+        baselineContractHash: '0'.repeat(64),
+      }),
+    ).toThrow(/not bound/u);
+    expect(() =>
+      comparePublicContractSnapshots(baseline, current, {
+        ...classifyDrift(baseline, ['routeContracts.unused.path']),
+        comparatorType: 'other-classification' as 'public-contract-drift-classification',
+      }),
+    ).toThrow(/classification type/u);
+    expect(() =>
+      comparePublicContractSnapshots(baseline, current, classifyDrift(baseline, ['routeContracts.unused.path'])),
+    ).toThrow(/unused paths/u);
   });
 });

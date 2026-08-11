@@ -1,5 +1,5 @@
 import { Buffer } from 'buffer';
-import { addHexPrefix, normalizeHexString } from '@stark-ballot/verification/shared/hex';
+import { addHexPrefix, normalizeHexString } from '@stark-ballot/crypto-primitives';
 
 /**
  * Normalize bitmap root values to a 0x-prefixed hex string.

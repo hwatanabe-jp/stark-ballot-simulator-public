@@ -2,7 +2,7 @@ import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { getS3Client, getS3Config } from './s3-client';
-import { isTargetAwsRuntime } from '@stark-ballot/runtime-config/env/targetRuntime';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashKeyPrefixForLogging } from '@stark-ballot/diagnostics/logging';
 import { assertSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
@@ -13,7 +13,7 @@ import { assertSafeVerifierSegment } from '@stark-ballot/validation/safe-verifie
 export interface S3UploadResult {
   bucket: string;
   key: string;
-  uploadedAt: string;
+  uploadedAtMs: number;
   success: boolean;
   error?: string;
 }
@@ -22,8 +22,9 @@ export interface S3UploadResult {
  * Upload Options
  */
 export interface S3UploadOptions {
+  profile: ResolvedRuntimeProfile;
   sessionId: string;
-  executionId: string;
+  finalizationId: string;
   filePath: string;
   contentType?: string;
   maxRetries?: number;
@@ -36,22 +37,23 @@ export interface S3UploadOptions {
  * @returns Upload result with S3 key and timestamp
  */
 export async function uploadFileToS3(options: S3UploadOptions): Promise<S3UploadResult> {
-  const { sessionId, executionId, filePath, contentType = 'application/zip', maxRetries = 3 } = options;
+  const { profile, sessionId, finalizationId, filePath, contentType = 'application/zip', maxRetries = 3 } = options;
 
   assertSafeVerifierSegment(sessionId, 'sessionId');
-  assertSafeVerifierSegment(executionId, 'executionId');
+  assertSafeVerifierSegment(finalizationId, 'finalizationId');
 
-  const config = getS3Config();
-  const client = getS3Client();
+  const config = getS3Config(profile);
+  const client = getS3Client(profile);
 
-  // Construct S3 key: sessions/<sessionId>/<executionId>/bundle.zip
+  // Construct S3 key: sessions/<sessionId>/<finalizationId>/bundle.zip
   const fileName = path.basename(filePath);
-  const key = `${config.prefix}${sessionId}/${executionId}/${fileName}`;
+  const key = `${config.prefix}${sessionId}/${finalizationId}/${fileName}`;
 
   let lastError: Error | undefined;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
+      const uploadedAtMs = Date.now();
       // Read file content
       const fileContent = await fs.readFile(filePath);
 
@@ -64,8 +66,8 @@ export async function uploadFileToS3(options: S3UploadOptions): Promise<S3Upload
         ExpectedBucketOwner: config.expectedBucketOwner,
         Metadata: {
           sessionId,
-          executionId,
-          uploadedAt: new Date().toISOString(),
+          finalizationId,
+          uploadedAtMs: String(uploadedAtMs),
         },
       });
 
@@ -82,7 +84,7 @@ export async function uploadFileToS3(options: S3UploadOptions): Promise<S3Upload
       return {
         bucket: config.bucket,
         key,
-        uploadedAt: new Date().toISOString(),
+        uploadedAtMs,
         success: true,
       };
     } catch (error) {
@@ -103,7 +105,7 @@ export async function uploadFileToS3(options: S3UploadOptions): Promise<S3Upload
   return {
     bucket: config.bucket,
     key,
-    uploadedAt: new Date().toISOString(),
+    uploadedAtMs: Date.now(),
     success: false,
     error: lastError?.message || 'Unknown error',
   };
@@ -112,13 +114,13 @@ export async function uploadFileToS3(options: S3UploadOptions): Promise<S3Upload
 /**
  * Check if S3 upload is enabled
  */
-export function isS3UploadEnabled(): boolean {
-  if (process.env['USE_S3'] !== 'true' || !isTargetAwsRuntime()) {
+export function isS3UploadEnabled(profile: ResolvedRuntimeProfile): boolean {
+  if (profile.artifacts.kind !== 's3') {
     return false;
   }
 
   try {
-    getS3Config();
+    getS3Config(profile);
     return true;
   } catch {
     return false;

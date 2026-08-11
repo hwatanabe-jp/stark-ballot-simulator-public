@@ -1,0 +1,6 @@
+{
+  "extends": "./test.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals"]
+  }
+}

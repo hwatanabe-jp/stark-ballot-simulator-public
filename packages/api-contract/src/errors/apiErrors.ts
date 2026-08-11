@@ -1,6 +1,17 @@
 /**
- * Centralized error management for API responses
+ * Centralized error management for API responses.
  */
+
+import { finalizationIdSchema, requestIdSchema } from '../schemas/primitives';
+import { publicErrorDetailSchema } from '../schemas/errors';
+import type { FlattenedSchemaError, PublicErrorDetail, StandardErrorResponse } from '../schemas/errors';
+import type { VerificationStatus } from '../schemas/verification';
+
+export type {
+  PublicVerificationErrorMessage,
+  PublicVerificationReport,
+  VerificationStatus,
+} from '../schemas/verification';
 
 /**
  * Error codes for API responses
@@ -24,8 +35,7 @@ export enum ErrorCode {
   SESSION_CAPABILITY_INVALID = 'SESSION_CAPABILITY_INVALID',
   SESSION_CAPABILITY_EXPIRED = 'SESSION_CAPABILITY_EXPIRED',
   SAME_ORIGIN_REQUIRED = 'SAME_ORIGIN_REQUIRED',
-  UNSUPPORTED_CURRENT_ARTIFACT = 'UNSUPPORTED_CURRENT_ARTIFACT',
-  CORRUPT_OR_UNREADABLE_FINALIZED_STATE = 'CORRUPT_OR_UNREADABLE_FINALIZED_STATE',
+  INVALID_FINALIZATION_ARTIFACT = 'INVALID_FINALIZATION_ARTIFACT',
   INVALID_BUNDLE_REFERENCE = 'INVALID_BUNDLE_REFERENCE',
   BUNDLE_NOT_FOUND = 'BUNDLE_NOT_FOUND',
   BUNDLE_DOWNLOAD_FAILED = 'BUNDLE_DOWNLOAD_FAILED',
@@ -40,7 +50,6 @@ export enum ErrorCode {
   VERIFICATION_OBSERVATION_CONFLICT = 'VERIFICATION_OBSERVATION_CONFLICT',
 
   // Additional error codes used in routes
-  SESSION_ID_REQUIRED = 'SESSION_ID_REQUIRED',
   INVALID_VOTE_CHOICE = 'INVALID_VOTE_CHOICE',
   ALREADY_VOTED = 'ALREADY_VOTED',
   SESSION_FINALIZED = 'SESSION_FINALIZED',
@@ -50,14 +59,12 @@ export enum ErrorCode {
   VOTING_NOT_COMPLETE = 'VOTING_NOT_COMPLETE',
   INVALID_SCENARIO = 'INVALID_SCENARIO',
   INVALID_SCENARIO_COMBINATION = 'INVALID_SCENARIO_COMBINATION',
-  INVALID_BOT_ID = 'INVALID_BOT_ID',
-  BOT_NOT_FOUND = 'BOT_NOT_FOUND',
   SESSION_NOT_FINALIZED = 'SESSION_NOT_FINALIZED',
-  BOT_DATA_NOT_FOUND = 'BOT_DATA_NOT_FOUND',
   INVALID_VOTE_ID = 'INVALID_VOTE_ID',
   VOTE_NOT_FOUND = 'VOTE_NOT_FOUND',
   DUPLICATE_VOTE = 'DUPLICATE_VOTE',
   VERIFICATION_FAILED = 'VERIFICATION_FAILED',
+  CT_PROOF_UNAVAILABLE = 'CT_PROOF_UNAVAILABLE',
 }
 
 /**
@@ -82,8 +89,7 @@ const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.SESSION_CAPABILITY_INVALID]: '無効なセッション認可トークンです',
   [ErrorCode.SESSION_CAPABILITY_EXPIRED]: 'セッション認可トークンの有効期限が切れています',
   [ErrorCode.SAME_ORIGIN_REQUIRED]: '同一オリジンからのリクエストが必要です',
-  [ErrorCode.UNSUPPORTED_CURRENT_ARTIFACT]: '現在のコントラクト世代ではサポートされていない確定済み状態です',
-  [ErrorCode.CORRUPT_OR_UNREADABLE_FINALIZED_STATE]: '確定済み状態が破損しているか読み取れません',
+  [ErrorCode.INVALID_FINALIZATION_ARTIFACT]: '確定済み成果物が無効です',
   [ErrorCode.INVALID_BUNDLE_REFERENCE]: '無効な検証バンドル参照です',
   [ErrorCode.BUNDLE_NOT_FOUND]: '検証バンドルが見つかりません',
   [ErrorCode.BUNDLE_DOWNLOAD_FAILED]: '検証バンドルを読み込めませんでした',
@@ -98,7 +104,6 @@ const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.VERIFICATION_OBSERVATION_CONFLICT]: '現在の検証結果と観測内容が一致しません',
 
   // Additional messages
-  [ErrorCode.SESSION_ID_REQUIRED]: 'セッションIDが必要です',
   [ErrorCode.INVALID_VOTE_CHOICE]: '無効な投票選択です',
   [ErrorCode.ALREADY_VOTED]: 'すでに投票済みです',
   [ErrorCode.SESSION_FINALIZED]: 'セッションは終了しています',
@@ -108,14 +113,12 @@ const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.VOTING_NOT_COMPLETE]: '投票がまだ完了していません',
   [ErrorCode.INVALID_SCENARIO]: '無効なシナリオです',
   [ErrorCode.INVALID_SCENARIO_COMBINATION]: '無効なシナリオの組み合わせです',
-  [ErrorCode.INVALID_BOT_ID]: '無効なボットIDです',
-  [ErrorCode.BOT_NOT_FOUND]: 'ボットが見つかりません',
   [ErrorCode.SESSION_NOT_FINALIZED]: 'セッションがまだ確定されていません',
-  [ErrorCode.BOT_DATA_NOT_FOUND]: 'ボットデータが見つかりません',
   [ErrorCode.INVALID_VOTE_ID]: '無効な投票IDです',
   [ErrorCode.VOTE_NOT_FOUND]: '投票が見つかりません',
   [ErrorCode.DUPLICATE_VOTE]: '重複投票が検出されました',
   [ErrorCode.VERIFICATION_FAILED]: '検証に失敗しました',
+  [ErrorCode.CT_PROOF_UNAVAILABLE]: 'CT証明を利用できません',
 };
 
 /**
@@ -125,70 +128,35 @@ export function getErrorMessage(code: ErrorCode): string {
   return ERROR_MESSAGES[code] || '不明なエラーが発生しました';
 }
 
-type PublicErrorArtifactState = 'unsupported_current_artifact' | 'corrupt_or_unreadable';
-
-type FlattenedSchemaError = {
-  formErrors: string[];
-  fieldErrors: Record<string, string[]>;
-};
-
-export type VerificationStatus = 'success' | 'failed' | 'dev_mode' | 'not_run' | 'running';
-export type PublicVerificationErrorMessage =
-  | 'ImageID mismatch'
-  | 'Receipt does not contain ImageID'
-  | 'Invalid proof'
-  | 'Failed to download bundle'
-  | 'Verification failed';
-
-export interface PublicVerificationReport {
-  status: VerificationStatus;
-  verifier_version?: string;
-  verified_at?: string;
-  duration_ms?: number;
-  expected_image_id?: string;
-  receipt_image_id?: string | null;
-  dev_mode_receipt?: boolean;
-  errors?: PublicVerificationErrorMessage[];
-}
-
-const PUBLIC_VERIFICATION_ERROR_MESSAGES = new Set<PublicVerificationErrorMessage>([
-  'ImageID mismatch',
-  'Receipt does not contain ImageID',
-  'Invalid proof',
-  'Failed to download bundle',
-  'Verification failed',
-]);
-
-type PublicErrorDetailFields = {
+type ErrorDetailInputFields = {
   message?: string;
-  details?: string;
+  details?: string | PublicErrorDetail;
   issues?: FlattenedSchemaError;
   reason?: string;
   retryAfter?: number;
+  retryAfterSeconds?: number;
   limitBytes?: number;
   receivedBytes?: number;
   nextAvailableAt?: string;
+  nextAvailableAtMs?: number;
   remainingExecutions?: number;
-  artifactState?: PublicErrorArtifactState;
-  runtimeContractGeneration?: string;
-  persistedContractGeneration?: string | null;
-  carriedContractGeneration?: string | null;
   status?: VerificationStatus;
-  verificationExecutionId?: string;
-  verificationReport?: PublicVerificationReport;
+  finalizationId?: string;
+  verificationReport?: unknown;
   voteIndex?: number;
   expectedTreeSize?: number;
   actualTreeSize?: number;
   errorCodes?: string[];
 };
 
-export type ApiErrorPayload = {
-  error: ErrorCode;
-  message: string;
-  statusCode: number;
-} & Omit<PublicErrorDetailFields, 'message'>;
+export type ApiErrorPayload = StandardErrorResponse;
 
-export type ErrorDetails = PublicErrorDetailFields & Record<string, unknown>;
+export interface ApiErrorResult {
+  status: number;
+  payload: ApiErrorPayload;
+}
+
+export type ErrorDetails = ErrorDetailInputFields & Record<string, unknown>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -198,12 +166,8 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
 function isNonNegativeFiniteNumber(value: unknown): value is number {
-  return isFiniteNumber(value) && value >= 0;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
@@ -239,89 +203,115 @@ function isVerificationStatus(value: unknown): value is VerificationStatus {
   return typeof value === 'string' && VERIFICATION_STATUSES.has(value as VerificationStatus);
 }
 
-function sanitizePublicVerificationErrors(value: unknown): PublicVerificationReport['errors'] | undefined {
+function sanitizeErrorCodes(value: unknown): string[] | undefined {
   if (!isStringArray(value)) {
     return undefined;
   }
 
-  const errors: NonNullable<PublicVerificationReport['errors']> = [];
+  const errorCodes: string[] = [];
   for (const entry of value) {
     const trimmed = entry.trim();
-    if (!trimmed) {
+    if (!trimmed || trimmed.length > 128 || errorCodes.includes(trimmed)) {
       continue;
     }
-    const publicError = PUBLIC_VERIFICATION_ERROR_MESSAGES.has(trimmed as PublicVerificationErrorMessage)
-      ? (trimmed as PublicVerificationErrorMessage)
-      : 'Verification failed';
-    if (!errors.includes(publicError)) {
-      errors.push(publicError);
-    }
-    if (errors.length >= 20) {
+    errorCodes.push(trimmed);
+    if (errorCodes.length >= 20) {
       break;
     }
   }
-
-  return errors.length > 0 ? errors : undefined;
+  return errorCodes.length > 0 ? errorCodes : undefined;
 }
 
-function sanitizePublicVerificationReport(value: unknown): PublicVerificationReport | undefined {
-  if (!isRecord(value) || !isVerificationStatus(value['status'])) {
+function sanitizeNextAvailableAtMs(details: ErrorDetails): number | undefined {
+  if (isNonNegativeInteger(details.nextAvailableAtMs)) {
+    return details.nextAvailableAtMs;
+  }
+  if (!isNonEmptyString(details.nextAvailableAt)) {
     return undefined;
   }
-  const errors = sanitizePublicVerificationErrors(value['errors']);
-
-  return {
-    status: value['status'],
-    ...(isNonEmptyString(value['verifier_version']) ? { verifier_version: value['verifier_version'] } : {}),
-    ...(isNonEmptyString(value['verified_at']) ? { verified_at: value['verified_at'] } : {}),
-    ...(isNonNegativeInteger(value['duration_ms']) ? { duration_ms: value['duration_ms'] } : {}),
-    ...(isNonEmptyString(value['expected_image_id']) ? { expected_image_id: value['expected_image_id'] } : {}),
-    ...(isNonEmptyString(value['receipt_image_id']) || value['receipt_image_id'] === null
-      ? { receipt_image_id: value['receipt_image_id'] }
-      : {}),
-    ...(typeof value['dev_mode_receipt'] === 'boolean' ? { dev_mode_receipt: value['dev_mode_receipt'] } : {}),
-    ...(errors ? { errors } : {}),
-  };
+  const parsed = Date.parse(details.nextAvailableAt);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
-function sanitizeErrorDetails(details?: ErrorDetails): PublicErrorDetailFields {
+function sanitizeFinalizationId(value: unknown): string | undefined {
+  const parsed = finalizationIdSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function sanitizeTaggedErrorDetail(details: ErrorDetails): PublicErrorDetail | undefined {
+  const nested = publicErrorDetailSchema.safeParse(details.details);
+  if (nested.success) {
+    return nested.data;
+  }
+
+  const explicit = publicErrorDetailSchema.safeParse(details);
+  if (explicit.success) {
+    return explicit.data;
+  }
+
+  const issues = sanitizeFlattenedIssues(details.issues);
+  if (issues) {
+    return { kind: 'validation', issues };
+  }
+
+  if (isNonNegativeInteger(details.limitBytes)) {
+    return {
+      kind: 'bodyLimit',
+      limitBytes: details.limitBytes,
+      ...(isNonNegativeInteger(details.receivedBytes) ? { receivedBytes: details.receivedBytes } : {}),
+    };
+  }
+
+  const retryAfterSeconds = isNonNegativeFiniteNumber(details.retryAfterSeconds)
+    ? details.retryAfterSeconds
+    : isNonNegativeFiniteNumber(details.retryAfter)
+      ? details.retryAfter
+      : undefined;
+  const nextAvailableAtMs = sanitizeNextAvailableAtMs(details);
+  const remainingExecutions = isNonNegativeInteger(details.remainingExecutions)
+    ? details.remainingExecutions
+    : undefined;
+  if (retryAfterSeconds !== undefined || nextAvailableAtMs !== undefined || remainingExecutions !== undefined) {
+    return {
+      kind: 'rateLimit',
+      ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+      ...(nextAvailableAtMs !== undefined ? { nextAvailableAtMs } : {}),
+      ...(remainingExecutions !== undefined ? { remainingExecutions } : {}),
+    };
+  }
+
+  if (isVerificationStatus(details.status)) {
+    const finalizationId = sanitizeFinalizationId(details.finalizationId);
+    const errorCodes = sanitizeErrorCodes(details.errorCodes);
+    return {
+      kind: 'verificationState',
+      status: details.status,
+      ...(finalizationId ? { finalizationId } : {}),
+      ...(errorCodes ? { errorCodes } : {}),
+    };
+  }
+
+  if (isNonNegativeInteger(details.voteIndex) && isNonNegativeInteger(details.expectedTreeSize)) {
+    return {
+      kind: 'proofRange',
+      voteIndex: details.voteIndex,
+      expectedTreeSize: details.expectedTreeSize,
+      ...(isNonNegativeInteger(details.actualTreeSize) ? { actualTreeSize: details.actualTreeSize } : {}),
+    };
+  }
+
+  return undefined;
+}
+
+function sanitizeErrorDetails(details?: ErrorDetails): { message?: string; details?: PublicErrorDetail } {
   if (!details) {
     return {};
   }
-  const issues = sanitizeFlattenedIssues(details.issues);
-  const verificationReport = sanitizePublicVerificationReport(details.verificationReport);
 
+  const publicDetail = sanitizeTaggedErrorDetail(details);
   return {
     ...(isNonEmptyString(details.message) ? { message: details.message } : {}),
-    ...(isNonEmptyString(details.details) ? { details: details.details } : {}),
-    ...(issues ? { issues } : {}),
-    ...(isNonEmptyString(details.reason) ? { reason: details.reason } : {}),
-    ...(isNonNegativeFiniteNumber(details.retryAfter) ? { retryAfter: details.retryAfter } : {}),
-    ...(isNonNegativeInteger(details.limitBytes) ? { limitBytes: details.limitBytes } : {}),
-    ...(isNonNegativeInteger(details.receivedBytes) ? { receivedBytes: details.receivedBytes } : {}),
-    ...(isNonEmptyString(details.nextAvailableAt) ? { nextAvailableAt: details.nextAvailableAt } : {}),
-    ...(isNonNegativeInteger(details.remainingExecutions) ? { remainingExecutions: details.remainingExecutions } : {}),
-    ...(details.artifactState === 'unsupported_current_artifact' || details.artifactState === 'corrupt_or_unreadable'
-      ? { artifactState: details.artifactState }
-      : {}),
-    ...(isNonEmptyString(details.runtimeContractGeneration)
-      ? { runtimeContractGeneration: details.runtimeContractGeneration }
-      : {}),
-    ...(isNonEmptyString(details.persistedContractGeneration) || details.persistedContractGeneration === null
-      ? { persistedContractGeneration: details.persistedContractGeneration }
-      : {}),
-    ...(isNonEmptyString(details.carriedContractGeneration) || details.carriedContractGeneration === null
-      ? { carriedContractGeneration: details.carriedContractGeneration }
-      : {}),
-    ...(isVerificationStatus(details.status) ? { status: details.status } : {}),
-    ...(isNonEmptyString(details.verificationExecutionId)
-      ? { verificationExecutionId: details.verificationExecutionId }
-      : {}),
-    ...(verificationReport ? { verificationReport } : {}),
-    ...(isNonNegativeInteger(details.voteIndex) ? { voteIndex: details.voteIndex } : {}),
-    ...(isNonNegativeInteger(details.expectedTreeSize) ? { expectedTreeSize: details.expectedTreeSize } : {}),
-    ...(isNonNegativeInteger(details.actualTreeSize) ? { actualTreeSize: details.actualTreeSize } : {}),
-    ...(isStringArray(details.errorCodes) ? { errorCodes: [...details.errorCodes] } : {}),
+    ...(publicDetail ? { details: publicDetail } : {}),
   };
 }
 
@@ -343,19 +333,29 @@ export class ApiError extends Error {
   }
 
   /**
-   * Convert error to JSON response format
+   * Convert the internal error into a status plus canonical public payload.
    */
-  toJSON(): ApiErrorPayload {
+  toResult(requestId: string): ApiErrorResult {
     const publicDetails = sanitizeErrorDetails(this.details);
-    const { message: detailMessage, ...detailFields } = publicDetails;
-    const json: ApiErrorPayload = {
-      error: this.code,
-      message: detailMessage ?? this.message,
-      statusCode: this.statusCode,
-      ...detailFields,
+    const parsedRequestId = requestIdSchema.safeParse(requestId);
+    if (!parsedRequestId.success) {
+      throw new Error('A trusted non-empty requestId is required to serialize an API error');
+    }
+    const payload: ApiErrorPayload = {
+      error: {
+        code: this.code,
+        message: publicDetails.message ?? this.message,
+        ...(publicDetails.details ? { details: publicDetails.details } : {}),
+      },
+      meta: {
+        requestId: parsedRequestId.data,
+      },
     };
 
-    return json;
+    return {
+      status: this.statusCode,
+      payload,
+    };
   }
 }
 
@@ -381,8 +381,7 @@ export const ERROR_STATUS_CODES: Partial<Record<ErrorCode, number>> = {
   [ErrorCode.SESSION_CAPABILITY_INVALID]: 401,
   [ErrorCode.SESSION_CAPABILITY_EXPIRED]: 401,
   [ErrorCode.SAME_ORIGIN_REQUIRED]: 403,
-  [ErrorCode.UNSUPPORTED_CURRENT_ARTIFACT]: 500,
-  [ErrorCode.CORRUPT_OR_UNREADABLE_FINALIZED_STATE]: 500,
+  [ErrorCode.INVALID_FINALIZATION_ARTIFACT]: 500,
   [ErrorCode.INVALID_BUNDLE_REFERENCE]: 400,
   [ErrorCode.BUNDLE_NOT_FOUND]: 404,
   [ErrorCode.BUNDLE_DOWNLOAD_FAILED]: 500,
@@ -395,7 +394,6 @@ export const ERROR_STATUS_CODES: Partial<Record<ErrorCode, number>> = {
   [ErrorCode.CANCELLATION_UNSUPPORTED]: 501,
   [ErrorCode.FINALIZATION_NOT_CANCELLABLE]: 409,
   [ErrorCode.VERIFICATION_OBSERVATION_CONFLICT]: 409,
-  [ErrorCode.SESSION_ID_REQUIRED]: 400,
   [ErrorCode.INVALID_VOTE_CHOICE]: 400,
   [ErrorCode.ALREADY_VOTED]: 400,
   [ErrorCode.SESSION_FINALIZED]: 400,
@@ -405,24 +403,26 @@ export const ERROR_STATUS_CODES: Partial<Record<ErrorCode, number>> = {
   [ErrorCode.VOTING_NOT_COMPLETE]: 400,
   [ErrorCode.INVALID_SCENARIO]: 400,
   [ErrorCode.INVALID_SCENARIO_COMBINATION]: 400,
-  [ErrorCode.INVALID_BOT_ID]: 400,
-  [ErrorCode.BOT_NOT_FOUND]: 404,
   [ErrorCode.SESSION_NOT_FINALIZED]: 400,
-  [ErrorCode.BOT_DATA_NOT_FOUND]: 404,
   [ErrorCode.INVALID_VOTE_ID]: 400,
   [ErrorCode.VOTE_NOT_FOUND]: 404,
   [ErrorCode.DUPLICATE_VOTE]: 409,
   [ErrorCode.VERIFICATION_FAILED]: 400,
+  [ErrorCode.CT_PROOF_UNAVAILABLE]: 400,
 };
 
 /**
- * Helper to create error response from ApiError or ErrorCode
+ * Build an internal HTTP status plus canonical public error payload.
  */
-export function createErrorResponse(error: ApiError | ErrorCode, details?: ErrorDetails): ApiErrorPayload {
+export function createApiErrorResult(
+  error: ApiError | ErrorCode,
+  requestId: string,
+  details?: ErrorDetails,
+): ApiErrorResult {
   if (error instanceof ApiError) {
-    return error.toJSON();
+    return error.toResult(requestId);
   }
 
   const statusCode = ERROR_STATUS_CODES[error] || 500;
-  return new ApiError(error, statusCode, undefined, details).toJSON();
+  return new ApiError(error, statusCode, undefined, details).toResult(requestId);
 }

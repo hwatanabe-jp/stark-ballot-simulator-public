@@ -166,7 +166,7 @@ def theoremReports : List TheoremReport := [
   {
     name := "no_overflow_under_guest_bounds"
     source := "formal/StarkBallotFormal/GuestModel.lean"
-    claim := "under explicit guest tree-size, vote-count, and candidate tally-bucket bounds of 1,000,000, modeled seen, valid, rejected, and candidate tally bucket counts remain inside the Rust u32 domain"
+    claim := "under explicit guest tree-size and vote-count input bounds of 1,000,000, modeled seen, valid, rejected, and candidate tally bucket counts remain inside the Rust u32 domain, and each candidate tally bucket is proved <= 1,000,000"
   }
 ]
 
@@ -175,7 +175,7 @@ def assumptions : List String := [
   "RISC Zero receipt soundness is assumed, not proved by Lean",
   "Rust and TypeScript implementation correspondence is checked by generated vectors and tests",
   "The guest model is an abstract state machine over presented records, not a direct Rust verification",
-  "Rust bounded-counter correspondence is claimed only for accepted guest inputs satisfying the explicit Phase 4 guest bounds: treeSize <= 1,000,000, vote count <= 1,000,000, and each candidate tally bucket <= 1,000,000"
+  "Rust bounded-counter correspondence is scoped to the explicit guest input bounds treeSize <= 1,000,000 and vote count <= 1,000,000; under those bounds, Lean proves each candidate tally bucket <= 1,000,000"
 ]
 
 def nonClaims : List String := [
@@ -198,7 +198,7 @@ def generatedVectorArtifacts : List String := [
 def formalReportJson : String :=
   "{\n" ++ jsonObjectBody [
     "  \"schema\": " ++ jsonString "stark-ballot:formal-report|v1",
-    "  \"leanToolchain\": " ++ jsonString "leanprover/lean4:v4.29.1",
+    "  \"leanToolchain\": " ++ jsonString "leanprover/lean4:v4.32.2",
     "  \"reportKind\": " ++ jsonString "stable",
     "  \"modelModules\": " ++ renderStringArray [
       "formal/StarkBallotFormal/JournalCounts.lean",

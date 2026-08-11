@@ -96,17 +96,17 @@ export interface ExtractBundleOptions {
   sessionId: string;
   bundlePath: string;
   delivery: VerificationBundleDelivery;
-  executionId?: string;
+  finalizationId?: string;
   outputDir?: string;
 }
 
 export async function extractBundleArchive(options: ExtractBundleOptions): Promise<string> {
-  const { sessionId, bundlePath, delivery, executionId, outputDir = DEFAULT_OUTPUT_ROOT } = options;
+  const { sessionId, bundlePath, delivery, finalizationId, outputDir = DEFAULT_OUTPUT_ROOT } = options;
 
   const sessionBase = path.join(outputDir, sessionId, 'extracted');
   await ensureDirectory(sessionBase);
 
-  const identifier = executionId ?? path.basename(bundlePath, path.extname(bundlePath));
+  const identifier = finalizationId ?? path.basename(bundlePath, path.extname(bundlePath));
   const extractionDir = path.join(sessionBase, `${identifier}-${delivery}`);
 
   await fs.rm(extractionDir, { recursive: true, force: true });

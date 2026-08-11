@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
 import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
-import { normalizeHexString } from '@stark-ballot/domain/utils/hex';
+import { normalizeHexString } from '@stark-ballot/crypto-primitives';
 
 interface FixtureVote {
   commitment: number[];

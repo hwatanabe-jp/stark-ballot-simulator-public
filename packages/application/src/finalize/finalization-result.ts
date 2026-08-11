@@ -5,14 +5,13 @@ import type {
 } from '@stark-ballot/application/finalize/finalization-types';
 import type { ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
 import type { CloseStatement, ElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
-import { sanitizeFinalizationPayloadVerificationStatus } from '@stark-ballot/verification/fail-closed-status';
 import { isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import { VOTE_CHOICES } from '@stark-ballot/domain/shared/constants';
 import { toPublicZkvmJournal } from '@stark-ballot/zkvm-contract/zkvm/public-journal';
 import {
   resolveFinalizationTamperDetected,
   resolveScenarioTamperCount,
-} from '@stark-ballot/domain/finalize/finalization-tamper';
+} from '@stark-ballot/verification/finalization-tamper';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import {
   resolveConsistentPublicAuditArtifacts as resolveVerificationPublicAuditArtifacts,
@@ -113,7 +112,10 @@ function applyScenarioContext(
     return result;
   }
 
-  const scenarioTamperCount = scenarioContext.summary.ignoredCount + scenarioContext.summary.recountedCount;
+  const scenarioTamperCount = resolveScenarioTamperCount({
+    ignoredVotes: scenarioContext.summary.ignoredCount,
+    recountedVotes: scenarioContext.summary.recountedCount,
+  });
   const excludedSlots = result.journal.excludedSlots;
   const rejectedRecords = result.journal.rejectedRecords;
   const tamperDetected = resolveFinalizationTamperDetected({
@@ -228,12 +230,10 @@ export function canonicalizeFinalizationResult(
     closeStatement,
     bitmapProofSource: candidate.bitmapProofSource,
     bitmapData: candidate.bitmapData,
-    verificationResult: candidate.verificationResult,
     ...omitUndefinedProperties({ tamperSummary: candidate.tamperSummary }),
   });
 
-  const scenarioAware = scenarioContext ? applyScenarioContext(canonical, scenarioContext) : canonical;
-  return sanitizeFinalizationPayloadVerificationStatus(scenarioAware);
+  return scenarioContext ? applyScenarioContext(canonical, scenarioContext) : canonical;
 }
 
 export function hydrateFinalizationResultFromJournal(
@@ -245,10 +245,7 @@ export function hydrateFinalizationResultFromJournal(
 
 export function hasConsistentPublicAuditArtifacts(
   result:
-    | Pick<
-        FinalizationResultAuthority,
-        'journal' | 'publicInputArtifact' | 'electionManifest' | 'closeStatement' | 'verificationResult'
-      >
+    | Pick<FinalizationResultAuthority, 'journal' | 'publicInputArtifact' | 'electionManifest' | 'closeStatement'>
     | undefined,
 ): boolean {
   if (!result || !isSupportedZkVMJournal(result.journal)) {

@@ -8,15 +8,15 @@
 
 import {
   BITMAP_CHUNK_BITS,
-  buildMerkleTreeLevels,
+  buildBitmapMerkleTreeHexLevels,
   calculateBitmapBitOffset,
   calculateBitmapLeafIndex,
-  extractBitFromChunkBuffer,
+  extractBitFromBitmapChunkHex,
   getBitmapLeafChunkHex,
-  hashInternalNode,
-  hashLeafChunk,
+  hashBitmapInternalNodeHex,
+  hashBitmapLeafChunkHex,
   isBitmapChunkHex,
-} from '@stark-ballot/zkvm-contract/zkvm/bitmap';
+} from '@stark-ballot/zkvm-contract/zkvm/bitmap-core';
 import {
   asAuthenticatedBitmapTreeSize,
   asBitmapBitIndex,
@@ -100,19 +100,8 @@ export function generateBitmapMerkleProof(bitmap: boolean[], bitIndex: number): 
   const leafIndex = calculateLeafIndex(bitIndex);
   const leafChunk = getLeafChunk(bitmap, leafIndex);
 
-  // Build complete bitmap chunks
-  const numLeaves = Math.ceil(bitmap.length / 256);
-  const chunks: Buffer[] = [];
-  for (let i = 0; i < numLeaves; i++) {
-    const chunkHex = getLeafChunk(bitmap, i);
-    chunks.push(Buffer.from(chunkHex, 'hex'));
-  }
-
-  // Hash all leaf chunks
-  const leaves = chunks.map((chunk) => hashLeafChunk(chunk));
-
   // Build the complete Merkle tree
-  const levels = buildMerkleTreeLevels(leaves);
+  const levels = buildBitmapMerkleTreeHexLevels(bitmap);
 
   // Generate audit path
   const auditPath: Array<{ hash: string; position: 'left' | 'right' }> = [];
@@ -129,7 +118,7 @@ export function generateBitmapMerkleProof(bitmap: boolean[], bitIndex: number): 
     const sibling = levelNodes[siblingIndex];
     if (sibling) {
       auditPath.push({
-        hash: sibling.toString('hex'),
+        hash: sibling,
         position: isLeft ? 'right' : 'left',
       });
     }
@@ -170,13 +159,12 @@ export function verifyBitmapMerkleProof(
     return invalidBitmapResult(leafIndex, bitOffset);
   }
 
-  const chunkBuffer = Buffer.from(leafChunk, 'hex');
-  if (!hasZeroUnusedPadding(chunkBuffer, context.treeSize, leafIndex)) {
+  if (!hasZeroUnusedPadding(leafChunk, context.treeSize, leafIndex)) {
     return invalidBitmapResult(leafIndex, bitOffset);
   }
 
-  const included = extractBitFromChunkBuffer(chunkBuffer, bitOffset);
-  let currentHash = hashLeafChunk(chunkBuffer);
+  const included = extractBitFromBitmapChunkHex(leafChunk, bitOffset);
+  let currentHash = hashBitmapLeafChunkHex(leafChunk);
 
   for (const pathNode of auditPath) {
     if (!isBitmapChunkHex(pathNode.hash)) {
@@ -188,18 +176,16 @@ export function verifyBitmapMerkleProof(
       };
     }
 
-    const siblingHash = Buffer.from(pathNode.hash, 'hex');
-
     if (pathNode.position === 'left') {
       // Sibling is on the left, current is on the right
-      currentHash = hashInternalNode(siblingHash, currentHash);
+      currentHash = hashBitmapInternalNodeHex(pathNode.hash, currentHash);
     } else {
       // Sibling is on the right, current is on the left
-      currentHash = hashInternalNode(currentHash, siblingHash);
+      currentHash = hashBitmapInternalNodeHex(currentHash, pathNode.hash);
     }
   }
 
-  const computedRoot = '0x' + currentHash.toString('hex');
+  const computedRoot = '0x' + currentHash;
   const normalizedExpected = context.expectedRoot.startsWith('0x') ? context.expectedRoot : '0x' + context.expectedRoot;
   const valid = computedRoot === normalizedExpected;
 
@@ -240,7 +226,7 @@ export function buildAuthenticatedBitmapProofContext(input: {
   };
 }
 
-function hasZeroUnusedPadding(chunk: Buffer, treeSize: number, leafIndex: number): boolean {
+function hasZeroUnusedPadding(chunkHex: string, treeSize: number, leafIndex: number): boolean {
   const leafCount = Math.ceil(treeSize / BITMAP_CHUNK_BITS);
   if (leafIndex !== leafCount - 1) {
     return true;
@@ -252,7 +238,7 @@ function hasZeroUnusedPadding(chunk: Buffer, treeSize: number, leafIndex: number
   }
 
   for (let bitOffset = usedBitsInLeaf; bitOffset < BITMAP_CHUNK_BITS; bitOffset++) {
-    if (extractBitFromChunkBuffer(chunk, bitOffset)) {
+    if (extractBitFromBitmapChunkHex(chunkHex, bitOffset)) {
       return false;
     }
   }

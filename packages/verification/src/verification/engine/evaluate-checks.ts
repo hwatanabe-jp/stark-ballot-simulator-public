@@ -1,19 +1,19 @@
 import type { VerificationStepStatus } from '../step-types';
 import type { VerificationCheckId, VerificationCheckNoteKey } from '@stark-ballot/verification/checks';
 import { VERIFICATION_CHECK_IDS } from '@stark-ballot/verification/checks';
-import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { VOTE_CHOICES } from '@stark-ballot/verification/shared/constants';
-import type { VoteChoice } from '@stark-ballot/verification/shared/constants';
 import { verifyCTMerkleInclusion } from '@stark-ballot/verification/merkle';
 import { resolveExcludedCount } from '@stark-ballot/verification/excluded-count';
 import { recomputeElectionManifestHash, buildCloseStatement } from '@stark-ballot/verification/public-audit-artifacts';
-import { normalizeHexString, isValidHexString } from '@stark-ballot/verification/shared/hex';
+import { isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { explainVoteInclusionStatus, verifyMyVoteWasCounted } from '@stark-ballot/verification/bitmap-verifier';
 import { asAuthenticatedBitmapTreeSize } from '@stark-ballot/verification/bitmap-proof-types';
 import { toCanonicalRfc6962Proof } from '@stark-ballot/merkle/rfc6962-proof';
 import type { CheckResult, VerificationContext, VerificationStatus } from './types';
 import { asBulletinIndex, asLeafIndex } from '../index-identifiers';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import { verifyConsistencyProof } from '../consistency-verifier';
+import { evaluateLocalCastChecks, type LocalCastCheckResults } from '@stark-ballot/verification/local-cast-checks';
 
 export interface EvaluateChecksOptions {
   applyZkGate?: boolean;
@@ -22,6 +22,7 @@ export interface EvaluateChecksOptions {
 interface EvaluationRuntime {
   starkStatus: VerificationStepStatus;
   zkGateStatus?: VerificationStepStatus;
+  localCastResults: LocalCastCheckResults;
 }
 
 interface EvaluationHelpers {
@@ -35,10 +36,10 @@ type CheckEvaluator = (
 ) => CheckResult | Promise<CheckResult>;
 
 export const CHECK_EVALUATORS: Record<VerificationCheckId, CheckEvaluator> = {
-  cast_receipt_present: (ctx) => resolveCastReceiptPresent(ctx.voteReceipt),
-  cast_choice_range: (ctx) => resolveCastChoiceRange(ctx.userVote?.vote),
-  cast_random_format: (ctx) => resolveCastRandomFormat(ctx.userVote?.random),
-  cast_commitment_match: (ctx) => resolveCastCommitmentMatch(ctx),
+  cast_receipt_present: (_ctx, runtime) => runtime.localCastResults.cast_receipt_present,
+  cast_choice_range: (_ctx, runtime) => runtime.localCastResults.cast_choice_range,
+  cast_random_format: (_ctx, runtime) => runtime.localCastResults.cast_random_format,
+  cast_commitment_match: (_ctx, runtime) => runtime.localCastResults.cast_commitment_match,
   recorded_commitment_in_bulletin: (_ctx, _runtime, helpers) => helpers.evaluate('recorded_inclusion_proof'),
   recorded_index_in_range: (ctx) => resolveRecordedIndexInRange(ctx.voteReceipt, ctx.treeSize),
   recorded_root_at_cast_consistent: (_ctx, _runtime, helpers) => helpers.evaluate('recorded_consistency_proof'),
@@ -77,6 +78,14 @@ export async function evaluateChecks(
   );
   const runtime: EvaluationRuntime = {
     starkStatus,
+    localCastResults: evaluateLocalCastChecks(
+      omitUndefinedProperties({
+        electionId: ctx.electionId,
+        voteReceipt: ctx.voteReceipt,
+        choice: ctx.userVote?.vote,
+        random: ctx.userVote?.random,
+      }),
+    ),
     ...omitUndefinedProperties({ zkGateStatus: applyZkGate ? resolveZkGateStatus(starkStatus) : undefined }),
   };
 
@@ -104,69 +113,6 @@ export async function evaluateAllChecks(
   options: EvaluateChecksOptions = {},
 ): Promise<Map<VerificationCheckId, CheckResult>> {
   return evaluateChecks(ctx, VERIFICATION_CHECK_IDS, options);
-}
-
-function resolveCastReceiptPresent(voteReceipt: VerificationContext['voteReceipt']): CheckResult {
-  if (!voteReceipt) {
-    return { status: 'not_run' };
-  }
-  if (!voteReceipt.voteId || !voteReceipt.commitment) {
-    return { status: 'failed', error: 'Invalid receipt: missing commitment or voteId' };
-  }
-  return { status: 'success' };
-}
-
-function resolveCastChoiceRange(choice?: VoteChoice): CheckResult {
-  if (!choice) {
-    return { status: 'not_run' };
-  }
-  if (!VOTE_CHOICES.includes(choice)) {
-    return { status: 'failed', error: `Unknown vote choice "${choice}".` };
-  }
-  return { status: 'success' };
-}
-
-function resolveCastRandomFormat(random?: string): CheckResult {
-  if (!random) {
-    return { status: 'not_run' };
-  }
-  return isValidHexString(random, 32)
-    ? { status: 'success' }
-    : { status: 'failed', error: 'Random value must be a 32-byte hex string.' };
-}
-
-function resolveCastCommitmentMatch(input: VerificationContext): CheckResult {
-  const { electionId, voteReceipt, userVote } = input;
-  if (!electionId || !voteReceipt?.commitment || !userVote?.vote || !userVote.random) {
-    return { status: 'not_run' };
-  }
-
-  const normalizedCommitment = normalizeHexString(voteReceipt.commitment);
-  if (!normalizedCommitment) {
-    return { status: 'failed', error: 'Receipt commitment is malformed.' };
-  }
-
-  const choiceIndex = VOTE_CHOICES.indexOf(userVote.vote);
-  if (choiceIndex === -1) {
-    return { status: 'failed', error: `Unknown vote choice "${userVote.vote}".` };
-  }
-
-  try {
-    const recomputed = computeCommitment(electionId, choiceIndex, userVote.random);
-    const normalizedRecomputed = normalizeHexString(recomputed);
-    if (normalizedCommitment !== normalizedRecomputed) {
-      return { status: 'failed', error: 'Commitment mismatch between receipt and recomputed value.' };
-    }
-    return { status: 'success' };
-  } catch (error) {
-    return {
-      status: 'failed',
-      error:
-        error instanceof Error
-          ? `Failed to recompute commitment: ${error.message}`
-          : 'Failed to recompute commitment due to invalid input.',
-    };
-  }
 }
 
 async function resolveRecordedInclusionProof(ctx: VerificationContext): Promise<CheckResult> {
@@ -237,8 +183,8 @@ function resolveRecordedIndexInRange(voteReceipt: VerificationContext['voteRecei
 }
 
 function resolveRecordedConsistencyProof(input: VerificationContext): CheckResult {
-  const { bulletin, voteReceipt, bulletinRoot, treeSize, userVote } = input;
-  if (!bulletin || !voteReceipt || !voteReceipt.bulletinRootAtCast || !bulletinRoot || typeof treeSize !== 'number') {
+  const { consistencyProof, voteReceipt, bulletinRoot, treeSize, userVote } = input;
+  if (!voteReceipt || !voteReceipt.bulletinRootAtCast || !bulletinRoot || typeof treeSize !== 'number') {
     return { status: 'not_run' };
   }
 
@@ -276,25 +222,25 @@ function resolveRecordedConsistencyProof(input: VerificationContext): CheckResul
     return { status: 'failed', error: 'Consistency proof tree size exceeds final bulletin size.' };
   }
 
-  if (typeof bulletin.getSize === 'function' && newSize > bulletin.getSize()) {
-    return { status: 'failed', error: 'Root mismatch: bulletin may have been modified' };
+  if (!consistencyProof || consistencyProof.kind === 'unavailable') {
+    return { status: 'not_run' };
+  }
+  if (consistencyProof.kind !== 'admitted') {
+    return {
+      status: 'failed',
+      error: consistencyProof.message ?? 'Consistency proof evidence could not be admitted.',
+    };
   }
 
-  try {
-    const rootAtOldSize = bulletin.getRootAtSize(proof.treeSize);
-    if (normalizeHexString(rootAtOldSize) !== normalizeHexString(voteReceipt.bulletinRootAtCast)) {
-      return { status: 'failed', error: 'Root mismatch: bulletin may have been modified' };
-    }
-    const rootAtNewSize = bulletin.getRootAtSize(newSize);
-    if (normalizeHexString(rootAtNewSize) !== normalizeHexString(bulletinRoot)) {
-      return { status: 'failed', error: 'Root mismatch: bulletin may have been modified' };
-    }
-    const proofNodes = bulletin.getConsistencyProof(proof.treeSize, newSize);
-    const isConsistent = bulletin.verifyConsistency(rootAtOldSize, rootAtNewSize, proofNodes);
-    return isConsistent ? { status: 'success' } : { status: 'failed', error: 'Consistency proof verification failed.' };
-  } catch {
-    return { status: 'failed', error: 'Consistency proof verification failed.' };
-  }
+  const result = verifyConsistencyProof(consistencyProof.value, {
+    fromTreeSize: proof.treeSize,
+    toTreeSize: newSize,
+    rootAtFromTreeSize: voteReceipt.bulletinRootAtCast,
+    rootAtToTreeSize: bulletinRoot,
+  });
+  return result.isValid
+    ? { status: 'success' }
+    : { status: 'failed', error: result.error ?? 'Consistency proof verification failed.' };
 }
 
 function resolveRecordedSthThirdParty(input: VerificationContext): CheckResult {
@@ -305,8 +251,7 @@ function resolveRecordedSthThirdParty(input: VerificationContext): CheckResult {
     return { status: 'not_run' };
   }
 
-  const sources = input.sthSources ?? [];
-  if (sources.length === 0) {
+  if (input.sthSourcesConfigured !== true) {
     return { status: 'not_run' };
   }
 
@@ -624,10 +569,7 @@ function isValidCount(value: number | undefined): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
-async function resolveCountedMyVoteIncluded(
-  input: VerificationContext,
-  zkGateStatus?: VerificationStepStatus,
-): Promise<CheckResult> {
+function resolveCountedMyVoteIncluded(input: VerificationContext, zkGateStatus?: VerificationStepStatus): CheckResult {
   if (zkGateStatus) {
     return { status: zkGateStatus };
   }
@@ -659,21 +601,29 @@ async function resolveCountedMyVoteIncluded(
     return noteKey ? { status: 'not_run', noteKey } : { status: 'not_run' };
   }
 
+  if (!input.includedBitmapProof || input.includedBitmapProof.kind !== 'admitted') {
+    const noteKey = resolveCountedMyVoteIncludedNoteKey(input, 'not_run', zkGateStatus);
+    return noteKey ? { status: 'not_run', noteKey } : { status: 'not_run' };
+  }
+
   try {
-    const bitmapOptions = {
-      ...(input.bitmapProofProvider ? { proofProvider: input.bitmapProofProvider } : {}),
-      treeSize: authenticatedTreeSize,
-    };
     const result = seenBitmapRoot
-      ? await explainVoteInclusionStatus(
+      ? explainVoteInclusionStatus(
           bulletinIndex,
           {
             includedBitmapRoot,
             seenBitmapRoot,
           },
-          bitmapOptions,
+          {
+            includedProof: input.includedBitmapProof.value,
+            ...(input.seenBitmapProof?.kind === 'admitted' ? { seenProof: input.seenBitmapProof.value } : {}),
+            treeSize: authenticatedTreeSize,
+          },
         )
-      : await verifyMyVoteWasCounted(bulletinIndex, includedBitmapRoot, bitmapOptions);
+      : verifyMyVoteWasCounted(bulletinIndex, includedBitmapRoot, {
+          proof: input.includedBitmapProof.value,
+          treeSize: authenticatedTreeSize,
+        });
     if (!result.valid) {
       return { status: 'failed' };
     }
@@ -733,6 +683,10 @@ function resolveCountedMyVoteIncludedNoteKey(
   return undefined;
 }
 
+function isValidImageId(value: unknown): value is string {
+  return typeof value === 'string' && isValidHexString(value, 32);
+}
+
 function resolveStarkImageIdMatch(ctx: VerificationContext, status: VerificationStepStatus): CheckResult {
   if (status === 'running' || status === 'not_run' || status === 'failed') {
     return { status };
@@ -741,6 +695,17 @@ function resolveStarkImageIdMatch(ctx: VerificationContext, status: Verification
   const report = ctx.verificationReport;
   const claimedImageId = ctx.claimedImageId;
   const comparisonImageId = ctx.comparisonImageId;
+
+  if (
+    (claimedImageId !== undefined && !isValidImageId(claimedImageId)) ||
+    (comparisonImageId !== undefined && !isValidImageId(comparisonImageId)) ||
+    (report?.expected_image_id !== undefined && !isValidImageId(report.expected_image_id)) ||
+    (report?.receipt_image_id !== undefined &&
+      report.receipt_image_id !== null &&
+      !isValidImageId(report.receipt_image_id))
+  ) {
+    return { status: 'failed', error: 'ImageID evidence must be a 32-byte hexadecimal value.' };
+  }
 
   if (claimedImageId && comparisonImageId) {
     if (normalizeHexString(claimedImageId) !== normalizeHexString(comparisonImageId)) {
@@ -770,7 +735,7 @@ function resolveStarkImageIdMatch(ctx: VerificationContext, status: Verification
     return { status: 'success' };
   }
 
-  return { status };
+  return { status: 'not_run' };
 }
 
 export function resolveStarkStatus(

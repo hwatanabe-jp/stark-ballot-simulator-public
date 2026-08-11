@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
 import { VoteRateLimiter, getVoteRateLimiter, resetVoteRateLimiter } from './voteRateLimit';
 
 describe('VoteRateLimiter', () => {
@@ -46,12 +47,13 @@ describe('VoteRateLimiter', () => {
 describe('shared voteRateLimiter instance', () => {
   it('shares state between calls', async () => {
     resetVoteRateLimiter();
-    const limiter = getVoteRateLimiter();
+    const profile = localRuntimeProfile();
+    const limiter = getVoteRateLimiter(profile);
     const ip = '198.51.100.1';
     for (let i = 0; i < 10; i++) {
       await limiter.record(ip);
     }
-    const result = await getVoteRateLimiter().check(ip);
+    const result = await getVoteRateLimiter(profile).check(ip);
     expect(result.allowed).toBe(false);
   });
 });

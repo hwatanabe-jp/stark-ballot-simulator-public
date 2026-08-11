@@ -19,9 +19,7 @@ type TestJournalOptions = {
   totalExpected?: number;
   validVotes?: number;
   missingSlots?: number;
-  missingIndices?: number;
   invalidPresentedSlots?: number;
-  invalidIndices?: number;
   rejectedRecords?: number;
   excludedSlots?: number;
   seenIndicesCount?: number;
@@ -125,8 +123,8 @@ export function createTestJournal(options: TestJournalOptions = {}): CurrentZkVM
   const electionId = options.electionId ?? generateElectionId();
   const totalExpected = options.totalExpected ?? 64;
   const validVotes = options.validVotes ?? totalExpected;
-  const requestedMissingSlots = options.missingSlots ?? options.missingIndices;
-  const requestedInvalidPresentedSlots = options.invalidPresentedSlots ?? options.invalidIndices;
+  const requestedMissingSlots = options.missingSlots;
+  const requestedInvalidPresentedSlots = options.invalidPresentedSlots;
   const seenIndicesCount =
     options.seenIndicesCount ??
     (requestedInvalidPresentedSlots !== undefined
@@ -142,10 +140,10 @@ export function createTestJournal(options: TestJournalOptions = {}): CurrentZkVM
     throw new Error('createTestJournal slot partition requires validVotes <= seenIndicesCount');
   }
   if (requestedMissingSlots !== undefined && requestedMissingSlots !== missingSlots) {
-    throw new Error('createTestJournal slot partition must match missingIndices');
+    throw new Error('createTestJournal slot partition must match missingSlots');
   }
   if (requestedInvalidPresentedSlots !== undefined && requestedInvalidPresentedSlots !== invalidPresentedSlots) {
-    throw new Error('createTestJournal invalidIndices must match seenIndicesCount - validVotes');
+    throw new Error('createTestJournal invalidPresentedSlots must match seenIndicesCount - validVotes');
   }
 
   const bulletinRoot = generateRandomBytes32();

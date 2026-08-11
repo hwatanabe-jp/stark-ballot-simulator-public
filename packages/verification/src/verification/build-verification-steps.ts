@@ -27,7 +27,7 @@ export interface BuildVerificationStepsInput extends VerificationContext {
 }
 
 /**
- * Build the four-step verification summary for /api/verify responses.
+ * Build the four-step summary for a verification resource.
  */
 export async function buildVerificationSteps(input: BuildVerificationStepsInput): Promise<VerificationStep[]> {
   const castSource = input.castSource ?? 'client';
@@ -63,7 +63,7 @@ function buildStepFromChecks(
 
 function resolveRequirementContext(input: BuildVerificationStepsInput): VerificationCheckRequirementContext {
   return {
-    sthSourcesConfigured: (input.sthSources ?? []).length > 0,
+    sthSourcesConfigured: input.sthSourcesConfigured === true,
   };
 }
 

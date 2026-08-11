@@ -3,7 +3,9 @@
 この章群では、投票集計の正当性を RISC Zero zkVM で検証し、レシートとジャーナルを検証パイプラインへ渡す流れを説明します。
 mock、`RISC0_DEV_MODE=1`、production STARK proof は、それぞれ異なる検証前提として区別します。
 
-## 章の構成
+<a id="章の構成"></a>
+
+## この部の章
 
 - [zkVM の基礎](foundations.md) では、zkVM の概念、RISC Zero の選択理由、データフロー、保証境界を扱います。
 - [ゲストプログラム](guest-program.md) では、zkVM 内で実行される検証と集計ロジックを扱います。
@@ -16,7 +18,9 @@ mock、`RISC0_DEV_MODE=1`、production STARK proof は、それぞれ異なる�
 - 想定読者は、集計の正当性を STARK で証明したい実装者と運用者です。
 - 前提は、[暗号プロトコル](../protocol/index.md) の入力コミットメントと Merkle ツリーを把握していることです。
 
-## 本章で扱わないもの
+<a id="本章で扱わないもの"></a>
+
+## この部で扱わないもの
 
 - RISC Zero SDK の API リファレンスやアップグレード手順
 - STARK / FRI の数学的構成証明

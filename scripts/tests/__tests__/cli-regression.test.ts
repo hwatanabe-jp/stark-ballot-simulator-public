@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { CLITestHelpers } from '@stark-ballot/test-support/testing/cli-test-helpers';
+import { buildCliVerificationPresentationFixture } from '@stark-ballot/test-support/testing/cli-verification-fixtures';
 import type { ImageIdMapping } from '@stark-ballot/verification/image-id-types';
 import type { CLITestConfig, CommandSpawner } from '../cli-e2e-voting-flow';
 import {
   CLIVotingTest,
-  configureCliZkvmEnvironment,
+  configureCliRuntimeProfile,
   resolveDefaultCliExpectedImageId,
   runBuildCiCommand,
 } from '../cli-e2e-voting-flow';
-import { getStringProperty, requireRecord } from '@stark-ballot/domain/utils/guards';
+import { getStringProperty, requireRecord } from '@stark-ballot/validation/unknown-value-guards';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import imageIdMappingJson from '../../../public/imageId-mapping.json';
 import packageJson from '../../../package.json';
@@ -54,6 +55,7 @@ function createHelpers(overrides: Partial<CLITestHelpers> = {}): CLITestHelpers 
     generateBotVotes: vi.fn().mockResolvedValue(undefined),
     finalizeWithScenarios: vi.fn().mockResolvedValue({
       data: {
+        finalizationId: 'finalization-1',
         tally: {
           counts: [64, 0, 0, 0, 0],
           merkleRoot: '0xroot',
@@ -84,45 +86,18 @@ function createHelpers(overrides: Partial<CLITestHelpers> = {}): CLITestHelpers 
         includedBitmapRoot: '0xbitmap',
         inputCommitment: '0xinput',
         verificationStatus: 'success',
-        verificationSteps: [
-          {
-            id: 'counted_as_recorded',
-            status: 'success',
-            inputs: [],
-          },
-          {
-            id: 'stark_verification',
-            status: 'success',
-            inputs: [],
-          },
-        ],
-        verificationChecks: [
-          {
-            id: 'counted_expected_vs_tree_size',
-            status: 'success',
-            evidence: 'public',
-            inputs: ['totalExpected', 'treeSize'],
-          },
-          {
-            id: 'counted_election_manifest_consistent',
-            status: 'success',
-            evidence: 'public',
-            inputs: ['electionManifest'],
-          },
-          {
-            id: 'counted_close_statement_consistent',
-            status: 'success',
-            evidence: 'public',
-            inputs: ['closeStatement'],
-          },
-          {
-            id: 'stark_receipt_verify',
-            status: 'success',
-            evidence: 'zk',
-            inputs: ['proofBundleStatus'],
-          },
-        ],
-        verificationExecutionId: 'exec-1',
+        ...buildCliVerificationPresentationFixture({
+          steps: [
+            { id: 'counted_as_recorded', status: 'success' },
+            { id: 'stark_verification', status: 'success' },
+          ],
+          checks: [
+            { id: 'counted_expected_vs_tree_size', status: 'success' },
+            { id: 'counted_election_manifest_consistent', status: 'success' },
+            { id: 'counted_close_statement_consistent', status: 'success' },
+            { id: 'stark_receipt_verify', status: 'success' },
+          ],
+        }),
         journal: createTestJournal({ totalExpected: 64, validVotes: 64 }),
         verificationReport: {
           status: 'success',
@@ -137,14 +112,17 @@ function createHelpers(overrides: Partial<CLITestHelpers> = {}): CLITestHelpers 
           errors: [],
         },
       },
+      meta: {
+        mode: 'sync',
+        finalizationId: 'finalization-1',
+      },
     }),
     verifySTARK: vi.fn().mockResolvedValue(true),
     describeReceipt: vi.fn().mockReturnValue({ kind: 'mock' }),
     verifyMerkle: vi.fn().mockResolvedValue(true),
     generateReport: vi.fn().mockResolvedValue(''),
     executeZkVM: vi.fn(),
-    getSensitiveAuthHeaders: vi.fn().mockReturnValue({
-      'X-Session-ID': 'session-123',
+    getPathSessionAuthHeaders: vi.fn().mockReturnValue({
       'X-Session-Capability': 'capability-token',
     }),
     ...overrides,
@@ -155,7 +133,7 @@ function createHelpers(overrides: Partial<CLITestHelpers> = {}): CLITestHelpers 
 
 type VerifyStark = CLITestHelpers['verifySTARK'];
 
-const trackedEnvVars = ['USE_MOCK_ZKVM', 'RISC0_DEV_MODE', 'STARK_BALLOT_CLI_BASE_URL'];
+const trackedEnvVars = ['RUNTIME_PROFILE', 'VITE_RUNTIME_PROFILE', 'STARK_BALLOT_CLI_BASE_URL'];
 const originalFetch = global.fetch;
 const imageIdMapping = imageIdMappingJson as ImageIdMapping;
 const BUILD_ENV_DENYLIST = [
@@ -237,6 +215,7 @@ function createAuthenticatedDownloadFetch(bundleZip: Buffer): typeof fetch {
             'Content-Range': `bytes ${start}-${end}/${bundleZip.byteLength}`,
             'Accept-Ranges': 'bytes',
             'X-Stark-Bundle-Range-Chunk-Size': String(4 * 1024 * 1024),
+            ETag: '"bundle-etag"',
           },
         }),
       );
@@ -263,10 +242,30 @@ function resolveFetchInputUrl(input: Parameters<typeof fetch>[0]): string {
   return input.url;
 }
 
+interface CliArtifactDownloadHarness {
+  downloadAuthenticatedBundle(url: string): Promise<Buffer>;
+  downloadAuthenticatedReport(url: string): Promise<Buffer>;
+}
+
+function createCliArtifactDownloadHarness(): CliArtifactDownloadHarness {
+  const config: CLITestConfig = {
+    scenarios: [],
+    allScenarios: false,
+    useRealZkVM: false,
+    realMode: 'dev',
+    verbose: false,
+    outputFormat: 'table',
+    userChoice: 'A',
+    skipBuild: true,
+  };
+  return new CLIVotingTest(config, createHelpers()) as unknown as CliArtifactDownloadHarness;
+}
+
 describe('CLIVotingTest regression coverage', () => {
   const savedEnv: Record<string, string | undefined> = {};
 
   beforeEach(async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
     global.fetch = createAuthenticatedDownloadFetch(await createBundleZipBuffer());
     trackedEnvVars.forEach((key) => {
       savedEnv[key] = process.env[key];
@@ -276,6 +275,7 @@ describe('CLIVotingTest regression coverage', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     global.fetch = originalFetch;
     trackedEnvVars.forEach((key) => {
       const savedValue = savedEnv[key];
@@ -290,7 +290,8 @@ describe('CLIVotingTest regression coverage', () => {
   it('passes the happy path in mock mode and reports Recorded-as-Cast success', async () => {
     const verifySTARK = vi.fn<VerifyStark>().mockResolvedValue(true);
     const verifyMerkle = vi.fn().mockResolvedValue(true);
-    const helpers = createHelpers({ verifySTARK, verifyMerkle });
+    const describeReceipt = vi.fn().mockReturnValue({ kind: 'mock' });
+    const helpers = createHelpers({ verifySTARK, describeReceipt, verifyMerkle });
     const config: CLITestConfig = {
       scenarios: [],
       ...omitUndefinedProperties({ scenario: undefined }),
@@ -317,7 +318,10 @@ describe('CLIVotingTest regression coverage', () => {
     expect(verifySTARK).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
-        useRealZkVM: false,
+        proofProfile: {
+          executor: 'mock',
+          evidence: 'mock',
+        },
         verificationStatus: 'success',
       }),
     );
@@ -327,35 +331,202 @@ describe('CLIVotingTest regression coverage', () => {
 
     expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(global.fetch).mock.calls.map((call) => call[0])).toEqual([
-      'http://localhost/api/verification/bundles/session-123/exec-1',
-      'http://localhost/api/verification/bundles/session-123/exec-1/report',
+      'http://localhost/api/sessions/session-123/finalizations/finalization-1/artifacts/bundle',
+      'http://localhost/api/sessions/session-123/finalizations/finalization-1/artifacts/report',
     ]);
     for (const fetchCall of vi.mocked(global.fetch).mock.calls) {
       const requestOptions = requireRecord(fetchCall[1], 'fetch request init');
       expect(getStringProperty(requestOptions, 'method')).toBe('GET');
       const requestHeaders = requireRecord(requestOptions['headers'], 'fetch request headers');
-      expect(getStringProperty(requestHeaders, 'X-Session-ID')).toBe('session-123');
+      expect(getStringProperty(requestHeaders, 'X-Session-ID')).toBeUndefined();
       expect(getStringProperty(requestHeaders, 'X-Session-Capability')).toBe('capability-token');
     }
 
     expect(result.details.verificationBundleDelivery).toBe('authenticated-endpoint');
     expect(result.details.verificationHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.details.verificationReportHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(describeReceipt).toHaveBeenCalledWith(JSON.stringify({ mock: true }));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('[OK] STARK proof verified (mock)'));
     expect(verifyMerkle).toHaveBeenCalledTimes(1);
-    expect(strictDefined(process.env['USE_MOCK_ZKVM'])).toBe('true');
-    expect(strictDefined(process.env['RISC0_DEV_MODE'])).toBe('1');
+    expect(strictDefined(process.env['RUNTIME_PROFILE'])).toBe('static-mock-e2e');
+    expect(strictDefined(process.env['VITE_RUNTIME_PROFILE'])).toBe('static-mock-e2e');
   });
 
-  it('resolves the accepted managed Prover ImageID as the default variant', () => {
+  it.each([
+    {
+      name: 'an oversized advertised total',
+      response: new Response('0123', {
+        status: 206,
+        headers: { 'Content-Range': `bytes 0-3/${256 * 1024 * 1024 + 1}` },
+      }),
+    },
+    {
+      name: 'a malformed content range',
+      response: new Response('0123', {
+        status: 206,
+        headers: { 'Content-Range': 'bytes invalid' },
+      }),
+    },
+    {
+      name: 'a body shorter than its advertised range',
+      response: new Response('012', {
+        status: 206,
+        headers: { 'Content-Range': 'bytes 0-3/4', ETag: '"bundle-etag"' },
+      }),
+    },
+    {
+      name: 'a body longer than its advertised range',
+      response: new Response('01234', {
+        status: 206,
+        headers: { 'Content-Range': 'bytes 0-3/4', ETag: '"bundle-etag"' },
+      }),
+    },
+    {
+      name: 'a response without a representation identity',
+      response: new Response('0123', {
+        status: 206,
+        headers: { 'Content-Range': 'bytes 0-3/4' },
+      }),
+    },
+  ])('rejects $name while downloading a CLI bundle', async ({ response }) => {
+    global.fetch = vi.fn<typeof fetch>().mockResolvedValue(response);
+
+    await expect(
+      createCliArtifactDownloadHarness().downloadAuthenticatedBundle('http://localhost/artifacts/bundle'),
+    ).rejects.toThrow('Invalid ranged bundle response');
+  });
+
+  it('rejects a later CLI range that does not exactly match the requested interval', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response('0123', {
+          status: 206,
+          headers: {
+            'Content-Range': 'bytes 0-3/8',
+            'X-Stark-Bundle-Range-Chunk-Size': '4',
+            ETag: '"bundle-etag"',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response('456', {
+          status: 206,
+          headers: {
+            'Content-Range': 'bytes 4-6/8',
+            'X-Stark-Bundle-Range-Chunk-Size': '4',
+            ETag: '"bundle-etag"',
+          },
+        }),
+      );
+    global.fetch = fetchMock;
+
+    await expect(
+      createCliArtifactDownloadHarness().downloadAuthenticatedBundle('http://localhost/artifacts/bundle'),
+    ).rejects.toThrow('Invalid ranged bundle response');
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('range')).toBe('bytes=4-7');
+  });
+
+  it('rejects a representation identity change between CLI bundle ranges', async () => {
+    global.fetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response('0123', {
+          status: 206,
+          headers: {
+            'Content-Range': 'bytes 0-3/8',
+            'X-Stark-Bundle-Range-Chunk-Size': '4',
+            ETag: '"bundle-etag"',
+            'X-Amz-Version-Id': 'version-1',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response('4567', {
+          status: 206,
+          headers: {
+            'Content-Range': 'bytes 4-7/8',
+            'X-Stark-Bundle-Range-Chunk-Size': '4',
+            ETag: '"bundle-etag"',
+            'X-Amz-Version-Id': 'version-2',
+          },
+        }),
+      );
+
+    await expect(
+      createCliArtifactDownloadHarness().downloadAuthenticatedBundle('http://localhost/artifacts/bundle'),
+    ).rejects.toThrow('Bundle representation changed during download');
+  });
+
+  it('caps an oversized CLI server-advertised chunk size at the local 4 MiB request bound', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response('0123', {
+          status: 206,
+          headers: {
+            'Content-Range': `bytes 0-3/${8 * 1024 * 1024}`,
+            'X-Stark-Bundle-Range-Chunk-Size': String(64 * 1024 * 1024),
+            ETag: '"bundle-etag"',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(new Response('range unavailable', { status: 416 }));
+    global.fetch = fetchMock;
+
+    await expect(
+      createCliArtifactDownloadHarness().downloadAuthenticatedBundle('http://localhost/artifacts/bundle'),
+    ).rejects.toThrow('HTTP 416');
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('range')).toBe('bytes=4-4194307');
+  });
+
+  it('rejects a full CLI bundle whose declared size exceeds the client bound', async () => {
+    global.fetch = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('bundle', {
+        status: 200,
+        headers: { 'Content-Length': String(256 * 1024 * 1024 + 1) },
+      }),
+    );
+
+    await expect(
+      createCliArtifactDownloadHarness().downloadAuthenticatedBundle('http://localhost/artifacts/bundle'),
+    ).rejects.toThrow('bundle response exceeds size limit');
+  });
+
+  it('rejects a protected CLI report whose declared size exceeds 4 MiB', async () => {
+    global.fetch = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('{"status":"success"}', {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': String(4 * 1024 * 1024 + 1),
+        },
+      }),
+    );
+
+    await expect(
+      createCliArtifactDownloadHarness().downloadAuthenticatedReport('http://localhost/artifacts/report'),
+    ).rejects.toThrow('report response exceeds size limit');
+  });
+
+  it('rejects a protected CLI report whose received body exceeds 4 MiB without a content length', async () => {
+    global.fetch = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('x'.repeat(4 * 1024 * 1024 + 1), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(
+      createCliArtifactDownloadHarness().downloadAuthenticatedReport('http://localhost/artifacts/report'),
+    ).rejects.toThrow('report response exceeds size limit');
+  });
+
+  it('resolves the accepted managed Prover ImageID by default', () => {
     const resolved = resolveDefaultCliExpectedImageId(imageIdMapping, 'default');
-    const current = imageIdMapping.mappings[imageIdMapping.current];
-    const defaultVariant = strictDefined(current).variants.default;
-    if (defaultVariant.state !== 'confirmed') {
-      throw new Error('default test mapping must be confirmed');
-    }
 
     expect(resolved.variant).toBe('default');
-    expect(resolved.imageId).toBe(defaultVariant.imageId);
+    expect(resolved.imageId).toBe('0x8dbbe2a82c110e06c77d58fc5f1f07b7d887595315a07a5d91b28275fb42bebc');
   });
 
   it('resolves the x86_64 variant when explicitly requested', () => {
@@ -370,20 +541,26 @@ describe('CLIVotingTest regression coverage', () => {
     expect(resolved.imageId).toBe(x86.imageId);
   });
 
-  it('makes the explicit CLI zkVM mode override stale local environment defaults before server start', () => {
+  it('selects one semantic runtime profile and removes retired selector inputs before server start', () => {
     const environment: NodeJS.ProcessEnv = {
+      S3_PROOF_PREFIX: 'sessions/',
       USE_MOCK_ZKVM: 'true',
       RISC0_DEV_MODE: '1',
     };
 
-    configureCliZkvmEnvironment({ useRealZkVM: true, realMode: 'prod' }, environment);
-    expect(environment['USE_MOCK_ZKVM']).toBe('false');
+    configureCliRuntimeProfile({ useRealZkVM: true, realMode: 'prod' }, environment);
+    expect(environment['RUNTIME_PROFILE']).toBe('local-proof-production');
+    expect(environment['VITE_RUNTIME_PROFILE']).toBe('local-proof-production');
+    expect(environment['USE_MOCK_ZKVM']).toBeUndefined();
     expect(environment['RISC0_DEV_MODE']).toBeUndefined();
+    expect(environment['S3_PROOF_PREFIX']).toBeUndefined();
 
     environment['USE_MOCK_ZKVM'] = 'true';
-    configureCliZkvmEnvironment({ useRealZkVM: true, realMode: 'dev' }, environment);
-    expect(environment['USE_MOCK_ZKVM']).toBe('false');
-    expect(environment['RISC0_DEV_MODE']).toBe('1');
+    configureCliRuntimeProfile({ useRealZkVM: true, realMode: 'dev' }, environment);
+    expect(environment['RUNTIME_PROFILE']).toBe('local-proof-development');
+    expect(environment['VITE_RUNTIME_PROFILE']).toBe('local-proof-development');
+    expect(environment['USE_MOCK_ZKVM']).toBeUndefined();
+    expect(environment['RISC0_DEV_MODE']).toBeUndefined();
   });
 
   it('sets the active x86_64 ImageID variant on maintained CLI package scripts', () => {
@@ -398,13 +575,14 @@ describe('CLIVotingTest regression coverage', () => {
     }
   });
 
-  it('runs the target artifact build without server secrets or mock bypass flags', async () => {
+  it('runs the local-profile artifact build without server secrets or retired selectors', async () => {
     const sourceEnv: NodeJS.ProcessEnv = {
       NODE_ENV: 'development',
       PATH: '/usr/bin',
       HOME: '/home/tester',
       CI: 'true',
       VITE_API_BASE_URL: 'https://api.example.com',
+      VITE_RUNTIME_PROFILE: 'local-proof-development',
       VITE_STH_SOURCES: 'https://auditor.example/sth',
       SESSION_CAPABILITY_SECRET: 'test-capability-secret-0123456789abcdef',
       S3_PROOF_PREFIX: 'sessions/',
@@ -418,7 +596,7 @@ describe('CLIVotingTest regression coverage', () => {
 
     const spawnImpl = ((command: string, args?: readonly string[], options?: { env?: NodeJS.ProcessEnv }) => {
       expect(command).toMatch(/^pnpm(?:\.cmd)?$/);
-      expect(args).toEqual(['build:ci']);
+      expect(args).toEqual(['build:local-mock']);
       capturedEnv = options?.env;
       const child = new EventEmitter();
       queueMicrotask(() => child.emit('exit', 0));
@@ -433,6 +611,7 @@ describe('CLIVotingTest regression coverage', () => {
       HOME: '/home/tester',
       CI: 'true',
       VITE_API_BASE_URL: 'https://api.example.com',
+      VITE_RUNTIME_PROFILE: 'local-proof-development',
       VITE_STH_SOURCES: 'https://auditor.example/sth',
     });
     for (const key of BUILD_ENV_DENYLIST) {
@@ -467,10 +646,14 @@ describe('CLIVotingTest regression coverage', () => {
     expect(verifySTARK).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        useRealZkVM: true,
+        proofProfile: {
+          executor: 'risc0',
+          evidence: 'production',
+        },
         verificationStatus: 'success',
       }),
     );
+    expect(describeReceipt).not.toHaveBeenCalled();
 
     const verifyCall = vi.mocked(verifySTARK).mock.calls[0];
     const verifyOptions = requireRecord(strictDefined(verifyCall)[1], 'verifySTARK options');
@@ -481,25 +664,65 @@ describe('CLIVotingTest regression coverage', () => {
     expect(result.passed).toBe(false);
     expect(result.details.errors).toEqual(expect.arrayContaining(['STARK proof verification failed']));
     expect(result.details.verificationStatus).toBe('success');
-    expect(result.details.verificationExecutionId).toBe('exec-1');
+    expect(result.details.finalizationId).toBe('finalization-1');
+    expect(console.log).toHaveBeenCalledWith(
+      '[CLI] Production STARK proof enabled; expected duration is about 6 minutes per scenario',
+    );
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('[ERROR] STARK proof verification failed'));
     expect(result.details.verificationHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.details.verificationReportHash).toMatch(/^[0-9a-f]{64}$/);
     const fetchCall = vi.mocked(global.fetch).mock.calls.at(0);
     expect(fetchCall).toBeDefined();
 
-    expect(fetchCall?.[0]).toBe('http://localhost/api/verification/bundles/session-123/exec-1');
+    expect(fetchCall?.[0]).toBe(
+      'http://localhost/api/sessions/session-123/finalizations/finalization-1/artifacts/bundle',
+    );
 
     const requestOptions = requireRecord(fetchCall?.[1], 'fetch request init');
     expect(getStringProperty(requestOptions, 'method')).toBe('GET');
 
     const requestHeaders = requireRecord(requestOptions['headers'], 'fetch request headers');
-    expect(getStringProperty(requestHeaders, 'X-Session-ID')).toBe('session-123');
+    expect(getStringProperty(requestHeaders, 'X-Session-ID')).toBeUndefined();
     expect(getStringProperty(requestHeaders, 'X-Session-Capability')).toBe('capability-token');
     expect(vi.mocked(global.fetch).mock.calls.at(1)?.[0]).toBe(
-      'http://localhost/api/verification/bundles/session-123/exec-1/report',
+      'http://localhost/api/sessions/session-123/finalizations/finalization-1/artifacts/report',
     );
-    expect(strictDefined(process.env['USE_MOCK_ZKVM'])).toBe('false');
-    expect(process.env['RISC0_DEV_MODE']).toBeUndefined();
+    expect(strictDefined(process.env['RUNTIME_PROFILE'])).toBe('local-proof-production');
+    expect(strictDefined(process.env['VITE_RUNTIME_PROFILE'])).toBe('local-proof-production');
+  });
+
+  it('keeps routine production-proof diagnostics free of stale format warnings', async () => {
+    const describeReceipt = vi.fn().mockReturnValue({ kind: 'unknown' });
+    const helpers = createHelpers({ describeReceipt });
+    const config: CLITestConfig = {
+      scenarios: [],
+      ...omitUndefinedProperties({ scenario: 'S0' }),
+      allScenarios: false,
+      useRealZkVM: true,
+      realMode: 'prod',
+      verbose: false,
+      outputFormat: 'table',
+      userChoice: 'A',
+      skipBuild: true,
+    };
+
+    const result = await new CLIVotingTest(config, helpers).runTestCase({
+      name: 'S0: Normal case (no tampering)',
+      ...omitUndefinedProperties({ scenario: [] }),
+      expectedTamper: false,
+    });
+
+    expect(result.passed).toBe(true);
+    expect(describeReceipt).not.toHaveBeenCalled();
+    expect(console.log).toHaveBeenCalledWith(
+      '[CLI] Production STARK proof enabled; expected duration is about 6 minutes per scenario',
+    );
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining('[OK] STARK proof verified (authenticated production RISC Zero receipt)'),
+    );
+    expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining('[WARN]'));
+    expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining('Receipt format could not be classified'));
+    expect(console.log).not.toHaveBeenCalledWith('[DEBUG] Merkle verification data:');
   });
 
   it('does not allow deployed dev-mode verification evidence in production real mode used by develop gated smoke', async () => {
@@ -508,6 +731,7 @@ describe('CLIVotingTest regression coverage', () => {
       verifySTARK,
       finalizeWithScenarios: vi.fn().mockResolvedValue({
         data: {
+          finalizationId: 'finalization-1',
           tally: {
             counts: [64, 0, 0, 0, 0],
             merkleRoot: '0xroot',
@@ -538,45 +762,18 @@ describe('CLIVotingTest regression coverage', () => {
           includedBitmapRoot: '0xbitmap',
           inputCommitment: '0xinput',
           verificationStatus: 'dev_mode',
-          verificationSteps: [
-            {
-              id: 'counted_as_recorded',
-              status: 'success',
-              inputs: [],
-            },
-            {
-              id: 'stark_verification',
-              status: 'success',
-              inputs: [],
-            },
-          ],
-          verificationChecks: [
-            {
-              id: 'counted_expected_vs_tree_size',
-              status: 'success',
-              evidence: 'public',
-              inputs: ['totalExpected', 'treeSize'],
-            },
-            {
-              id: 'counted_election_manifest_consistent',
-              status: 'success',
-              evidence: 'public',
-              inputs: ['electionManifest'],
-            },
-            {
-              id: 'counted_close_statement_consistent',
-              status: 'success',
-              evidence: 'public',
-              inputs: ['closeStatement'],
-            },
-            {
-              id: 'stark_receipt_verify',
-              status: 'success',
-              evidence: 'zk',
-              inputs: ['proofBundleStatus'],
-            },
-          ],
-          verificationExecutionId: 'exec-1',
+          ...buildCliVerificationPresentationFixture({
+            steps: [
+              { id: 'counted_as_recorded', status: 'success' },
+              { id: 'stark_verification', status: 'success' },
+            ],
+            checks: [
+              { id: 'counted_expected_vs_tree_size', status: 'success' },
+              { id: 'counted_election_manifest_consistent', status: 'success' },
+              { id: 'counted_close_statement_consistent', status: 'success' },
+              { id: 'stark_receipt_verify', status: 'success' },
+            ],
+          }),
           journal: createTestJournal({ totalExpected: 64, validVotes: 64 }),
           verificationReport: {
             status: 'dev_mode',
@@ -590,6 +787,10 @@ describe('CLIVotingTest regression coverage', () => {
             dev_mode_receipt: true,
             errors: [],
           },
+        },
+        meta: {
+          mode: 'sync',
+          finalizationId: 'finalization-1',
         },
       }),
     });
@@ -615,15 +816,21 @@ describe('CLIVotingTest regression coverage', () => {
     const verifyCall = vi.mocked(verifySTARK).mock.calls[0];
     const verifyOptions = requireRecord(strictDefined(verifyCall)[1], 'verifySTARK options');
     expect(verifyOptions).toMatchObject({
-      useRealZkVM: true,
+      proofProfile: {
+        executor: 'risc0',
+        evidence: 'production',
+      },
       verificationStatus: 'dev_mode',
-      allowDevMode: false,
     });
     expect(result.passed).toBe(false);
     expect(result.details.errors).toEqual(expect.arrayContaining(['STARK proof verification failed']));
+    expect(console.log).toHaveBeenCalledWith(
+      '[CLI] Production STARK proof enabled; expected duration is about 6 minutes per scenario',
+    );
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('[ERROR] STARK proof verification failed'));
   });
 
-  it('fails closed when the finalized payload omits the top-level verificationExecutionId', async () => {
+  it('fails closed when the finalization result omits finalizationId authority', async () => {
     const verifySTARK = vi.fn<VerifyStark>().mockResolvedValue(true);
     const helpers = createHelpers({
       verifySTARK,
@@ -659,47 +866,18 @@ describe('CLIVotingTest regression coverage', () => {
           includedBitmapRoot: '0xbitmap',
           inputCommitment: '0xinput',
           verificationStatus: 'success',
-          verificationSteps: [
-            {
-              id: 'counted_as_recorded',
-              status: 'success',
-              inputs: [],
-            },
-            {
-              id: 'stark_verification',
-              status: 'success',
-              inputs: [],
-            },
-          ],
-          verificationChecks: [
-            {
-              id: 'counted_expected_vs_tree_size',
-              status: 'success',
-              evidence: 'public',
-              inputs: ['totalExpected', 'treeSize'],
-            },
-            {
-              id: 'counted_election_manifest_consistent',
-              status: 'success',
-              evidence: 'public',
-              inputs: ['electionManifest'],
-            },
-            {
-              id: 'counted_close_statement_consistent',
-              status: 'success',
-              evidence: 'public',
-              inputs: ['closeStatement'],
-            },
-            {
-              id: 'stark_receipt_verify',
-              status: 'success',
-              evidence: 'zk',
-              inputs: ['proofBundleStatus'],
-            },
-          ],
-          verificationResult: {
-            executionId: 'exec-1',
-          },
+          ...buildCliVerificationPresentationFixture({
+            steps: [
+              { id: 'counted_as_recorded', status: 'success' },
+              { id: 'stark_verification', status: 'success' },
+            ],
+            checks: [
+              { id: 'counted_expected_vs_tree_size', status: 'success' },
+              { id: 'counted_election_manifest_consistent', status: 'success' },
+              { id: 'counted_close_statement_consistent', status: 'success' },
+              { id: 'stark_receipt_verify', status: 'success' },
+            ],
+          }),
           journal: createTestJournal({ totalExpected: 64, validVotes: 64 }),
           verificationReport: {
             status: 'success',
@@ -737,14 +915,17 @@ describe('CLIVotingTest regression coverage', () => {
     });
 
     expect(result.passed).toBe(false);
-    expect(result.details.verificationExecutionId).toBeUndefined();
+    expect(result.details.finalizationId).toBeUndefined();
     expect(result.details.errors).toEqual(
-      expect.arrayContaining(['Finalized response missing top-level verificationExecutionId']),
+      expect.arrayContaining(['Finalization response missing a safe finalizationId']),
+    );
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining('[ERROR] Finalization response missing a safe finalizationId'),
     );
     expect(vi.mocked(global.fetch)).not.toHaveBeenCalled();
   });
 
-  it('fails when counted stage stays green after manifest consistency fails', async () => {
+  it('does not trust a stale flat counted stage after manifest consistency fails', async () => {
     const helpers = createHelpers({
       finalizeWithScenarios: vi.fn().mockResolvedValue({
         data: {
@@ -778,45 +959,23 @@ describe('CLIVotingTest regression coverage', () => {
           includedBitmapRoot: '0xbitmap',
           inputCommitment: '0xinput',
           verificationStatus: 'success',
-          verificationSteps: [
-            {
-              id: 'counted_as_recorded',
-              status: 'success',
-              inputs: [],
-            },
-            {
-              id: 'stark_verification',
-              status: 'success',
-              inputs: [],
-            },
-          ],
-          verificationChecks: [
-            {
-              id: 'counted_expected_vs_tree_size',
-              status: 'success',
-              evidence: 'public',
-              inputs: ['totalExpected', 'treeSize'],
-            },
-            {
-              id: 'counted_election_manifest_consistent',
-              status: 'failed',
-              evidence: 'public',
-              inputs: ['electionManifest'],
-            },
-            {
-              id: 'counted_close_statement_consistent',
-              status: 'success',
-              evidence: 'public',
-              inputs: ['closeStatement'],
-            },
-            {
-              id: 'stark_receipt_verify',
-              status: 'success',
-              evidence: 'zk',
-              inputs: ['proofBundleStatus'],
-            },
-          ],
+          ...buildCliVerificationPresentationFixture({
+            steps: [
+              { id: 'counted_as_recorded', status: 'success' },
+              { id: 'stark_verification', status: 'success' },
+            ],
+            checks: [
+              { id: 'counted_expected_vs_tree_size', status: 'success' },
+              { id: 'counted_election_manifest_consistent', status: 'failed' },
+              { id: 'counted_close_statement_consistent', status: 'success' },
+              { id: 'stark_receipt_verify', status: 'success' },
+            ],
+          }),
           journal: createTestJournal({ totalExpected: 64, validVotes: 64 }),
+        },
+        meta: {
+          mode: 'sync',
+          finalizationId: 'finalization-1',
         },
       }),
     });
@@ -841,10 +1000,15 @@ describe('CLIVotingTest regression coverage', () => {
 
     expect(result.passed).toBe(false);
     expect(result.details.errors).toEqual(
-      expect.arrayContaining([
-        'CLI verification required check counted_election_manifest_consistent was failed',
-        'Verification contract mismatch: counted_as_recorded was success while counted_election_manifest_consistent=failed',
-      ]),
+      expect.arrayContaining(['CLI verification required check counted_election_manifest_consistent was failed']),
+    );
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '[ERROR] CLI verification required check counted_election_manifest_consistent was failed',
+      ),
+    );
+    expect(result.details.errors).not.toContain(
+      'Verification contract mismatch: counted_as_recorded was success while counted_election_manifest_consistent=failed',
     );
   });
 });

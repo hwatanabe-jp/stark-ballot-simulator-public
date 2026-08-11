@@ -28,7 +28,7 @@ import {
   getStringArrayProperty,
   getStringProperty,
   isRecord,
-} from '@stark-ballot/domain/utils/guards';
+} from '@stark-ballot/validation/unknown-value-guards';
 import { isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import { toPublicZkvmJournal } from '@stark-ballot/zkvm-contract/zkvm/public-journal';
 
@@ -53,9 +53,78 @@ const FINALIZATION_RESULT_AUTHORITY_KEYS = new Set<string>([
   'closeStatement',
   'bitmapProofSource',
   'bitmapData',
-  'verificationResult',
   'tamperSummary',
 ]);
+const VERIFICATION_RESULT_KEYS = new Set<string>(['status', 'report', 'failureCategory']);
+const VERIFICATION_REPORT_KEYS = new Set<string>([
+  'status',
+  'verifier_version',
+  'verified_at',
+  'duration_ms',
+  'expected_image_id',
+  'receipt_image_id',
+  'dev_mode_receipt',
+  'errors',
+]);
+const FINALIZATION_TALLY_KEYS = new Set<string>(['counts', 'totalVotes', 'tamperedCount']);
+const FINALIZATION_ERROR_KEYS = new Set<string>(['code', 'message', 'category', 'details']);
+const FINALIZATION_SCENARIO_CONTEXT_KEYS = new Set<string>([
+  'scenarios',
+  'tamperMode',
+  'claimedCounts',
+  'claimedTotalVotes',
+  'summary',
+]);
+const FINALIZATION_SCENARIO_SUMMARY_KEYS = new Set<string>([
+  'ignoredCount',
+  'recountedCount',
+  'userRecountChoice',
+  'affectedBotIds',
+]);
+const RECEIPT_JOURNAL_KEYS = new Set<string>(['bytes']);
+const RECEIPT_KEYS = new Set<string>(['seal', 'journal', 'imageId', 'metadata']);
+const RECEIPT_PUBLICATION_KEYS = new Set<string>(['receiptHash', 'boardIndex', 'timestamp']);
+const BITMAP_DATA_KEYS = new Set<string>([
+  'includedBitmap',
+  'includedBitmapRoot',
+  'seenBitmap',
+  'seenBitmapRoot',
+  'treeSize',
+  'finalizedAtMs',
+]);
+const TAMPER_SUMMARY_KEYS = new Set<string>(['ignoredVotes', 'recountedVotes', 'userRecountedTo', 'affectedBotIds']);
+const JOURNAL_KEYS = new Set<string>([
+  'electionId',
+  'electionConfigHash',
+  'bulletinRoot',
+  'treeSize',
+  'totalExpected',
+  'sthDigest',
+  'verifiedTally',
+  'totalVotes',
+  'validVotes',
+  'invalidVotes',
+  'seenIndicesCount',
+  'missingSlots',
+  'invalidPresentedSlots',
+  'rejectedRecords',
+  'seenBitmapRoot',
+  'includedBitmapRoot',
+  'excludedSlots',
+  'inputCommitment',
+  'methodVersion',
+  'imageId',
+]);
+const ELECTION_MANIFEST_KEYS = new Set<string>([
+  'electionId',
+  'totalExpected',
+  'choices',
+  'version',
+  'botCount',
+  'merkleTreeDepth',
+  'electionConfigHash',
+]);
+const CLOSE_STATEMENT_KEYS = new Set<string>(['logId', 'treeSize', 'timestamp', 'bulletinRoot', 'sthDigest']);
 
 function hasOwn(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
@@ -80,7 +149,7 @@ function parseVerificationStatus(value: unknown): VerificationStatus | undefined
 }
 
 function parseCountRecord(value: unknown): Record<VoteChoice, number> | undefined {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || Object.keys(value).length !== VOTE_CHOICES.length) {
     return undefined;
   }
 
@@ -97,7 +166,7 @@ function parseCountRecord(value: unknown): Record<VoteChoice, number> | undefine
 }
 
 function parseFinalizationTally(value: unknown): FinalizationTally | undefined {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, FINALIZATION_TALLY_KEYS)) {
     return undefined;
   }
 
@@ -119,7 +188,7 @@ function parseReceiptJournal(value: unknown): ReceiptJournal | undefined {
   if (typeof value === 'string') {
     return value;
   }
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, RECEIPT_JOURNAL_KEYS)) {
     return undefined;
   }
 
@@ -132,7 +201,7 @@ function parseReceiptJournal(value: unknown): ReceiptJournal | undefined {
 }
 
 function parseReceiptWithImageId(value: unknown): ReceiptWithImageId | undefined {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, RECEIPT_KEYS)) {
     return undefined;
   }
 
@@ -156,7 +225,7 @@ function parseReceiptWithImageId(value: unknown): ReceiptWithImageId | undefined
 function parseReceiptPublication(
   value: unknown,
 ): NonNullable<FinalizationResultAuthority['receiptPublication']> | undefined {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, RECEIPT_PUBLICATION_KEYS)) {
     return undefined;
   }
 
@@ -178,19 +247,19 @@ function parseReceiptPublication(
 }
 
 function parseBitmapData(value: unknown): FinalizationBitmapData | undefined {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, BITMAP_DATA_KEYS)) {
     return undefined;
   }
 
   const includedBitmap = getBooleanArrayProperty(value, 'includedBitmap');
   const includedBitmapRoot = getStringProperty(value, 'includedBitmapRoot');
   const treeSize = getNumberProperty(value, 'treeSize');
-  const finalizedAt = getNumberProperty(value, 'finalizedAt');
+  const finalizedAtMs = getNumberProperty(value, 'finalizedAtMs');
   if (
     !includedBitmap ||
     typeof includedBitmapRoot !== 'string' ||
     !isNonNegativeInteger(treeSize) ||
-    !isNonNegativeInteger(finalizedAt)
+    !isNonNegativeInteger(finalizedAtMs)
   ) {
     return undefined;
   }
@@ -210,12 +279,12 @@ function parseBitmapData(value: unknown): FinalizationBitmapData | undefined {
     ...(seenBitmap ? { seenBitmap: [...seenBitmap] } : {}),
     ...(seenBitmapRoot ? { seenBitmapRoot } : {}),
     treeSize,
-    finalizedAt,
+    finalizedAtMs,
   };
 }
 
 function parseVerificationReport(value: unknown): VerificationReport | undefined {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, VERIFICATION_REPORT_KEYS)) {
     return undefined;
   }
 
@@ -261,7 +330,7 @@ function parseVerificationReport(value: unknown): VerificationReport | undefined
 }
 
 export function parseVerificationResult(value: unknown): VerificationResult | undefined {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, VERIFICATION_RESULT_KEYS)) {
     return undefined;
   }
 
@@ -293,7 +362,7 @@ export function parseVerificationResult(value: unknown): VerificationResult | un
 }
 
 function parseTamperSummary(value: unknown): FinalizationTamperSummary | undefined {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, TAMPER_SUMMARY_KEYS)) {
     return undefined;
   }
 
@@ -331,7 +400,13 @@ export function parseFinalizationResultAuthority(value: unknown): FinalizationRe
   const tally = parseFinalizationTally(value['tally']);
   const imageId = getStringProperty(value, 'imageId');
   const journalValue = value['journal'];
-  if (!tally || typeof imageId !== 'string' || !isSupportedZkVMJournal(journalValue)) {
+  if (
+    !tally ||
+    typeof imageId !== 'string' ||
+    !isRecord(journalValue) ||
+    !hasOnlyAllowedKeys(journalValue, JOURNAL_KEYS) ||
+    !isSupportedZkVMJournal(journalValue)
+  ) {
     return undefined;
   }
   const journal = toPublicZkvmJournal(journalValue);
@@ -365,10 +440,22 @@ export function parseFinalizationResultAuthority(value: unknown): FinalizationRe
     return undefined;
   }
 
-  if (value['electionManifest'] !== undefined && !isElectionManifest(value['electionManifest'])) {
+  const electionManifest = value['electionManifest'];
+  if (
+    electionManifest !== undefined &&
+    (!isRecord(electionManifest) ||
+      !hasOnlyAllowedKeys(electionManifest, ELECTION_MANIFEST_KEYS) ||
+      !isElectionManifest(electionManifest))
+  ) {
     return undefined;
   }
-  if (value['closeStatement'] !== undefined && !isCloseStatement(value['closeStatement'])) {
+  const closeStatement = value['closeStatement'];
+  if (
+    closeStatement !== undefined &&
+    (!isRecord(closeStatement) ||
+      !hasOnlyAllowedKeys(closeStatement, CLOSE_STATEMENT_KEYS) ||
+      !isCloseStatement(closeStatement))
+  ) {
     return undefined;
   }
 
@@ -380,13 +467,6 @@ export function parseFinalizationResultAuthority(value: unknown): FinalizationRe
   const bitmapData = value['bitmapData'];
   const parsedBitmapData = bitmapData !== undefined ? parseBitmapData(bitmapData) : undefined;
   if (bitmapData !== undefined && !parsedBitmapData) {
-    return undefined;
-  }
-
-  const verificationResult = value['verificationResult'];
-  const parsedVerificationResult =
-    verificationResult !== undefined ? parseVerificationResult(verificationResult) : undefined;
-  if (verificationResult !== undefined && !parsedVerificationResult) {
     return undefined;
   }
 
@@ -405,17 +485,16 @@ export function parseFinalizationResultAuthority(value: unknown): FinalizationRe
     ...(scenarios ? { scenarios: [...scenarios] } : {}),
     journal,
     ...(parsedPublicInputArtifact ? { publicInputArtifact: parsedPublicInputArtifact } : {}),
-    ...(value['electionManifest'] !== undefined ? { electionManifest: value['electionManifest'] } : {}),
-    ...(value['closeStatement'] !== undefined ? { closeStatement: value['closeStatement'] } : {}),
+    ...(electionManifest !== undefined ? { electionManifest } : {}),
+    ...(closeStatement !== undefined ? { closeStatement } : {}),
     ...(bitmapProofSource !== undefined ? { bitmapProofSource: bitmapProofSource as BitmapProofSource } : {}),
     ...(parsedBitmapData ? { bitmapData: parsedBitmapData } : {}),
-    ...(parsedVerificationResult ? { verificationResult: parsedVerificationResult } : {}),
     ...(parsedTamperSummary ? { tamperSummary: parsedTamperSummary } : {}),
   };
 }
 
 function parseFinalizationError(value: unknown): Extract<FinalizationState, { status: 'failed' }>['error'] | undefined {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, FINALIZATION_ERROR_KEYS)) {
     return undefined;
   }
 
@@ -441,11 +520,11 @@ function parseFinalizationError(value: unknown): Extract<FinalizationState, { st
 }
 
 const FINALIZATION_STATE_KEYS_BY_STATUS: Record<FinalizationState['status'], ReadonlySet<string>> = {
-  pending: new Set(['status', 'executionId', 'queuedAt']),
-  running: new Set(['status', 'executionId', 'queuedAt', 'startedAt']),
-  succeeded: new Set(['status', 'executionId', 'queuedAt', 'startedAt', 'completedAt']),
-  failed: new Set(['status', 'executionId', 'queuedAt', 'startedAt', 'failedAt', 'error']),
-  timeout: new Set(['status', 'executionId', 'queuedAt', 'startedAt', 'timeoutAt']),
+  pending: new Set(['status', 'finalizationId', 'queuedAtMs']),
+  running: new Set(['status', 'finalizationId', 'queuedAtMs', 'startedAtMs']),
+  succeeded: new Set(['status', 'finalizationId', 'queuedAtMs', 'startedAtMs', 'completedAtMs']),
+  failed: new Set(['status', 'finalizationId', 'queuedAtMs', 'startedAtMs', 'failedAtMs', 'error']),
+  timeout: new Set(['status', 'finalizationId', 'queuedAtMs', 'startedAtMs', 'timeoutAtMs']),
 };
 
 export function parseFinalizationState(value: unknown): FinalizationState | undefined {
@@ -459,81 +538,81 @@ export function parseFinalizationState(value: unknown): FinalizationState | unde
     return undefined;
   }
 
-  const executionId = getStringProperty(value, 'executionId');
-  const queuedAt = getNumberProperty(value, 'queuedAt');
-  if (!status || typeof executionId !== 'string' || !isNonNegativeInteger(queuedAt)) {
+  const finalizationId = getStringProperty(value, 'finalizationId');
+  const queuedAtMs = getNumberProperty(value, 'queuedAtMs');
+  if (!status || typeof finalizationId !== 'string' || !isNonNegativeInteger(queuedAtMs)) {
     return undefined;
   }
 
   if (status === 'pending') {
     return {
       status: 'pending',
-      executionId,
-      queuedAt,
+      finalizationId,
+      queuedAtMs,
     };
   }
 
-  const startedAt = getNumberProperty(value, 'startedAt');
-  if (hasOwn(value, 'startedAt') && !isNonNegativeInteger(startedAt)) {
+  const startedAtMs = getNumberProperty(value, 'startedAtMs');
+  if (hasOwn(value, 'startedAtMs') && !isNonNegativeInteger(startedAtMs)) {
     return undefined;
   }
 
   if (status === 'running') {
-    if (!isNonNegativeInteger(startedAt)) {
+    if (!isNonNegativeInteger(startedAtMs)) {
       return undefined;
     }
     return {
       status: 'running',
-      executionId,
-      queuedAt,
-      startedAt,
+      finalizationId,
+      queuedAtMs,
+      startedAtMs,
     };
   }
 
   if (status === 'succeeded') {
-    const completedAt = getNumberProperty(value, 'completedAt');
-    if (!isNonNegativeInteger(startedAt) || !isNonNegativeInteger(completedAt)) {
+    const completedAtMs = getNumberProperty(value, 'completedAtMs');
+    if (!isNonNegativeInteger(startedAtMs) || !isNonNegativeInteger(completedAtMs)) {
       return undefined;
     }
 
     return {
       status: 'succeeded',
-      executionId,
-      queuedAt,
-      startedAt,
-      completedAt,
+      finalizationId,
+      queuedAtMs,
+      startedAtMs,
+      completedAtMs,
     };
   }
 
   if (status === 'failed') {
-    const failedAt = getNumberProperty(value, 'failedAt');
+    const failedAtMs = getNumberProperty(value, 'failedAtMs');
     const error = parseFinalizationError(value['error']);
-    if (!isNonNegativeInteger(failedAt) || !error) {
+    if (!isNonNegativeInteger(failedAtMs) || !error) {
       return undefined;
     }
 
     return {
       status: 'failed',
-      executionId,
-      queuedAt,
-      ...(startedAt !== undefined ? { startedAt } : {}),
-      failedAt,
+      finalizationId,
+      queuedAtMs,
+      ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+      failedAtMs,
       error,
     };
   }
 
   if (status === 'timeout') {
-    const timeoutAt = getNumberProperty(value, 'timeoutAt');
-    if (!isNonNegativeInteger(timeoutAt)) {
+    const timeoutAtMs = getNumberProperty(value, 'timeoutAtMs');
+    if (!isNonNegativeInteger(timeoutAtMs)) {
       return undefined;
     }
 
     return {
       status: 'timeout',
-      executionId,
-      queuedAt,
-      ...(startedAt !== undefined ? { startedAt } : {}),
-      timeoutAt,
+      finalizationId,
+      queuedAtMs,
+      ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+      timeoutAtMs,
     };
   }
 
@@ -541,7 +620,7 @@ export function parseFinalizationState(value: unknown): FinalizationState | unde
 }
 
 export function parseFinalizationScenarioContext(value: unknown): FinalizationScenarioContext | undefined {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, FINALIZATION_SCENARIO_CONTEXT_KEYS)) {
     return undefined;
   }
 
@@ -556,7 +635,8 @@ export function parseFinalizationScenarioContext(value: unknown): FinalizationSc
     !SCENARIO_TAMPER_MODES.has(tamperMode as ScenarioTamperMode) ||
     !claimedCounts ||
     !isNonNegativeInteger(claimedTotalVotes) ||
-    !summary
+    !summary ||
+    !hasOnlyAllowedKeys(summary, FINALIZATION_SCENARIO_SUMMARY_KEYS)
   ) {
     return undefined;
   }

@@ -1,8 +1,7 @@
-import { resolveConfiguredImageIdVariant } from './image-id-policy.js';
+import { resolveConfiguredImageIdVariant, type ImageIdMapping } from '@stark-ballot/validation/image-id-policy';
 import { getExpectedImageId } from './image-id-verifier';
 import { logger } from '@stark-ballot/verification/shared/logger';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
-import type { ImageIdMapping } from './image-id-types';
 
 export const DEFAULT_POC_IMAGE_ID = '0x08aa256ee9120045bbdbe2152723ff657cf1cd7329cba46715954d183caa84de';
 

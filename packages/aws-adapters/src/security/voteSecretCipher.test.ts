@@ -13,6 +13,7 @@ import {
 const originalEnv = { ...process.env };
 const VOTE_SECRET_REF = '/stark-ballot-simulator/stark-dev/develop/app/secrets/vote-secret-encryption-key';
 const VOTE_SECRET_ENCRYPTION_KEY = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
+const DEVELOP_REFERENCE_AUTHORITY = { expectedDeploymentEnvironment: 'develop' } as const;
 
 function restoreEnv(): void {
   for (const key of Object.keys(process.env)) {
@@ -63,21 +64,26 @@ describe('voteSecretCipher', () => {
   it('encrypts and decrypts using a target vote secret reference resolver', () => {
     delete process.env['VOTE_SECRET_ENCRYPTION_KEY'];
     process.env['VOTE_SECRET_ENCRYPTION_KEY_REF'] = VOTE_SECRET_REF;
-    installStaticRuntimeConfigReferenceResolver(new Map([[VOTE_SECRET_REF, VOTE_SECRET_ENCRYPTION_KEY]]));
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[VOTE_SECRET_REF, VOTE_SECRET_ENCRYPTION_KEY]]),
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
 
     const encrypted = encryptVoteSecret('0x' + '2'.repeat(64));
 
     expect(decryptVoteSecret(encrypted)).toBe('0x' + '2'.repeat(64));
   });
 
-  it('rejects raw vote secret keys in target non-mock runtime', () => {
-    process.env['USE_MOCK_STORE'] = 'false';
+  it('rejects raw vote secret keys when a secret reference is configured', () => {
     process.env['VOTE_SECRET_ENCRYPTION_KEY'] = VOTE_SECRET_ENCRYPTION_KEY;
     process.env['VOTE_SECRET_ENCRYPTION_KEY_REF'] = VOTE_SECRET_REF;
-    installStaticRuntimeConfigReferenceResolver(new Map([[VOTE_SECRET_REF, VOTE_SECRET_ENCRYPTION_KEY]]));
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[VOTE_SECRET_REF, VOTE_SECRET_ENCRYPTION_KEY]]),
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
 
     expect(() => encryptVoteSecret('0x' + '5'.repeat(64))).toThrow(
-      'VOTE_SECRET_ENCRYPTION_KEY must not be set directly when USE_MOCK_STORE=false; use VOTE_SECRET_ENCRYPTION_KEY_REF',
+      'VOTE_SECRET_ENCRYPTION_KEY must not be set directly when VOTE_SECRET_ENCRYPTION_KEY_REF is configured',
     );
   });
 
@@ -93,7 +99,10 @@ describe('voteSecretCipher', () => {
   it('fails closed when the vote secret reference resolves to invalid key material', () => {
     delete process.env['VOTE_SECRET_ENCRYPTION_KEY'];
     process.env['VOTE_SECRET_ENCRYPTION_KEY_REF'] = VOTE_SECRET_REF;
-    installStaticRuntimeConfigReferenceResolver(new Map([[VOTE_SECRET_REF, 'not-a-32-byte-key']]));
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[VOTE_SECRET_REF, 'not-a-32-byte-key']]),
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
 
     expect(() => encryptVoteSecret('0x' + '4'.repeat(64))).toThrow(
       'VOTE_SECRET_ENCRYPTION_KEY must resolve to a valid 32-byte key',

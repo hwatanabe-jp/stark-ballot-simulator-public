@@ -12,19 +12,32 @@ describe('isBrowserTurnstileRequiredForAction', () => {
     clearBrowserPublicEnvForTests();
   });
 
-  it('requires Turnstile for every browser action when the target static config requires it', () => {
-    setBrowserPublicEnvForTests('VITE_SESSION_CREATE_TURNSTILE_REQUIRED', 'true');
+  it('requires Turnstile for every browser action in target main', () => {
+    setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'target-aws-async');
+    setBrowserPublicEnvForTests('VITE_APP_ENV', 'main');
 
     for (const action of ACTIONS) {
       expect(isBrowserTurnstileRequiredForAction(action)).toBe(true);
     }
   });
 
-  it('relaxes Turnstile for every browser action in operator-gated develop static config', () => {
-    setBrowserPublicEnvForTests('VITE_SESSION_CREATE_TURNSTILE_REQUIRED', 'false');
+  it('relaxes Turnstile for every browser action in operator-gated target develop', () => {
+    setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'target-aws-async');
+    setBrowserPublicEnvForTests('VITE_APP_ENV', 'develop');
 
     for (const action of ACTIONS) {
       expect(isBrowserTurnstileRequiredForAction(action)).toBe(false);
     }
   });
+
+  it.each(['local-demo', 'static-mock-e2e', 'local-proof-development', 'local-proof-production'] as const)(
+    'relaxes Turnstile for every browser action in %s',
+    (profile) => {
+      setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', profile);
+
+      for (const action of ACTIONS) {
+        expect(isBrowserTurnstileRequiredForAction(action)).toBe(false);
+      }
+    },
+  );
 });

@@ -1,18 +1,25 @@
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
-import type { RootSnapshot, SessionData, VoteData } from '@stark-ballot/domain/types/server';
+import type {
+  RootSnapshot,
+  SessionVotingRecord,
+  StoredVoteRecord,
+  UserParticipation,
+} from '@stark-ballot/domain/types/sessionRecords';
 import { asVoteIndex, type VoteIndex } from '@stark-ballot/domain/types/identifiers';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
-import { isRecord } from '@stark-ballot/domain/utils/guards';
+import { isRecord } from '@stark-ballot/validation/unknown-value-guards';
 import { normalizeHex } from '@stark-ballot/domain/utils/hex';
 
 export interface CanonicalCtSessionProjection {
-  bulletin?: SimpleBulletinBoard;
+  bulletin: SimpleBulletinBoard;
   bulletinRootHistory: RootSnapshot[];
   botCount: number;
-  userVoteIndex: VoteIndex | undefined;
+  userParticipation: UserParticipation;
   nextIndex: VoteIndex;
 }
+
+type CtVoteRecord = Pick<StoredVoteRecord, 'commit'> & Partial<Pick<StoredVoteRecord, 'voteId' | 'timestamp'>>;
 
 export const USER_VOTE_REQUIRED_BEFORE_BOT_VOTES = 'USER_VOTE_REQUIRED_BEFORE_BOT_VOTES';
 export const NON_CANONICAL_CT_VOTE_INDICES = 'NON_CANONICAL_CT_VOTE_INDICES';
@@ -76,7 +83,7 @@ function normalizePersistedRootSnapshot(value: unknown): RootSnapshot | null {
   }
 }
 
-function resolveSnapshotTimestamp(vote: VoteData, fallbackTimestamp: number): number {
+function resolveSnapshotTimestamp(vote: CtVoteRecord, fallbackTimestamp: number): number {
   return typeof vote.timestamp === 'number' && Number.isInteger(vote.timestamp) && vote.timestamp > 0
     ? vote.timestamp
     : fallbackTimestamp;
@@ -103,30 +110,26 @@ export function parsePersistedRootHistory(value: unknown): RootSnapshot[] | unde
 }
 
 export function resolveCanonicalUserVoteIndex(
-  votes: ReadonlyMap<number, VoteData>,
-  fallbackUserVoteIndex: number | undefined,
+  votes: ReadonlyMap<number, CtVoteRecord>,
+  explicitUserVoteIndex: number | undefined,
 ): VoteIndex | undefined {
   if (
-    typeof fallbackUserVoteIndex === 'number' &&
-    Number.isSafeInteger(fallbackUserVoteIndex) &&
-    fallbackUserVoteIndex >= 0 &&
-    votes.has(fallbackUserVoteIndex)
+    typeof explicitUserVoteIndex === 'number' &&
+    Number.isSafeInteger(explicitUserVoteIndex) &&
+    explicitUserVoteIndex >= 0 &&
+    votes.has(explicitUserVoteIndex)
   ) {
-    return asVoteIndex(fallbackUserVoteIndex);
-  }
-
-  if (votes.has(0)) {
-    return asVoteIndex(0);
+    return asVoteIndex(explicitUserVoteIndex);
   }
 
   return undefined;
 }
 
 export function assertCanonicalUserVoteIndexForBotVotes(
-  votes: ReadonlyMap<number, VoteData>,
-  fallbackUserVoteIndex: number | undefined,
+  votes: ReadonlyMap<number, CtVoteRecord>,
+  explicitUserVoteIndex: number | undefined,
 ): VoteIndex {
-  const userVoteIndex = resolveCanonicalUserVoteIndex(votes, fallbackUserVoteIndex);
+  const userVoteIndex = resolveCanonicalUserVoteIndex(votes, explicitUserVoteIndex);
   if (userVoteIndex !== 0) {
     throw new Error(USER_VOTE_REQUIRED_BEFORE_BOT_VOTES);
   }
@@ -134,15 +137,15 @@ export function assertCanonicalUserVoteIndexForBotVotes(
 }
 
 export function deriveBotCountFromVotes(
-  votes: ReadonlyMap<number, VoteData>,
-  fallbackUserVoteIndex: number | undefined,
+  votes: ReadonlyMap<number, CtVoteRecord>,
+  explicitUserVoteIndex: number | undefined,
 ): number {
   assertCanonicalCtVoteIndices(votes.keys());
   if (votes.size === 0) {
     return 0;
   }
 
-  const userVoteIndex = resolveCanonicalUserVoteIndex(votes, fallbackUserVoteIndex);
+  const userVoteIndex = resolveCanonicalUserVoteIndex(votes, explicitUserVoteIndex);
   if (userVoteIndex !== undefined) {
     let count = 0;
     for (const index of votes.keys()) {
@@ -156,23 +159,20 @@ export function deriveBotCountFromVotes(
   return Math.max(votes.size - 1, 0);
 }
 
-export function getNextVoteIndex(votes: ReadonlyMap<number, VoteData>): VoteIndex {
+export function getNextVoteIndex(votes: ReadonlyMap<number, CtVoteRecord>): VoteIndex {
   return assertCanonicalCtVoteIndices(votes.keys());
 }
 
-export function rebuildCanonicalBulletinFromVotes(session: Pick<SessionData, 'votes' | 'logId' | 'bulletin'>): {
-  bulletin?: SimpleBulletinBoard;
+export function rebuildCanonicalBulletinFromVotes(voting: Pick<SessionVotingRecord, 'votes' | 'bulletin'>): {
+  bulletin: SimpleBulletinBoard;
   reconstructedHistory: RootSnapshot[];
 } {
-  assertCanonicalCtVoteIndices(session.votes.keys());
-  const logId = session.logId ?? session.bulletin?.getLogId();
-  if (!logId) {
-    return { reconstructedHistory: [] };
-  }
+  assertCanonicalCtVoteIndices(voting.votes.keys());
+  const logId = voting.bulletin.getLogId();
 
   const bulletin = new SimpleBulletinBoard(logId);
   const reconstructedHistory: RootSnapshot[] = [];
-  const sortedVotes = Array.from(session.votes.entries()).sort((a, b) => a[0] - b[0]);
+  const sortedVotes = Array.from(voting.votes.entries()).sort((a, b) => a[0] - b[0]);
 
   for (const [, vote] of sortedVotes) {
     if (!vote.voteId) {
@@ -189,7 +189,7 @@ export function rebuildCanonicalBulletinFromVotes(session: Pick<SessionData, 'vo
   return { bulletin, reconstructedHistory };
 }
 
-function rebuildCanonicalHistoryFromVotes(votes: ReadonlyMap<number, VoteData>): RootSnapshot[] {
+function rebuildCanonicalHistoryFromVotes(votes: ReadonlyMap<number, CtVoteRecord>): RootSnapshot[] {
   assertCanonicalCtVoteIndices(votes.keys());
   const tree = new RFC6962MerkleTree();
   const reconstructedHistory: RootSnapshot[] = [];
@@ -251,49 +251,46 @@ export function mergePersistedRootHistory(
 }
 
 export function getCanonicalBulletinRootHistory(
-  session: Pick<SessionData, 'sessionId' | 'votes' | 'logId' | 'bulletin' | 'bulletinRootHistory'>,
+  voting: Pick<SessionVotingRecord, 'sessionId' | 'votes' | 'bulletin' | 'bulletinRootHistory'>,
 ): RootSnapshot[] {
-  const reconstructedHistory = rebuildCanonicalHistoryFromVotes(session.votes);
-  const persistedHistory = parsePersistedRootHistory(session.bulletinRootHistory);
+  const reconstructedHistory = rebuildCanonicalHistoryFromVotes(voting.votes);
+  const persistedHistory = parsePersistedRootHistory(voting.bulletinRootHistory);
 
   return mergePersistedRootHistory(reconstructedHistory, persistedHistory);
 }
 
 export function getLatestCanonicalBulletinSnapshot(
-  session: Pick<SessionData, 'sessionId' | 'votes' | 'logId' | 'bulletin' | 'bulletinRootHistory'>,
+  voting: Pick<SessionVotingRecord, 'sessionId' | 'votes' | 'bulletin' | 'bulletinRootHistory'>,
 ): RootSnapshot | undefined {
-  const rootHistory = getCanonicalBulletinRootHistory(session);
+  const rootHistory = getCanonicalBulletinRootHistory(voting);
   return rootHistory.length > 0 ? rootHistory[rootHistory.length - 1] : undefined;
 }
 
 export function applyCanonicalCtSessionProjection(
-  session: Pick<SessionData, 'bulletin' | 'bulletinRootHistory' | 'botCount' | 'userVoteIndex'>,
+  voting: Pick<SessionVotingRecord, 'bulletin' | 'bulletinRootHistory' | 'botCount' | 'userParticipation'>,
   projection: CanonicalCtSessionProjection,
 ): void {
-  if (projection.bulletin) {
-    session.bulletin = projection.bulletin;
-  }
-  session.bulletinRootHistory = projection.bulletinRootHistory;
-  session.botCount = projection.botCount;
-  if (projection.userVoteIndex !== undefined) {
-    session.userVoteIndex = projection.userVoteIndex;
-  } else {
-    delete session.userVoteIndex;
-  }
+  voting.bulletin = projection.bulletin;
+  voting.bulletinRootHistory = projection.bulletinRootHistory;
+  voting.botCount = projection.botCount;
+  voting.userParticipation = projection.userParticipation;
 }
 
 export function buildCanonicalCtSessionProjection(
-  session: Pick<SessionData, 'sessionId' | 'votes' | 'logId' | 'bulletin' | 'bulletinRootHistory' | 'userVoteIndex'>,
+  voting: Pick<SessionVotingRecord, 'sessionId' | 'votes' | 'bulletin' | 'bulletinRootHistory' | 'userParticipation'>,
 ): CanonicalCtSessionProjection {
-  const { bulletin } = rebuildCanonicalBulletinFromVotes(session);
-  const bulletinRootHistory = getCanonicalBulletinRootHistory(session);
-  const userVoteIndex = resolveCanonicalUserVoteIndex(session.votes, session.userVoteIndex);
+  const { bulletin } = rebuildCanonicalBulletinFromVotes(voting);
+  const bulletinRootHistory = getCanonicalBulletinRootHistory(voting);
+  const explicitUserVoteIndex =
+    voting.userParticipation.status === 'cast' ? voting.userParticipation.voteIndex : undefined;
+  const userVoteIndex = resolveCanonicalUserVoteIndex(voting.votes, explicitUserVoteIndex);
 
   return {
-    ...omitUndefinedProperties({ bulletin }),
+    bulletin,
     bulletinRootHistory,
-    botCount: deriveBotCountFromVotes(session.votes, session.userVoteIndex),
-    userVoteIndex,
-    nextIndex: getNextVoteIndex(session.votes),
+    botCount: deriveBotCountFromVotes(voting.votes, explicitUserVoteIndex),
+    userParticipation:
+      userVoteIndex === undefined ? { status: 'not_cast' } : { status: 'cast', voteIndex: userVoteIndex },
+    nextIndex: getNextVoteIndex(voting.votes),
   };
 }

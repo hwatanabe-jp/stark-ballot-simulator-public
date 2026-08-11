@@ -1,0 +1,9 @@
+{
+  "extends": "./base.json",
+  "files": ["./browser-v8-error.d.ts"],
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "react", "react-dom"],
+    "jsx": "react-jsx"
+  }
+}

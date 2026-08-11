@@ -1,7 +1,3 @@
-/**
- * @vitest-environment node
- */
-
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -57,7 +53,7 @@ describe('formal-report.json', () => {
     expect(existsSync(path.resolve(process.cwd(), report.formalAuditArtifact))).toBe(true);
   });
 
-  it('reports the phase 3 guest-model claims and boundaries', () => {
+  it('reports the guest-model claims and boundaries', () => {
     const report = readFormalReport();
     const theoremNames = report.theorems.map((theorem) => theorem.name);
 
@@ -78,6 +74,18 @@ describe('formal-report.json', () => {
     );
     expect(report.nonClaims).toContain('Lean does not prove SHA-256 collision resistance');
     expect(report.nonClaims).toContain('Lean does not prove production-election security');
+  });
+
+  it('reports the candidate tally bound as a proved consequence of the guest input bounds', () => {
+    const report = readFormalReport();
+    const noOverflowClaim = report.theorems.find((theorem) => theorem.name === 'no_overflow_under_guest_bounds');
+
+    expect(noOverflowClaim?.claim).toBe(
+      'under explicit guest tree-size and vote-count input bounds of 1,000,000, modeled seen, valid, rejected, and candidate tally bucket counts remain inside the Rust u32 domain, and each candidate tally bucket is proved <= 1,000,000',
+    );
+    expect(report.assumptions).toContain(
+      'Rust bounded-counter correspondence is scoped to the explicit guest input bounds treeSize <= 1,000,000 and vote count <= 1,000,000; under those bounds, Lean proves each candidate tally bucket <= 1,000,000',
+    );
   });
 
   it('keeps reported theorem names tied to Lean declarations', () => {

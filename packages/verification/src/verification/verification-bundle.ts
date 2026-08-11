@@ -13,7 +13,7 @@ import {
 } from '@stark-ballot/verification/public-audit-artifacts';
 import { createIncludedBitmapArtifact } from '@stark-ballot/verification/included-bitmap-artifact';
 import { createSeenBitmapArtifact } from '@stark-ballot/verification/seen-bitmap-artifact';
-import { getStringProperty } from '@stark-ballot/verification/shared/guards';
+import { getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 import {
   buildSupportedPublicInputArtifactFromZkvmInput,
   buildPublicInputArtifactFromZkvmInput,
@@ -22,7 +22,6 @@ import { resolveConsistentPublicAuditArtifacts } from './public-audit-artifact-c
 
 export interface VerificationBundleArtifactContext {
   sessionId: string;
-  contractGeneration: string;
   createdAt: string;
   zkvmInput: ZkVMInput;
   electionConfig: ElectionConfig;
@@ -37,31 +36,6 @@ export interface VerificationBundleArtifactContext {
 export interface VerificationBundleArtifacts {
   artifacts: Record<string, unknown>;
 }
-
-export interface S3UploadResult {
-  s3BundleKey?: string;
-  s3ReportKey?: string;
-  s3UploadedAt?: string;
-}
-
-export const PUBLIC_BUNDLE_ALLOWLIST = [
-  'public-input.json',
-  'election-manifest.json',
-  'close-statement.json',
-  'receipt.json',
-  'journal.json',
-  'metadata.json',
-  'sth.json',
-  'consistency-proof.json',
-] as const;
-
-export const REQUIRED_PUBLIC_BUNDLE_ARTIFACTS = [
-  'public-input.json',
-  'election-manifest.json',
-  'close-statement.json',
-  'receipt.json',
-  'journal.json',
-] as const;
 
 export function buildVerificationBundleArtifacts(
   context: VerificationBundleArtifactContext,
@@ -78,16 +52,11 @@ export function buildVerificationBundleArtifacts(
     },
   };
 
-  const publicInput = buildPublicInputArtifactFromZkvmInput(
-    context.zkvmInput,
-    context.zkvmResult.methodVersion,
-    context.contractGeneration,
-  );
+  const publicInput = buildPublicInputArtifactFromZkvmInput(context.zkvmInput, context.zkvmResult.methodVersion);
   const canonicalJournal = toPublicZkvmJournal(context.zkvmResult);
   const publicInputArtifact = buildSupportedPublicInputArtifactFromZkvmInput(
     context.zkvmInput,
     context.zkvmResult.methodVersion,
-    context.contractGeneration,
     { source: 'generated' },
   );
 

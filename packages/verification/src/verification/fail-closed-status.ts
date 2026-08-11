@@ -1,13 +1,13 @@
 import { VOTE_CHOICES, type VoteChoice } from '@stark-ballot/verification/shared/constants';
 import { resolveExcludedCount } from '@stark-ballot/verification/excluded-count';
-import { normalizeHexString } from '@stark-ballot/verification/shared/hex';
+import { normalizeHexString } from '@stark-ballot/crypto-primitives';
 import {
   getNumberArrayProperty,
   getNumberProperty,
   getRecordProperty,
   getStringProperty,
   isRecord,
-} from '@stark-ballot/verification/shared/guards';
+} from '@stark-ballot/validation/unknown-value-guards';
 import { hasLegacyJournalCountAliases, isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import type { ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
 import type {

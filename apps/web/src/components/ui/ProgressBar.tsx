@@ -5,7 +5,7 @@ import { omitUndefinedProperties } from '@stark-ballot/validation/definedPropert
  * ProgressBar - 「透明な信頼」デザインシステム
  *
  * 集計進捗バー。8px高さ、墨色グラデーション。
- * 非線形補間は apps/web/src/finalize/progress-interpolation.ts を使用。
+ * 非線形補間は application の finalization-progress read model を使用。
  */
 
 export interface ProgressBarProps {

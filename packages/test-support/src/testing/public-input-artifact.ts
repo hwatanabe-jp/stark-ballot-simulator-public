@@ -1,11 +1,9 @@
-import { resolveCurrentContractGeneration } from '@stark-ballot/domain/contract';
 import type { SupportedPublicInputArtifact } from '@stark-ballot/verification/public-input';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
 
 export interface TestPublicInputArtifactOptions {
-  contractGeneration?: string;
   source?: 'bundle' | 'generated';
-  executionId?: string;
+  finalizationId?: string;
   bundleKey?: string;
   typedAuthority?: Partial<SupportedPublicInputArtifact['typedAuthority']>;
 }
@@ -16,14 +14,13 @@ export function createTestPublicInputArtifact(
   const source = options.source ?? 'generated';
 
   return {
-    compatibilityMarker: {
+    format: {
       schema: 'stark-ballot.public_input',
       version: '1.1',
-      contractGeneration: options.contractGeneration ?? resolveCurrentContractGeneration(),
     },
     provenance: {
       source,
-      ...(options.executionId ? { executionId: options.executionId } : {}),
+      ...(options.finalizationId ? { finalizationId: options.finalizationId } : {}),
       ...(options.bundleKey ? { bundleKey: options.bundleKey } : {}),
     },
     typedAuthority: {

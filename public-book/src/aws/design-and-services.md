@@ -1,19 +1,17 @@
 # 現行構成とサービス一覧
 
 AWS runtime の管理境界、環境分離、主要サービスの責務を公開仕様として整理します。
-前提となる公開境界と、個別デプロイの承認記録・内部運用証跡など扱わない範囲は [AWS runtime boundary](runtime-boundary.md) を参照してください。
+前提となる公開境界と、個別デプロイの承認記録・内部運用証跡など扱わない範囲は [AWS runtime 境界](runtime-boundary.md) を参照してください。
 
 ## Terraform root ごとの管理境界
 
 AWS runtime は Terraform の root ごとに責務を分けて管理します。
-各 root の管理対象と境界は次のとおりです（root ownership の詳細は [Terraform](terraform.md)）。
+root ごとの管理対象と所有しない範囲の正本は [Terraform > Root ownership](terraform.md#root-ownership) です。要約は次のとおりです。
 
-| 管理系                       | 公開仕様上の役割                                                                                                                                                                                 | 境界                                                                                           |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `infra/terraform/foundation` | ECR repository、versioned manifest storage、Secrets Manager container、non-secret SSM config、prover networking                                                                                  | API、Lambda、DynamoDB、SQS、Step Functions、ECS task、CloudFront、proof artifact S3 は作らない |
-| `infra/terraform/app`        | CloudFront + private S3 frontend、develop operator gate、API Gateway + `public-api`、DynamoDB、target Lambdas、SQS/SFN/ECS/S3、runtime SSM refs、logs / metrics / alarms / notification / ledger | ECR repository や image publication は所有せず、digest 固定の prover image URI を消費する      |
-| `infra/terraform/bootstrap`  | Terraform state backend、deployment control lane、暗号化された deployment artifact / acceptance evidence storage                                                                                 | Runtime workload resource は所有しない                                                         |
-| `infra/terraform/legacy`     | retained historical context                                                                                                                                                                      | 現行 runtime の authority ではない                                                             |
+- `infra/terraform/app`：target application runtime（CloudFront + frontend、API、DynamoDB、queue / SFN / ECS / S3、observability）。ECR repository や image publication は所有せず、digest 固定の prover image URI を消費する
+- `infra/terraform/foundation`：app 実行の前提リソース（ECR、ECR retention controller、manifest storage、secret / config container、prover networking）。app runtime resource は作らない
+- `infra/terraform/bootstrap`：Terraform state backend と deployment-control lane、report-only controls、暗号化された authority storage。runtime workload resource は所有しない
+- `infra/terraform/legacy`：retained historical context。現行 runtime の authority ではない
 
 ## 環境分離
 
@@ -21,7 +19,7 @@ AWS runtime は Terraform の root ごとに責務を分けて管理します。
 現在の live target app lane は `stark-dev/develop/app` です。
 `stark-prod/main/app` は protected production contract の repository evidence として render されます。
 これは非変更 evidence であり、live production deployment はまだ承認しません。
-証明モードは実 STARK 証明を前提にし、`RISC0_DEV_MODE=1` / `USE_MOCK_ZKVM=true` はローカル同期実行用の設定です。
+Target は `target-aws-async` profile による production STARK 証明を前提にします。Local 実行意図の authority は semantic `RUNTIME_PROFILE`（`local-demo`、`static-mock-e2e`、`local-proof-development`、`local-proof-production`）であり、置き換え済みの `RISC0_DEV_MODE` / `USE_MOCK_ZKVM` selector は拒否します。
 
 | 項目                                                                  | `develop`                                                                                    | `main`                                                                  |
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
@@ -71,39 +69,45 @@ _図: STARK Ballot Simulator の AWS 全体構成（クリックで拡大）。_
 | S3                     | proof artifacts / static frontend | private proof artifacts、public `bundle.zip` の読み出し元、frontend artifacts               |
 | SSM Parameter Store    | runtime refs                      | non-secret runtime wiring と secret/config reference name の保持                            |
 | EventBridge            | janitor / operations-ledger rules | terminal status / 定期 sweep と、alarm / ECS / pipeline / deployment event の正規化         |
-| CloudWatch             | logs / metrics / dashboard        | runtime / access logs、metric filters、passive alarm、normalized ledger と query            |
-| SNS                    | verification invariant alerts     | verification verdict invariant の矛盾に限定した通知                                         |
+| CloudWatch             | logs / metrics / dashboard        | runtime / access logs、metric filters、passive / damped actionable alarm、ledger / query    |
+| SNS                    | invariant / `ops-actionable`      | verification verdict invariant の矛盾と、限定された持続的な運用 signal の通知               |
 | KMS + CloudFront       | develop operator-gate keyset      | versioned asymmetric signing keys と CloudFront trusted public-key group を管理             |
 
 サービス表の補足は次のとおりです。
 
-- Observability：telemetry は verification verdict を変更せず、通知 action を持つのは verification invariant alarm だけです（その他は passive alarm。詳細は [可観測性設計](observability.md)）。
+- Observability：telemetry は verification verdict を変更せず、自動 remediation も起動しません。Verification invariant の直接通知と、隔離された `ops-actionable` 経路の routing 対象（damped alarm と exact owned-pipeline failure）は [可観測性設計 > 通知の境界](observability.md#通知の境界) が正本です。その他の調査用 alarm は passive です。
 - Artifact 境界：`public` の分類、`bundle.zip` の除外 artifact、`verification.json` の capability 保護配信は [公開境界](../verification/public-boundary.md) の定義に従います。
 - DynamoDB recovery：4 phase の定義と quiesce を含む切替契約は [Terraform](terraform.md) を参照してください。
 - Develop operator gate：追跡対象の keyset manifest を authority とし、KMS の private signing material を Terraform state、pipeline artifact、runtime role に渡しません。KMS から導出した public key だけを CloudFront trust group に登録し、署名権限は target runtime の責務外に保ちます。
 
 ### Foundation resources
 
-| サービス            | リソース                     | 役割                                                              |
-| ------------------- | ---------------------------- | ----------------------------------------------------------------- |
-| ECR                 | prover / RISC Zero toolchain | プローバーコンテナと RISC Zero toolchain image の repository 管理 |
-| S3                  | versioned manifest storage   | image / deployment manifest 系メタデータの非公開保存              |
-| Secrets Manager     | runtime secret containers    | app runtime が参照する secret container の作成                    |
-| SSM Parameter Store | non-secret config records    | Turnstile site key など、app runtime が参照する non-secret config |
-| VPC / subnet / SG   | prover networking inputs     | ECS prover task が利用する networking input                       |
+| サービス                          | リソース                     | 役割                                                                                                                     |
+| --------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| ECR                               | prover / RISC Zero toolchain | プローバーコンテナと RISC Zero toolchain image の repository 管理                                                        |
+| Lambda + EventBridge + CloudWatch | ECR retention controller     | accepted / rollback / running / in-progress reference を保護する reference-aware retention を日次実行し、専用 log に記録 |
+| S3                                | versioned manifest storage   | image / deployment manifest 系メタデータの非公開保存                                                                     |
+| Secrets Manager                   | runtime secret containers    | app runtime が参照する secret container の作成                                                                           |
+| SSM Parameter Store               | non-secret config records    | Turnstile site key など、app runtime が参照する non-secret config                                                        |
+| VPC / subnet / security group     | prover networking inputs     | ECS prover task が利用する networking input                                                                              |
 
 Prover image metadata、promotion evidence、release record / accepted pointer は proof artifact bucket ではなく image build / signing と runtime wiring の境界に属し、旧構成の SSM current pointer は候補 metadata lookup にとどまります（target topology の release authority ではありません）。
 Image build、digest 固定、署名ステータス確認、Image ID との関係は [イメージ署名](image-signing.md) に集約します。
+ECR retention は count / age ベースの native lifecycle expiry ではなく、Foundation-owned の reference-aware retention controller が担います（保護対象と動作の正本は [Terraform > Retention authority](terraform.md#retention-authority)）。
 
 ### Deployment control
 
-| サービス     | リソース                            | 役割                                                                                                                   |
-| ------------ | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| S3 + KMS     | state / deployment evidence storage | Terraform state と lockfile、暗号化された pipeline artifact、retained deployable、immutable acceptance evidence の保護 |
-| CodePipeline | deployment lanes                    | app の normal / rollback と foundation root の制御された実行経路                                                       |
-| CodeBuild    | app build / deploy jobs             | authority selection、frontend / Lambda artifact、Terraform saved plan/apply、smoke / acceptance job                    |
-| CodeBuild    | image release jobs                  | toolchain / prover candidate build、Image ID/signing/scan evidence、promotion evidence                                 |
-| IAM          | deploy roles                        | root ごとの最小権限実行                                                                                                |
+| サービス                    | リソース                                       | 役割                                                                                                                                                           |
+| --------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S3 + KMS                    | state / execution / retained authority storage | Terraform state / lockfile、lane ごとの暗号化された execution artifact、retained deployable / acceptance evidence、accepted Terraform baseline / report の保護 |
+| CodePipeline                | controlled lanes                               | Bootstrap / Foundation saved-plan、Toolchain / Prover release、App full（normal / rollback）、App static-fast の分離された実行経路                             |
+| CodeBuild                   | root / app build and deploy jobs               | Bootstrap / Foundation / App の validation、saved plan / review / apply / smoke、App artifact build / deploy / acceptance                                      |
+| CodeBuild                   | image release jobs                             | Toolchain / Prover candidate build、Image ID / signing / scan evidence、accepted pointer promotion                                                             |
+| CodeBuild                   | report-only jobs                               | weekly / on-demand drift coordinator、Bootstrap / Foundation / App runner、on-demand rollback / recovery readiness                                             |
+| EventBridge Scheduler + SQS | drift schedule / missed-run queue              | weekly drift coordinator の起動と、起動できなかった run の暗号化済み queue への隔離                                                                            |
+| IAM                         | control-plane roles                            | root、lane、report-only project ごとの最小権限実行                                                                                                             |
+
+Report-only drift は accepted Terraform baseline と exact historical source を使って refresh-enabled plan を実行し、redacted report だけを保存します。Rollback / recovery readiness も同じ隔離された App planning 境界を使います。どちらも Apply、state / pointer write、remediation、rollback / recovery exercise を起動せず、その結果は saved plan や mutation の authority になりません。
 
 [![AWS deployment control](./images/aws-deployment-control.png)](./images/aws-deployment-control.png)
 _図: GitHub から CodePipeline deployment lanes を経て app runtime に到達するデプロイ制御フロー（クリックで拡大）。_
@@ -133,6 +137,7 @@ flowchart TB
     MANIFEST["Manifest storage<br/>release records / promotion evidence"]
     CONFIG["Secret/config containers<br/>Secrets Manager / SSM"]
     NET["Prover networking inputs"]
+    RETENTION["Reference-aware ECR retention"]
   end
 
   subgraph APP["infra/terraform/app"]
@@ -147,17 +152,23 @@ flowchart TB
   end
 
   subgraph BOOT["infra/terraform/bootstrap"]
-    CONTROL["Deployment control lane"]
-    ACCEPT["Encrypted deployment evidence<br/>retained deployables / CAS accepted index"]
+    CONTROL["Deployment control lanes"]
+    AUTHORITY["Encrypted authority storage<br/>deployables / acceptance / Terraform baseline / reports"]
+    REPORT["Report-only controls<br/>drift / readiness"]
   end
 
   ECR --> RUNTIME
+  ECR --> RETENTION
   MANIFEST --> RUNTIME
+  MANIFEST --> RETENTION
   CONFIG --> PARAM
   NET --> RUNTIME
   CONTROL --> RUNTIME
-  CONTROL --> ACCEPT
-  ACCEPT --> CONTROL
+  CONTROL --> AUTHORITY
+  AUTHORITY --> CONTROL
+  AUTHORITY --> RETENTION
+  AUTHORITY --> REPORT
+  REPORT --> AUTHORITY
   PARAM --> RUNTIME
   GATE --> RUNTIME
   RUNTIME --> DATA
@@ -165,6 +176,8 @@ flowchart TB
   SEM --> RUNTIME
   RUNTIME --> ARTIFACTS
   RUNTIME --> OBS
+  RUNTIME --> RETENTION
+  REPORT -. "refresh-only inspection" .-> RUNTIME
   CONTROL --> OBS
   RUNTIME --> OUT
 ```
@@ -180,12 +193,24 @@ canonical runtime component name と legacy/historical name の対応は次の�
 | `image-signature-verifier` | `check-image-signature`    |
 | `semaphore-janitor`        | —（legacy 名なし）         |
 
+## 現行アーキテクチャの責務分離
+
+現行構成は、一つの hosting/backend lifecycle にすべての責務を集約しません。
+短い user-facing Web/API request と数分規模の proof work を分ける理由は
+[非同期プローバー > 実行リソースと mode 境界](async-prover.md#実行リソースと-mode-境界)、
+runtime、前提 resource、deployment control を Terraform root ごとに分ける理由は
+[Terraform > Root ownership](terraform.md#root-ownership) が現在の参照先です。
+
+この分離により、proof capacity や image authority の変更を API request lifecycle
+から切り離し、IaC の plan、権限、review、rollback 判断を change lifecycle ごとに
+限定できます。過去の Amplify / AppSync / Next.js 構成や手動 handoff は現行 runtime
+contract ではありません。
+
 ## 関連する章
 
 - [トポロジー](topology.md)：リクエスト経路とコンポーネント間の通信フロー
 - [非同期プローバー](async-prover.md)：SQS → Step Functions → ECS の実行時フロー
 - [可観測性設計](observability.md)：CloudWatch / EventBridge / SNS のシグナルと authority 境界
 - [Terraform](terraform.md)：target app/bootstrap state と runtime wiring
-- [設計ふりかえり § Amplify 単独構成からハイブリッド構成への移行](../decisions/design-retrospective.md#6-amplify-単独構成からハイブリッド構成への移行)：現行構成に至った設計判断
 
 <!-- source: infra/terraform/, infra/lambdas/, infra/docker/ -->

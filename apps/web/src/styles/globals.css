@@ -12,7 +12,9 @@
  * Reference: docs/ui/design-spec-transparent-trust.md
  */
 
-@import 'tailwindcss';
+@import 'tailwindcss' source(none);
+@source '../';
+@source '../../../../index.html';
 
 @theme {
   /* ============================================

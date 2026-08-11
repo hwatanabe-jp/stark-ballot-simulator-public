@@ -4,6 +4,7 @@ import { hashIpForLogging } from '@stark-ballot/diagnostics/logging';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { randomUUID } from 'node:crypto';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 const MAX_CLIENT_REQUEST_ID_LENGTH = 128;
 const SIMPLE_CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
@@ -36,9 +37,13 @@ export function resolveUntrustedClientRequestId(headers: Headers): string | unde
   return value;
 }
 
-export function buildRequestLogContext(request: Request, options: RequestLogOptions = {}): LogContext {
+export function buildRequestLogContext(
+  profile: ResolvedRuntimeProfile,
+  request: Request,
+  options: RequestLogOptions = {},
+): LogContext {
   const requestId = options.requestId?.trim() || randomUUID();
-  const clientIp = getRequestIp(request.headers, options.fallbackIp);
+  const clientIp = getRequestIp(profile, request.headers, options.fallbackIp);
   const sourceIpHash = clientIp ? hashIpForLogging(clientIp) : undefined;
 
   return {
@@ -88,10 +93,11 @@ export function logRequestSummary(response: Response, durationMs: number, option
 }
 
 export async function withRequestLogContext<T>(
+  profile: ResolvedRuntimeProfile,
   request: Request,
   handler: () => Promise<T> | T,
   options: RequestLogOptions = {},
 ): Promise<T> {
-  const logContext = buildRequestLogContext(request, options);
+  const logContext = buildRequestLogContext(profile, request, options);
   return await runWithLogContext(logContext, handler);
 }

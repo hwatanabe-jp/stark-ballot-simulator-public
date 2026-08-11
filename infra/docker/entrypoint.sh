@@ -12,6 +12,7 @@ OUTPUT_S3_PREFIX="${OUTPUT_S3_PREFIX:-}"
 AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-}"
 PUBLIC_INPUT_SCHEMA="${PUBLIC_INPUT_SCHEMA:-stark-ballot.public_input}"
 PUBLIC_INPUT_VERSION="${PUBLIC_INPUT_VERSION:-1.1}"
+PUBLIC_BUNDLE_MANIFEST_PATH="${PUBLIC_BUNDLE_MANIFEST_PATH:-/opt/zkvm/share/public-bundle-manifest.json}"
 CURRENT_METHOD_VERSION=14
 PROVER_SUMMARY_ACTIVE=0
 PROVER_START_MS=0
@@ -27,14 +28,18 @@ epoch_millis() {
   date -u +%s%3N
 }
 
+is_target_runtime_profile() {
+  [[ "${RUNTIME_PROFILE:-}" == "target-aws-async" ]]
+}
+
 validate_prover_observability() {
-  if [[ "${TARGET_AWS_RUNTIME:-}" != "1" ]]; then
+  if ! is_target_runtime_profile; then
     return 0
   fi
   if [[ ! "${DEPLOYMENT_ID:-}" =~ ^dep_[0-9a-f]{32}$ ]] ||
      [[ ! "${APP_SOURCE_SHA:-}" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] ||
      [[ "${DEPLOY_MODE:-}" != "normal" && "${DEPLOY_MODE:-}" != "rollback" ]] ||
-     [[ ! "${EXECUTION_ID:-}" =~ ^[A-Za-z0-9_-]{1,128}$ ]] ||
+     [[ ! "${FINALIZATION_ID:-}" =~ ^[A-Za-z0-9_-]{1,128}$ ]] ||
      [[ -z "${LOG_IP_HASH_SALT:-}" ]] ||
      [[ "${LOG_IP_HASH_SALT:-}" == "stark-ballot-log-salt" ]]; then
     printf '%s\n' '{"level":"error","event":"config_invalid","message":"Prover observability configuration is invalid"}' >&2
@@ -74,20 +79,20 @@ emit_prover_summary() {
     --arg deployment_id "${DEPLOYMENT_ID:-}" \
     --arg app_source_sha "${APP_SOURCE_SHA:-}" \
     --arg deploy_mode "${DEPLOY_MODE:-}" \
-    --arg execution_id "${EXECUTION_ID:-}" \
+    --arg finalization_id "${FINALIZATION_ID:-}" \
     --arg phase "$phase" \
     --arg result "$result" \
     --arg category "$category" \
     --arg key_prefix "$key_prefix" \
     --argjson duration_ms "$duration_ms" \
-    '{ts:$ts,level:(if $result == "error" then "error" else "info" end),service:"prover",env:$env,deployment_id:$deployment_id,app_source_sha:$app_source_sha,deploy_mode:$deploy_mode,event:"prover_summary",phase:$phase,result:$result,category:$category,duration_ms:$duration_ms,execution_id:$execution_id} + (if $key_prefix == "" then {} else {key_prefix:$key_prefix} end)'
+    '{ts:$ts,level:(if $result == "error" then "error" else "info" end),service:"prover",env:$env,deployment_id:$deployment_id,app_source_sha:$app_source_sha,deploy_mode:$deploy_mode,event:"prover_summary",phase:$phase,result:$result,category:$category,duration_ms:$duration_ms,finalization_id:$finalization_id} + (if $key_prefix == "" then {} else {key_prefix:$key_prefix} end)'
 }
 
 log() {
   local level="$1"; shift
   local message="$*"
   message="${message:0:512}"
-  if [[ "${TARGET_AWS_RUNTIME:-}" == "1" ]] && validate_prover_observability >/dev/null 2>&1; then
+  if is_target_runtime_profile && validate_prover_observability >/dev/null 2>&1; then
     jq -cn \
       --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
       --arg level "${level,,}" \
@@ -95,9 +100,9 @@ log() {
       --arg deployment_id "$DEPLOYMENT_ID" \
       --arg app_source_sha "$APP_SOURCE_SHA" \
       --arg deploy_mode "$DEPLOY_MODE" \
-      --arg execution_id "$EXECUTION_ID" \
+      --arg finalization_id "$FINALIZATION_ID" \
       --arg message "$message" \
-      '{ts:$ts,level:$level,service:"prover",env:$env,deployment_id:$deployment_id,app_source_sha:$app_source_sha,deploy_mode:$deploy_mode,event:"prover_log",message:$message,execution_id:$execution_id}' ||
+      '{ts:$ts,level:$level,service:"prover",env:$env,deployment_id:$deployment_id,app_source_sha:$app_source_sha,deploy_mode:$deploy_mode,event:"prover_log",message:$message,finalization_id:$finalization_id}' ||
       printf '%s\n' '{"level":"error","event":"log_sanitization_failed","message":"Log payload discarded"}'
     return
   fi
@@ -299,18 +304,22 @@ uses_s3_artifacts() {
 }
 
 validate_production_proof_mode() {
-  if uses_s3_artifacts && [[ "${RISC0_DEV_MODE:-}" == "1" ]]; then
-    fatal "RISC0_DEV_MODE=1 is not allowed for S3-backed async prover execution"
+  case "${RUNTIME_PROFILE:-}" in
+    target-aws-async | local-proof-production) ;;
+    *) fatal "RUNTIME_PROFILE must select a supported production prover profile" ;;
+  esac
+  if uses_s3_artifacts && ! is_target_runtime_profile; then
+    fatal "RUNTIME_PROFILE=target-aws-async is required for S3-backed async prover execution"
   fi
 }
 
 validate_expected_bucket_owner() {
-  if [[ "${TARGET_AWS_RUNTIME:-}" != "1" ]] || ! uses_s3_artifacts; then
+  if ! is_target_runtime_profile || ! uses_s3_artifacts; then
     return
   fi
 
   if [[ ! "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
-    fatal "AWS_ACCOUNT_ID must be a 12-digit account ID when TARGET_AWS_RUNTIME=1 uses S3 artifacts"
+    fatal "AWS_ACCOUNT_ID must be a 12-digit account ID for target S3 artifacts"
   fi
 }
 
@@ -628,10 +637,6 @@ election_id = require(
     bytes_to_uuid(get_value(payload, "election_id", "electionId")),
     "election_id",
 )
-contract_generation = require(
-    get_value(payload, "contract_generation", "contractGeneration"),
-    "contract_generation",
-)
 election_config_hash = require(
     bytes_to_hex(get_value(payload, "election_config_hash", "electionConfigHash"), 32),
     "election_config_hash",
@@ -686,7 +691,6 @@ for vote in votes:
 public_input = {
     "schema": schema,
     "version": version,
-    "contractGeneration": contract_generation,
     "electionId": election_id,
     "electionConfigHash": election_config_hash,
     "bulletinRoot": bulletin_root,
@@ -1046,9 +1050,6 @@ if public_input.get("schema") != "stark-ballot.public_input":
     raise SystemExit("Invalid public-input schema")
 if public_input.get("version") != "1.1":
     raise SystemExit("Invalid public-input version")
-if not isinstance(public_input.get("contractGeneration"), str) or not public_input.get("contractGeneration"):
-    raise SystemExit("Invalid public-input contractGeneration")
-
 if require_string(public_input, "electionId", "public-input.electionId") != require_string(
     journal, "electionId", "journal.electionId"
 ):
@@ -1110,6 +1111,115 @@ if not matches_hex(require_string(close_statement, "sthDigest"), compute_sth_dig
     raise SystemExit("close-statement.sthDigest self-check failed")
 if not matches_hex(require_string(close_statement, "sthDigest"), require_string(journal, "sthDigest"), 32):
     raise SystemExit("close-statement.sthDigest drifted from journal")
+PY
+}
+
+inspect_public_bundle_archive() {
+  local archive_path="$1"
+  local bundle_mode="$2"
+
+  python3 - "$PUBLIC_BUNDLE_MANIFEST_PATH" "$archive_path" "$bundle_mode" <<'PY'
+import json
+import re
+import sys
+import zipfile
+
+manifest_path, archive_path, bundle_mode = sys.argv[1:4]
+canonical_member = re.compile(r"^[a-z0-9][a-z0-9-]*\.json$")
+
+
+def fail(reason):
+    print(f"Public bundle archive admission failed: {reason}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def require_exact_keys(value, expected, label):
+    if not isinstance(value, dict) or set(value) != set(expected):
+        fail(f"{label} has invalid fields")
+
+
+def require_members(value, label):
+    if not isinstance(value, list):
+        fail(f"{label} must be an array")
+    members = []
+    for member in value:
+        if not isinstance(member, str) or canonical_member.fullmatch(member) is None:
+            fail(f"{label} contains a noncanonical member")
+        members.append(member)
+    return members
+
+
+try:
+    with open(manifest_path, "r", encoding="utf-8") as handle:
+        manifest = json.load(handle)
+except (OSError, UnicodeError, json.JSONDecodeError):
+    fail("manifest is unavailable or malformed")
+
+require_exact_keys(manifest, ["requiredInAllModes", "modes", "neverPublic"], "manifest")
+require_exact_keys(manifest["modes"], ["sync", "async"], "manifest modes")
+if bundle_mode not in manifest["modes"]:
+    fail("bundle mode is unsupported")
+
+required_in_all_modes = require_members(manifest["requiredInAllModes"], "requiredInAllModes")
+never_public = require_members(manifest["neverPublic"], "neverPublic")
+mode_members = {}
+known_public = list(required_in_all_modes)
+for mode_name, mode_value in manifest["modes"].items():
+    require_exact_keys(mode_value, ["required", "optional"], f"mode {mode_name}")
+    required = require_members(mode_value["required"], f"mode {mode_name} required")
+    optional = require_members(mode_value["optional"], f"mode {mode_name} optional")
+    mode_members[mode_name] = {"required": required, "optional": optional}
+    known_public.extend(required)
+    known_public.extend(optional)
+
+public_by_case = set()
+for member in known_public:
+    case_key = member.casefold()
+    if case_key in public_by_case:
+        fail("manifest public membership is duplicated or case-conflicting")
+    public_by_case.add(case_key)
+
+private_by_case = set()
+for member in never_public:
+    case_key = member.casefold()
+    if case_key in private_by_case or case_key in public_by_case:
+        fail("manifest private membership is duplicated or overlaps public membership")
+    private_by_case.add(case_key)
+
+selected_mode = mode_members[bundle_mode]
+required = set(required_in_all_modes + selected_mode["required"])
+allowed = required | set(selected_mode["optional"])
+known_public_set = set(known_public)
+never_public_set = set(never_public)
+seen_exact = set()
+seen_by_case = {}
+
+try:
+    with zipfile.ZipFile(archive_path, "r") as archive:
+        for entry in archive.infolist():
+            member = entry.filename
+            case_key = member.casefold()
+            if member in seen_exact:
+                fail("archive contains a duplicate member")
+            if case_key in seen_by_case:
+                fail("archive contains case-conflicting members")
+            if entry.is_dir() or canonical_member.fullmatch(member) is None:
+                fail("archive contains a noncanonical member")
+            seen_exact.add(member)
+            seen_by_case[case_key] = member
+            if member in never_public_set:
+                fail("archive contains a never-public member")
+            if member not in allowed:
+                if member in known_public_set:
+                    fail("archive contains a mode-inconsistent member")
+                fail("archive contains an unknown member")
+            archive.read(entry)
+except (OSError, RuntimeError, UnicodeError, zipfile.BadZipFile, zipfile.LargeZipFile):
+    fail("archive is malformed or unreadable")
+
+missing = sorted(required - seen_exact)
+if missing:
+    fail("archive is missing required members")
 PY
 }
 
@@ -1187,6 +1297,12 @@ create_bundle_archive() {
 
   rm -f "$bundle_zip"
   (cd "$bundle_dir" && zip -q -r "$bundle_zip" .)
+  if ! inspect_public_bundle_archive "$bundle_zip" async; then
+    rm -f "$bundle_zip"
+    rm -rf "$bundle_dir"
+    shopt -u nullglob
+    fatal "Public bundle archive admission failed"
+  fi
   rm -rf "$bundle_dir"
   shopt -u nullglob
 
@@ -1283,6 +1399,10 @@ run_host_with_timeout() {
     fatal "zkVM timeout and termination grace must be positive integer seconds"
   fi
   log INFO "Running host (timeout: ${timeout_seconds}s)"
+  # Adapter-private translation: both supported prover profiles require
+  # production RISC Zero evidence, so retired development-mode variables must
+  # never reach the external host process.
+  unset RISC0_DEV_MODE FORCE_DEV_MODE
   local started_at_seconds="$SECONDS"
   timeout --kill-after="${termination_grace_seconds}s" "$timeout_seconds" "$HOST_BIN" "$WORK_INPUT" >/dev/null 2>&1 &
   PROVER_HOST_WRAPPER_PID="$!"

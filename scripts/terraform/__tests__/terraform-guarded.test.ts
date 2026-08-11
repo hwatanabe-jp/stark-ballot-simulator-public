@@ -1,20 +1,22 @@
-/**
- * @vitest-environment node
- */
-
 import { describe, expect, it } from 'vitest';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { parseDeploymentTargetConfiguration, resolveAllowedDeploymentTarget } from '@stark-ballot/deployment-authority';
 
 const SCRIPT_PATH = path.resolve(process.cwd(), 'scripts/terraform/terraform-guarded.sh');
-const APP_SIGNATURE_PREFLIGHT_PLAN_ROLE =
-  'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-sig-preflight-plan-stark-dev-develop-app/codebuild-test';
-const APP_SIGNATURE_PREFLIGHT_APPLY_ROLE =
-  'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-sig-preflight-apply-stark-dev-develop-app/codebuild-test';
-const APP_SIGNATURE_STATE_REFRESH_APPLY_ROLE =
-  'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-sig-state-refresh-apply-stark-dev-develop-app/codebuild-test';
+const REVIEWED_DEVELOP_ACCOUNT_ID = resolveAllowedDeploymentTarget('stark-dev/develop').accountId;
+const REVIEWED_TARGET = parseDeploymentTargetConfiguration(
+  JSON.parse(
+    readFileSync(path.resolve(process.cwd(), 'packages/deployment-authority/deployment-targets.json'), 'utf8'),
+  ),
+).allowedTargets['stark-dev/develop'];
+const REVIEWED_STATE_BUCKET = REVIEWED_TARGET.sharedNames.terraformStateBucket;
+const REVIEWED_STATE_KMS_ALIAS = REVIEWED_TARGET.sharedNames.terraformStateKmsAlias;
+const APP_SIGNATURE_PREFLIGHT_PLAN_ROLE = `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-sig-preflight-plan-stark-dev-develop-app/codebuild-test`;
+const APP_SIGNATURE_PREFLIGHT_APPLY_ROLE = `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-sig-preflight-apply-stark-dev-develop-app/codebuild-test`;
+const APP_SIGNATURE_STATE_REFRESH_APPLY_ROLE = `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-sig-state-refresh-apply-stark-dev-develop-app/codebuild-test`;
 const APP_SIGNATURE_PREFLIGHT_TARGET_ARGS = [
   '-target=terraform_data.image_signature_verifier_permissions_boundary_authority',
   '-target=aws_cloudwatch_log_group.image_signature_verifier',
@@ -71,9 +73,9 @@ function testEnv(dir: string, extra: Record<string, string | undefined> = {}): N
   return {
     ...env,
     PATH: `${path.join(dir, 'bin')}:${env['PATH'] ?? ''}`,
-    TERRAFORM_AWS_ACCOUNT_ID: '111122223333',
-    MOCK_AWS_ACCOUNT: '111122223333',
-    MOCK_AWS_ARN: 'arn:aws:sts::111122223333:assumed-role/terraform-admin/aws-vault-test',
+    TERRAFORM_AWS_ACCOUNT_ID: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
+    MOCK_AWS_ACCOUNT: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
+    MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/terraform-admin/aws-vault-test`,
     MOCK_TERRAFORM_WORKSPACE: 'develop',
     MOCK_TERRAFORM_LOG: path.join(dir, 'terraform.log'),
     ...extra,
@@ -124,7 +126,7 @@ function writeBootstrapTfvars(
   const file = path.join(dir, `${environment}.local.tfvars`);
   const values = {
     aws_region: 'ap-northeast-1',
-    aws_account_id: '111122223333',
+    aws_account_id: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
     account_alias: 'stark-dev',
     deployment_environment: environment,
     state_scope: 'bootstrap',
@@ -144,7 +146,7 @@ function writeAppTfvars(dir: string, overrides: Record<string, string> = {}): st
   const file = path.join(dir, 'pipeline.auto.tfvars');
   const values = {
     aws_region: 'ap-northeast-1',
-    aws_account_id: '111122223333',
+    aws_account_id: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
     account_alias: 'stark-dev',
     deployment_environment: 'develop',
     state_scope: 'app',
@@ -201,6 +203,65 @@ function writeAppBackendConfig(
 type AppBackendConfigOptions = NonNullable<Parameters<typeof writeAppBackendConfig>[1]>;
 
 describe('terraform-guarded.sh', () => {
+  it('consumes reviewed target root and role values instead of reconstructing them in shell', () => {
+    const source = readFileSync(SCRIPT_PATH, 'utf8');
+
+    expect(source).toContain('.allowedTargets[$target_key] as $target');
+    expect(source).toContain('$target.lanes[$lane] as $root');
+    expect(source).toContain('$root.backendKey');
+    expect(source).toContain('$root.names.terraformPlanRole');
+    expect(source).not.toContain("printf 'stark-ballot-sim-tf-plan-%s-%s-app'");
+    expect(source).not.toContain('expected_key="stark-ballot-simulator/${identity}/terraform.tfstate"');
+  });
+
+  it('rejects a well-formed target account that is absent from the reviewed deployment configuration', () => {
+    withTempDir((dir) => {
+      installMocks(dir);
+      mkdirSync(path.join(dir, 'infra/terraform/bootstrap'), { recursive: true });
+      writeFileSync(path.join(dir, 'reviewed.tfplan'), 'mock saved plan');
+
+      const result = spawnSync(
+        'bash',
+        [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'apply', path.join(dir, 'reviewed.tfplan')],
+        {
+          encoding: 'utf8',
+          env: testEnv(dir, {
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
+            MOCK_AWS_ACCOUNT: '111122223333',
+            MOCK_AWS_ARN: 'arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00',
+            MOCK_TERRAFORM_WORKSPACE: 'default',
+          }),
+        },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(`Reviewed target account: ${REVIEWED_DEVELOP_ACCOUNT_ID}`);
+      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
+    });
+  });
+
+  it('rejects target execution when canonical deployment configuration admission fails', () => {
+    withTempDir((dir) => {
+      installMocks(dir);
+      writeMockBin(dir, 'node', '#!/usr/bin/env bash\nexit 7\n');
+
+      const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'validate'], {
+        encoding: 'utf8',
+        env: testEnv(dir, {
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: REVIEWED_DEVELOP_ACCOUNT_ID,
+          TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
+          MOCK_AWS_ACCOUNT: REVIEWED_DEVELOP_ACCOUNT_ID,
+          MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
+        }),
+      });
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('Reviewed deployment target configuration failed canonical admission.');
+      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
+    });
+  });
+
   it('runs Terraform only after caller, workspace, and tfvars environment checks pass', () => {
     withTempDir((dir) => {
       installMocks(dir);
@@ -248,12 +309,14 @@ describe('terraform-guarded.sh', () => {
       const result = spawnSync('bash', [SCRIPT_PATH, 'develop', 'plan', `-var-file=${tfvars}`], {
         encoding: 'utf8',
         env: testEnv(dir, {
-          MOCK_AWS_ARN: 'arn:aws:iam::111122223333:user/user01',
+          MOCK_AWS_ARN: `arn:aws:iam::${REVIEWED_DEVELOP_ACCOUNT_ID}:user/user01`,
         }),
       });
 
       expect(result.status).toBe(2);
-      expect(result.stderr).toContain('Terraform must run as arn:aws:sts::111122223333:assumed-role/terraform-admin/*');
+      expect(result.stderr).toContain(
+        `Terraform must run as arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/terraform-admin/*`,
+      );
       expect(result.stderr).not.toContain('user01');
       expect(result.stderr).toContain('Current caller ARN did not match the required role.');
       expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
@@ -342,9 +405,9 @@ describe('terraform-guarded.sh', () => {
         {
           encoding: 'utf8',
           env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-            MOCK_AWS_ARN: 'arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         },
@@ -424,8 +487,8 @@ describe('terraform-guarded.sh', () => {
           cwd: dir,
           encoding: 'utf8',
           env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
-            MOCK_AWS_ARN: 'arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
           }),
         },
       );
@@ -445,9 +508,10 @@ describe('terraform-guarded.sh', () => {
       writeFileSync(
         path.join(dir, 'infra/terraform/bootstrap/backend.local.hcl'),
         [
-          'bucket       = "example-terraform-state"',
+          `bucket       = "${REVIEWED_STATE_BUCKET}"`,
           'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
           'region       = "ap-northeast-1"',
+          `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
           'use_lockfile = true',
           'encrypt      = true',
         ].join('\n'),
@@ -460,9 +524,9 @@ describe('terraform-guarded.sh', () => {
           cwd: dir,
           encoding: 'utf8',
           env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-            MOCK_AWS_ARN: 'arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
           }),
         },
       );
@@ -482,9 +546,12 @@ describe('terraform-guarded.sh', () => {
       writeFileSync(
         path.join(dir, 'infra/terraform/bootstrap/backend.local.hcl'),
         [
-          'bucket       = "example-terraform-state"',
+          `bucket       = "${REVIEWED_STATE_BUCKET}"`,
           'key          = "terraform.tfstate"',
           'region       = "ap-northeast-1"',
+          `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
+          'use_lockfile = true',
+          'encrypt      = true',
         ].join('\n'),
       );
 
@@ -495,9 +562,9 @@ describe('terraform-guarded.sh', () => {
           cwd: dir,
           encoding: 'utf8',
           env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-            MOCK_AWS_ARN: 'arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
           }),
         },
       );
@@ -511,6 +578,186 @@ describe('terraform-guarded.sh', () => {
     });
   });
 
+  it.each([
+    {
+      label: 'missing bucket',
+      lines: [
+        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
+        'region       = "ap-northeast-1"',
+        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
+        'use_lockfile = true',
+        'encrypt      = true',
+      ],
+      expected: 'Terraform target backend config must include bucket.',
+    },
+    {
+      label: 'wrong bucket',
+      lines: [
+        'bucket       = "wrong-terraform-state"',
+        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
+        'region       = "ap-northeast-1"',
+        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
+        'use_lockfile = true',
+        'encrypt      = true',
+      ],
+      expected: 'Terraform target backend bucket mismatch.',
+    },
+    {
+      label: 'missing KMS',
+      lines: [
+        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
+        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
+        'region       = "ap-northeast-1"',
+        'use_lockfile = true',
+        'encrypt      = true',
+      ],
+      expected: 'Terraform target backend config must include kms_key_id.',
+    },
+    {
+      label: 'wrong KMS',
+      lines: [
+        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
+        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
+        'region       = "ap-northeast-1"',
+        'kms_key_id   = "alias/wrong-terraform-state"',
+        'use_lockfile = true',
+        'encrypt      = true',
+      ],
+      expected: 'Terraform target backend kms_key_id mismatch.',
+    },
+    {
+      label: 'missing region',
+      lines: [
+        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
+        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
+        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
+        'use_lockfile = true',
+        'encrypt      = true',
+      ],
+      expected: 'Terraform target backend config must include region.',
+    },
+    {
+      label: 'wrong region',
+      lines: [
+        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
+        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
+        'region       = "us-east-1"',
+        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
+        'use_lockfile = true',
+        'encrypt      = true',
+      ],
+      expected: 'Terraform target backend region mismatch.',
+    },
+    {
+      label: 'missing lockfile control',
+      lines: [
+        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
+        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
+        'region       = "ap-northeast-1"',
+        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
+        'encrypt      = true',
+      ],
+      expected: 'Terraform target backend config must include use_lockfile.',
+    },
+    {
+      label: 'disabled lockfile control',
+      lines: [
+        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
+        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
+        'region       = "ap-northeast-1"',
+        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
+        'use_lockfile = false',
+        'encrypt      = true',
+      ],
+      expected: 'Terraform target backend use_lockfile mismatch.',
+    },
+    {
+      label: 'missing encryption control',
+      lines: [
+        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
+        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
+        'region       = "ap-northeast-1"',
+        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
+        'use_lockfile = true',
+      ],
+      expected: 'Terraform target backend config must include encrypt.',
+    },
+    {
+      label: 'disabled encryption',
+      lines: [
+        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
+        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
+        'region       = "ap-northeast-1"',
+        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
+        'use_lockfile = true',
+        'encrypt      = false',
+      ],
+      expected: 'Terraform target backend encrypt mismatch.',
+    },
+  ])('rejects target account init with $label', ({ expected, lines }) => {
+    withTempDir((dir) => {
+      installMocks(dir);
+      mkdirSync(path.join(dir, 'infra/terraform/bootstrap'), { recursive: true });
+      writeFileSync(path.join(dir, 'infra/terraform/bootstrap/backend.local.hcl'), lines.join('\n'));
+
+      const result = spawnSync(
+        'bash',
+        [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'init', '-backend-config=backend.local.hcl'],
+        {
+          cwd: dir,
+          encoding: 'utf8',
+          env: testEnv(dir, {
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
+            TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
+          }),
+        },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(expected);
+      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
+    });
+  });
+
+  it('applies the exact target backend validator to Foundation init', () => {
+    withTempDir((dir) => {
+      installMocks(dir);
+      mkdirSync(path.join(dir, 'infra/terraform/foundation'), { recursive: true });
+      writeFileSync(
+        path.join(dir, 'infra/terraform/foundation/backend.pipeline.hcl'),
+        [
+          `bucket       = "${REVIEWED_STATE_BUCKET}"`,
+          'key          = "stark-ballot-simulator/stark-dev/develop/foundation/terraform.tfstate"',
+          'region       = "ap-northeast-1"',
+          `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
+          'use_lockfile = true',
+          'encrypt      = true',
+        ].join('\n'),
+      );
+
+      const result = spawnSync(
+        'bash',
+        [SCRIPT_PATH, 'stark-dev/develop/foundation', 'init', '-backend-config=backend.pipeline.hcl'],
+        {
+          cwd: dir,
+          encoding: 'utf8',
+          env: testEnv(dir, {
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
+            TERRAFORM_WORKING_DIR: 'infra/terraform/foundation',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/${REVIEWED_TARGET.lanes.foundation.names.terraformPlanRole}/codebuild-test`,
+          }),
+        },
+      );
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Terraform guard passed for stark-dev/develop/foundation.');
+      expect(readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toContain(
+        '-chdir=infra/terraform/foundation init -backend-config=backend.pipeline.hcl',
+      );
+    });
+  });
+
   it('requires the default workspace for target account plan/apply commands', () => {
     withTempDir((dir) => {
       installMocks(dir);
@@ -520,9 +767,9 @@ describe('terraform-guarded.sh', () => {
       const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'plan', `-var-file=${tfvars}`], {
         encoding: 'utf8',
         env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
           TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-          MOCK_AWS_ARN: 'arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00',
+          MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
           MOCK_TERRAFORM_WORKSPACE: 'develop',
         }),
       });
@@ -552,9 +799,9 @@ describe('terraform-guarded.sh', () => {
         {
           encoding: 'utf8',
           env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-            MOCK_AWS_ARN: 'arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         },
@@ -584,9 +831,9 @@ describe('terraform-guarded.sh', () => {
         {
           encoding: 'utf8',
           env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-            MOCK_AWS_ARN: 'arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         },
@@ -613,9 +860,9 @@ describe('terraform-guarded.sh', () => {
       const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'plan', `-var-file=${tfvars}`], {
         encoding: 'utf8',
         env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
           TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-          MOCK_AWS_ARN: 'arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00',
+          MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
           MOCK_TERRAFORM_WORKSPACE: 'default',
         }),
       });
@@ -636,8 +883,8 @@ describe('terraform-guarded.sh', () => {
       const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', 'plan', `-var-file=${tfvars}`], {
         encoding: 'utf8',
         env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
-          MOCK_AWS_ARN: 'arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00',
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
+          MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
         }),
       });
 
@@ -658,26 +905,24 @@ describe('terraform-guarded.sh', () => {
         const result = spawnSync('bash', [SCRIPT_PATH, identity, 'plan', `-var-file=${tfvars}`], {
           encoding: 'utf8',
           env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_PROD: '111122223333',
-            TERRAFORM_ALLOWED_PRINCIPAL_ARN_PATTERN:
-              '^arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_AdministratorAccess_[A-Za-z0-9]+/.+$',
-            MOCK_AWS_ARN: 'arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_PROD: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
+            TERRAFORM_ALLOWED_PRINCIPAL_ARN_PATTERN: `^arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_[A-Za-z0-9]+/.+$`,
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         });
 
         expect(result.status).toBe(2);
         expect(result.stderr).toContain(
-          'Current target helper execution is authorized only for stark-dev/develop/bootstrap, stark-dev/develop/foundation, stark-dev/develop/app, and protected-production app static contract checks.',
+          'Terraform target stark-prod/main/bootstrap is not authorized by the reviewed deployment configuration.',
         );
-        expect(result.stderr).toContain('Production bootstrap requires a later authorization record.');
         expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
       });
     },
   );
 
-  it('renders the protected-production app lane through the guarded app backend init contract', () => {
+  it('rejects executing the repository-only protected-production app contract', () => {
     withTempDir((dir) => {
       installMocks(dir);
       writeAppBackendConfig(dir, {
@@ -694,19 +939,19 @@ describe('terraform-guarded.sh', () => {
           encoding: 'utf8',
           env: testEnv(dir, {
             ...appBackendEnv(),
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_PROD: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_PROD: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN:
-              'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-plan-stark-prod-main-app/codebuild-test',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-plan-stark-prod-main-app/codebuild-test`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         },
       );
 
-      expect(result.status).toBe(0);
-      expect(result.stdout).toContain('Terraform guard passed for stark-prod/main/app.');
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain('-chdir=infra/terraform/app init -backend-config=backend.pipeline.hcl');
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        'Terraform target stark-prod/main/app is not authorized by the reviewed deployment configuration.',
+      );
+      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
     });
   });
 
@@ -723,10 +968,9 @@ describe('terraform-guarded.sh', () => {
           encoding: 'utf8',
           env: testEnv(dir, {
             ...appBackendEnv(),
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN:
-              'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-plan-stark-dev-develop-app/codebuild-test',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-plan-stark-dev-develop-app/codebuild-test`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         },
@@ -752,10 +996,9 @@ describe('terraform-guarded.sh', () => {
           encoding: 'utf8',
           env: testEnv(dir, {
             ...appBackendEnv(),
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN:
-              'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         },
@@ -785,7 +1028,7 @@ describe('terraform-guarded.sh', () => {
           encoding: 'utf8',
           env: testEnv(dir, {
             ...appBackendEnv(),
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
             MOCK_AWS_ARN: roleArn,
             MOCK_TERRAFORM_WORKSPACE: 'default',
@@ -808,7 +1051,7 @@ describe('terraform-guarded.sh', () => {
       const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', 'validate'], {
         encoding: 'utf8',
         env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
           TERRAFORM_WORKING_DIR: 'infra/terraform/app',
           MOCK_AWS_ARN: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
           MOCK_TERRAFORM_WORKSPACE: 'default',
@@ -839,10 +1082,9 @@ describe('terraform-guarded.sh', () => {
           encoding: 'utf8',
           env: testEnv(dir, {
             ...appBackendEnv(),
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN:
-              'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         },
@@ -869,10 +1111,9 @@ describe('terraform-guarded.sh', () => {
           encoding: 'utf8',
           env: testEnv(dir, {
             ...appBackendEnv(),
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN:
-              'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-plan-stark-dev-develop-app/codebuild-test',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-plan-stark-dev-develop-app/codebuild-test`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         },
@@ -936,10 +1177,9 @@ describe('terraform-guarded.sh', () => {
           encoding: 'utf8',
           env: testEnv(dir, {
             ...appBackendEnv(),
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN:
-              'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-plan-stark-dev-develop-app/codebuild-test',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-plan-stark-dev-develop-app/codebuild-test`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         },
@@ -960,10 +1200,9 @@ describe('terraform-guarded.sh', () => {
       const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', 'plan', `-var-file=${tfvars}`], {
         encoding: 'utf8',
         env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
           TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-          MOCK_AWS_ARN:
-            'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test',
+          MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test`,
           MOCK_TERRAFORM_WORKSPACE: 'default',
         }),
       });
@@ -1008,7 +1247,7 @@ describe('terraform-guarded.sh', () => {
       const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', ...args], {
         encoding: 'utf8',
         env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
           TERRAFORM_WORKING_DIR: 'infra/terraform/app',
           MOCK_AWS_ARN: roleArn,
           MOCK_TERRAFORM_WORKSPACE: 'default',
@@ -1034,10 +1273,9 @@ describe('terraform-guarded.sh', () => {
           cwd: dir,
           encoding: 'utf8',
           env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN:
-              'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-plan-stark-dev-develop-app/codebuild-test',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-plan-stark-dev-develop-app/codebuild-test`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         },
@@ -1069,7 +1307,7 @@ describe('terraform-guarded.sh', () => {
           cwd: dir,
           encoding: 'utf8',
           env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
             MOCK_AWS_ARN: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
             MOCK_TERRAFORM_WORKSPACE: 'default',
@@ -1106,7 +1344,7 @@ describe('terraform-guarded.sh', () => {
           cwd: dir,
           encoding: 'utf8',
           env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
             MOCK_AWS_ARN: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
             MOCK_TERRAFORM_WORKSPACE: 'default',
@@ -1146,7 +1384,7 @@ describe('terraform-guarded.sh', () => {
           cwd: dir,
           encoding: 'utf8',
           env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
             MOCK_AWS_ARN: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
             MOCK_TERRAFORM_WORKSPACE: 'default',
@@ -1185,10 +1423,9 @@ describe('terraform-guarded.sh', () => {
         cwd: dir,
         encoding: 'utf8',
         env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
           TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-          MOCK_AWS_ARN:
-            'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-plan-stark-dev-develop-app/codebuild-test',
+          MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-plan-stark-dev-develop-app/codebuild-test`,
           MOCK_TERRAFORM_WORKSPACE: 'default',
         }),
       });
@@ -1245,11 +1482,11 @@ describe('terraform-guarded.sh', () => {
           encoding: 'utf8',
           env: testEnv(dir, {
             CODEBUILD_BUILD_ID: 'spoofed',
-            CODEBUILD_BUILD_ARN: 'arn:aws:codebuild:ap-northeast-1:111122223333:build/spoofed',
-            TERRAFORM_ALLOWED_PRINCIPAL_ARN_PATTERN: '^arn:aws:sts::111122223333:assumed-role/.+$',
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            CODEBUILD_BUILD_ARN: `arn:aws:codebuild:ap-northeast-1:${REVIEWED_DEVELOP_ACCOUNT_ID}:build/spoofed`,
+            TERRAFORM_ALLOWED_PRINCIPAL_ARN_PATTERN: `^arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/.+$`,
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN: 'arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         });
@@ -1282,10 +1519,9 @@ describe('terraform-guarded.sh', () => {
         {
           encoding: 'utf8',
           env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN:
-              'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         },
@@ -1309,10 +1545,9 @@ describe('terraform-guarded.sh', () => {
         const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', 'apply', '-auto-approve', tfplan], {
           encoding: 'utf8',
           env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
             TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN:
-              'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test',
+            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test`,
             MOCK_TERRAFORM_WORKSPACE: 'default',
           }),
         });
@@ -1334,10 +1569,9 @@ describe('terraform-guarded.sh', () => {
       const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', 'apply', '-auto-approve', 'tfplan'], {
         encoding: 'utf8',
         env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
           TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-          MOCK_AWS_ARN:
-            'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test',
+          MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test`,
           MOCK_TERRAFORM_WORKSPACE: 'default',
         }),
       });
@@ -1359,7 +1593,7 @@ describe('terraform-guarded.sh', () => {
       const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', 'apply', '-auto-approve', 'tfplan'], {
         encoding: 'utf8',
         env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
           TERRAFORM_WORKING_DIR: 'infra/terraform/app',
           MOCK_AWS_ARN: roleArn,
           MOCK_TERRAFORM_WORKSPACE: 'default',
@@ -1380,10 +1614,9 @@ describe('terraform-guarded.sh', () => {
       const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', 'smoke'], {
         encoding: 'utf8',
         env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: '111122223333',
+          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
           TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-          MOCK_AWS_ARN:
-            'arn:aws:sts::111122223333:assumed-role/stark-ballot-sim-tf-smoke-stark-dev-develop-app/codebuild-test',
+          MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-smoke-stark-dev-develop-app/codebuild-test`,
           MOCK_TERRAFORM_WORKSPACE: 'default',
         }),
       });

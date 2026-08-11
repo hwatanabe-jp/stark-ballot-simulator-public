@@ -53,9 +53,19 @@ output "development_app_github_trigger_role_arn" {
   value       = var.enable_development_app_pipeline ? aws_iam_role.app_github_trigger[0].arn : null
 }
 
-output "development_app_pipeline_artifact_bucket_name" {
-  description = "Encrypted app pipeline artifact bucket name when enabled."
+output "development_app_retained_artifact_bucket_name" {
+  description = "Encrypted retained App authority and build-cache bucket name when enabled."
   value       = var.enable_development_app_pipeline ? aws_s3_bucket.app_pipeline_artifacts[0].bucket : null
+}
+
+output "development_app_pipeline_execution_artifact_bucket_name" {
+  description = "Encrypted full App CodePipeline execution artifact bucket name when enabled."
+  value       = var.enable_development_app_pipeline ? aws_s3_bucket.app_pipeline_execution_artifacts[0].bucket : null
+}
+
+output "development_app_static_fast_execution_artifact_bucket_name" {
+  description = "Encrypted static-fast CodePipeline execution artifact bucket name when enabled."
+  value       = var.enable_development_app_pipeline ? aws_s3_bucket.app_static_fast_execution_artifacts[0].bucket : null
 }
 
 output "development_app_release_manifest_bucket_name" {
@@ -91,4 +101,24 @@ output "development_foundation_pipeline_artifact_bucket_name" {
 output "development_foundation_state_backend_key" {
   description = "Terraform remote state key for the development foundation lane."
   value       = local.foundation_state_backend_key
+}
+
+output "terraform_authority_bucket_name" {
+  description = "Durable accepted Terraform baseline and drift-report authority bucket."
+  value       = local.terraform_drift_enabled ? aws_s3_bucket.terraform_authority[0].bucket : null
+}
+
+output "terraform_authority_kms_key_arn" {
+  description = "KMS key for accepted Terraform baselines and drift reports."
+  value       = local.terraform_drift_enabled ? aws_kms_key.terraform_authority[0].arn : null
+}
+
+output "terraform_baseline_prefix" {
+  description = "Durable accepted Terraform baseline prefix."
+  value       = local.terraform_baseline_prefix
+}
+
+output "terraform_drift_report_prefix" {
+  description = "Bounded-retention report-only Terraform drift prefix."
+  value       = local.terraform_drift_report_prefix
 }

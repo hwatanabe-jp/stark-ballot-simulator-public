@@ -22,7 +22,11 @@
 - `ResultPage`: tally 表示と verify 遷移
 - `VerifyPage`: verify 画面の summary / check 状態取得
 
-## 実行コマンド
+## 実行コマンドと runtime profile
+
+定常運用で test を実行する Playwright command はすべて `static-mock-e2e` profile を選択します。
+この profile は production build の frontend と同一 origin の local Hono API を使い、
+mock proof を E2E evidence として扱います。
 
 ```bash
 # 全 Playwright suite（@axe を含む）
@@ -44,9 +48,10 @@ pnpm test:e2e:debug
 pnpm test:e2e:report
 ```
 
-### Real zkVM について
-
-現時点では `pnpm test:e2e:real-dev` / `pnpm test:e2e:real-prod` の wrapper script はありません。`playwright.config.ts` には real-zkVM 用の分岐が残っていますが、定常運用の入口としてはメンテしていません。実証明の再確認は通常、以下の CLI 経路を使ってください。
+`playwright.config.ts` の production-build harness は `local-proof-development` と
+`local-proof-production` も解決できますが、`pnpm test:e2e:real-dev` /
+`pnpm test:e2e:real-prod` の wrapper script はありません。real zkVM evidence の
+定常確認は以下の CLI 経路です。
 
 ```bash
 pnpm test:cli:real-dev
@@ -62,12 +67,46 @@ pnpm test:cli:real-prod:s0
 - 手動再実行は repository CI の `playwright-mock` job を `workflow_dispatch`
   で起動します。
 
-## Playwright 設定の前提
+## Playwright harness と mock runtime
 
 - active project は `chromium` のみです。
 - `workers` は `1` 固定です。`fullyParallel: true` は定義されていますが、現行設定では実質直列実行です。
-- mock 実行時は `webServer.command` が `scripts/start-test-server.sh` を使い、production build の `pnpm start` を立ち上げます。
 - failure 時は Playwright 標準の screenshot / video が残ります。trace は `trace: 'on-first-retry'` のため、retry が走ったケースで残ります。
+
+mock command の `webServer.command` は `scripts/start-test-server.sh` を実行します。
+この script は `pnpm run build:local-mock` で frontend を production build し、その後
+`pnpm tsx scripts/dev/static-hono-server.ts` で local Hono API と static frontend を
+直接起動します。server 起動は `pnpm start` を経由しないため、developer の
+`.env.local` を dotenv で server process に読み込みません。
+
+script は server と browser の selector をそれぞれ
+`RUNTIME_PROFILE=static-mock-e2e` / `VITE_RUNTIME_PROFILE=static-mock-e2e` に固定します。
+この一つの profile から次の構成が fail-closed に決まります。
+
+- server: file-backed session store、mock proof、sync finalization、local artifact reader
+- browser: same-origin API、Turnstile bypass eligible、各 action の Turnstile 不要
+
+個別の mock / store / Turnstile flag は使いません。reusable/deployable な
+`pnpm build:ci` artifact は `target-aws-async` browser profile を選択し、
+test-only の Turnstile bypass を含みません。
+
+`scripts/start-test-server.sh` はさらに以下を固定または補完してから起動します。
+
+- `NODE_ENV=production` を固定
+- `EXPECTED_IMAGE_ID_VARIANT=x86_64` を必要時に補完
+- `VERIFIER_PUBLIC_BASE_URL=http://localhost:3000` を既定化
+- `VITE_STH_SOURCES=/api/sessions/:sessionId/bulletin/sth,/api/sessions/:sessionId/bulletin/sth?auditorId=b`
+  を既定化
+- `LOG_LEVEL=error` を必要時に補完
+- `RUNTIME_DEPLOYMENT_ENV=develop` を必要時に補完
+- `SESSION_CAPABILITY_SECRET` が未設定なら `scripts/tests/.env.test.defaults` の test-only 値を補完
+- default store の `.tmp/mock-sessions/` を掃除
+
+`FileMockSessionStore` は全 record family を一つの `sessions.json` snapshot に保存し、
+snapshot の signature が変わったときに long-lived reader の state を更新します。
+store 固有の環境 control は `FILE_MOCK_STORE_DIR` のみで、未設定時の保存先は
+`.tmp/mock-sessions/` です。override を使う場合、起動時の default store cleanup は
+その custom directory には適用されません。
 
 ## 検証戦略
 
@@ -97,7 +136,7 @@ expect(tallySum).toBe(totalVotes);
 ```tsx
 <label data-testid="vote-option-A">...</label>
 <button data-testid="execute-button">...</button>
-<span data-testid="tally-value-A">14 票</span>
+<span data-testid="tally-value-A">14</span>
 ```
 
 ```typescript
@@ -128,49 +167,6 @@ page.locator('text=/Tamper.*YES|Tamper.*NO|改ざん.*あり|改ざん.*なし/i
 ```
 
 文言・i18n・strict mode に弱いので、まず `data-testid` と `data-status` を検討してください。
-
-## 実行環境と mock store
-
-`pnpm test:e2e:mock` / `pnpm test:e2e:axe` は Playwright の web server として
-`scripts/start-test-server.sh` を使います。この script が mock 用の production
-server 起動前に以下を固定または補完します。
-
-- `USE_MOCK_ZKVM=true` / `USE_MOCK_STORE=true` を固定
-- `NODE_ENV=production` を固定
-- `ALLOW_INSECURE_ZKVM=true` を必要時に付与
-- `EXPECTED_IMAGE_ID_VARIANT=x86_64` を必要時に補完
-- `VERIFIER_PUBLIC_BASE_URL=http://localhost:3000` を既定化
-- `VITE_STH_SOURCES=/api/sth,/api/sth?auditor=b` を既定化
-- `LOG_LEVEL=error` を必要時に補完
-- `VITE_TURNSTILE_BYPASS=1` / `TURNSTILE_BYPASS=1` を補完し、`pnpm build:local-mock` で mock 専用の Vite artifact scan を実行
-- `RUNTIME_DEPLOYMENT_ENV=develop` を必要時に補完
-- `SESSION_CAPABILITY_SECRET` が未設定なら `scripts/tests/.env.test.defaults` の test-only 値を補完
-- `PERSIST_MOCK_STORE=1` を有効化
-- `FINALIZE_ASYNC_MODE=false` を固定
-- `.tmp/mock-sessions/` を掃除してから起動
-
-重要なのは、Playwright の mock 実行は production build + file-backed mock store 前提だという点です。`USE_MOCK_STORE=true` でも、この経路では in-memory ではなくファイル永続化が使われます。
-
-## FileMockSessionStore cache controls
-
-長時間の CLI / Playwright 実行で `.tmp/mock-sessions/` のメモリ使用量とディスク I/O を抑えるため、FileMockSessionStore には `lastActivity` とアクセス順を使うキャッシュ層があります。
-
-- `FILE_STORE_CACHE_LIMIT`（デフォルト `32`）
-- `DISABLE_FILE_STORE_CACHE=1`
-- `FILE_MOCK_STORE_DIR`
-
-`FileMockSessionStore.__getDiagnosticsForTests()` で `cacheSize` / `cacheEvictions` を確認できます。
-
-## CSP 緩和と Turnstile bypass
-
-headless E2E では strict CSP と Turnstile がそのままだと初期化を阻害することがあります。mock 用 script は必要な env を preset 済みです。Playwright を `scripts/start-test-server.sh` なしで直接叩く場合も、少なくとも以下は mock UI テストと合わせてください。
-
-- `DISABLE_STRICT_CSP=1`
-- `VITE_TURNSTILE_BYPASS=1`
-- `TURNSTILE_BYPASS=1`
-- `RUNTIME_DEPLOYMENT_ENV=develop`
-
-本番運用や reusable/deployable な `pnpm build:ci` artifact ではこれらを設定しません。
 
 ## 出力物
 

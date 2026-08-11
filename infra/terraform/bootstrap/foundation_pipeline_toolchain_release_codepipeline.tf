@@ -45,10 +45,10 @@ resource "aws_codepipeline" "development_toolchain_release" {
   }
 
   stage {
-    name = "Source"
+    name = local.deployment_target.sourceAction
 
     action {
-      name             = "Source"
+      name             = local.deployment_target.sourceAction
       category         = "Source"
       owner            = "AWS"
       provider         = "CodeStarSourceConnection"
@@ -57,10 +57,10 @@ resource "aws_codepipeline" "development_toolchain_release" {
       output_artifacts = ["SourceOutput"]
 
       configuration = {
-        BranchName           = var.source_branch
+        BranchName           = local.deployment_target.sourceBranch
         ConnectionArn        = aws_codeconnections_connection.source[0].arn
         DetectChanges        = "false"
-        FullRepositoryId     = var.github_full_repository_id
+        FullRepositoryId     = local.deployment_target.repository
         OutputArtifactFormat = "CODE_ZIP"
       }
     }
@@ -177,7 +177,7 @@ resource "aws_codepipeline" "development_toolchain_release" {
         EnvironmentVariables = jsonencode([
           {
             name  = "TOOLCHAIN_ACCEPTED_POINTER_KEY"
-            value = "channels/develop/toolchain/accepted.json"
+            value = local.deployment_shared_names.toolchainAcceptedPointerKey
             type  = "PLAINTEXT"
           },
           {

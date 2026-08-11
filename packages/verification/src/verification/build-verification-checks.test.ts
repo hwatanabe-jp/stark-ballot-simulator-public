@@ -12,11 +12,9 @@ vi.mock('@stark-ballot/verification/bitmap-verifier', () => ({
 }));
 
 import { verifyCTMerkleInclusion } from './merkle';
-import type {
-  BulletinConsistencyProvider,
-  VerificationPublicInputAuthority,
-} from '@stark-ballot/verification/engine-types';
+import type { VerificationPublicInputAuthority } from '@stark-ballot/verification/engine-types';
 import { explainVoteInclusionStatus, verifyMyVoteWasCounted } from '@stark-ballot/verification/bitmap-verifier';
+import type { BitmapProofResponse } from '@stark-ballot/verification/bitmap-proof-types';
 import { CURRENT_METHOD_VERSION, type ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
 import type { VoteReceipt } from '@stark-ballot/verification/shared/types';
 import { buildCloseStatement, buildElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
@@ -76,6 +74,10 @@ const findStatus = (checks: Array<{ id: VerificationCheckId; status: string }>, 
   checks.find((check) => check.id === id)?.status;
 
 const findCheck = (checks: VerificationCheck[], id: VerificationCheckId) => checks.find((check) => check.id === id);
+const bitmapProof: BitmapProofResponse = {
+  leafChunk: '00'.repeat(32),
+  auditPath: [],
+};
 
 describe('buildVerificationChecks', () => {
   const defaultElectionConfig = buildDefaultElectionConfig();
@@ -247,6 +249,80 @@ describe('buildVerificationChecks', () => {
     expect(findStatus(checks, 'counted_tally_consistent')).toBe('success');
   });
 
+  it.each([
+    ['S2', { A: 0, B: 1, C: 0, D: 0, E: 0 }],
+    ['S4', { A: 0, B: 0, C: 1, D: 0, E: 0 }],
+  ] as const)(
+    '%s isolates claimed-tally disagreement from proof and public-input bindings',
+    async (_scenarioId, claimedCounts) => {
+      const electionManifest = buildElectionManifest('550e8400-e29b-41d4-a716-446655440000', defaultElectionConfig);
+      const closeStatement = buildCloseStatement({
+        logId: '0x' + '2'.repeat(64),
+        treeSize: 1,
+        timestamp: 123,
+        bulletinRoot: '0x' + '2'.repeat(64),
+      });
+      const imageId = '0x' + 'd'.repeat(64);
+      const journal = createJournal({
+        electionConfigHash: electionManifest.electionConfigHash,
+        sthDigest: closeStatement.sthDigest,
+      });
+
+      const checks = await buildVerificationChecks({
+        verificationStatus: 'success',
+        verificationReport: {
+          status: 'success',
+          expected_image_id: imageId,
+          receipt_image_id: imageId,
+          dev_mode_receipt: false,
+        },
+        claimedImageId: imageId,
+        comparisonImageId: imageId,
+        electionId: electionManifest.electionId,
+        electionConfigHash: electionManifest.electionConfigHash,
+        logId: closeStatement.logId,
+        bulletinRoot: journal.bulletinRoot,
+        treeSize: journal.treeSize,
+        totalExpected: journal.totalExpected,
+        sthDigest: journal.sthDigest,
+        tally: {
+          counts: { ...claimedCounts },
+          totalVotes: 1,
+        },
+        verifiedTally: [...journal.verifiedTally],
+        journal,
+        publicInputAuthority: createPublicInputAuthority({
+          electionId: electionManifest.electionId,
+          electionConfigHash: electionManifest.electionConfigHash,
+          bulletinRoot: journal.bulletinRoot,
+          treeSize: journal.treeSize,
+          totalExpected: journal.totalExpected,
+          logId: closeStatement.logId,
+          timestamp: closeStatement.timestamp,
+          recomputedInputCommitment: journal.inputCommitment,
+        }),
+        electionManifest,
+        closeStatement,
+      });
+
+      expect(findStatus(checks, 'counted_tally_consistent')).toBe('failed');
+      for (const checkId of [
+        'counted_input_sanity',
+        'counted_unique_indices',
+        'counted_unique_commitments',
+        'counted_missing_indices_zero',
+        'counted_expected_vs_tree_size',
+        'counted_election_manifest_consistent',
+        'counted_close_statement_consistent',
+        'counted_input_commitment_match',
+        'stark_image_id_match',
+        'stark_receipt_verify',
+      ] satisfies VerificationCheckId[]) {
+        expect(findStatus(checks, checkId), checkId).toBe('success');
+      }
+    },
+  );
+
   it('sets STARK checks to running when verificationStatus is running', async () => {
     const checks = await buildVerificationChecks({
       verificationStatus: 'running',
@@ -262,12 +338,64 @@ describe('buildVerificationChecks', () => {
     expect(findStatus(checks, 'counted_tally_consistent')).toBe('pending');
   });
 
+  it('does not accept an ImageID match without verifier-confirmed ImageID evidence', async () => {
+    const checks = await buildVerificationChecks({
+      verificationStatus: 'success',
+      claimedImageId: '0x' + 'd'.repeat(64),
+    });
+
+    expect(findStatus(checks, 'stark_receipt_verify')).toBe('success');
+    expect(findStatus(checks, 'stark_image_id_match')).toBe('not_run');
+  });
+
+  it.each([
+    [
+      'expected ImageID',
+      {
+        status: 'success' as const,
+        receipt_image_id: '0x' + 'd'.repeat(64),
+        dev_mode_receipt: false,
+      },
+    ],
+    [
+      'receipt ImageID',
+      {
+        status: 'success' as const,
+        expected_image_id: '0x' + 'd'.repeat(64),
+        dev_mode_receipt: false,
+      },
+    ],
+  ])('does not accept an ImageID match when the verifier report omits the %s', async (_label, verificationReport) => {
+    const checks = await buildVerificationChecks({
+      verificationStatus: 'success',
+      verificationReport,
+      claimedImageId: '0x' + 'd'.repeat(64),
+    });
+
+    expect(findStatus(checks, 'stark_receipt_verify')).toBe('success');
+    expect(findStatus(checks, 'stark_image_id_match')).toBe('not_run');
+  });
+
+  it('rejects matching verifier ImageID strings that are not 32-byte hexadecimal values', async () => {
+    const checks = await buildVerificationChecks({
+      verificationStatus: 'success',
+      verificationReport: {
+        status: 'success',
+        expected_image_id: 'not-hex',
+        receipt_image_id: 'not-hex',
+        dev_mode_receipt: false,
+      },
+    });
+
+    expect(findStatus(checks, 'stark_image_id_match')).toBe('failed');
+  });
+
   it('uses fallback STH inputs when journal is missing', async () => {
     const checks = await buildVerificationChecks({
       sthDigest: '0x' + 'a'.repeat(64),
       bulletinRoot: '0x' + 'b'.repeat(64),
       treeSize: 64,
-      sthSources: ['https://example.com/sth'],
+      sthSourcesConfigured: true,
       sthVerification: {
         verified: true,
         consensus: true,
@@ -285,13 +413,13 @@ describe('buildVerificationChecks', () => {
       sthDigest: '0x' + 'e'.repeat(64),
       bulletinRoot: '0x' + 'd'.repeat(64),
       treeSize: 64,
-      sthSources: ['/api/sth'],
+      sthSourcesConfigured: true,
       sthVerification: {
         verified: false,
         consensus: false,
         sourcesChecked: 1,
         matchingSources: 0,
-        errors: ['Malformed STH response from /api/sth'],
+        errors: ['Malformed STH response from /api/sessions/:sessionId/bulletin/sth'],
       },
     });
 
@@ -303,7 +431,7 @@ describe('buildVerificationChecks', () => {
       sthDigest: '0x' + 'c'.repeat(64),
       bulletinRoot: '0x' + 'd'.repeat(64),
       treeSize: 64,
-      sthSources: ['/api/sth'],
+      sthSourcesConfigured: true,
     });
 
     expect(findStatus(checks, 'recorded_sth_third_party')).toBe('not_run');
@@ -336,25 +464,6 @@ describe('buildVerificationChecks', () => {
     const bulletinIndex = 0;
     const treeSize = 3;
 
-    const bulletin: BulletinConsistencyProvider = {
-      getConsistencyProof: (oldSize: number, newSize: number) => ({
-        oldSize,
-        newSize,
-        proofNodes: [],
-      }),
-      getRootAtSize: (size: number) => {
-        if (size === bulletinIndex + 1) {
-          return bulletinRootAtCast;
-        }
-        if (size === treeSize) {
-          return bulletinRootFinal;
-        }
-        return '0x' + 'f'.repeat(64);
-      },
-      getSize: () => treeSize,
-      verifyConsistency: () => true,
-    };
-
     const checks = await buildVerificationChecks({
       voteReceipt: {
         voteId: 'vote-1',
@@ -373,7 +482,17 @@ describe('buildVerificationChecks', () => {
       },
       bulletinRoot: bulletinRootFinal,
       treeSize,
-      bulletin,
+      consistencyProof: {
+        kind: 'admitted',
+        value: {
+          fromTreeSize: bulletinIndex + 1,
+          toTreeSize: treeSize,
+          rootAtFromTreeSize: bulletinRootAtCast,
+          rootAtToTreeSize: bulletinRootFinal,
+          proofNodes: [],
+          generatedAtMs: Date.now(),
+        },
+      },
     });
 
     expect(findStatus(checks, 'recorded_consistency_proof')).toBe('not_run');
@@ -383,16 +502,6 @@ describe('buildVerificationChecks', () => {
   it('fails recorded-as-cast checks when proof binding drifts from the receipt', async () => {
     const bulletinRootAtCast = '0x' + '1'.repeat(64);
     const bulletinRootFinal = '0x' + '2'.repeat(64);
-    const bulletin: BulletinConsistencyProvider = {
-      getConsistencyProof: () => ({
-        oldSize: 1,
-        newSize: 2,
-        proofNodes: [],
-      }),
-      getRootAtSize: (size: number) => (size === 1 ? bulletinRootAtCast : bulletinRootFinal),
-      getSize: () => 2,
-      verifyConsistency: () => true,
-    };
 
     const checks = await buildVerificationChecks({
       voteReceipt: {
@@ -413,7 +522,17 @@ describe('buildVerificationChecks', () => {
       },
       bulletinRoot: bulletinRootFinal,
       treeSize: 2,
-      bulletin,
+      consistencyProof: {
+        kind: 'admitted',
+        value: {
+          fromTreeSize: 1,
+          toTreeSize: 2,
+          rootAtFromTreeSize: bulletinRootAtCast,
+          rootAtToTreeSize: bulletinRootFinal,
+          proofNodes: [],
+          generatedAtMs: Date.now(),
+        },
+      },
     });
 
     expect(findStatus(checks, 'recorded_inclusion_proof')).toBe('failed');
@@ -598,8 +717,7 @@ describe('buildVerificationChecks', () => {
   });
 
   it('verifies counted_my_vote_included via bitmap proof when trusted', async () => {
-    const bitmapProofProvider = vi.fn();
-    vi.mocked(verifyMyVoteWasCounted).mockResolvedValueOnce({
+    vi.mocked(verifyMyVoteWasCounted).mockReturnValueOnce({
       valid: true,
       included: true,
       leafIndex: 0,
@@ -610,8 +728,7 @@ describe('buildVerificationChecks', () => {
     const checks = await buildVerificationChecks({
       verificationStatus: 'success',
       bitmapProofSource: 'mock',
-      bitmapProofProvider,
-      sessionId: 'session-123',
+      includedBitmapProof: { kind: 'admitted', value: bitmapProof },
       treeSize: 1,
       includedBitmapRoot: '0x' + 'f'.repeat(64),
       voteReceipt: {
@@ -627,13 +744,12 @@ describe('buildVerificationChecks', () => {
     expect(vi.mocked(verifyMyVoteWasCounted)).toHaveBeenCalledWith(
       0,
       '0x' + 'f'.repeat(64),
-      expect.objectContaining({ proofProvider: bitmapProofProvider }),
+      expect.objectContaining({ proof: bitmapProof }),
     );
   });
 
   it('adds an explanatory note when seen bitmap shows the index was not presented', async () => {
-    const bitmapProofProvider = vi.fn();
-    vi.mocked(explainVoteInclusionStatus).mockResolvedValueOnce({
+    vi.mocked(explainVoteInclusionStatus).mockReturnValueOnce({
       valid: true,
       included: false,
       seen: false,
@@ -646,8 +762,8 @@ describe('buildVerificationChecks', () => {
     const checks = await buildVerificationChecks({
       verificationStatus: 'success',
       bitmapProofSource: 'real',
-      bitmapProofProvider,
-      sessionId: 'session-123',
+      includedBitmapProof: { kind: 'admitted', value: bitmapProof },
+      seenBitmapProof: { kind: 'admitted', value: bitmapProof },
       treeSize: 1,
       includedBitmapRoot: '0x' + 'f'.repeat(64),
       seenBitmapRoot: '0x' + 'e'.repeat(64),
@@ -669,18 +785,15 @@ describe('buildVerificationChecks', () => {
         includedBitmapRoot: '0x' + 'f'.repeat(64),
         seenBitmapRoot: '0x' + 'e'.repeat(64),
       },
-      expect.objectContaining({ proofProvider: bitmapProofProvider }),
+      expect.objectContaining({ includedProof: bitmapProof, seenProof: bitmapProof }),
     );
   });
 
   it('does not run counted_my_vote_included when authenticated treeSize is unavailable', async () => {
-    const bitmapProofProvider = vi.fn();
-
     const checks = await buildVerificationChecks({
       verificationStatus: 'success',
       bitmapProofSource: 'real',
-      bitmapProofProvider,
-      sessionId: 'session-123',
+      includedBitmapProof: { kind: 'admitted', value: bitmapProof },
       includedBitmapRoot: '0x' + 'f'.repeat(64),
       voteReceipt: {
         voteId: 'vote-1',
@@ -692,7 +805,7 @@ describe('buildVerificationChecks', () => {
     });
 
     expect(findStatus(checks, 'counted_my_vote_included')).toBe('not_run');
-    expect(bitmapProofProvider).not.toHaveBeenCalled();
+    expect(verifyMyVoteWasCounted).not.toHaveBeenCalled();
   });
 
   it('uses current slot counts for the my-vote-excluded note when the journal is omitted', async () => {

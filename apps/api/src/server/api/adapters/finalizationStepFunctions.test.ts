@@ -1,8 +1,14 @@
 import { DescribeExecutionCommand, type SFNClient } from '@aws-sdk/client-sfn';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  localRuntimeProfile,
+  targetRuntimeProfile,
+} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
 import { _setStepFunctionsClient, describeFinalizationExecution } from './finalizationStepFunctions';
 
 describe('finalizationStepFunctions adapter', () => {
+  const profile = targetRuntimeProfile();
+
   afterEach(() => {
     _setStepFunctionsClient(null);
   });
@@ -22,10 +28,10 @@ describe('finalizationStepFunctions adapter', () => {
     });
     _setStepFunctionsClient({ send } as unknown as SFNClient);
 
-    await expect(describeFinalizationExecution(executionArn)).resolves.toEqual({
+    await expect(describeFinalizationExecution(profile, executionArn)).resolves.toEqual({
       status: 'RUNNING',
-      startTime: Date.parse('2026-01-01T00:00:00.000Z'),
-      stopTime: null,
+      startTimeMs: Date.parse('2026-01-01T00:00:00.000Z'),
+      stopTimeMs: null,
     });
     expect(send).toHaveBeenCalledTimes(1);
   });
@@ -41,9 +47,15 @@ describe('finalizationStepFunctions adapter', () => {
     });
     _setStepFunctionsClient({ send } as unknown as SFNClient);
 
-    await expect(describeFinalizationExecution(executionArn)).rejects.toMatchObject({
+    await expect(describeFinalizationExecution(profile, executionArn)).rejects.toMatchObject({
       name: 'ExecutionDoesNotExist',
       message: 'Execution Does Not Exist',
     });
+  });
+
+  it('rejects Step Functions construction for a local runtime profile', async () => {
+    await expect(describeFinalizationExecution(localRuntimeProfile(), 'local-execution')).rejects.toThrow(
+      'Step Functions requires a target AWS runtime profile',
+    );
   });
 });

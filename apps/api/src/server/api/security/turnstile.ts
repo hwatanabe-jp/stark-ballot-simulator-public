@@ -1,8 +1,7 @@
 import { ApiError, ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
 import { isUnresolvedRuntimeSecretPlaceholder } from '@stark-ballot/runtime-config/env/runtimeSecretPlaceholders';
 import { resolveRuntimeConfigReference } from '@stark-ballot/runtime-config/env/runtimeConfigReferences';
-import { resolveRuntimeEnvMode } from '@stark-ballot/runtime-config/env/runtimeMode';
-import { isTruthyFlag } from '@stark-ballot/runtime-config/env/flags';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { isIP } from 'node:net';
 
@@ -75,16 +74,12 @@ function normalizeHostname(value: string): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-function getAllowedHostnames(): Set<string> {
-  const raw = process.env['TURNSTILE_ALLOWED_HOSTNAMES'];
-  if (!raw) {
-    return new Set();
-  }
-
-  const values = raw
-    .split(',')
-    .map((entry) => normalizeHostname(entry))
-    .filter((entry): entry is string => Boolean(entry));
+function getAllowedHostnames(profile: ResolvedRuntimeProfile, env: NodeJS.ProcessEnv): Set<string> {
+  const configured =
+    profile.external.kind === 'aws'
+      ? profile.external.turnstileAllowedHostnames
+      : (env['TURNSTILE_ALLOWED_HOSTNAMES']?.split(',') ?? []);
+  const values = configured.map((entry) => normalizeHostname(entry)).filter((entry): entry is string => Boolean(entry));
 
   return new Set(values);
 }
@@ -116,15 +111,11 @@ function assertHostnameAllowed(hostname: string | undefined, allowedHostnames: S
   }
 }
 
-function shouldBypassTurnstile(): boolean {
-  if (!isTruthyFlag(process.env['TURNSTILE_BYPASS'])) {
-    return false;
-  }
-  return resolveRuntimeEnvMode() === 'non-production';
+function shouldBypassTurnstile(profile: ResolvedRuntimeProfile): boolean {
+  return profile.turnstile.mode === 'bypass' && profile.turnstile.bypassEligible;
 }
 
-function resolveTrustedProxyMode(): TrustedProxyMode {
-  const raw = process.env['TRUSTED_PROXY'];
+function parseTrustedProxyMode(raw: string | undefined): TrustedProxyMode {
   if (raw && raw.trim().length > 0) {
     const normalized = raw.trim().toLowerCase();
     switch (normalized) {
@@ -153,21 +144,33 @@ function resolveTrustedProxyMode(): TrustedProxyMode {
         return 'none';
     }
   }
-
-  const isAwsRuntime =
-    Boolean(process.env['AWS_EXECUTION_ENV']) ||
-    Boolean(process.env['AWS_LAMBDA_FUNCTION_NAME']) ||
-    Boolean(process.env['AWS_REGION']);
-  return isAwsRuntime ? 'api-gateway' : 'none';
+  return 'none';
 }
 
-function getTurnstileSecret(): string {
-  const secret = process.env['TURNSTILE_SECRET_KEY']?.trim();
+function resolveTrustedProxyMode(profile: ResolvedRuntimeProfile, env: NodeJS.ProcessEnv): TrustedProxyMode {
+  return parseTrustedProxyMode(profile.external.kind === 'aws' ? profile.external.trustedProxy : env['TRUSTED_PROXY']);
+}
+
+function getTurnstileSecret(profile: ResolvedRuntimeProfile, env: NodeJS.ProcessEnv): string {
+  const secret = env['TURNSTILE_SECRET_KEY']?.trim();
+  if (profile.external.kind === 'aws') {
+    if (secret) {
+      throw new ApiError(ErrorCode.INTERNAL_ERROR, 500, 'Turnstile secret key must use its target runtime reference');
+    }
+    try {
+      return resolveRuntimeConfigReference({
+        name: 'TURNSTILE_SECRET_KEY',
+        reference: profile.external.secretReferences.turnstileSecretKey,
+      });
+    } catch (cause) {
+      throw new ApiError(ErrorCode.INTERNAL_ERROR, 500, 'Turnstile secret key is not configured', { cause });
+    }
+  }
   if (secret && !isUnresolvedRuntimeSecretPlaceholder(secret)) {
     return secret;
   }
 
-  const secretRef = process.env['TURNSTILE_SECRET_KEY_REF']?.trim();
+  const secretRef = env['TURNSTILE_SECRET_KEY_REF']?.trim();
   if (secretRef) {
     return resolveRuntimeConfigReference({
       name: 'TURNSTILE_SECRET_KEY',
@@ -184,12 +187,16 @@ function assertTokenPresent(token: unknown): asserts token is string {
   }
 }
 
-export async function validateTurnstileToken(options: ValidateTurnstileOptions): Promise<void> {
-  if (shouldBypassTurnstile()) {
+export async function validateTurnstileToken(
+  profile: ResolvedRuntimeProfile,
+  options: ValidateTurnstileOptions,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  if (shouldBypassTurnstile(profile)) {
     return;
   }
 
-  const secret = getTurnstileSecret();
+  const secret = getTurnstileSecret(profile, env);
   assertTokenPresent(options.token);
 
   const payload = new URLSearchParams();
@@ -240,7 +247,7 @@ export async function validateTurnstileToken(options: ValidateTurnstileOptions):
     assertExpectedActionMatches(result.action, options.expectedAction);
   }
 
-  const allowedHostnames = getAllowedHostnames();
+  const allowedHostnames = getAllowedHostnames(profile, env);
   if (allowedHostnames.size > 0) {
     assertHostnameAllowed(result.hostname, allowedHostnames);
   }
@@ -251,20 +258,8 @@ export function extractTurnstileToken(payload: unknown): string | undefined {
     return undefined;
   }
 
-  const asRecord = payload as Record<string, unknown> & {
-    turnstileToken?: unknown;
-    cfTurnstileResponse?: unknown;
-    'cf-turnstile-response'?: unknown;
-  };
-  const candidates = [asRecord.turnstileToken, asRecord['cf-turnstile-response'], asRecord.cfTurnstileResponse];
-
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim().length > 0) {
-      return candidate;
-    }
-  }
-
-  return undefined;
+  const token = (payload as Record<string, unknown>)['turnstileToken'];
+  return typeof token === 'string' && token.trim().length > 0 ? token : undefined;
 }
 
 function normalizeIpCandidate(value: string | null | undefined): string | null {
@@ -302,8 +297,13 @@ function normalizeIpCandidate(value: string | null | undefined): string | null {
 /**
  * Resolve client IP from request headers with optional fallback value.
  */
-export function getRequestIp(headers: Headers, fallbackIp?: string | null): string | undefined {
-  const trustedProxyMode = resolveTrustedProxyMode();
+export function getRequestIp(
+  profile: ResolvedRuntimeProfile,
+  headers: Headers,
+  fallbackIp?: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const trustedProxyMode = resolveTrustedProxyMode(profile, env);
   const normalizedFallback = normalizeIpCandidate(fallbackIp);
 
   if (trustedProxyMode === 'cloudflare' || trustedProxyMode === 'both') {

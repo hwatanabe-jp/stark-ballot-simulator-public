@@ -59,7 +59,7 @@ WORKDIR /var/task
 
 RUN /usr/sbin/groupadd --gid 10001 prover \
     && /usr/sbin/useradd --uid 10001 --gid 10001 --home-dir /home/prover --create-home --shell /sbin/nologin prover \
-    && mkdir -p /opt/risc0/bin /var/task/output \
+    && mkdir -p /opt/risc0/bin /opt/zkvm/share /var/task/output \
     && chown 10001:10001 /tmp /var/task/output \
     && chmod 0700 /tmp /var/task/output
 
@@ -76,10 +76,12 @@ COPY --from=build /build/dist/host /opt/zkvm/bin/host
 
 # Provide entrypoint script for orchestration
 COPY infra/docker/entrypoint.sh /opt/zkvm/bin/entrypoint.sh
+COPY packages/verification/src/verification/public-bundle-manifest.json /opt/zkvm/share/public-bundle-manifest.json
 RUN chmod 0555 /opt/risc0/bin/r0vm /opt/zkvm/bin/entrypoint.sh /opt/zkvm/bin/host \
-    && chmod 0444 /opt/risc0/settings.toml
+    && chmod 0444 /opt/risc0/settings.toml /opt/zkvm/share/public-bundle-manifest.json
 
 ENV HOST_BIN=/opt/zkvm/bin/host \
+    PUBLIC_BUNDLE_MANIFEST_PATH=/opt/zkvm/share/public-bundle-manifest.json \
     INPUT_PATH= \
     INPUT_S3_BUCKET= \
     INPUT_S3_KEY= \

@@ -6,25 +6,30 @@ import {
   resolveDynamoDbEndpoint,
   resolveDynamoDbRegion,
 } from '@stark-ballot/runtime-config/env/dynamodbConfig';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
-
-export interface DynamoDocumentClientConfig {
-  documentClient?: DynamoDBDocumentClient;
-}
 
 let sharedDocumentClient: DynamoDBDocumentClient | null = null;
 
 export { assertDynamoDbEndpointAllowed, requireDynamoDbRegion, resolveDynamoDbEndpoint, resolveDynamoDbRegion };
 
-export function getSharedDynamoDocumentClient(env: NodeJS.ProcessEnv = process.env): DynamoDBDocumentClient {
+export function getSharedDynamoDocumentClient(
+  profile: ResolvedRuntimeProfile,
+  env: NodeJS.ProcessEnv = process.env,
+): DynamoDBDocumentClient {
   if (sharedDocumentClient) {
     return sharedDocumentClient;
   }
 
-  assertDynamoDbEndpointAllowed(env);
   const endpoint = resolveDynamoDbEndpoint(env);
+  if (endpoint) {
+    assertDynamoDbEndpointAllowed(profile, env);
+  }
+  if (profile.external.kind !== 'aws' && !endpoint) {
+    throw new Error('DynamoDB client construction requires a target AWS profile or a validated local endpoint.');
+  }
   const client = new DynamoDBClient({
-    region: requireDynamoDbRegion(env),
+    region: profile.external.kind === 'aws' ? profile.external.region : requireDynamoDbRegion(env),
     ...omitUndefinedProperties({
       endpoint,
       credentials: endpoint

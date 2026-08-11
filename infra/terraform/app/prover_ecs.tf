@@ -104,7 +104,8 @@ locals {
     current = "/aws/ecs/containerinsights/${local.name_prefix}-prover/performance"
   }
   existing_prover_container_insights_performance_log_groups = (
-    var.account_alias == "stark-dev" && var.deployment_environment == "develop"
+    var.account_alias == local.deployment_target.accountLabel
+    && var.deployment_environment == local.deployment_target.environmentId
     ? local.prover_container_insights_performance_log_groups
     : {}
   )
@@ -208,8 +209,8 @@ resource "aws_ecs_task_definition" "prover" {
           value = var.deploy_mode
         },
         {
-          name  = "TARGET_AWS_RUNTIME"
-          value = "1"
+          name  = "RUNTIME_PROFILE"
+          value = "target-aws-async"
         },
         {
           name  = "AWS_ACCOUNT_ID"

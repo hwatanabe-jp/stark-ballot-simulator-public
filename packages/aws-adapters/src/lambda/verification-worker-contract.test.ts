@@ -18,25 +18,25 @@ describe('parseVerificationWorkerResponse', () => {
       parseVerificationWorkerResponse({
         status: 'success',
         sessionId: 'session-1',
-        executionId: 'execution-1',
+        finalizationId: 'execution-1',
         verifierStatus: 'success',
         verificationReport: validReport,
         s3: {
           bundleKey: 'sessions/session-1/execution-1/bundle.zip',
           reportKey: 'sessions/session-1/execution-1/verification.json',
-          uploadedAt: '2026-06-17T00:00:00.000Z',
+          uploadedAtMs: Date.parse('2026-06-17T00:00:00.000Z'),
         },
       }),
     ).toEqual({
       status: 'success',
       sessionId: 'session-1',
-      executionId: 'execution-1',
+      finalizationId: 'execution-1',
       verifierStatus: 'success',
       verificationReport: validReport,
       s3: {
         bundleKey: 'sessions/session-1/execution-1/bundle.zip',
         reportKey: 'sessions/session-1/execution-1/verification.json',
-        uploadedAt: '2026-06-17T00:00:00.000Z',
+        uploadedAtMs: Date.parse('2026-06-17T00:00:00.000Z'),
       },
     });
   });
@@ -46,7 +46,7 @@ describe('parseVerificationWorkerResponse', () => {
       parseVerificationWorkerResponse({
         status: 'success',
         sessionId: 'session-1',
-        executionId: 'execution-1',
+        finalizationId: 'execution-1',
         verificationReport: validReport,
       }),
     ).toThrow(/verifierStatus/);
@@ -57,7 +57,7 @@ describe('parseVerificationWorkerResponse', () => {
       parseVerificationWorkerResponse({
         status: 'success',
         sessionId: 'session-1',
-        executionId: 'execution-1',
+        finalizationId: 'execution-1',
         verifierStatus: 'success',
         verificationReport: { ...validReport, status: 'bogus' },
       }),
@@ -67,7 +67,7 @@ describe('parseVerificationWorkerResponse', () => {
       parseVerificationWorkerResponse({
         status: 'success',
         sessionId: 'session-1',
-        executionId: 'execution-1',
+        finalizationId: 'execution-1',
         verifierStatus: 'success',
         verificationReport: { ...validReport, verifier_version: undefined },
       }),
@@ -79,7 +79,7 @@ describe('parseVerificationWorkerResponse', () => {
       parseVerificationWorkerResponse({
         status: 'success',
         sessionId: 'session-1',
-        executionId: 'execution-1',
+        finalizationId: 'execution-1',
         verifierStatus: 'success',
         verificationReport: { ...validReport, bundle_path: '/tmp/private/bundle' },
       }),

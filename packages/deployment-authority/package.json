@@ -1,0 +1,26 @@
+{
+  "name": "@stark-ballot/deployment-authority",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec eslint packages/deployment-authority",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/deployment-authority",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./app-acceptance": "./src/app-acceptance.js",
+    "./dynamodb-recovery-phase": "./src/dynamodb-recovery-phase.js",
+    "./dynamodb-recovery-readiness": "./src/dynamodb-recovery-readiness.js",
+    "./ecr-retention": "./src/ecr-retention.js",
+    "./plan-approval": "./src/plan-approval.js",
+    "./readiness-check-failure": "./src/readiness-check-failure.js",
+    "./rollback-readiness": "./src/rollback-readiness.js",
+    "./saved-plan-review": "./src/saved-plan-review.js",
+    "./terraform-baseline": "./src/terraform-baseline.js",
+    "./terraform-drift": "./src/terraform-drift.js"
+  },
+  "devDependencies": {
+    "vitest": "catalog:testing"
+  }
+}

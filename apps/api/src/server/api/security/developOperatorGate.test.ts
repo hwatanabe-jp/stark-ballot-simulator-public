@@ -1,28 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { isOperatorGatedDevelopRequest, ORIGIN_VERIFY_HEADER } from './developOperatorGate';
+import {
+  localRuntimeProfile,
+  targetRuntimeProfile,
+} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
 
 const originVerifyHeader = 'origin-header-secret-0123456789abcdef';
-const envKeys = [
-  'TARGET_AWS_RUNTIME',
-  'EXPECTED_ORIGIN_VERIFY_HEADER',
-  'RUNTIME_DEPLOYMENT_ENV',
-  'TARGET_DEVELOP_OPERATOR_GATE_ENABLED',
-] as const;
-
-function restoreEnv(original: Record<(typeof envKeys)[number], string | undefined>): void {
-  for (const key of envKeys) {
-    const value = original[key];
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
-}
 
 function targetDevelopRequest(headers: Record<string, string> = {}): Request {
-  return new Request('https://develop.example/api/vote', {
+  return new Request('https://develop.example/api/sessions/session-123/votes', {
     method: 'POST',
     headers,
   });
@@ -34,49 +21,46 @@ describe('isOperatorGatedDevelopRequest', () => {
   });
 
   it('accepts only target develop requests admitted through the expected origin-verify header', () => {
-    vi.stubEnv('TARGET_AWS_RUNTIME', '1');
     vi.stubEnv('EXPECTED_ORIGIN_VERIFY_HEADER', originVerifyHeader);
-    vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', 'develop');
-    vi.stubEnv('TARGET_DEVELOP_OPERATOR_GATE_ENABLED', 'true');
 
-    expect(isOperatorGatedDevelopRequest(targetDevelopRequest({ [ORIGIN_VERIFY_HEADER]: originVerifyHeader }))).toBe(
-      true,
-    );
+    expect(
+      isOperatorGatedDevelopRequest(
+        targetRuntimeProfile('develop'),
+        targetDevelopRequest({ [ORIGIN_VERIFY_HEADER]: originVerifyHeader }),
+      ),
+    ).toBe(true);
   });
 
-  it('rejects the exception outside develop or without the verified CloudFront origin path', () => {
-    const original = Object.fromEntries(envKeys.map((key) => [key, process.env[key]])) as Record<
-      (typeof envKeys)[number],
-      string | undefined
-    >;
+  it('does not grant target operator admission to an injected local profile', () => {
+    vi.stubEnv('EXPECTED_ORIGIN_VERIFY_HEADER', originVerifyHeader);
 
-    try {
-      process.env['TARGET_AWS_RUNTIME'] = '1';
-      process.env['EXPECTED_ORIGIN_VERIFY_HEADER'] = originVerifyHeader;
-      process.env['RUNTIME_DEPLOYMENT_ENV'] = 'develop';
-      process.env['TARGET_DEVELOP_OPERATOR_GATE_ENABLED'] = 'true';
+    expect(
+      isOperatorGatedDevelopRequest(
+        localRuntimeProfile(),
+        targetDevelopRequest({ [ORIGIN_VERIFY_HEADER]: originVerifyHeader }),
+      ),
+    ).toBe(false);
+  });
 
-      expect(isOperatorGatedDevelopRequest(targetDevelopRequest())).toBe(false);
-      expect(isOperatorGatedDevelopRequest(targetDevelopRequest({ [ORIGIN_VERIFY_HEADER]: 'wrong' }))).toBe(false);
+  it('rejects the exception outside the develop profile or without the verified CloudFront origin path', () => {
+    vi.stubEnv('EXPECTED_ORIGIN_VERIFY_HEADER', originVerifyHeader);
+    const developProfile = targetRuntimeProfile('develop');
 
-      process.env['RUNTIME_DEPLOYMENT_ENV'] = 'main';
-      expect(isOperatorGatedDevelopRequest(targetDevelopRequest({ [ORIGIN_VERIFY_HEADER]: originVerifyHeader }))).toBe(
-        false,
-      );
-
-      process.env['RUNTIME_DEPLOYMENT_ENV'] = 'develop';
-      process.env['TARGET_DEVELOP_OPERATOR_GATE_ENABLED'] = 'false';
-      expect(isOperatorGatedDevelopRequest(targetDevelopRequest({ [ORIGIN_VERIFY_HEADER]: originVerifyHeader }))).toBe(
-        false,
-      );
-
-      process.env['TARGET_AWS_RUNTIME'] = '0';
-      process.env['TARGET_DEVELOP_OPERATOR_GATE_ENABLED'] = 'true';
-      expect(isOperatorGatedDevelopRequest(targetDevelopRequest({ [ORIGIN_VERIFY_HEADER]: originVerifyHeader }))).toBe(
-        false,
-      );
-    } finally {
-      restoreEnv(original);
-    }
+    expect(isOperatorGatedDevelopRequest(developProfile, targetDevelopRequest())).toBe(false);
+    expect(
+      isOperatorGatedDevelopRequest(developProfile, targetDevelopRequest({ [ORIGIN_VERIFY_HEADER]: 'wrong' })),
+    ).toBe(false);
+    expect(
+      isOperatorGatedDevelopRequest(
+        targetRuntimeProfile('main'),
+        targetDevelopRequest({ [ORIGIN_VERIFY_HEADER]: originVerifyHeader }),
+      ),
+    ).toBe(false);
+    expect(
+      isOperatorGatedDevelopRequest(
+        developProfile,
+        targetDevelopRequest({ [ORIGIN_VERIFY_HEADER]: originVerifyHeader }),
+      ),
+    ).toBe(true);
   });
 });

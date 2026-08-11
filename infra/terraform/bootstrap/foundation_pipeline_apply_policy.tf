@@ -78,6 +78,125 @@ data "aws_iam_policy_document" "foundation_terraform_apply_workload" {
     ]
     resources = [local.foundation_release_manifest_bucket_arn]
   }
+
+  statement {
+    sid    = "CreateFoundationEcrRetentionRole"
+    effect = "Allow"
+    actions = [
+      "iam:CreateRole",
+      "iam:PutRolePermissionsBoundary",
+    ]
+    resources = [local.foundation_ecr_retention_role_arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [local.foundation_ecr_retention_boundary_policy_arn]
+    }
+  }
+
+  statement {
+    sid    = "ManageFoundationEcrRetentionRole"
+    effect = "Allow"
+    actions = [
+      "iam:DeleteRole",
+      "iam:DeleteRolePermissionsBoundary",
+      "iam:DeleteRolePolicy",
+      "iam:GetRole",
+      "iam:GetRolePolicy",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListInstanceProfilesForRole",
+      "iam:ListRolePolicies",
+      "iam:ListRoleTags",
+      "iam:PutRolePolicy",
+      "iam:TagRole",
+      "iam:UntagRole",
+      "iam:UpdateAssumeRolePolicy",
+    ]
+    resources = [local.foundation_ecr_retention_role_arn]
+  }
+
+  statement {
+    sid       = "PassFoundationEcrRetentionRole"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = [local.foundation_ecr_retention_role_arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["lambda.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid    = "ManageFoundationEcrRetentionLambda"
+    effect = "Allow"
+    actions = [
+      "lambda:AddPermission",
+      "lambda:CreateFunction",
+      "lambda:DeleteFunction",
+      "lambda:DeleteFunctionConcurrency",
+      "lambda:GetFunction",
+      "lambda:GetFunctionCodeSigningConfig",
+      "lambda:GetFunctionConcurrency",
+      "lambda:GetPolicy",
+      "lambda:GetRuntimeManagementConfig",
+      "lambda:ListTags",
+      "lambda:ListVersionsByFunction",
+      "lambda:PutFunctionConcurrency",
+      "lambda:RemovePermission",
+      "lambda:TagResource",
+      "lambda:UntagResource",
+      "lambda:UpdateFunctionCode",
+      "lambda:UpdateFunctionConfiguration",
+    ]
+    resources = [local.foundation_ecr_retention_function_arn]
+  }
+
+  statement {
+    sid    = "ManageFoundationEcrRetentionSchedule"
+    effect = "Allow"
+    actions = [
+      "events:DeleteRule",
+      "events:DescribeRule",
+      "events:DisableRule",
+      "events:EnableRule",
+      "events:ListTagsForResource",
+      "events:ListTargetsByRule",
+      "events:PutRule",
+      "events:PutTargets",
+      "events:RemoveTargets",
+      "events:TagResource",
+      "events:UntagResource",
+    ]
+    resources = [local.foundation_ecr_retention_schedule_arn]
+  }
+
+  statement {
+    sid    = "ManageFoundationEcrRetentionLogGroup"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:DeleteLogGroup",
+      "logs:DeleteRetentionPolicy",
+      "logs:ListTagsForResource",
+      "logs:PutRetentionPolicy",
+      "logs:TagResource",
+      "logs:UntagResource",
+    ]
+    resources = [
+      local.foundation_ecr_retention_log_group_arn,
+      "${local.foundation_ecr_retention_log_group_arn}:*",
+    ]
+  }
+
+  statement {
+    sid       = "ReadFoundationEcrRetentionLogGroup"
+    effect    = "Allow"
+    actions   = ["logs:DescribeLogGroups"]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_policy" "foundation_terraform_apply_workload" {
@@ -88,6 +207,15 @@ resource "aws_iam_policy" "foundation_terraform_apply_workload" {
   tags = merge(local.common_tags, {
     StateScope = "foundation"
   })
+
+  lifecycle {
+    precondition {
+      condition = (
+        length(jsonencode(jsondecode(data.aws_iam_policy_document.foundation_terraform_apply_workload[0].json))) <= 6144
+      )
+      error_message = "Foundation Terraform Apply workload policy exceeds the IAM managed-policy size quota."
+    }
+  }
 
   depends_on = [aws_iam_policy.terraform_apply_app_lane_policy_admin]
 }

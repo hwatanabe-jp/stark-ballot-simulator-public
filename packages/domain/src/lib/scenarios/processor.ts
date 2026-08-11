@@ -1,5 +1,8 @@
-import type { VoteData } from '@stark-ballot/domain/types/server';
 import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
+
+export interface ScenarioVoteRecord {
+  vote: VoteChoice;
+}
 
 export interface ScenarioOptions {
   targetChoice?: VoteChoice;
@@ -15,8 +18,8 @@ export interface ScenarioChange {
   newVote?: VoteChoice;
 }
 
-export interface ScenarioResult {
-  modifiedVotes: Map<number, VoteData>;
+export interface ScenarioResult<TVote extends ScenarioVoteRecord = ScenarioVoteRecord> {
+  modifiedVotes: Map<number, TVote>;
   changes: ScenarioChange[];
 }
 
@@ -24,12 +27,12 @@ export class ScenarioProcessor {
   /**
    * Apply tamper scenarios to votes
    */
-  applyScenarios(
-    originalVotes: Map<number, VoteData>,
+  applyScenarios<TVote extends ScenarioVoteRecord>(
+    originalVotes: Map<number, TVote>,
     scenarios: string[],
     userVoteIndex: number,
     options: ScenarioOptions = {},
-  ): ScenarioResult {
+  ): ScenarioResult<TVote> {
     // Clone the votes map
     const modifiedVotes = new Map(originalVotes);
     const changes: ScenarioChange[] = [];
@@ -64,7 +67,7 @@ export class ScenarioProcessor {
               break;
             }
             const originalVote = userVote.vote;
-            const updatedVote: VoteData = { ...userVote, vote: options.targetChoice };
+            const updatedVote: TVote = { ...userVote, vote: options.targetChoice };
             modifiedVotes.set(userVoteIndex, updatedVote);
             changes.push({
               scenario: 'S2',
@@ -109,7 +112,7 @@ export class ScenarioProcessor {
               break;
             }
             const originalVote = botVote.vote;
-            const updatedVote: VoteData = { ...botVote, vote: options.targetChoice };
+            const updatedVote: TVote = { ...botVote, vote: options.targetChoice };
             modifiedVotes.set(targetBotId, updatedVote);
             changes.push({
               scenario: 'S4',
@@ -156,7 +159,7 @@ export class ScenarioProcessor {
   /**
    * Get tally counts from votes
    */
-  getTallyCounts(votes: Map<number, VoteData>): Record<VoteChoice, number> {
+  getTallyCounts(votes: ReadonlyMap<number, ScenarioVoteRecord>): Record<VoteChoice, number> {
     const counts: Record<VoteChoice, number> = {
       A: 0,
       B: 0,

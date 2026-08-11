@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CLITestHelpers } from '@stark-ballot/test-support/testing/cli-test-helpers';
+import { buildCliVerificationPresentationFixture } from '@stark-ballot/test-support/testing/cli-verification-fixtures';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import type { CLITestConfig } from '../cli-e2e-voting-flow';
 
@@ -17,6 +18,11 @@ import { omitUndefinedProperties } from '@stark-ballot/validation/definedPropert
 describe('CLIVotingTest - Merkle enforcement', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('fails the test case when merkle verification does not pass', async () => {
@@ -51,44 +57,18 @@ describe('CLIVotingTest - Merkle enforcement', () => {
             validVotes: 64,
           },
           verificationStatus: 'success',
-          verificationSteps: [
-            {
-              id: 'counted_as_recorded',
-              status: 'success',
-              inputs: [],
-            },
-            {
-              id: 'stark_verification',
-              status: 'success',
-              inputs: [],
-            },
-          ],
-          verificationChecks: [
-            {
-              id: 'counted_expected_vs_tree_size',
-              status: 'success',
-              evidence: 'public',
-              inputs: ['totalExpected', 'treeSize'],
-            },
-            {
-              id: 'counted_election_manifest_consistent',
-              status: 'success',
-              evidence: 'public',
-              inputs: ['electionManifest'],
-            },
-            {
-              id: 'counted_close_statement_consistent',
-              status: 'success',
-              evidence: 'public',
-              inputs: ['closeStatement'],
-            },
-            {
-              id: 'stark_receipt_verify',
-              status: 'success',
-              evidence: 'zk',
-              inputs: ['proofBundleStatus'],
-            },
-          ],
+          ...buildCliVerificationPresentationFixture({
+            steps: [
+              { id: 'counted_as_recorded', status: 'success' },
+              { id: 'stark_verification', status: 'success' },
+            ],
+            checks: [
+              { id: 'counted_expected_vs_tree_size', status: 'success' },
+              { id: 'counted_election_manifest_consistent', status: 'success' },
+              { id: 'counted_close_statement_consistent', status: 'success' },
+              { id: 'stark_receipt_verify', status: 'success' },
+            ],
+          }),
           journal: createTestJournal({ totalExpected: 64, validVotes: 64 }),
           userVote: {
             commitment: '0xcommit',
@@ -133,5 +113,6 @@ describe('CLIVotingTest - Merkle enforcement', () => {
     expect(result.passed).toBe(false);
     expect(result.details.errors).toBeDefined();
     expect(result.details.errors).toEqual(expect.arrayContaining([expect.stringMatching(/Merkle inclusion/i)]));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('[ERROR] Merkle inclusion verification failed'));
   });
 });

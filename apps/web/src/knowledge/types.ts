@@ -1,4 +1,5 @@
 import type { VoteChoice } from '@stark-ballot/web/session/types';
+import type { PublicReceiptPublication } from '@stark-ballot/api-contract/schemas';
 
 /**
  * Knowledge phases corresponding to the voting flow
@@ -82,13 +83,7 @@ export interface VoteReceipt {
   inputCommitment?: string;
 }
 
-/**
- * Receipt publication info
- */
-export interface ReceiptPublication {
-  receiptHash: string;
-  boardIndex: number;
-}
+export type ReceiptPublication = PublicReceiptPublication;
 
 /**
  * Knowledge data structure - all known information
@@ -108,7 +103,7 @@ export interface KnowledgeData {
   'user.voteId'?: string;
   'user.bulletinIndex'?: number;
   'user.bulletinRootAtCast'?: string;
-  'user.voteTimestamp'?: number;
+  'user.castAtMs'?: number;
   botVotesStatus?: BotVotesStatus;
   scenarioId?: ScenarioId;
 
@@ -182,7 +177,7 @@ export const KNOWLEDGE_KEYS = [
   'user.voteId',
   'user.bulletinIndex',
   'user.bulletinRootAtCast',
-  'user.voteTimestamp',
+  'user.castAtMs',
   'botVotesStatus',
   'scenarioId',
   // Result

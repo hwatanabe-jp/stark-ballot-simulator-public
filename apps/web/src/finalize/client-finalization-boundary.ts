@@ -1,4 +1,3 @@
-import { isFailClosedCurrentArtifactState } from '@stark-ballot/web/finalize/currentArtifactState';
 import { clearKnowledgeForSession } from '@stark-ballot/web/knowledge';
 import {
   clearSession,
@@ -7,12 +6,6 @@ import {
   saveSessionDataForIdentity,
   type SessionIdentity,
 } from '@stark-ballot/web/session';
-import type { FinalizationStatusResponse } from '@stark-ballot/web/finalize/finalization-status-client';
-
-export function hasFailClosedFinalizationStatus(status: Pick<FinalizationStatusResponse, 'artifactState'>): boolean {
-  return isFailClosedCurrentArtifactState(status.artifactState);
-}
-
 export function clearClientFinalizedProjection(expectedIdentity?: SessionIdentity | null): void {
   const expectedSessionId = expectedIdentity?.sessionId ?? getSessionData()?.sessionId ?? null;
   clearKnowledgeForSession(expectedSessionId);

@@ -1,6 +1,3 @@
-import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
-type RateLimitStoreKind = 'memory' | 'dynamo';
-
 const DEFAULT_ZKVM_MAX_EXECUTIONS = 50;
 const DEFAULT_ZKVM_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_ZKVM_GLOBAL_DAILY_LIMIT = 1000;
@@ -86,47 +83,6 @@ export function getFinalizeCancelRateLimitConfig(): {
   };
 }
 
-export function resolveRateLimitStore(): RateLimitStoreKind {
-  const raw = process.env['RATE_LIMIT_STORE']?.trim().toLowerCase();
-  if (
-    raw === 'dynamo' &&
-    process.env['NODE_ENV'] === 'test' &&
-    process.env['RATE_LIMIT_STORE_ALLOW_TEST_DYNAMO'] === 'true'
-  ) {
-    return 'dynamo';
-  }
-
-  if (process.env['NODE_ENV'] === 'test' || process.env['USE_MOCK_STORE'] === 'true') {
-    return 'memory';
-  }
-
-  if (raw === 'dynamo') {
-    return 'dynamo';
-  }
-  return 'memory';
-}
-
 export function getRateLimitAttemptMultiplier(): number {
   return DEFAULT_RATE_LIMIT_ATTEMPT_MULTIPLIER;
-}
-
-export function getRateLimitTableNames(): { eventsTable?: string; countersTable?: string } {
-  const eventsTable = process.env['RATE_LIMIT_EVENTS_TABLE']?.trim();
-  const countersTable = process.env['RATE_LIMIT_COUNTERS_TABLE']?.trim();
-  return {
-    ...omitUndefinedProperties({
-      eventsTable: eventsTable && eventsTable.length > 0 ? eventsTable : undefined,
-      countersTable: countersTable && countersTable.length > 0 ? countersTable : undefined,
-    }),
-  };
-}
-
-export function requireRateLimitTableNames(): { eventsTable: string; countersTable: string } {
-  const { eventsTable, countersTable } = getRateLimitTableNames();
-  if (!eventsTable || !countersTable) {
-    throw new Error(
-      'RATE_LIMIT_EVENTS_TABLE and RATE_LIMIT_COUNTERS_TABLE must be set when using DynamoDB rate limiting.',
-    );
-  }
-  return { eventsTable, countersTable };
 }

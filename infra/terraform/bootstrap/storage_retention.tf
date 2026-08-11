@@ -10,6 +10,8 @@ locals {
       bootstrap_codebuild_log_days        = 30
       foundation_codebuild_log_days       = 365
       app_codebuild_log_days              = 180
+      terraform_drift_codebuild_log_days  = 180
+      terraform_drift_report_days         = 180
       incomplete_multipart_retention_days = 7
     }
     main = {
@@ -22,6 +24,8 @@ locals {
       bootstrap_codebuild_log_days        = 365
       foundation_codebuild_log_days       = 365
       app_codebuild_log_days              = 365
+      terraform_drift_codebuild_log_days  = 365
+      terraform_drift_report_days         = 365
       incomplete_multipart_retention_days = 7
     }
   }

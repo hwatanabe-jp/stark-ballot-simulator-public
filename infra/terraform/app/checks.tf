@@ -15,6 +15,11 @@ resource "terraform_data" "skeletal_app_lane" {
 
   lifecycle {
     precondition {
+      condition     = local.deployment_target_inputs_exact
+      error_message = "App inputs must match the exact reviewed stark-dev/develop target and lane configuration."
+    }
+
+    precondition {
       condition     = data.aws_caller_identity.current.account_id == var.aws_account_id
       error_message = "AWS caller account must match aws_account_id."
     }
@@ -39,7 +44,7 @@ resource "terraform_data" "skeletal_app_lane" {
 
     precondition {
       condition     = !local.target_public_session_create_enabled || length(local.operator_gate_trusted_key_groups) > 0
-      error_message = "TARGET_PUBLIC_SESSION_CREATE_ENABLED requires a configured develop operator-gate key group."
+      error_message = "Public session creation requires a configured develop operator-gate key group."
     }
 
     precondition {
@@ -69,7 +74,7 @@ check "target_public_session_turnstile_gate" {
       || local.session_create_turnstile_required
       || local.target_develop_operator_gate_enabled
     )
-    error_message = "TARGET_PUBLIC_SESSION_CREATE_ENABLED without SESSION_CREATE_TURNSTILE_REQUIRED is allowed only for operator-gated develop."
+    error_message = "Public session creation without required Turnstile is allowed only for operator-gated develop."
   }
 }
 

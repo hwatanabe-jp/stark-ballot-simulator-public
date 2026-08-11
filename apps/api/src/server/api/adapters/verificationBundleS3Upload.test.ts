@@ -1,16 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { extractZipFromFile } from '@stark-ballot/node-adapters/zip';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { uploadVerificationBundleToS3 } from './verificationBundleS3Upload';
+import {
+  localRuntimeProfile,
+  targetRuntimeProfile,
+} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+
+const targetProfile = targetRuntimeProfile();
 
 vi.mock('@stark-ballot/aws-adapters/aws/s3-upload', () => ({
   uploadFileToS3: vi.fn(({ filePath }: { filePath: string }) =>
     Promise.resolve({
       bucket: 'test-bucket',
       key: `uploads/${path.basename(filePath)}`,
-      uploadedAt: '2025-01-01T00:00:00.000Z',
+      uploadedAtMs: 1735689600000,
       success: true,
     }),
   ),
@@ -18,17 +23,15 @@ vi.mock('@stark-ballot/aws-adapters/aws/s3-upload', () => ({
 
 describe('uploadVerificationBundleToS3', () => {
   let testWorkDir: string;
-  let loggerWarnSpy: MockInstance<typeof logger.warn>;
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     const { uploadFileToS3 } = await import('@stark-ballot/aws-adapters/aws/s3-upload');
     vi.mocked(uploadFileToS3).mockImplementation(({ filePath }: { filePath: string }) =>
       Promise.resolve({
         bucket: 'test-bucket',
         key: `uploads/${path.basename(filePath)}`,
-        uploadedAt: '2025-01-01T00:00:00.000Z',
+        uploadedAtMs: 1735689600000,
         success: true,
       }),
     );
@@ -39,11 +42,17 @@ describe('uploadVerificationBundleToS3', () => {
   });
 
   afterEach(async () => {
-    loggerWarnSpy.mockRestore();
-    delete process.env['USE_S3'];
-    delete process.env['TARGET_AWS_RUNTIME'];
+    vi.restoreAllMocks();
     await fs.rm(testWorkDir, { recursive: true, force: true });
   });
+
+  function captureExpectedWarnings(): MockInstance<typeof logger.warn> {
+    return vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+  }
+
+  function captureExpectedErrors(): MockInstance<typeof logger.error> {
+    return vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+  }
 
   async function writeUploadBundleWithPrivateSidecars(bundleDir: string): Promise<void> {
     await fs.mkdir(bundleDir, { recursive: true });
@@ -53,6 +62,7 @@ describe('uploadVerificationBundleToS3', () => {
       'close-statement.json': { treeSize: 1 },
       'receipt.json': { receipt: true },
       'journal.json': { journal: true },
+      'metadata.json': { sessionId: 'session-upload' },
       'verification.json': { status: 'success' },
       'input.json': { private: true },
       'included-bitmap.json': { private: true },
@@ -63,11 +73,10 @@ describe('uploadVerificationBundleToS3', () => {
   }
 
   it('uploads bundle archive and report when S3 is enabled', async () => {
+    const loggerWarnSpy = captureExpectedWarnings();
     const sessionId = 'session-upload';
-    const executionId = 'exec-upload';
-    process.env['USE_S3'] = 'true';
-
-    const bundleDir = path.join(testWorkDir, sessionId, executionId);
+    const finalizationId = 'exec-upload';
+    const bundleDir = path.join(testWorkDir, sessionId, finalizationId);
     await fs.mkdir(bundleDir, { recursive: true });
     await fs.writeFile(
       path.join(bundleDir, 'public-input.json'),
@@ -81,7 +90,7 @@ describe('uploadVerificationBundleToS3', () => {
     await fs.writeFile(path.join(bundleDir, 'metadata.json'), JSON.stringify({}), 'utf-8');
     await fs.writeFile(path.join(bundleDir, 'verification.json'), JSON.stringify({ status: 'success' }));
 
-    const result = await uploadVerificationBundleToS3(bundleDir, sessionId, executionId);
+    const result = await uploadVerificationBundleToS3(targetProfile, bundleDir, sessionId, finalizationId);
 
     const { uploadFileToS3 } = await import('@stark-ballot/aws-adapters/aws/s3-upload');
     const mockedUpload = vi.mocked(uploadFileToS3);
@@ -92,28 +101,32 @@ describe('uploadVerificationBundleToS3', () => {
 
     expect(result.s3BundleKey).toBe('uploads/bundle.zip');
     expect(result.s3ReportKey).toBe('uploads/verification.json');
-    expect(result.s3UploadedAt).toBe('2025-01-01T00:00:00.000Z');
+    expect(result.s3UploadedAtMs).toBe(1735689600000);
     expect(result).not.toHaveProperty('s3BundleUrl');
     expect(result).not.toHaveProperty('s3BundleExpiresAt');
-    expect(loggerWarnSpy).not.toHaveBeenCalledWith(expect.stringContaining('bitmap'), expect.anything());
+    expect(loggerWarnSpy).not.toHaveBeenCalled();
   });
 
-  it('fails closed when target runtime has S3 upload disabled', async () => {
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    delete process.env['USE_S3'];
-
-    await expect(uploadVerificationBundleToS3(testWorkDir, 'session-upload', 'exec-upload')).rejects.toThrow(
-      'USE_S3=true is required for target AWS runtime bundle persistence',
+  it('does not construct an S3 upload for a local artifact profile', async () => {
+    await writeUploadBundleWithPrivateSidecars(testWorkDir);
+    const result = await uploadVerificationBundleToS3(
+      localRuntimeProfile(),
+      testWorkDir,
+      'session-upload',
+      'exec-upload',
     );
+
+    const { uploadFileToS3 } = await import('@stark-ballot/aws-adapters/aws/s3-upload');
+    expect(uploadFileToS3).not.toHaveBeenCalled();
+    expect(result.s3BundleKey).toBeUndefined();
   });
 
   it('fails closed when target runtime report upload fails', async () => {
+    const loggerWarnSpy = captureExpectedWarnings();
+    const loggerErrorSpy = captureExpectedErrors();
     const sessionId = 'session-upload';
-    const executionId = 'exec-upload';
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_S3'] = 'true';
-
-    const bundleDir = path.join(testWorkDir, sessionId, executionId);
+    const finalizationId = 'exec-upload';
+    const bundleDir = path.join(testWorkDir, sessionId, finalizationId);
     await fs.mkdir(bundleDir, { recursive: true });
     for (const fileName of [
       'public-input.json',
@@ -132,19 +145,27 @@ describe('uploadVerificationBundleToS3', () => {
       .mockResolvedValueOnce({
         bucket: 'test-bucket',
         key: 'uploads/bundle.zip',
-        uploadedAt: '2025-01-01T00:00:00.000Z',
+        uploadedAtMs: 1735689600000,
         success: true,
       })
       .mockResolvedValueOnce({
         bucket: 'test-bucket',
         key: 'uploads/verification.json',
-        uploadedAt: '2025-01-01T00:00:00.000Z',
+        uploadedAtMs: 1735689600000,
         success: false,
         error: 'denied',
       });
 
-    await expect(uploadVerificationBundleToS3(bundleDir, sessionId, executionId)).rejects.toThrow(
+    await expect(uploadVerificationBundleToS3(targetProfile, bundleDir, sessionId, finalizationId)).rejects.toThrow(
       'Target AWS runtime verification report upload failed: denied',
+    );
+    expect(loggerWarnSpy.mock.calls).toEqual([
+      ['[Bundle] Verification report upload failed: denied'],
+      ['[Bundle] Verification report upload skipped:', 'Target AWS runtime verification report upload failed: denied'],
+    ]);
+    expect(loggerErrorSpy).toHaveBeenCalledExactlyOnceWith(
+      '[Bundle] S3 upload error:',
+      'Target AWS runtime verification report upload unavailable: Target AWS runtime verification report upload failed: denied',
     );
   });
 
@@ -152,12 +173,11 @@ describe('uploadVerificationBundleToS3', () => {
     ['included-bitmap.json', 'Target AWS runtime included bitmap upload failed: denied'],
     ['seen-bitmap.json', 'Target AWS runtime seen bitmap upload failed: denied'],
   ])('fails closed when target runtime %s upload fails', async (failedFileName, expectedMessage) => {
+    const loggerWarnSpy = captureExpectedWarnings();
+    const loggerErrorSpy = captureExpectedErrors();
     const sessionId = 'session-upload';
-    const executionId = `exec-${failedFileName}`;
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_S3'] = 'true';
-
-    const bundleDir = path.join(testWorkDir, sessionId, executionId);
+    const finalizationId = `exec-${failedFileName}`;
+    const bundleDir = path.join(testWorkDir, sessionId, finalizationId);
     await writeUploadBundleWithPrivateSidecars(bundleDir);
 
     const { uploadFileToS3 } = await import('@stark-ballot/aws-adapters/aws/s3-upload');
@@ -165,22 +185,29 @@ describe('uploadVerificationBundleToS3', () => {
       Promise.resolve({
         bucket: 'test-bucket',
         key: `uploads/${path.basename(filePath)}`,
-        uploadedAt: '2025-01-01T00:00:00.000Z',
+        uploadedAtMs: 1735689600000,
         success: path.basename(filePath) !== failedFileName,
         ...(path.basename(filePath) === failedFileName ? { error: 'denied' } : {}),
       }),
     );
 
-    await expect(uploadVerificationBundleToS3(bundleDir, sessionId, executionId)).rejects.toThrow(expectedMessage);
+    await expect(uploadVerificationBundleToS3(targetProfile, bundleDir, sessionId, finalizationId)).rejects.toThrow(
+      expectedMessage,
+    );
+    const label = failedFileName === 'included-bitmap.json' ? 'Included bitmap' : 'Seen bitmap';
+    expect(loggerWarnSpy.mock.calls).toEqual([
+      [`[Bundle] ${label} upload failed: denied`],
+      [`[Bundle] ${label} upload failed:`, expectedMessage],
+    ]);
+    expect(loggerErrorSpy).toHaveBeenCalledExactlyOnceWith('[Bundle] S3 upload error:', expectedMessage);
   });
 
   it('fails closed when target runtime cannot access an optional private sidecar unexpectedly', async () => {
+    const loggerWarnSpy = captureExpectedWarnings();
+    const loggerErrorSpy = captureExpectedErrors();
     const sessionId = 'session-upload';
-    const executionId = 'exec-sidecar-access';
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_S3'] = 'true';
-
-    const bundleDir = path.join(testWorkDir, sessionId, executionId);
+    const finalizationId = 'exec-sidecar-access';
+    const bundleDir = path.join(testWorkDir, sessionId, finalizationId);
     await writeUploadBundleWithPrivateSidecars(bundleDir);
     const realAccess = fs.access.bind(fs);
     const accessSpy = vi.spyOn(fs, 'access').mockImplementation(async (filePath) => {
@@ -191,22 +218,25 @@ describe('uploadVerificationBundleToS3', () => {
     });
 
     try {
-      await expect(uploadVerificationBundleToS3(bundleDir, sessionId, executionId)).rejects.toThrow(
+      await expect(uploadVerificationBundleToS3(targetProfile, bundleDir, sessionId, finalizationId)).rejects.toThrow(
         'permission denied',
       );
-      expect(loggerWarnSpy).toHaveBeenCalledWith('[Bundle] Included bitmap access failed:', 'permission denied');
+      expect(loggerWarnSpy).toHaveBeenCalledExactlyOnceWith(
+        '[Bundle] Included bitmap access failed:',
+        'permission denied',
+      );
+      expect(loggerErrorSpy).toHaveBeenCalledExactlyOnceWith('[Bundle] S3 upload error:', 'permission denied');
     } finally {
       accessSpy.mockRestore();
     }
   });
 
   it('fails closed when target runtime private bitmap sidecar upload throws', async () => {
+    const loggerWarnSpy = captureExpectedWarnings();
+    const loggerErrorSpy = captureExpectedErrors();
     const sessionId = 'session-upload';
-    const executionId = 'exec-sidecar-throw';
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_S3'] = 'true';
-
-    const bundleDir = path.join(testWorkDir, sessionId, executionId);
+    const finalizationId = 'exec-sidecar-throw';
+    const bundleDir = path.join(testWorkDir, sessionId, finalizationId);
     await writeUploadBundleWithPrivateSidecars(bundleDir);
 
     const { uploadFileToS3 } = await import('@stark-ballot/aws-adapters/aws/s3-upload');
@@ -217,51 +247,33 @@ describe('uploadVerificationBundleToS3', () => {
       return Promise.resolve({
         bucket: 'test-bucket',
         key: `uploads/${path.basename(filePath)}`,
-        uploadedAt: '2025-01-01T00:00:00.000Z',
+        uploadedAtMs: 1735689600000,
         success: true,
       });
     });
 
-    await expect(uploadVerificationBundleToS3(bundleDir, sessionId, executionId)).rejects.toThrow(
+    await expect(uploadVerificationBundleToS3(targetProfile, bundleDir, sessionId, finalizationId)).rejects.toThrow(
       'network unavailable',
     );
+    expect(loggerWarnSpy).toHaveBeenCalledExactlyOnceWith(
+      '[Bundle] Included bitmap upload failed:',
+      'network unavailable',
+    );
+    expect(loggerErrorSpy).toHaveBeenCalledExactlyOnceWith('[Bundle] S3 upload error:', 'network unavailable');
   });
 
-  it('uploads a Docker-shaped async public bundle without requiring metadata.json', async () => {
+  it('rejects a sync public bundle without metadata before uploading any artifact', async () => {
     const sessionId = 'session-upload';
-    const executionId = 'exec-async-upload';
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_S3'] = 'true';
-
-    const bundleDir = path.join(testWorkDir, sessionId, executionId);
+    const finalizationId = 'exec-missing-metadata';
+    const bundleDir = path.join(testWorkDir, sessionId, finalizationId);
     await writeUploadBundleWithPrivateSidecars(bundleDir);
+    await fs.rm(path.join(bundleDir, 'metadata.json'));
 
-    const result = await uploadVerificationBundleToS3(bundleDir, sessionId, executionId);
+    await expect(uploadVerificationBundleToS3(targetProfile, bundleDir, sessionId, finalizationId)).rejects.toThrow(
+      /missing required public bundle member.*metadata\.json/i,
+    );
 
     const { uploadFileToS3 } = await import('@stark-ballot/aws-adapters/aws/s3-upload');
-    const mockedUpload = vi.mocked(uploadFileToS3);
-    const bundleUpload = mockedUpload.mock.calls.find((call) => path.basename(call[0].filePath) === 'bundle.zip');
-    expect(bundleUpload).toBeDefined();
-    const uploadedFiles = mockedUpload.mock.calls.map((call) => path.basename(call[0].filePath));
-    expect(uploadedFiles).toEqual(
-      expect.arrayContaining(['bundle.zip', 'verification.json', 'included-bitmap.json', 'seen-bitmap.json']),
-    );
-
-    const extractionDir = path.join(bundleDir, 'extracted-async');
-    await extractZipFromFile(path.join(bundleDir, 'bundle.zip'), { destination: extractionDir });
-    const extractedFiles = (await fs.readdir(extractionDir)).sort();
-    expect(extractedFiles).toEqual(
-      ['close-statement.json', 'election-manifest.json', 'journal.json', 'public-input.json', 'receipt.json'].sort(),
-    );
-    expect(extractedFiles).not.toContain('metadata.json');
-    expect(extractedFiles).not.toContain('input.json');
-    expect(extractedFiles).not.toContain('included-bitmap.json');
-    expect(extractedFiles).not.toContain('seen-bitmap.json');
-    expect(extractedFiles).not.toContain('verification.json');
-    expect(result.s3BundleKey).toBe('uploads/bundle.zip');
-    expect(result.s3ReportKey).toBe('uploads/verification.json');
-    expect(result.s3UploadedAt).toBe('2025-01-01T00:00:00.000Z');
-    expect(result).not.toHaveProperty('s3BundleUrl');
-    expect(result).not.toHaveProperty('s3BundleExpiresAt');
+    expect(uploadFileToS3).not.toHaveBeenCalled();
   });
 });

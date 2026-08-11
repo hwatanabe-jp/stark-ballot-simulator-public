@@ -4,6 +4,7 @@
  */
 
 import { CLITestHelpers, resolveFinalizationCountDiagnostics } from './cli-test-helpers';
+import type { ZkVMProofProfile } from '@stark-ballot/node-adapters/zkvm/executor-factory';
 import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
@@ -27,7 +28,6 @@ function assertValidVoteChoice(value: string): asserts value is VoteChoice {
 export interface ScenarioConfig {
   scenario: string;
   userChoice: string;
-  useRealZkVM: boolean;
 }
 
 export interface ScenarioResult {
@@ -61,8 +61,8 @@ type ScenarioHelpers = Pick<
 export class ScenarioRunner {
   private helpers: ScenarioHelpers;
 
-  constructor(baseUrl = 'http://localhost:3000', helpers?: ScenarioHelpers) {
-    this.helpers = helpers ?? new CLITestHelpers(baseUrl);
+  constructor(proofProfile: ZkVMProofProfile, baseUrl = 'http://localhost:3000', helpers?: ScenarioHelpers) {
+    this.helpers = helpers ?? new CLITestHelpers(baseUrl, undefined, proofProfile);
   }
 
   /**
@@ -88,9 +88,6 @@ export class ScenarioRunner {
     const metrics: ScenarioResult['metrics'] = {};
 
     try {
-      // Configure zkVM mode
-      this.configureZkVMMode(config.useRealZkVM);
-
       // Create a session
       const sessionStartTime = Date.now();
       const sessionId = await this.helpers.createSession();
@@ -160,20 +157,6 @@ export class ScenarioRunner {
         errors,
         metrics,
       };
-    }
-  }
-
-  /**
-   * Configure zkVM execution mode
-   */
-  private configureZkVMMode(useRealZkVM: boolean): void {
-    if (!useRealZkVM) {
-      process.env['USE_MOCK_ZKVM'] = 'true';
-      process.env['RISC0_DEV_MODE'] = '1';
-    } else {
-      process.env['USE_MOCK_ZKVM'] = 'false';
-      // Force production-mode proofs by clearing any leftover dev-mode flags
-      delete process.env['RISC0_DEV_MODE'];
     }
   }
 

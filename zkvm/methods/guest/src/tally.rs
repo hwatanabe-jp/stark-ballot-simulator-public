@@ -15,7 +15,7 @@ use contract_core::{
 
 use crate::sth::compute_sth_digest;
 
-/// Maximum value any candidate tally bucket may reach under accepted Phase 4 inputs.
+/// Maximum value any candidate tally bucket may reach under accepted guest inputs.
 pub const MAX_FORMAL_GUEST_TALLY_BUCKET: u32 = MAX_GUEST_TREE_SIZE;
 
 struct ValidatedAggregatorInput<'a> {
@@ -51,7 +51,7 @@ impl<'a> ValidatedAggregatorInput<'a> {
 
         if input.votes.len() > MAX_GUEST_VOTE_COUNT {
             return Err(format!(
-                "Vote count exceeds Phase 4 guest bound of {}",
+                "Vote count exceeds guest bound of {}",
                 MAX_GUEST_VOTE_COUNT
             ));
         }
@@ -112,7 +112,7 @@ fn validate_tree_size(value: u32) -> Result<TreeSize, String> {
     let tree_size = TreeSize::new(value).map_err(|_| "Tree size cannot be zero".to_string())?;
     if tree_size.get() > MAX_GUEST_TREE_SIZE {
         return Err(format!(
-            "Tree size exceeds Phase 4 guest bound of {}",
+            "Tree size exceeds guest bound of {}",
             MAX_GUEST_TREE_SIZE
         ));
     }
@@ -122,7 +122,7 @@ fn validate_tree_size(value: u32) -> Result<TreeSize, String> {
 fn validate_total_expected(value: u32) -> Result<TotalExpected, String> {
     if value > MAX_GUEST_TREE_SIZE {
         return Err(format!(
-            "Total expected exceeds Phase 4 guest bound of {}",
+            "Total expected exceeds guest bound of {}",
             MAX_GUEST_TREE_SIZE
         ));
     }
@@ -324,7 +324,7 @@ fn build_verification_output(
     })
 }
 
-/// Validate input structure and Phase 4 bounded-counter assumptions.
+/// Validate input structure and bounded-counter assumptions.
 #[cfg(test)]
 pub fn validate_input(input: &AggregatorInput) -> Result<(), String> {
     ValidatedAggregatorInput::validate(input).map(|_| ())
@@ -454,7 +454,7 @@ fn verify_and_tally_core(
             checked_increment(verified_tally[vote.choice() as usize], "candidate tally")?;
         if verified_tally[vote.choice() as usize] > MAX_FORMAL_GUEST_TALLY_BUCKET {
             return Err(format!(
-                "Candidate tally bucket exceeds Phase 4 guest bound of {}",
+                "Candidate tally bucket exceeds guest bound of {}",
                 MAX_FORMAL_GUEST_TALLY_BUCKET
             ));
         }
@@ -954,7 +954,7 @@ mod tests {
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
-            .contains("Tree size exceeds Phase 4 guest bound"));
+            .contains("Tree size exceeds guest bound"));
     }
 
     #[test]
@@ -974,7 +974,7 @@ mod tests {
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
-            .contains("Total expected exceeds Phase 4 guest bound"));
+            .contains("Total expected exceeds guest bound"));
     }
 
     #[test]
@@ -1001,7 +1001,7 @@ mod tests {
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
-            .contains("Vote count exceeds Phase 4 guest bound"));
+            .contains("Vote count exceeds guest bound"));
     }
 
     #[test]

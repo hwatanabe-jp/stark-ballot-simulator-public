@@ -8,7 +8,7 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
-import { addHexPrefix } from '@stark-ballot/domain/utils/hex';
+import { addHexPrefix } from '@stark-ballot/crypto-primitives';
 import { serializeZkvmAggregatorInput } from '@stark-ballot/zkvm-contract/zkvm/host-io';
 import { computeCommitment, type ZkVMInput, type VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
 

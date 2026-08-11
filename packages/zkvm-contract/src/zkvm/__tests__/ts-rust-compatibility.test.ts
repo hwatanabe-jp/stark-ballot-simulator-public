@@ -11,6 +11,29 @@ import { describe, it, expect } from 'vitest';
 import type { ZkVMInput, VoteWithProof } from '../types';
 import { asUnixTimestampMillis, computeSTHDigest, computeInputCommitment, computeCommitment } from '../types';
 import { computeIncludedBitmapRoot } from '../bitmap';
+import { computeIncludedBitmapRootHex } from '../bitmap-core';
+
+const APPROVED_RUST_AGGREGATOR_INPUT_FIELDS = [
+  'election_id',
+  'bulletin_root',
+  'tree_size',
+  'log_id',
+  'timestamp',
+  'total_expected',
+  'election_config_hash',
+  'votes',
+] as const;
+
+const APPROVED_TS_ZKVM_INPUT_FIELDS = [
+  'electionId',
+  'bulletinRoot',
+  'treeSize',
+  'logId',
+  'timestamp',
+  'totalExpected',
+  'electionConfigHash',
+  'votes',
+] as const;
 
 const APPROVED_RUST_VERIFICATION_OUTPUT_FIELDS = [
   'election_id',
@@ -34,7 +57,7 @@ const APPROVED_RUST_VERIFICATION_OUTPUT_FIELDS = [
   'method_version',
 ] as const;
 
-const APPROVED_TS_JOURNAL_FIELDS = [
+const APPROVED_TS_ZKVM_JOURNAL_FIELDS = [
   'electionId',
   'electionConfigHash',
   'bulletinRoot',
@@ -83,7 +106,11 @@ function extractRustStructFieldsFromBody(body: string, structName: string): stri
   });
 }
 
-function extractTsInterfaceFields(source: string, interfaceName: string): string[] {
+function extractTsInterfaceFields(
+  source: string,
+  interfaceName: string,
+  excludedFields: readonly string[] = [],
+): string[] {
   const body = requireBlock(
     source,
     new RegExp(`export interface ${interfaceName} \\{([\\s\\S]*?)\\n\\}`),
@@ -97,10 +124,23 @@ function extractTsInterfaceFields(source: string, interfaceName: string): string
       }
       return field;
     })
-    .filter((field) => field !== 'imageId');
+    .filter((field) => !excludedFields.includes(field));
 }
 
 describe('TypeScript-Rust Compatibility', () => {
+  describe('Input contract structure', () => {
+    it('keeps AggregatorInput and ZkVMInput on the approved proof-input field lists', () => {
+      const rustTypes = readRepoFile('zkvm/contract-core/src/types.rs');
+      const tsTypes = readRepoFile('packages/zkvm-contract/src/zkvm/types.ts');
+      const rustAggregatorInputBody = extractRustStructBody(rustTypes, 'AggregatorInput');
+
+      expect(extractRustStructFieldsFromBody(rustAggregatorInputBody, 'AggregatorInput')).toEqual([
+        ...APPROVED_RUST_AGGREGATOR_INPUT_FIELDS,
+      ]);
+      expect(extractTsInterfaceFields(tsTypes, 'ZkVMInput')).toEqual([...APPROVED_TS_ZKVM_INPUT_FIELDS]);
+    });
+  });
+
   describe('Journal contract structure', () => {
     it('keeps VerificationOutput and ZkVMJournal on the approved public field list', () => {
       const rustTypes = readRepoFile('zkvm/contract-core/src/types.rs');
@@ -111,7 +151,9 @@ describe('TypeScript-Rust Compatibility', () => {
       expect(extractRustStructFieldsFromBody(rustVerificationOutputBody, 'VerificationOutput')).toEqual([
         ...APPROVED_RUST_VERIFICATION_OUTPUT_FIELDS,
       ]);
-      expect(extractTsInterfaceFields(tsTypes, 'ZkVMJournal')).toEqual([...APPROVED_TS_JOURNAL_FIELDS]);
+      expect(extractTsInterfaceFields(tsTypes, 'ZkVMJournal', ['imageId'])).toEqual([
+        ...APPROVED_TS_ZKVM_JOURNAL_FIELDS,
+      ]);
 
       for (const legacyField of [
         'merkle_root',
@@ -313,9 +355,9 @@ describe('TypeScript-Rust Compatibility', () => {
         false, // index 7
       ];
 
-      expect(computeIncludedBitmapRoot(bitmap)).toBe(
-        '0xe4018e05fd184227db0b71514ec035dbe036ebdea6360eb572ac801aff35e753',
-      );
+      const expectedRoot = '0xe4018e05fd184227db0b71514ec035dbe036ebdea6360eb572ac801aff35e753';
+      expect(computeIncludedBitmapRoot(bitmap)).toBe(expectedRoot);
+      expect(computeIncludedBitmapRootHex(bitmap)).toBe(expectedRoot);
     });
 
     it('should handle partial bytes correctly', () => {

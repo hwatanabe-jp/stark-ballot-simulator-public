@@ -1,26 +1,21 @@
-import type { ApiContext } from '../context';
+import { createHash } from 'node:crypto';
+import type { ApiHandlerArguments, SessionAdmittedContext } from '../context';
 import { ErrorCode, type ApiError, type ErrorDetails } from '@stark-ballot/api-contract/errors/apiErrors';
-import { errorResponse, jsonResponse } from '../../http/response';
-import { toApiErrorPayload } from '@stark-ballot/api-contract/errors/errorPayload';
-import type { ConsistencyProofResponse } from '@stark-ballot/api-contract/types/api/consistency-proof';
-import { validateSessionWithCapability } from '../middleware/session';
-import type { SessionData } from '@stark-ballot/domain/types/server';
+import { errorResponse } from '../../http/response';
+import type { BulletinResponse, ConsistencyProofResponse } from '@stark-ballot/api-contract/schemas/bulletin';
+import type { SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
 import {
-  BulletinProofResponseSchema,
-  BulletinResponseSchema,
-  ConsistencyProofResponseSchema,
-} from '@stark-ballot/api-contract/validation/apiSchemas';
-import { respondWithSchema } from '../utils/responseSchema';
+  sessionBulletinConsistencyProofRoute,
+  sessionBulletinRoute,
+  sessionVoteInclusionProofRoute,
+} from '@stark-ballot/api-contract/routes';
+import { respondWithRoute } from '../utils/responseSchema';
 import {
   getCanonicalBulletinRootHistory,
   getLatestCanonicalBulletinSnapshot,
 } from '@stark-ballot/domain/bulletin/ctSessionState';
 import { normalizeHex } from '@stark-ballot/domain/utils/hex';
 import { logger } from '@stark-ballot/diagnostics/logger';
-import {
-  buildUnsupportedFinalizedArtifactResponse,
-  resolveSupportedFinalizedRead,
-} from '../utils/currentArtifactAdmission';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 /**
@@ -33,15 +28,11 @@ interface BulletinBoardResponse {
   bulletinRoot: string;
   /** Total number of votes in the tree. */
   treeSize: number;
-  /** Current timestamp. */
-  timestamp: number;
-  /** Next offset for paging (nullable when no more data). */
-  nextOffset?: number | null;
-  /** Whether additional commitments are available. */
-  hasMore?: boolean;
+  /** Repository generation timestamp. */
+  generatedAtMs: number;
   /** Optional: History of Merkle root snapshots. */
   rootHistory?: Array<{
-    timestamp: number;
+    recordedAtMs: number;
     bulletinRoot: string;
     treeSize: number;
     signature?: string;
@@ -50,30 +41,14 @@ interface BulletinBoardResponse {
 
 // UUID v4 validation regex - compiled once for performance
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const NON_NEGATIVE_INTEGER_QUERY_PATTERN = /^(0|[1-9]\d*)$/;
 
-function parseNonNegativeIntegerQueryParam(value: string): number | null {
-  if (!NON_NEGATIVE_INTEGER_QUERY_PATTERN.test(value)) {
-    return null;
-  }
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? parsed : null;
-}
-
-const MAX_BULLETIN_LIMIT = 1000;
 const PRIVATE_NO_STORE_CACHE_CONTROL = 'private, no-store';
-const SESSION_AUTH_VARY = 'X-Session-ID, X-Session-Capability';
-
-interface BulletinPagingParams {
-  offset: number;
-  limit?: number;
-  hasPaging: boolean;
-}
+const SESSION_AUTH_VARY = 'X-Session-Capability';
 
 /**
  * Validate vote ID format with security checks.
  */
-function isValidVoteId(voteId: string): boolean {
+export function isValidBulletinVoteId(voteId: string): boolean {
   // Prevent path traversal attacks
   if (voteId.includes('..') || voteId.includes('/') || voteId.includes('\\')) {
     return false;
@@ -95,187 +70,107 @@ function createPrivateNoStoreHeaders(headers?: HeadersInit): Headers {
   return merged;
 }
 
-function createPrivateNoStoreResponse(response: Response): Response {
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: createPrivateNoStoreHeaders(response.headers),
-  });
-}
-
 function voteProofErrorResponse(error: ApiError | ErrorCode, details?: ErrorDetails): Response {
-  const payload = toApiErrorPayload(error, details);
-  return jsonResponse(payload, {
-    status: payload.statusCode,
+  return errorResponse(error, details, {
     headers: createPrivateNoStoreHeaders({
       'X-Content-Type-Options': 'nosniff',
     }),
   });
 }
 
-function parseBulletinPagingParams(requestUrl: string): BulletinPagingParams | Response {
-  const { searchParams } = new URL(requestUrl);
-  const offsetParam = searchParams.get('offset');
-  const limitParam = searchParams.get('limit');
-  const hasPaging = offsetParam !== null || limitParam !== null;
-
-  let offset = 0;
-  let limit: number | undefined;
-
-  if (offsetParam !== null) {
-    const parsedOffset = Number(offsetParam);
-    if (!Number.isFinite(parsedOffset) || !Number.isInteger(parsedOffset)) {
-      return errorResponse(ErrorCode.INVALID_OFFSET, {
-        field: 'offset',
-        reason: 'integer',
-        expected: 'integer >= 0',
-        actual: offsetParam,
-      });
-    }
-    if (parsedOffset < 0) {
-      return errorResponse(ErrorCode.INVALID_OFFSET, {
-        field: 'offset',
-        reason: 'min',
-        expected: 'integer >= 0',
-        actual: parsedOffset,
-      });
-    }
-    offset = parsedOffset;
-  }
-
-  if (limitParam !== null) {
-    const parsedLimit = Number(limitParam);
-    if (!Number.isFinite(parsedLimit) || !Number.isInteger(parsedLimit)) {
-      return errorResponse(ErrorCode.INVALID_LIMIT, {
-        field: 'limit',
-        reason: 'integer',
-        expected: 'integer > 0',
-        actual: limitParam,
-      });
-    }
-    if (parsedLimit <= 0) {
-      return errorResponse(ErrorCode.INVALID_LIMIT, {
-        field: 'limit',
-        reason: 'min',
-        expected: 'integer > 0',
-        actual: parsedLimit,
-      });
-    }
-    if (parsedLimit > MAX_BULLETIN_LIMIT) {
-      return errorResponse(ErrorCode.INVALID_LIMIT, {
-        field: 'limit',
-        reason: 'max',
-        expected: `<= ${MAX_BULLETIN_LIMIT}`,
-        actual: parsedLimit,
-        max: MAX_BULLETIN_LIMIT,
-      });
-    }
-    limit = parsedLimit;
-  }
-
-  return {
-    offset,
-    ...omitUndefinedProperties({ limit }),
-    hasPaging,
-  };
-}
-
 /**
  * Return all commitments and current root from the bulletin board.
  */
-export async function getBulletinHandler({ request, store }: ApiContext): Promise<Response> {
-  const sessionResult = await validateSessionWithCapability(request.headers, store, { updateActivity: false });
-  if (sessionResult instanceof Response) {
-    return sessionResult;
-  }
-  const { session } = sessionResult;
-  const finalizedRead = resolveSupportedFinalizedRead(session);
-  if (finalizedRead.artifactState) {
-    return buildUnsupportedFinalizedArtifactResponse(finalizedRead.artifactState);
-  }
+export function getSessionBulletinHandler({
+  input,
+  context,
+}: ApiHandlerArguments<typeof sessionBulletinRoute, SessionAdmittedContext>): Response {
+  const { session } = context;
+  const voting = session.voting;
 
-  const pagingParams = parseBulletinPagingParams(request.url);
-  if (pagingParams instanceof Response) {
-    return pagingParams;
-  }
-
-  const { offset, limit, hasPaging } = pagingParams;
-  const commitments = resolveBulletinCommitments(session);
+  const { offset = 0, limit } = input.query;
+  const hasPaging = input.query.offset !== undefined || input.query.limit !== undefined;
+  const commitments = resolveBulletinCommitments(voting);
   const totalCommitments = commitments.length;
   const effectiveOffset = hasPaging ? Math.min(offset, totalCommitments) : 0;
   const sliceLimit = limit ?? Math.max(0, totalCommitments - effectiveOffset);
   const sliceEnd = Math.min(totalCommitments, effectiveOffset + sliceLimit);
   const pagedCommitments = hasPaging ? commitments.slice(effectiveOffset, sliceEnd) : commitments;
 
-  const bulletinRoot = resolveBulletinRoot(session);
+  const bulletinRoot = resolveBulletinRoot(voting);
   if (!bulletinRoot) {
     return errorResponse(ErrorCode.INVALID_REQUEST, {
       details: 'BULLETIN_STATE_UNAVAILABLE',
     });
   }
-  const treeSize = resolveBulletinTreeSize(session);
-  const rootHistory = resolveBulletinRootHistory(session);
+  const treeSize = resolveBulletinTreeSize(voting);
+  const rootHistory = resolveBulletinRootHistory(voting);
 
   const response: BulletinBoardResponse = {
     commitments: pagedCommitments,
     bulletinRoot,
     treeSize,
-    timestamp: Date.now(),
+    generatedAtMs: Date.now(),
   };
 
+  let page: BulletinResponse['meta']['page'];
   if (hasPaging) {
     const hasMore = sliceEnd < totalCommitments;
-    response.nextOffset = hasMore ? sliceEnd : null;
-    response.hasMore = hasMore;
+    page = {
+      nextOffset: hasMore ? sliceEnd : null,
+      hasMore,
+    };
   }
 
   if (rootHistory.length > 0) {
     response.rootHistory = rootHistory;
   }
 
-  return respondWithSchema(BulletinResponseSchema, response);
+  return respondWithRoute(sessionBulletinRoute, {
+    status: 200,
+    content: 'json',
+    body: {
+      data: response,
+      ...(page ? { meta: { page } } : {}),
+    },
+  });
 }
 
 /**
  * Return minimal inclusion proof data for a vote.
  */
-export async function getBulletinVoteProofHandler({
-  request,
-  store,
-  params,
-}: ApiContext<{ voteId: string }>): Promise<Response> {
+export async function getSessionVoteInclusionProofHandler({
+  input,
+  context,
+}: ApiHandlerArguments<typeof sessionVoteInclusionProofRoute, SessionAdmittedContext>): Promise<Response> {
   const startTime = performance.now();
 
   try {
-    const voteId = params?.voteId;
-    if (!voteId || !isValidVoteId(voteId)) {
+    const { voteId } = input.params;
+    if (!isValidBulletinVoteId(voteId)) {
       return voteProofErrorResponse(ErrorCode.INVALID_VOTE_ID);
     }
 
-    const sessionResult = await validateSessionWithCapability(request.headers, store, { updateActivity: false });
-    if (sessionResult instanceof Response) {
-      return createPrivateNoStoreResponse(sessionResult);
-    }
-    const { session, sessionId } = sessionResult;
-    if (!session.finalized) {
+    const { session, sessionId, store } = context;
+    if (session.finalization?.state.status !== 'succeeded' || !session.finalization.finalizationResult) {
       return voteProofErrorResponse(ErrorCode.SESSION_NOT_FINALIZED);
     }
-    const finalizedRead = resolveSupportedFinalizedRead(session);
-    if (finalizedRead.artifactState) {
-      return createPrivateNoStoreResponse(buildUnsupportedFinalizedArtifactResponse(finalizedRead.artifactState));
-    }
+    const { voting } = session;
+    const finalizationResult = session.finalization.finalizationResult;
 
     const userVoteId =
-      session.userVoteIndex !== undefined ? session.votes.get(session.userVoteIndex)?.voteId : undefined;
+      voting.userParticipation.status === 'cast'
+        ? voting.votes.get(voting.userParticipation.voteIndex)?.voteId
+        : undefined;
     let isAllowed = Boolean(userVoteId && userVoteId === voteId);
 
-    if (!isAllowed && finalizedRead.finalizationResult) {
-      const scenarios = finalizedRead.finalizationResult.scenarios ?? [];
+    if (!isAllowed) {
+      const scenarios = finalizationResult.scenarios ?? [];
       const scenarioId = scenarios.length > 0 ? scenarios[0] : undefined;
-      const affectedBotIds = finalizedRead.finalizationResult.tamperSummary?.affectedBotIds ?? [];
+      const affectedBotIds = finalizationResult.tamperSummary?.affectedBotIds ?? [];
       if ((scenarioId === 'S3' || scenarioId === 'S4') && affectedBotIds.length > 0) {
         for (const botId of affectedBotIds) {
-          const botVoteId = session.votes.get(botId)?.voteId;
+          const botVoteId = voting.votes.get(botId)?.voteId;
           if (botVoteId && botVoteId === voteId) {
             isAllowed = true;
             break;
@@ -321,13 +216,17 @@ export async function getBulletinVoteProofHandler({
       });
     }
 
-    return respondWithSchema(BulletinProofResponseSchema, responseData, {
-      headers: createPrivateNoStoreHeaders({
-        'X-Content-Type-Options': 'nosniff',
-      }),
-    });
+    return respondWithRoute(
+      sessionVoteInclusionProofRoute,
+      { status: 200, content: 'json', body: { data: responseData } },
+      {
+        headers: createPrivateNoStoreHeaders({
+          'X-Content-Type-Options': 'nosniff',
+        }),
+      },
+    );
   } catch (error) {
-    const voteId = params?.voteId;
+    const { voteId } = input.params;
     logger.error('[API] Error retrieving vote proof:', {
       voteId,
       error: error instanceof Error ? error.message : 'Unknown error',
@@ -341,95 +240,101 @@ export async function getBulletinVoteProofHandler({
 /**
  * Generate a consistency proof between two tree sizes.
  */
-export async function getConsistencyProofHandler({ request, store }: ApiContext): Promise<Response> {
-  try {
-    const sessionResult = await validateSessionWithCapability(request.headers, store, { updateActivity: false });
-    if (sessionResult instanceof Response) {
-      return sessionResult;
-    }
-    const { session } = sessionResult;
-    const finalizedRead = resolveSupportedFinalizedRead(session);
-    if (finalizedRead.artifactState) {
-      return buildUnsupportedFinalizedArtifactResponse(finalizedRead.artifactState);
-    }
+export interface ConsistencyProofDataInput {
+  session: SessionVotingRecord;
+  fromTreeSize: number;
+  toTreeSize: number;
+  generatedAtMs: number;
+}
 
-    const { searchParams } = new URL(request.url);
-    const oldSizeParam = searchParams.get('oldSize');
-    const newSizeParam = searchParams.get('newSize');
+export type ConsistencyProofDataResolution =
+  { ok: true; data: ConsistencyProofResponse['data'] } | { ok: false; message: string };
 
-    if (oldSizeParam === null) {
-      return errorResponse(ErrorCode.INVALID_SIZE, { details: 'Missing required parameter: oldSize' });
-    }
+export function resolveConsistencyProofData({
+  session,
+  fromTreeSize,
+  toTreeSize,
+  generatedAtMs,
+}: ConsistencyProofDataInput): ConsistencyProofDataResolution {
+  if (fromTreeSize > toTreeSize) {
+    return { ok: false, message: 'fromTreeSize cannot be greater than toTreeSize' };
+  }
 
-    if (newSizeParam === null) {
-      return errorResponse(ErrorCode.INVALID_SIZE, { details: 'Missing required parameter: newSize' });
-    }
-
-    const oldSize = parseNonNegativeIntegerQueryParam(oldSizeParam);
-    const newSize = parseNonNegativeIntegerQueryParam(newSizeParam);
-
-    if (oldSize === null || newSize === null) {
-      return errorResponse(ErrorCode.INVALID_SIZE, { details: 'oldSize and newSize must be non-negative integers' });
-    }
-
-    if (oldSize > newSize) {
-      return errorResponse(ErrorCode.INVALID_SIZE, { details: 'oldSize cannot be greater than newSize' });
-    }
-
-    if (!session.bulletin) {
-      return errorResponse(ErrorCode.INVALID_SIZE, { details: 'Bulletin board not initialized for this session' });
-    }
-
-    const currentTreeSize = session.bulletin.getSize();
-
-    if (newSize > currentTreeSize) {
-      return errorResponse(ErrorCode.INVALID_SIZE, {
-        details: `newSize (${newSize}) exceeds current tree size (${currentTreeSize})`,
-      });
-    }
-
-    let proofNodes: string[] = [];
-    let rootAtOldSize: string;
-    let rootAtNewSize: string;
-
-    let oldSubtreeHashes: string[] | undefined;
-    let appendSubtreeHashes: string[] | undefined;
-
-    if (oldSize === 0) {
-      const { createHash } = await import('crypto');
-      rootAtOldSize = createHash('sha256').digest('hex');
-      rootAtNewSize = newSize === 0 ? createHash('sha256').digest('hex') : session.bulletin.getRootAtSize(newSize);
-      proofNodes = [];
-    } else if (oldSize === newSize) {
-      rootAtOldSize = session.bulletin.getRootAtSize(oldSize);
-      rootAtNewSize = rootAtOldSize;
-      proofNodes = [];
-    } else {
-      try {
-        const consistencyProof = session.bulletin.getConsistencyProof(oldSize, newSize);
-        proofNodes = consistencyProof.proofNodes;
-        oldSubtreeHashes = consistencyProof.oldSubtreeHashes;
-        appendSubtreeHashes = consistencyProof.appendSubtreeHashes;
-        rootAtOldSize = session.bulletin.getRootAtSize(oldSize);
-        rootAtNewSize = session.bulletin.getRootAtSize(newSize);
-      } catch (proofError) {
-        return errorResponse(ErrorCode.INVALID_SIZE, {
-          details: proofError instanceof Error ? proofError.message : 'Failed to generate consistency proof',
-        });
-      }
-    }
-
-    const response: ConsistencyProofResponse = {
-      oldSize,
-      newSize,
-      rootAtOldSize: normalizeHex(rootAtOldSize, { allowEmpty: true }),
-      rootAtNewSize: normalizeHex(rootAtNewSize, { allowEmpty: true }),
-      proofNodes: proofNodes.map((node) => normalizeHex(node, { allowEmpty: true })),
-      ...omitUndefinedProperties({ oldSubtreeHashes, appendSubtreeHashes }),
-      timestamp: Date.now(),
+  const currentTreeSize = session.bulletin.getSize();
+  if (toTreeSize > currentTreeSize) {
+    return {
+      ok: false,
+      message: `toTreeSize (${toTreeSize}) exceeds current tree size (${currentTreeSize})`,
     };
+  }
 
-    return respondWithSchema(ConsistencyProofResponseSchema, response);
+  let proofNodes: string[] = [];
+  let rootAtFromTreeSize: string;
+  let rootAtToTreeSize: string;
+  let oldSubtreeHashes: string[] | undefined;
+  let appendSubtreeHashes: string[] | undefined;
+
+  if (fromTreeSize === 0) {
+    const emptyRoot = createHash('sha256').digest('hex');
+    rootAtFromTreeSize = emptyRoot;
+    rootAtToTreeSize = toTreeSize === 0 ? emptyRoot : session.bulletin.getRootAtSize(toTreeSize);
+  } else if (fromTreeSize === toTreeSize) {
+    rootAtFromTreeSize = session.bulletin.getRootAtSize(fromTreeSize);
+    rootAtToTreeSize = rootAtFromTreeSize;
+  } else {
+    try {
+      const consistencyProof = session.bulletin.getConsistencyProof(fromTreeSize, toTreeSize);
+      proofNodes = consistencyProof.proofNodes;
+      oldSubtreeHashes = consistencyProof.oldSubtreeHashes;
+      appendSubtreeHashes = consistencyProof.appendSubtreeHashes;
+      rootAtFromTreeSize = session.bulletin.getRootAtSize(fromTreeSize);
+      rootAtToTreeSize = session.bulletin.getRootAtSize(toTreeSize);
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Failed to generate consistency proof',
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    data: {
+      fromTreeSize,
+      toTreeSize,
+      rootAtFromTreeSize: normalizeHex(rootAtFromTreeSize, { allowEmpty: true }),
+      rootAtToTreeSize: normalizeHex(rootAtToTreeSize, { allowEmpty: true }),
+      proofNodes: proofNodes.map((node) => normalizeHex(node, { allowEmpty: true })),
+      ...omitUndefinedProperties({
+        oldSubtreeHashes: oldSubtreeHashes?.map((node) => normalizeHex(node, { allowEmpty: true })),
+        appendSubtreeHashes: appendSubtreeHashes?.map((node) => normalizeHex(node, { allowEmpty: true })),
+      }),
+      generatedAtMs,
+    },
+  };
+}
+
+export function getSessionBulletinConsistencyProofHandler({
+  input,
+  context,
+}: ApiHandlerArguments<typeof sessionBulletinConsistencyProofRoute, SessionAdmittedContext>): Response {
+  try {
+    const { session } = context;
+
+    const resolution = resolveConsistencyProofData({
+      session: session.voting,
+      ...input.query,
+      generatedAtMs: Date.now(),
+    });
+    if (!resolution.ok) {
+      return errorResponse(ErrorCode.INVALID_SIZE, { details: resolution.message });
+    }
+
+    return respondWithRoute(sessionBulletinConsistencyProofRoute, {
+      status: 200,
+      content: 'json',
+      body: { data: resolution.data },
+    });
   } catch (error) {
     logger.error('Error generating consistency proof:', error);
     return errorResponse(ErrorCode.INTERNAL_ERROR, {
@@ -438,23 +343,23 @@ export async function getConsistencyProofHandler({ request, store }: ApiContext)
   }
 }
 
-function resolveBulletinRoot(session: SessionData): string | null {
+function resolveBulletinRoot(session: SessionVotingRecord): string | null {
   const latestSnapshot = getLatestCanonicalBulletinSnapshot(session);
   if (latestSnapshot) {
     return normalizeHex(latestSnapshot.root, { allowEmpty: true });
   }
-  if (session.bulletin && session.votes.size === 0) {
+  if (session.votes.size === 0) {
     return normalizeHex(session.bulletin.getCurrentRoot(), { allowEmpty: true });
   }
   return null;
 }
 
-function resolveBulletinTreeSize(session: SessionData): number {
+function resolveBulletinTreeSize(session: SessionVotingRecord): number {
   const latestSnapshot = getLatestCanonicalBulletinSnapshot(session);
   if (latestSnapshot) {
     return latestSnapshot.treeSize;
   }
-  if (session.bulletin && session.votes.size === 0) {
+  if (session.votes.size === 0) {
     return session.bulletin.getSize();
   }
   return session.votes.size;
@@ -462,10 +367,10 @@ function resolveBulletinTreeSize(session: SessionData): number {
 
 type BulletinRootHistoryEntry = NonNullable<BulletinBoardResponse['rootHistory']>[number];
 
-function resolveBulletinRootHistory(session: SessionData): BulletinRootHistoryEntry[] {
+function resolveBulletinRootHistory(session: SessionVotingRecord): BulletinRootHistoryEntry[] {
   return getCanonicalBulletinRootHistory(session).map((snapshot) => {
     const entry: BulletinRootHistoryEntry = {
-      timestamp: snapshot.timestamp,
+      recordedAtMs: snapshot.timestamp,
       bulletinRoot: normalizeHex(snapshot.root, { allowEmpty: true }),
       treeSize: snapshot.treeSize,
     };
@@ -476,21 +381,15 @@ function resolveBulletinRootHistory(session: SessionData): BulletinRootHistoryEn
   });
 }
 
-function resolveBulletinCommitments(session: SessionData): string[] {
-  if (session.bulletin) {
-    const bulletinCommitments = session.bulletin
-      .getCommitments()
-      .map((commitment) => normalizeHex(commitment, { allowEmpty: true }));
-    if (session.votes.size !== bulletinCommitments.length) {
-      logger.warn('[API] bulletin/votes size mismatch', {
-        bulletinSize: session.bulletin.getSize(),
-        votesSize: session.votes.size,
-      });
-    }
-    return bulletinCommitments;
+function resolveBulletinCommitments(session: SessionVotingRecord): string[] {
+  const bulletinCommitments = session.bulletin
+    .getCommitments()
+    .map((commitment) => normalizeHex(commitment, { allowEmpty: true }));
+  if (session.votes.size !== bulletinCommitments.length) {
+    logger.warn('[API] bulletin/votes size mismatch', {
+      bulletinSize: session.bulletin.getSize(),
+      votesSize: session.votes.size,
+    });
   }
-
-  return Array.from(session.votes.entries())
-    .sort(([indexA], [indexB]) => indexA - indexB)
-    .map(([, vote]) => vote.commit);
+  return bulletinCommitments;
 }

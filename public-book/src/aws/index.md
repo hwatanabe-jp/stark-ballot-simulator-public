@@ -1,17 +1,19 @@
 # AWS アーキテクチャ
 
 この部は、STARK Ballot Simulator を AWS 上で動かす場合の runtime 境界とサービス責務を説明します。
-まず [AWS runtime boundary](runtime-boundary.md) を読み、公開仕様として扱う範囲を確認してください。
+まず [AWS runtime 境界](runtime-boundary.md) を読み、公開仕様として扱う範囲を確認してください。
 
 AWS runtime は、Terraform 管理の静的フロントエンド、Hono/API ランタイム、DynamoDB ストア、非同期プローバー、検証 worker、private proof artifact storage で構成されます。
 この部はそれぞれの責務分担を説明します。
 
-ここでいう `public` は「秘密を含まず第三者検証に使える」という機密性の分類であり、無認証公開を意味しません（定義は [公開境界](../verification/public-boundary.md)）。
-`verification.json` などの protected report artifact の通常の bundle/report 取得経路は capability 保護 API です（[バンドル構造](../verification/bundle-structure.md)）。
+ここでいう `public` は「秘密を含まず第三者検証に使える」という機密性の分類です（無認証公開ではありません。定義は [公開境界](../verification/public-boundary.md)）。
+bundle / report の通常取得経路は capability 保護 API です（[公開境界 > bundle と report の取得経路](../verification/public-boundary.md#bundle-と-report-の取得経路)）。
 
-## この部に含まれる章
+<a id="この部に含まれる章"></a>
 
-- [AWS runtime boundary](runtime-boundary.md)：公開仕様として扱う runtime 境界、artifact 境界、扱わない情報
+## この部の章
+
+- [AWS runtime 境界](runtime-boundary.md)：公開仕様として扱う runtime 境界、artifact 境界、扱わない情報
 - [現行構成とサービス一覧](design-and-services.md)：runtime 管理境界、環境分離、主要サービスの責務
 - [トポロジー](topology.md)：レイヤ別のサービス構成と通信フロー
 - [非同期プローバー](async-prover.md)：SQS → Step Functions → ECS による証明パイプライン
@@ -24,7 +26,9 @@ AWS runtime は、Terraform 管理の静的フロントエンド、Hono/API ラ�
 - 想定読者: 公開仕様として AWS runtime の責務分担を把握したい読者
 - 前提: AWS の基本サービス（S3 / SQS / Step Functions / ECS）、CloudFront / KMS / CodePipeline などの配信・デプロイ系サービス、Terraform の概念を把握していること
 
-## 本章で扱わないもの
+<a id="本章で扱わないもの"></a>
+
+## この部で扱わないもの
 
 - 退役済み Amplify / AppSync 構成の詳細
 - Terraform 文法・モジュール設計の一般論

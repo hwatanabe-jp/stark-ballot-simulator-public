@@ -4,8 +4,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useEffect, useRef } from 'react';
 import { VoteForm } from './VoteForm';
 import { generateCommitment } from '@stark-ballot/web/vote/commitment';
-import { getSessionAuthHeaders, getSessionData } from '@stark-ballot/web/session';
-import { apiFetch } from '@stark-ballot/web/api/apiFetch';
+import {
+  captureSessionIdentity,
+  getSessionData,
+  getSessionDataForIdentity,
+  saveSessionDataForIdentity,
+} from '@stark-ballot/web/session';
+import { submitVote } from '@stark-ballot/web/api/votes';
 import {
   clearBrowserPublicEnvForTests,
   setBrowserPublicEnvForTests,
@@ -49,21 +54,18 @@ vi.mock('@stark-ballot/web/vote/commitment', () => ({
 }));
 
 vi.mock('@stark-ballot/web/session', () => ({
-  getSessionAuthHeaders: vi.fn(),
+  captureSessionIdentity: vi.fn(),
   getSessionData: vi.fn(),
-  saveSessionData: vi.fn(),
+  getSessionDataForIdentity: vi.fn(),
+  saveSessionDataForIdentity: vi.fn(),
 }));
 
 vi.mock('@stark-ballot/web/knowledge', () => ({
   saveKnowledgeData: vi.fn(),
 }));
 
-vi.mock('@stark-ballot/web/api/apiFetch', () => ({
-  apiFetch: vi.fn(),
-}));
-
-vi.mock('@stark-ballot/web/api/apiBaseUrl', () => ({
-  resolveApiUrl: (path: string) => path,
+vi.mock('@stark-ballot/web/api/votes', () => ({
+  submitVote: vi.fn(),
 }));
 
 describe('VoteForm', () => {
@@ -72,34 +74,35 @@ describe('VoteForm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     turnstileMockState.emitToken = true;
-    setBrowserPublicEnvForTests('VITE_SESSION_CREATE_TURNSTILE_REQUIRED', 'true');
-    vi.mocked(getSessionData).mockReturnValue({
+    setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'target-aws-async');
+    setBrowserPublicEnvForTests('VITE_APP_ENV', 'main');
+    const sessionData = {
       sessionId: 'session-123',
       capabilityToken: 'test-capability-token',
       electionId: '550e8400-e29b-41d4-a716-446655440000',
+      electionConfigHash: `0x${'a'.repeat(64)}`,
+      logId: `0x${'b'.repeat(64)}`,
       lastActivity: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      phase: 'voting',
+    } as const;
+    vi.mocked(getSessionData).mockReturnValue(sessionData);
+    vi.mocked(captureSessionIdentity).mockReturnValue({
+      sessionId: sessionData.sessionId,
+      capabilityToken: sessionData.capabilityToken,
     });
-    vi.mocked(getSessionAuthHeaders).mockReturnValue({
-      'X-Session-ID': 'session-123',
-      'X-Session-Capability': 'test-capability-token',
-    });
+    vi.mocked(getSessionDataForIdentity).mockReturnValue(sessionData);
     vi.mocked(generateCommitment).mockResolvedValue({
       commitment: '0x' + '1'.repeat(64),
       randomValue: '0x' + '2'.repeat(64),
     });
-    vi.mocked(apiFetch).mockResolvedValue({
-      ok: true,
-      json: () =>
-        Promise.resolve({
-          data: {
-            voteId: '550e8400-e29b-41d4-a716-446655440000',
-            commitment: '0x' + '1'.repeat(64),
-            bulletinIndex: 1,
-            bulletinRootAtCast: '0x' + '1'.repeat(64),
-            timestamp: 1234567890,
-          },
-        }),
-    } as Response);
+    vi.mocked(submitVote).mockResolvedValue({
+      voteId: '550e8400-e29b-41d4-a716-446655440000',
+      commitment: '0x' + '1'.repeat(64),
+      bulletinIndex: 1,
+      bulletinRootAtCast: '0x' + '1'.repeat(64),
+      castAtMs: 1234567890,
+    });
   });
 
   afterEach(() => {
@@ -144,7 +147,9 @@ describe('VoteForm', () => {
   it('allows operator-gated develop vote submission without a browser Turnstile token', async () => {
     const user = userEvent.setup();
     turnstileMockState.emitToken = false;
-    setBrowserPublicEnvForTests('VITE_SESSION_CREATE_TURNSTILE_REQUIRED', 'false');
+    clearBrowserPublicEnvForTests();
+    setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'target-aws-async');
+    setBrowserPublicEnvForTests('VITE_APP_ENV', 'develop');
 
     render(<VoteForm onVoteComplete={onVoteComplete} />);
 
@@ -157,17 +162,89 @@ describe('VoteForm', () => {
     await user.click(submitButton);
 
     await waitFor(() => {
-      expect(apiFetch).toHaveBeenCalled();
+      expect(submitVote).toHaveBeenCalled();
     });
-    const calls = vi.mocked(apiFetch).mock.calls as unknown;
+    const calls = vi.mocked(submitVote).mock.calls as unknown;
     const firstCall = isUnknownArray(calls) ? calls.at(0) : undefined;
     expect(isUnknownArray(firstCall)).toBe(true);
-    const [url, requestInit] = firstCall as [unknown, { body?: unknown }];
-    expect(url).toBe('/api/vote');
-    expect(typeof requestInit.body).toBe('string');
-    if (typeof requestInit.body !== 'string') {
-      throw new Error('Expected vote request body to be a JSON string.');
-    }
-    expect(JSON.parse(requestInit.body)).not.toHaveProperty('turnstileToken');
+    const [, request] = firstCall as [unknown, Record<string, unknown>];
+    expect(request).not.toHaveProperty('turnstileToken');
+  });
+
+  it('does not adopt a replacement session after the form mounts', async () => {
+    const user = userEvent.setup();
+    const onError = vi.fn();
+    render(<VoteForm onVoteComplete={onVoteComplete} onError={onError} />);
+
+    vi.mocked(getSessionData).mockReturnValue({
+      sessionId: 'replacement-session',
+      capabilityToken: 'replacement-capability',
+      electionId: '550e8400-e29b-41d4-a716-446655440001',
+      electionConfigHash: `0x${'c'.repeat(64)}`,
+      logId: `0x${'d'.repeat(64)}`,
+      lastActivity: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      phase: 'voting',
+    });
+    vi.mocked(getSessionDataForIdentity).mockReturnValue(null);
+
+    await user.click(screen.getByTestId('vote-option-A'));
+    await user.click(screen.getByTestId('submit-vote'));
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('errors.generic'));
+    expect(submitVote).not.toHaveBeenCalled();
+    expect(getSessionData).not.toHaveBeenCalled();
+    expect(saveSessionDataForIdentity).not.toHaveBeenCalled();
+    expect(onVoteComplete).not.toHaveBeenCalled();
+  });
+
+  it('does not submit a vote when the mounted session is replaced while commitment generation is pending', async () => {
+    const user = userEvent.setup();
+    const onError = vi.fn();
+    const pendingCommitment = Promise.withResolvers<Awaited<ReturnType<typeof generateCommitment>>>();
+    vi.mocked(generateCommitment).mockReturnValue(pendingCommitment.promise);
+
+    render(<VoteForm onVoteComplete={onVoteComplete} onError={onError} />);
+
+    await user.click(screen.getByTestId('vote-option-A'));
+    await user.click(screen.getByTestId('submit-vote'));
+    await waitFor(() => expect(generateCommitment).toHaveBeenCalledOnce());
+
+    vi.mocked(getSessionDataForIdentity).mockReturnValue(null);
+    pendingCommitment.resolve({
+      commitment: `0x${'1'.repeat(64)}`,
+      randomValue: `0x${'2'.repeat(64)}`,
+    });
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('errors.generic'));
+    expect(saveSessionDataForIdentity).not.toHaveBeenCalled();
+    expect(submitVote).not.toHaveBeenCalled();
+    expect(onVoteComplete).not.toHaveBeenCalled();
+  });
+
+  it('does not complete a vote when the mounted session is replaced while submission is pending', async () => {
+    const user = userEvent.setup();
+    const onError = vi.fn();
+    const pendingSubmission = Promise.withResolvers<Awaited<ReturnType<typeof submitVote>>>();
+    vi.mocked(submitVote).mockReturnValue(pendingSubmission.promise);
+
+    render(<VoteForm onVoteComplete={onVoteComplete} onError={onError} />);
+
+    await user.click(screen.getByTestId('vote-option-A'));
+    await user.click(screen.getByTestId('submit-vote'));
+    await waitFor(() => expect(submitVote).toHaveBeenCalledOnce());
+
+    vi.mocked(getSessionDataForIdentity).mockReturnValue(null);
+    pendingSubmission.resolve({
+      voteId: '550e8400-e29b-41d4-a716-446655440000',
+      commitment: `0x${'1'.repeat(64)}`,
+      bulletinIndex: 1,
+      bulletinRootAtCast: `0x${'1'.repeat(64)}`,
+      castAtMs: 1234567890,
+    });
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('errors.generic'));
+    expect(saveSessionDataForIdentity).toHaveBeenCalledOnce();
+    expect(onVoteComplete).not.toHaveBeenCalled();
   });
 });

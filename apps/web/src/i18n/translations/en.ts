@@ -302,7 +302,7 @@ export const en = {
         voteId: 'Vote ID',
         bulletinIndex: 'Bulletin Index',
         bulletinRootAtCast: 'Root at Cast',
-        voteTimestamp: 'Vote Timestamp',
+        castAtMs: 'Vote Timestamp',
         voteReceipt: 'Vote Receipt',
         merklePath: 'Inclusion Proof',
       },

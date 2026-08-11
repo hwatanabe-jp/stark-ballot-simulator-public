@@ -5,7 +5,7 @@
  * Verifies client-side bitmap proof handling after implementation.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   explainVoteInclusionStatus,
   verifyMyVoteWasCounted,
@@ -19,29 +19,11 @@ import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitm
 import { generateBitmapMerkleProof } from '@stark-ballot/verification/merkle/bitmap-merkle-tree';
 import { asAuthenticatedBitmapTreeSize } from '../bitmap-proof-types';
 
-function createProofProvider(...responses: Array<BitmapProofResponse | Error>) {
-  const queue = [...responses];
-  return vi.fn(() => {
-    const next = queue.shift();
-    if (next instanceof Error) {
-      return Promise.reject(next);
-    }
-    if (!next) {
-      return Promise.reject(new Error('Missing proof response'));
-    }
-    return Promise.resolve(next);
-  });
-}
-
 function authenticatedTreeSize(value: number) {
   return asAuthenticatedBitmapTreeSize(value);
 }
 
 describe('Bitmap Verifier (Client-side)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
   describe('calculateLeafIndexClient', () => {
     it('should calculate leaf index independently on client', () => {
       // Client must calculate this independently to prevent server manipulation
@@ -158,43 +140,46 @@ describe('Bitmap Verifier (Client-side)', () => {
   });
 
   describe('verifyMyVoteWasCounted', () => {
-    it('uses the provided proof source and verifies vote was counted', async () => {
+    it('uses admitted proof material and verifies vote was counted', () => {
       const mockResponse: BitmapProofResponse = {
         leafChunk: '02' + '00'.repeat(31), // Bit 1 set
         auditPath: [],
       };
 
-      const proofProvider = createProofProvider(mockResponse);
-
-      const result = await verifyMyVoteWasCounted(
+      const result = verifyMyVoteWasCounted(
         1, // My vote index
         '0x' + 'e'.repeat(64), // includedBitmapRoot from receipt
-        { proofProvider, treeSize: authenticatedTreeSize(256) },
+        { proof: mockResponse, treeSize: authenticatedTreeSize(256) },
       );
 
-      expect(proofProvider).toHaveBeenCalledWith({ bitIndex: 1, kind: 'included' });
       expect(result.included).toBe(true);
       expect(result.valid).toBeDefined();
     });
 
-    it('requires a proof provider', async () => {
-      await expect(
-        verifyMyVoteWasCounted(100, '0x' + 'f'.repeat(64), { treeSize: authenticatedTreeSize(256) }),
-      ).rejects.toThrow('Bitmap proof provider is required');
+    it('requires admitted proof material in its options', () => {
+      const options = { treeSize: authenticatedTreeSize(256) };
+
+      expect(() =>
+        verifyMyVoteWasCounted(100, '0x' + 'f'.repeat(64), options as Parameters<typeof verifyMyVoteWasCounted>[2]),
+      ).toThrow();
     });
 
-    it('propagates proof provider failures', async () => {
-      const proofProvider = createProofProvider(new Error('Network error'));
+    it('fails closed for malformed admitted proof material', () => {
+      const malformedProof = {
+        leafChunk: 'not-hex',
+        auditPath: [],
+      } as BitmapProofResponse;
 
-      await expect(
-        verifyMyVoteWasCounted(50, '0x' + '1'.repeat(64), {
-          proofProvider,
-          treeSize: authenticatedTreeSize(256),
-        }),
-      ).rejects.toThrow('Network error');
+      const result = verifyMyVoteWasCounted(50, '0x' + '1'.repeat(64), {
+        proof: malformedProof,
+        treeSize: authenticatedTreeSize(256),
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.included).toBe(false);
     });
 
-    it('should explain when a vote was presented but invalid', async () => {
+    it('should explain when a vote was presented but invalid', () => {
       const excludedResponse: BitmapProofResponse = {
         leafChunk: '00'.repeat(32),
         auditPath: [],
@@ -204,25 +189,25 @@ describe('Bitmap Verifier (Client-side)', () => {
         auditPath: [],
       };
 
-      const proofProvider = createProofProvider(excludedResponse, seenResponse);
-
-      const result = await explainVoteInclusionStatus(
+      const result = explainVoteInclusionStatus(
         2,
         {
           includedBitmapRoot: computeIncludedBitmapRoot(Array.from({ length: 256 }, () => false)),
           seenBitmapRoot: computeIncludedBitmapRoot([false, false, true]),
         },
-        { proofProvider, treeSize: authenticatedTreeSize(256) },
+        {
+          includedProof: excludedResponse,
+          seenProof: seenResponse,
+          treeSize: authenticatedTreeSize(256),
+        },
       );
 
-      expect(proofProvider).toHaveBeenNthCalledWith(1, { bitIndex: 2, kind: 'included' });
-      expect(proofProvider).toHaveBeenNthCalledWith(2, { bitIndex: 2, kind: 'seen' });
       expect(result.statusDetail).toBe('presented_but_invalid');
       expect(result.included).toBe(false);
       expect(result.seen).toBe(true);
     });
 
-    it('should explain when a vote index was not presented', async () => {
+    it('should explain when a vote index was not presented', () => {
       const excludedResponse: BitmapProofResponse = {
         leafChunk: '00'.repeat(32),
         auditPath: [],
@@ -232,55 +217,51 @@ describe('Bitmap Verifier (Client-side)', () => {
         auditPath: [],
       };
 
-      const proofProvider = createProofProvider(excludedResponse, notSeenResponse);
-
-      const result = await explainVoteInclusionStatus(
+      const result = explainVoteInclusionStatus(
         4,
         {
           includedBitmapRoot: computeIncludedBitmapRoot(Array.from({ length: 256 }, () => false)),
           seenBitmapRoot: computeIncludedBitmapRoot(Array.from({ length: 256 }, () => false)),
         },
-        { proofProvider, treeSize: authenticatedTreeSize(256) },
+        {
+          includedProof: excludedResponse,
+          seenProof: notSeenResponse,
+          treeSize: authenticatedTreeSize(256),
+        },
       );
 
       expect(result.statusDetail).toBe('not_presented');
       expect(result.seen).toBe(false);
     });
 
-    it('should fall back to included-only status when seen proof is unavailable', async () => {
+    it('should fall back to included-only status when seen proof is unavailable', () => {
       const excludedResponse: BitmapProofResponse = {
         leafChunk: '00'.repeat(32),
         auditPath: [],
       };
 
-      const proofProvider = createProofProvider(excludedResponse, new Error('Bitmap proof unavailable'));
-
-      const result = await explainVoteInclusionStatus(
+      const result = explainVoteInclusionStatus(
         4,
         {
           includedBitmapRoot: computeIncludedBitmapRoot(Array.from({ length: 256 }, () => false)),
           seenBitmapRoot: computeIncludedBitmapRoot(Array.from({ length: 256 }, () => false)),
         },
-        { proofProvider, treeSize: authenticatedTreeSize(256) },
+        { includedProof: excludedResponse, treeSize: authenticatedTreeSize(256) },
       );
 
-      expect(proofProvider).toHaveBeenNthCalledWith(1, { bitIndex: 4, kind: 'included' });
-      expect(proofProvider).toHaveBeenNthCalledWith(2, { bitIndex: 4, kind: 'seen' });
       expect(result.valid).toBe(true);
       expect(result.included).toBe(false);
       expect(result.statusDetail).toBe('unknown_excluded');
     });
 
-    it('should always include privacy notice in result', async () => {
+    it('should always include privacy notice in result', () => {
       const mockResponse: BitmapProofResponse = {
         leafChunk: 'ff'.repeat(32), // All bits set
         auditPath: [],
       };
 
-      const proofProvider = createProofProvider(mockResponse);
-
-      const result = await verifyMyVoteWasCounted(100, '0x' + '3'.repeat(64), {
-        proofProvider,
+      const result = verifyMyVoteWasCounted(100, '0x' + '3'.repeat(64), {
+        proof: mockResponse,
         treeSize: authenticatedTreeSize(256),
       });
 
@@ -292,34 +273,30 @@ describe('Bitmap Verifier (Client-side)', () => {
   });
 
   describe('Edge cases', () => {
-    it('should handle empty audit path (single leaf tree)', async () => {
+    it('should handle empty audit path (single leaf tree)', () => {
       const mockResponse: BitmapProofResponse = {
         leafChunk: '01' + '00'.repeat(31),
         auditPath: [], // No siblings for single leaf
       };
 
-      const proofProvider = createProofProvider(mockResponse);
-
-      const result = await verifyMyVoteWasCounted(0, '0x' + '4'.repeat(64), {
-        proofProvider,
+      const result = verifyMyVoteWasCounted(0, '0x' + '4'.repeat(64), {
+        proof: mockResponse,
         treeSize: authenticatedTreeSize(1),
       });
 
       expect(result.included).toBe(true);
     });
 
-    it('should handle maximum index (last bit)', async () => {
+    it('should handle maximum index (last bit)', () => {
       const mockResponse: BitmapProofResponse = {
         leafChunk: '00'.repeat(31) + '80', // Last bit of chunk set
         auditPath: [{ hash: '5'.repeat(64), position: 'left' }],
       };
 
-      const proofProvider = createProofProvider(mockResponse);
-
-      const result = await verifyMyVoteWasCounted(
+      const result = verifyMyVoteWasCounted(
         255, // Last bit of first chunk
         '0x' + '6'.repeat(64),
-        { proofProvider, treeSize: authenticatedTreeSize(256) },
+        { proof: mockResponse, treeSize: authenticatedTreeSize(256) },
       );
 
       expect(result.bitOffset).toBe(255);
@@ -327,19 +304,17 @@ describe('Bitmap Verifier (Client-side)', () => {
   });
 
   describe('Security considerations', () => {
-    it('should not trust server-provided leaf index', async () => {
+    it('should not trust server-provided leaf index', () => {
       // Even if server returns wrong data, client calculates independently
       const mockResponse: BitmapProofResponse = {
         leafChunk: '00'.repeat(32),
         auditPath: [],
       };
 
-      const proofProvider = createProofProvider(mockResponse);
-
-      const result = await verifyMyVoteWasCounted(
+      const result = verifyMyVoteWasCounted(
         512, // Should be in leaf 2
         '0x' + '7'.repeat(64),
-        { proofProvider, treeSize: authenticatedTreeSize(768) },
+        { proof: mockResponse, treeSize: authenticatedTreeSize(768) },
       );
 
       // Client independently calculates this should be leaf 2

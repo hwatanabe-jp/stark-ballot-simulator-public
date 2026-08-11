@@ -1,2 +1,2 @@
 export * from './identifiers';
-export type * from './finalization';
+export * from './sessionRecords';

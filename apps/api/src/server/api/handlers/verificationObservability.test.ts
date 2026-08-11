@@ -20,7 +20,7 @@ vi.mock('@stark-ballot/diagnostics/canonicalEvents', () => ({
 }));
 
 const sessionId = 'session-verification-observability-1';
-const executionId = 'execution-verification-observability-1';
+const finalizationId = 'execution-verification-observability-1';
 const validVerificationReport = {
   status: 'success' as const,
   verifier_version: '0.1.0',
@@ -89,7 +89,7 @@ describe('verification observability', () => {
       persistedScenarios: ['S2'],
       verificationResult: verificationResult(),
       sessionId,
-      executionId,
+      finalizationId,
     });
 
     expect(canonicalEventMocks.emitCanonicalEvent).toHaveBeenCalledOnce();
@@ -101,7 +101,7 @@ describe('verification observability', () => {
       failed_required_count: 1,
       dev_mode_receipt: false,
       session_id_hash: hashSessionIdForLogging(sessionId),
-      execution_id: executionId,
+      finalization_id: finalizationId,
     });
     expect(JSON.stringify(canonicalEventMocks.emitCanonicalEvent.mock.calls)).not.toContain(sessionId);
   });
@@ -120,7 +120,7 @@ describe('verification observability', () => {
         },
       }),
       sessionId,
-      executionId,
+      finalizationId,
     });
 
     expect(canonicalEventMocks.emitCanonicalEvent).toHaveBeenCalledWith(
@@ -142,7 +142,7 @@ describe('verification observability', () => {
         persistedScenarios: ['S0'],
         verificationResult: { status: 'failed', failureCategory },
         sessionId,
-        executionId,
+        finalizationId,
       });
 
       expect(canonicalEventMocks.emitCanonicalEvent).toHaveBeenCalledWith(
@@ -158,7 +158,7 @@ describe('verification observability', () => {
       persistedScenarios: ['S0'],
       verificationResult: { status: 'failed' },
       sessionId,
-      executionId,
+      finalizationId,
     });
 
     expect(canonicalEventMocks.emitCanonicalEvent).toHaveBeenCalledWith(
@@ -181,7 +181,7 @@ describe('verification observability', () => {
         },
       }),
       sessionId,
-      executionId,
+      finalizationId,
     });
 
     expect(canonicalEventMocks.emitCanonicalEvent).toHaveBeenCalledWith(
@@ -197,7 +197,7 @@ describe('verification observability', () => {
         persistedScenarios,
         verificationResult: verificationResult(),
         sessionId,
-        executionId,
+        finalizationId,
       });
     }
 
@@ -216,7 +216,7 @@ describe('verification observability', () => {
         persistedScenarios: [],
         verificationResult: verificationResult(),
         sessionId,
-        executionId,
+        finalizationId,
       }),
     ).not.toThrow();
   });

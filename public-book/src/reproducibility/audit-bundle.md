@@ -3,12 +3,35 @@
 この手順は、検証ページでダウンロードした `bundle.zip` を対象に、Ubuntu 上で第三者が行える最小監査のガイドです。
 確認できるのは [第三者検証ガイド](index.md) の不変条件表にある範囲であり、`/verify` UI の総合 Verified 判定の代替ではありません。
 
+各 Step の概要は次のとおりです。
+
+| Step | 確認内容                                         | 必要ツール                         |
+| ---- | ------------------------------------------------ | ---------------------------------- |
+| 1    | Ubuntu セットアップ（Rust toolchain の導入）     | `apt`、`rustup`                    |
+| 2    | production-feature `verifier-service` の build   | Rust toolchain                     |
+| 3    | `bundle.zip` の admission と展開                 | Node.js / pnpm、`unzip`            |
+| 4    | 期待 Image ID の決定                             | Node.js / pnpm、`jq`               |
+| 5    | STARK レシートの検証                             | Step 2 の `verifier-service`、`jq` |
+| 6    | receipt と `journal.json` の結合・完全性チェック | Node.js / pnpm、`jq`               |
+| 7    | 公開監査アーティファクトの整合性チェック         | Node.js / pnpm                     |
+| 8    | `inputCommitment` 再計算                         | Node.js / pnpm、`jq`               |
+
 ## 0. 前提
 
-- 検証ページから `bundle.zip` をダウンロード済みであること
+ツール要件:
+
 - Ubuntu 22.04 / 24.04
+- Node.js 24 と Corepack 経由の pnpm 11.x
+
+実行済みであること:
+
+- 検証ページから `bundle.zip` をダウンロード済みであること
 - このリポジトリ（`stark-ballot-simulator`）のソースを取得済みであること
-- Node.js 24 と Corepack 経由の pnpm 11.x が利用可能で、`$REPO_ROOT` で `corepack enable` と `pnpm install --frozen-lockfile` を実行済みであること（Step 4、Step 6、Step 7、Step 8 で必要）
+- `$REPO_ROOT` で `corepack enable` と `pnpm install --frozen-lockfile` を実行済みであること
+
+必要になる Step:
+
+- Node.js / pnpm 前提は Step 3、Step 4、Step 6、Step 7、Step 8 で必要（Step ごとの必要ツールは冒頭の概要表を参照）
 
 > 手順の前提（ソース取得やビルドが必要なステップ）は、リポジトリが公開されるまで実行できません。
 > 詳細は [第三者検証ガイド](index.md) を参照してください。
@@ -47,25 +70,68 @@ cargo --version
 
 ```bash
 cd "$REPO_ROOT/verifier-service"
-cargo build --release
+cargo build --release --features production
 ```
+
+この監査では production-feature build を使用します。`production` feature は
+`risc0-zkvm/disable-dev-mode` を有効にし、production STARK proof の検証境界と一致させます。
+fake receipt を診断できる dev-mode-capable build（`cargo build --release`）は、この手順の合格証拠には使用しません。
 
 生成物:
 
 - `verifier-service/target/release/verifier-service`
 
-## 3. bundle.zip を展開
+## 3. bundle.zip を admission して展開
 
 ```bash
 mkdir -p "$AUDIT_ROOT"
 cp ~/Downloads/stark-ballot-verification-*.zip "$AUDIT_ROOT/bundle.zip"
+cd "$REPO_ROOT"
+
+pnpm tsx -e "
+import { inspectVerificationBundleArchiveFile } from './packages/node-adapters/src/verification-bundle';
+import { resolvePublicBundlePolicy } from './packages/verification/src/verification/public-bundle-manifest';
+
+const archivePath = process.argv[1];
+
+void (async () => {
+  const failures = [];
+  for (const mode of ['sync', 'async']) {
+    try {
+      const inspection = await inspectVerificationBundleArchiveFile(
+        archivePath,
+        resolvePublicBundlePolicy(mode),
+      );
+      console.log(JSON.stringify({ bundle_manifest: 'ok', mode, members: inspection.members }, null, 2));
+      return;
+    } catch (error) {
+      failures.push({ mode, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  console.error(JSON.stringify({ bundle_manifest: 'ng', failures }, null, 2));
+  process.exitCode = 1;
+})();
+" "$AUDIT_ROOT/bundle.zip"
+
+if [ "$?" -ne 0 ]; then
+  echo 'bundle manifest admission failed'
+  exit 1
+fi
+
 cd "$AUDIT_ROOT"
 
 unzip -o bundle.zip -d bundle
 ls -1 bundle
 ```
 
-最低限、以下のファイルが必要です。
+admission は、mode-aware な default-deny manifest に従って次を検査します。
+
+- sync bundle: 下記 5 ファイルと `metadata.json` が必須。`sth.json` と `consistency-proof.json` だけが任意
+- async bundle: 下記 5 ファイルだけが必須かつ許可対象
+- 両 mode: 必須 member の欠落、未登録または非公開 member、duplicate、case conflict、traversal・absolute・非 canonical path は不合格
+
+両 mode で共通して必要なファイルは次のとおりです。
 
 - `bundle/receipt.json`
 - `bundle/journal.json`
@@ -73,7 +139,8 @@ ls -1 bundle
 - `bundle/election-manifest.json`
 - `bundle/close-statement.json`
 
-`metadata.json` は同期モードでのみ含まれる場合があります。
+`metadata.json` は sync bundle では必須で、async bundle には含まれません。
+`bundle_manifest="ok"` が出力されるまで ZIP を展開せず、admission が失敗した ZIP を以降の証拠として扱わないでください。
 
 ## 4. 期待 Image ID を決定
 
@@ -375,11 +442,11 @@ echo "journal=$JOURNAL_COMMITMENT"
 
 ## 合格条件
 
+- Step 3 の archive admission が `bundle_manifest="ok"` になる
 - Step 4 で `EXPECTED_IMAGE_ID` を決定できる
 - Step 5 から Step 8 の判定がすべて合格
 
 いずれかが失敗した場合、Counted 段階または STARK 段階の必須チェックを満たしていないため `Verified` にはなりません。
-逆に、すべて合格しても確認できたのは `bundle.zip` の不変条件までであり、`/verify` UI の総合 Verified 判定そのものの再現ではありません。
-範囲外や `bundle.zip` 単体では揃わない検証材料は [第三者検証ガイド](index.md) を参照してください。
+すべて合格しても確認できたのは `bundle.zip` の不変条件までであり、`/verify` UI の総合 Verified 判定そのものの再現ではありません（範囲外や `bundle.zip` 単体では揃わない検証材料は [第三者検証ガイド](index.md) を参照）。
 
-<!-- source: apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/lib/verification-data.ts, apps/web/src/routes/verify/lib/download.ts, apps/api/src/server/api/handlers/verify.ts, apps/api/src/server/api/handlers/verificationBundles.ts, packages/verification/src/verification/verification-bundle.ts, packages/verification/src/verification/public-audit-artifacts.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, infra/docker/entrypoint.sh, verifier-service/src/lib.rs, public/imageId-mapping.json, packages/zkvm-contract/src/zkvm/types.ts -->
+<!-- source: apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/lib/verification-data.ts, apps/web/src/routes/verify/lib/download.ts, apps/api/src/server/api/handlers/verify.ts, apps/api/src/server/api/handlers/verificationBundles.ts, packages/node-adapters/src/verification-bundle.ts, packages/verification/src/verification/public-bundle-manifest.json, packages/verification/src/verification/public-bundle-manifest.ts, packages/verification/src/verification/verification-bundle.ts, packages/verification/src/verification/public-audit-artifacts.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, infra/docker/entrypoint.sh, verifier-service/Cargo.toml, verifier-service/src/lib.rs, public/imageId-mapping.json, packages/zkvm-contract/src/zkvm/types.ts -->

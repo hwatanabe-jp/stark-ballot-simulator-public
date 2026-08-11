@@ -18,7 +18,7 @@ Runs the real zkVM production path for all 6 tamper scenarios (`S0` through
 
 Behavior:
 
-- Sets `USE_MOCK_STORE=true` and `USE_MOCK_ZKVM=false`
+- Selects the immutable `local-proof-production` runtime profile
 - Calls `pnpm test:cli -- --real-zkvm --zkvm-mode prod --all-scenarios`
 - Defaults to `--user-choice A`
 - Accepts `--user-choice` / `-u`
@@ -36,7 +36,7 @@ Runs the real zkVM production path for one scenario.
 
 Behavior:
 
-- Sets `USE_MOCK_STORE=true` and `USE_MOCK_ZKVM=false`
+- Selects the immutable `local-proof-production` runtime profile
 - Calls `pnpm test:cli -- --real-zkvm --zkvm-mode prod --scenario <scenario>`
 - Defaults to `--scenario S3`
 - Defaults to `--user-choice A`
@@ -76,8 +76,12 @@ Typical outputs include:
   authenticated public verification bundle download
 - `.tmp/cli-bundles/<sessionId>/verification-report-authenticated-endpoint-*.json`
   - authenticated verifier report download
-- `.tmp/cli-bundles/<sessionId>/extracted/<executionId>-authenticated-endpoint/`
+- `.tmp/cli-bundles/<sessionId>/extracted/<finalizationId>-authenticated-endpoint/`
   - extracted public bundle artifacts
+
+The directory selector is the same `finalizationId` returned by finalization
+create/current and used by verification work and bundle/report routes; the CLI
+does not fall back to a second nested identity.
 
 Raw host files such as `*-output.json`, `*-receipt.json`, `*-bitmap.json`, and
 `*-seen-bitmap.json` may be created transiently by the zkVM executor, but they
@@ -85,8 +89,9 @@ are not the stable output contract for these wrappers.
 
 ## Important Notes
 
-1. **Production mode**: These scripts pass `--zkvm-mode prod`, so the CLI
-   unsets `RISC0_DEV_MODE` for real STARK receipts.
+1. **Production mode**: These scripts select `local-proof-production` and pass
+   `--zkvm-mode prod`. The RISC Zero adapter translates that proof profile at
+   the external process boundary, with development mode disabled.
 2. **Builds**: The CLI runs `pnpm build:ci` unless you pass `--skip-build` or set
    `STARK_BALLOT_CLI_SKIP_BUILD=true` / `CLI_SKIP_BUILD=true`.
 3. **Prerequisites**:

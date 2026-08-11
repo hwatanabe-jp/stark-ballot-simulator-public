@@ -3,7 +3,10 @@ import {
   clearClientFinalizedProjection,
   clearClientSessionAuthority,
 } from '@stark-ballot/web/finalize/client-finalization-boundary';
-import { isFailClosedFinalizationErrorCode, isSessionUnavailableErrorCode } from '@stark-ballot/web/api/apiErrors';
+import {
+  isFailClosedFinalizationErrorCode,
+  isSessionUnavailableErrorCode,
+} from '@stark-ballot/api-contract/errors/apiErrorGuards';
 import {
   readApiJson,
   readStandardApiErrorCode,
@@ -78,6 +81,19 @@ export function resolveVerificationClientApiError(
     ...omitUndefinedProperties({ code: errorCode }),
     invalidation: 'none',
     responseStatus: options.responseStatus,
+  });
+}
+
+export function resolveVerificationUnavailableError(options: {
+  code: 'VERIFICATION_UNAVAILABLE' | 'INVALID_VERIFICATION_ARTIFACT';
+  message: string;
+  sessionIdentity?: SessionIdentity | null;
+}): VerificationClientApiError {
+  clearClientFinalizedProjection(options.sessionIdentity);
+  return new VerificationClientApiError(options.message, {
+    code: options.code,
+    invalidation: 'clear_finalized_projection',
+    responseStatus: 200,
   });
 }
 

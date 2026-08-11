@@ -40,8 +40,8 @@ echo "Delegating to scripts/tests/cli-e2e-voting-flow.ts instead."
 echo ""
 
 exec env \
-  USE_MOCK_STORE=true \
-  USE_MOCK_ZKVM=false \
+  RUNTIME_PROFILE=local-proof-production \
+  VITE_RUNTIME_PROFILE=local-proof-production \
   pnpm test:cli -- \
     --user-choice "$user_choice" \
     --real-zkvm \

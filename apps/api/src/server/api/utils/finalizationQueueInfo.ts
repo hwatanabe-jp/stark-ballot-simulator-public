@@ -21,10 +21,6 @@ function resolveConcurrencyLimit(): number {
   if (enforcedMaxSlots !== null) {
     return enforcedMaxSlots;
   }
-  const legacyConcurrency = parsePositiveInteger(process.env['PROVER_LAMBDA_CONCURRENCY']);
-  if (legacyConcurrency !== null) {
-    return legacyConcurrency;
-  }
   return DEFAULT_CONCURRENCY;
 }
 

@@ -2,16 +2,20 @@ import type { VerificationStepStatus } from '../step-types';
 import type { VoteReceipt } from '@stark-ballot/verification/shared/types';
 import type { VoteChoice } from '@stark-ballot/verification/shared/constants';
 import type { ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
-import type { ConsistencyProof } from '@stark-ballot/merkle/consistency-proof';
 import type { BitmapProofSource } from '@stark-ballot/verification/shared/types';
 import type { SupportedPublicInputArtifact } from '@stark-ballot/verification/public-input';
 import type { CloseStatement, ElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
-import type { BitmapProofProvider } from '../bitmap-verifier';
+import type { BitmapProofResponse } from '../bitmap-proof-types';
+import type { AdmittedConsistencyProof } from '../consistency-proof-types';
+import type { EvidenceAcquisition } from '../evidence-acquisition';
 import type { SthVerificationResult } from '../sth-verifier';
 import type { VerificationStatus } from '@stark-ballot/verification/shared/types';
 import type { VerificationCheckNoteKey } from '../verification-checks';
 
 export type { VerificationStatus };
+export type { AdmittedConsistencyProof } from '../consistency-proof-types';
+export type { BitmapProofResponse } from '../bitmap-proof-types';
+export type { EvidenceAcquisition } from '../evidence-acquisition';
 
 export interface UserVoteInput {
   vote?: VoteChoice;
@@ -26,16 +30,9 @@ export interface UserVoteInput {
   };
 }
 
-export interface BulletinConsistencyProvider {
-  getConsistencyProof(oldSize: number, newSize: number): ConsistencyProof;
-  getRootAtSize(size: number): string;
-  getSize(): number;
-  verifyConsistency(oldRoot: string, newRoot: string, proof: ConsistencyProof): boolean;
-}
-
 export type VerificationPublicInputAuthority = SupportedPublicInputArtifact['typedAuthority'] & {
   source: SupportedPublicInputArtifact['provenance']['source'];
-  executionId?: string;
+  finalizationId?: string;
   bundleKey?: string;
 };
 
@@ -49,9 +46,7 @@ export interface VerificationContext {
   electionManifest?: ElectionManifest;
   closeStatement?: CloseStatement;
   sthDigest?: string;
-  sthSources?: string[];
-  sthMinMatchingSources?: number;
-  sthBaseUrl?: string;
+  sthSourcesConfigured?: boolean;
   sthVerification?: SthVerificationResult;
   missingSlots?: number;
   invalidPresentedSlots?: number;
@@ -70,8 +65,9 @@ export interface VerificationContext {
   publicInputAuthority?: VerificationPublicInputAuthority;
   includedBitmapRoot?: string;
   bitmapProofSource?: BitmapProofSource;
-  bitmapProofEndpoint?: string;
-  bitmapProofProvider?: BitmapProofProvider;
+  consistencyProof?: EvidenceAcquisition<AdmittedConsistencyProof>;
+  includedBitmapProof?: EvidenceAcquisition<BitmapProofResponse>;
+  seenBitmapProof?: EvidenceAcquisition<BitmapProofResponse>;
   verificationStatus?: VerificationStatus;
   verificationReportStatus?: VerificationStatus;
   verificationReport?: {
@@ -83,9 +79,6 @@ export interface VerificationContext {
   claimedImageId?: string;
   comparisonImageId?: string;
   allowDevModeVerification?: boolean;
-  bulletin?: BulletinConsistencyProvider;
-  sessionId?: string;
-  sessionAuthHeaders?: Record<string, string>;
 }
 
 export interface CheckResult {

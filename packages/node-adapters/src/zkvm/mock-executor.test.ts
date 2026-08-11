@@ -142,12 +142,12 @@ describe('MockZkVM Executor', () => {
       expect(result.imageId).toBe(expectedImageId);
     });
 
-    it('uses the accepted managed Prover ImageID as the default', async () => {
+    it('uses the accepted managed Prover ImageID by default', async () => {
       delete process.env['EXPECTED_IMAGE_ID'];
       delete process.env['EXPECTED_IMAGE_ID_VARIANT'];
 
       await expect(resolveMockImageId(CURRENT_METHOD_VERSION)).resolves.toBe(
-        '0xd8619329804e7f183fc66aed960a69ec1c5aa326ecd51ac6a9f79eae4e35f15c',
+        '0x8dbbe2a82c110e06c77d58fc5f1f07b7d887595315a07a5d91b28275fb42bebc',
       );
     });
 
@@ -239,11 +239,11 @@ describe('MockZkVM Executor', () => {
     });
 
     it('should calculate invalidPresentedSlots for failed verification', async () => {
-      // Create votes with invalid commitments
+      // Create votes with a well-formed but incorrect commitment.
       const votes: VoteWithProof[] = [
         createTestVoteWithProof({ electionId, choice: 0, index: 0 }),
         {
-          commitment: '0xinvalid',
+          commitment: '0x' + '0'.repeat(64),
           choice: 1,
           random: '0x' + 'c'.repeat(64),
           index: 1,
@@ -261,7 +261,6 @@ describe('MockZkVM Executor', () => {
       expect(result.seenIndicesCount).toBe(3);
       expect(result.missingSlots).toBe(0);
       expect(result.invalidPresentedSlots).toBe(1);
-      expect(result.validVotes).toBe(2);
       expect(result.validVotes).toBe(2);
     });
 

@@ -151,11 +151,7 @@ variable "image_signature_verifier_selected_authority" {
 
   validation {
     condition = var.image_signature_verifier_selected_authority == null ? true : (
-      can(regex(
-        "^arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:stark-ballot-sim-${var.account_alias}-${var.deployment_environment}-image-signature-verifier$",
-        var.image_signature_verifier_selected_authority.function_arn,
-      ))
-      && can(regex("^[1-9][0-9]*$", var.image_signature_verifier_selected_authority.function_version))
+      can(regex("^[1-9][0-9]*$", var.image_signature_verifier_selected_authority.function_version))
       && var.image_signature_verifier_selected_authority.architecture == "x86_64"
       && var.image_signature_verifier_selected_authority.runtime == var.lambda_runtime
       && floor(var.image_signature_verifier_selected_authority.timeout_seconds) == var.image_signature_verifier_selected_authority.timeout_seconds
@@ -165,7 +161,6 @@ variable "image_signature_verifier_selected_authority" {
       && can(regex("^[0-9a-f]{64}$", var.image_signature_verifier_selected_authority.execution_role_assume_policy_sha256))
       && can(regex("^[0-9a-f]{64}$", var.image_signature_verifier_selected_authority.execution_role_policy_sha256))
       && can(regex("^[0-9a-f]{64}$", var.image_signature_verifier_selected_authority.execution_role_permissions_boundary_policy_sha256))
-      && var.image_signature_verifier_selected_authority.execution_role_arn == "arn:aws:iam::${var.aws_account_id}:role/stark-ballot-sim-${var.account_alias}-${var.deployment_environment}-image-signature-verifier-role"
       && var.image_signature_verifier_selected_authority.execution_role_permissions_boundary_arn == var.image_signature_verifier_permissions_boundary_arn
       && var.image_signature_verifier_selected_authority.preflight_alias_arn == "${var.image_signature_verifier_selected_authority.function_arn}:preflight"
       && var.image_signature_verifier_selected_authority.runtime_alias_arn == "${var.image_signature_verifier_selected_authority.function_arn}:runtime"

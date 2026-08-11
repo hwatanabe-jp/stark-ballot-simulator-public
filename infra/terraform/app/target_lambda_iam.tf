@@ -65,16 +65,6 @@ data "aws_iam_policy_document" "target_lambda_session_store_runtime" {
   }
 
   statement {
-    sid    = "UseSessionVoteTransactions"
-    effect = "Allow"
-
-    actions = [
-      "dynamodb:TransactWriteItems",
-    ]
-    resources = concat(local.runtime_sessions_table_arns, local.runtime_votes_table_arns)
-  }
-
-  statement {
     sid    = "UseAppDataKey"
     effect = "Allow"
 
@@ -156,6 +146,45 @@ data "aws_iam_policy_document" "target_lambda_public_api" {
     data.aws_iam_policy_document.target_lambda_store_runtime.json,
     data.aws_iam_policy_document.target_lambda_logs["public_api"].json,
   ]
+
+  statement {
+    sid       = "UseSessionConditionChecks"
+    effect    = "Allow"
+    actions   = ["dynamodb:ConditionCheckItem"]
+    resources = local.runtime_sessions_table_arns
+
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "dynamodb:EnclosingOperation"
+      values   = ["TransactWriteItems"]
+    }
+  }
+
+  statement {
+    sid       = "UseSessionDeletes"
+    effect    = "Allow"
+    actions   = ["dynamodb:DeleteItem"]
+    resources = local.runtime_sessions_table_arns
+
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "dynamodb:EnclosingOperation"
+      values   = ["TransactWriteItems"]
+    }
+  }
+
+  statement {
+    sid       = "UseVoteTtlUpdates"
+    effect    = "Allow"
+    actions   = ["dynamodb:UpdateItem"]
+    resources = local.runtime_votes_table_arns
+
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "dynamodb:EnclosingOperation"
+      values   = ["TransactWriteItems"]
+    }
+  }
 
   statement {
     sid    = "UseProofArtifactBucket"
@@ -241,6 +270,32 @@ data "aws_iam_policy_document" "target_lambda_finalization_writer" {
   ]
 
   statement {
+    sid       = "UseSessionConditionChecks"
+    effect    = "Allow"
+    actions   = ["dynamodb:ConditionCheckItem"]
+    resources = local.runtime_sessions_table_arns
+
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "dynamodb:EnclosingOperation"
+      values   = ["TransactWriteItems"]
+    }
+  }
+
+  statement {
+    sid       = "UseVoteTtlUpdates"
+    effect    = "Allow"
+    actions   = ["dynamodb:UpdateItem"]
+    resources = local.runtime_votes_table_arns
+
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "dynamodb:EnclosingOperation"
+      values   = ["TransactWriteItems"]
+    }
+  }
+
+  statement {
     sid    = "ReadProofArtifactBundle"
     effect = "Allow"
 
@@ -257,6 +312,19 @@ data "aws_iam_policy_document" "target_lambda_verification_worker" {
     data.aws_iam_policy_document.target_lambda_session_store_runtime.json,
     data.aws_iam_policy_document.target_lambda_logs["verification_worker"].json,
   ]
+
+  statement {
+    sid       = "UseSessionDeletes"
+    effect    = "Allow"
+    actions   = ["dynamodb:DeleteItem"]
+    resources = local.runtime_sessions_table_arns
+
+    condition {
+      test     = "ForAnyValue:StringEquals"
+      variable = "dynamodb:EnclosingOperation"
+      values   = ["TransactWriteItems"]
+    }
+  }
 
   statement {
     sid    = "UseProofArtifactBucket"

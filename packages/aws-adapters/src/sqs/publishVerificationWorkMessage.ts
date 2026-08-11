@@ -1,18 +1,19 @@
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import {
-  VERIFICATION_WORK_MESSAGE_VERSION,
+  VERIFICATION_WORK_RECORD_TYPE,
   parseVerificationWorkMessage,
   type VerificationWorkMessage,
 } from '@stark-ballot/aws-adapters/sqs/verificationWorkMessage';
 import { emitCanonicalEvent } from '@stark-ballot/diagnostics/canonicalEvents';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 let sqsClient: SQSClient | null = null;
 const SQS_MESSAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
-function getSqsClient(): SQSClient {
+function getSqsClient(region: string): SQSClient {
   if (!sqsClient) {
-    sqsClient = new SQSClient({});
+    sqsClient = new SQSClient({ region });
   }
   return sqsClient;
 }
@@ -22,25 +23,26 @@ export function setVerificationSqsClient(client: SQSClient | null): void {
 }
 
 export async function publishVerificationWorkMessage(
-  message: Omit<VerificationWorkMessage, 'messageVersion'>,
+  profile: ResolvedRuntimeProfile,
+  message: Omit<VerificationWorkMessage, 'recordType'>,
 ): Promise<void> {
   const correlation = {
     session_id_hash: hashSessionIdForLogging(message.sessionId),
-    execution_id: message.executionId,
+    finalization_id: message.finalizationId,
   } as const;
 
   try {
-    const queueUrl = process.env['VERIFICATION_WORK_QUEUE_URL'];
-    if (!queueUrl) {
-      throw new Error('VERIFICATION_WORK_QUEUE_URL is not configured');
+    if (profile.external.kind !== 'aws') {
+      throw new Error('Verification work publication requires a target AWS runtime profile.');
     }
+    const queueUrl = profile.external.asyncRuntime.verificationWorkQueueUrl;
     const payload = JSON.stringify(
       parseVerificationWorkMessage({
-        messageVersion: VERIFICATION_WORK_MESSAGE_VERSION,
+        recordType: VERIFICATION_WORK_RECORD_TYPE,
         ...message,
       }),
     );
-    const response = await getSqsClient().send(
+    const response = await getSqsClient(profile.external.region).send(
       new SendMessageCommand({
         QueueUrl: queueUrl,
         MessageBody: payload,

@@ -1,7 +1,8 @@
 import type { FinalizeScenarioData } from '@stark-ballot/test-support/testing/cli-test-helpers';
-import { getStringArrayProperty, isRecord } from '@stark-ballot/domain/utils/guards';
+import { getStringArrayProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
 import {
+  getVerificationRequiredCheckIdsForStep,
   VERIFICATION_CHECK_IDS,
   type VerificationCheckId,
   type VerificationCheck,
@@ -10,10 +11,6 @@ import { omitUndefinedProperties } from '@stark-ballot/validation/definedPropert
 
 type VerificationStepId = 'cast_as_intended' | 'recorded_as_cast' | 'counted_as_recorded' | 'stark_verification';
 type VerificationStepStatus = 'pending' | 'running' | 'success' | 'failed' | 'not_run';
-type VerificationStep = {
-  id: VerificationStepId;
-  status: VerificationStepStatus;
-};
 
 export interface ResolvedTallyResult {
   counts: Record<string, number>;
@@ -43,35 +40,20 @@ export interface FetchedVoteProof {
   bulletinRootAtCast?: string;
 }
 
-const VERIFICATION_STEP_IDS = [
-  'cast_as_intended',
-  'recorded_as_cast',
-  'counted_as_recorded',
-  'stark_verification',
-] as const satisfies readonly VerificationStepId[];
-
-export const CLI_REQUIRED_VERIFY_CHECK_IDS = [
-  'counted_expected_vs_tree_size',
-  'counted_election_manifest_consistent',
-  'counted_close_statement_consistent',
-  'stark_receipt_verify',
-] as const satisfies readonly VerificationCheckId[];
-
 const CLI_REQUIRED_VERIFY_STEP_IDS = [
   'counted_as_recorded',
   'stark_verification',
 ] as const satisfies readonly VerificationStepId[];
-const CLI_REQUIRED_COUNTED_STAGE_CHECK_IDS = CLI_REQUIRED_VERIFY_CHECK_IDS.filter(
-  (checkId) => checkId !== 'stark_receipt_verify',
+export const CLI_REQUIRED_VERIFY_CHECK_IDS = CLI_REQUIRED_VERIFY_STEP_IDS.flatMap((stepId) =>
+  getVerificationRequiredCheckIdsForStep(stepId, { sthSourcesConfigured: false }),
 );
+const CLI_REQUIRED_COUNTED_STAGE_CHECK_IDS = getVerificationRequiredCheckIdsForStep('counted_as_recorded', {
+  sthSourcesConfigured: false,
+});
 const CLI_JOURNAL_COUNT_FIELDS = ['missingSlots', 'invalidPresentedSlots', 'validVotes', 'excludedSlots'] as const;
 
 function isVerificationCheckId(value: unknown): value is VerificationCheckId {
   return typeof value === 'string' && VERIFICATION_CHECK_IDS.includes(value as VerificationCheckId);
-}
-
-function isVerificationStepId(value: unknown): value is VerificationStepId {
-  return typeof value === 'string' && VERIFICATION_STEP_IDS.includes(value as VerificationStepId);
 }
 
 function isVerificationStepStatus(value: unknown): value is VerificationStepStatus {
@@ -80,10 +62,6 @@ function isVerificationStepStatus(value: unknown): value is VerificationStepStat
 
 function isVerificationCheckLike(value: unknown): value is Pick<VerificationCheck, 'id' | 'status'> {
   return isRecord(value) && isVerificationCheckId(value['id']) && isVerificationStepStatus(value['status']);
-}
-
-function isVerificationStepLike(value: unknown): value is Pick<VerificationStep, 'id' | 'status'> {
-  return isRecord(value) && isVerificationStepId(value['id']) && isVerificationStepStatus(value['status']);
 }
 
 function isNumberRecord(value: unknown): value is Record<string, number> {
@@ -236,9 +214,7 @@ export function resolveVerificationCheckStatuses(
 export function resolveVerificationStepStatuses(
   data: FinalizeScenarioData,
 ): Partial<Record<VerificationStepId, VerificationStepStatus>> {
-  const steps = Array.isArray(data.verificationSteps) ? data.verificationSteps : [];
-  const entries = steps.filter((step) => isVerificationStepLike(step)).map((step) => [step.id, step.status] as const);
-  return Object.fromEntries(entries);
+  return data.presentationPolicy ? { ...data.presentationPolicy.stageStatuses } : {};
 }
 
 export interface CliVerificationContractOptions {

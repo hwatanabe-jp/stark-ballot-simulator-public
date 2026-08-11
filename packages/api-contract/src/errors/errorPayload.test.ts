@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MockInstance } from 'vitest';
-import { handleApiErrorPayload, toApiErrorPayload } from './errorPayload';
+import { handleApiErrorResult, toApiErrorResult } from './errorPayload';
 import { ApiError, ErrorCode } from './apiErrors';
+
+const REQUEST_ID = 'error-payload-test-request';
 
 describe('errorPayload', () => {
   let consoleSpy: MockInstance<typeof console.error>;
@@ -14,40 +16,42 @@ describe('errorPayload', () => {
     consoleSpy.mockRestore();
   });
 
-  describe('toApiErrorPayload', () => {
-    it('should convert ErrorCode to ApiErrorPayload', () => {
-      const payload = toApiErrorPayload(ErrorCode.INVALID_REQUEST);
+  describe('toApiErrorResult', () => {
+    it('converts an ErrorCode to a canonical result', () => {
+      const result = toApiErrorResult(ErrorCode.INVALID_REQUEST, REQUEST_ID);
 
-      expect(payload.error).toBe('INVALID_REQUEST');
-      expect(payload.message).toBeTruthy();
-      expect(payload.statusCode).toBe(400);
+      expect(result.payload.error.code).toBe('INVALID_REQUEST');
+      expect(result.payload.error.message).toBeTruthy();
+      expect(result.payload.meta.requestId).toBe(REQUEST_ID);
+      expect(result.status).toBe(400);
     });
 
-    it('should include additional details when provided', () => {
-      const details = { reason: 'session_expired' };
-      const payload = toApiErrorPayload(ErrorCode.SESSION_EXPIRED, details);
+    it('drops unstructured reasons and removed artifact-state details', () => {
+      const details = { reason: 'session_expired', artifactState: 'unsupported_current_artifact' as const };
+      const result = toApiErrorResult(ErrorCode.SESSION_EXPIRED, REQUEST_ID, details);
 
-      expect(payload.error).toBe('SESSION_EXPIRED');
-      expect(payload.reason).toBe('session_expired');
-      expect(payload.statusCode).toBe(401);
+      expect(result.payload.error.code).toBe('SESSION_EXPIRED');
+      expect(result.payload.error).not.toHaveProperty('details');
+      expect(result.payload).not.toHaveProperty('reason');
+      expect(result.status).toBe(401);
     });
   });
 
-  describe('handleApiErrorPayload', () => {
-    it('should convert ApiError instances', () => {
+  describe('handleApiErrorResult', () => {
+    it('converts ApiError instances', () => {
       const apiError = new ApiError(ErrorCode.SESSION_NOT_FOUND, 404, 'Session not found');
-      const payload = handleApiErrorPayload(apiError);
+      const result = handleApiErrorResult(apiError, REQUEST_ID);
 
-      expect(payload.error).toBe('SESSION_NOT_FOUND');
-      expect(payload.message).toBe('Session not found');
-      expect(payload.statusCode).toBe(404);
+      expect(result.payload.error.code).toBe('SESSION_NOT_FOUND');
+      expect(result.payload.error.message).toBe('Session not found');
+      expect(result.status).toBe(404);
     });
 
-    it('should map SESSION_LIMIT_EXCEEDED messages', () => {
-      const payload = handleApiErrorPayload(new Error('SESSION_LIMIT_EXCEEDED: test'));
+    it('maps SESSION_LIMIT_EXCEEDED messages', () => {
+      const result = handleApiErrorResult(new Error('SESSION_LIMIT_EXCEEDED: test'), REQUEST_ID);
 
-      expect(payload.error).toBe('SESSION_LIMIT_EXCEEDED');
-      expect(payload.statusCode).toBe(503);
+      expect(result.payload.error.code).toBe('SESSION_LIMIT_EXCEEDED');
+      expect(result.status).toBe(503);
     });
   });
 });

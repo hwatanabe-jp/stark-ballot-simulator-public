@@ -47,7 +47,16 @@ vi.mock('fs/promises', () => ({
   ...mockFs,
 }));
 
-import { executeZkVM } from './executor';
+import { executeZkVM as executeRisc0ZkVM } from './executor';
+
+const PRODUCTION_PROOF_PROFILE = {
+  executor: 'risc0',
+  evidence: 'production',
+} as const;
+
+function executeZkVM(input: ZkVMInput) {
+  return executeRisc0ZkVM(input, PRODUCTION_PROOF_PROFILE);
+}
 
 function createBaseInput(): ZkVMInput {
   return {
@@ -96,6 +105,14 @@ function createValidCurrentHostOutput(overrides: Record<string, unknown> = {}): 
   };
 }
 
+function missingOptionalHostArtifact(filePath: unknown): Promise<never> {
+  const pathValue = String(filePath);
+  if (!pathValue.endsWith('-seen-bitmap.json') && !pathValue.endsWith('-bitmap.json')) {
+    throw new Error(`Unexpected zkVM host artifact read: ${pathValue}`);
+  }
+  return Promise.reject(Object.assign(new Error('Optional zkVM host artifact not found'), { code: 'ENOENT' }));
+}
+
 function mockHostArtifacts(output: Record<string, unknown>, receipt: Record<string, unknown> = {}) {
   mockFs.readFile.mockImplementation((filePath: unknown) => {
     const pathValue = String(filePath);
@@ -111,7 +128,7 @@ function mockHostArtifacts(output: Record<string, unknown>, receipt: Record<stri
         }),
       );
     }
-    return Promise.resolve('{}');
+    return missingOptionalHostArtifact(filePath);
   });
 }
 
@@ -127,16 +144,54 @@ function repeatVote(vote: VoteWithProof, count: number): VoteWithProof[] {
   return Array.from({ length: count }, () => vote);
 }
 
+function requireLastChildEnvironment(): NodeJS.ProcessEnv {
+  const options = mockExec.mock.calls.at(-1)?.[1];
+  if (!options || typeof options === 'function') {
+    throw new Error('zkVM host execution options were not captured');
+  }
+  return options.env ?? {};
+}
+
 describe('zkVM Executor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   describe('executeZkVM', () => {
+    it('translates development evidence to RISC0_DEV_MODE only in the child environment', async () => {
+      vi.stubEnv('RISC0_DEV_MODE', 'stale-parent-value');
+      mockHostArtifacts(createValidCurrentHostOutput());
+
+      await executeRisc0ZkVM(createBaseInput(), {
+        executor: 'risc0',
+        evidence: 'development',
+      });
+
+      const childEnvironment = requireLastChildEnvironment();
+      expect(childEnvironment['RISC0_DEV_MODE']).toBe('1');
+      expect(process.env['RISC0_DEV_MODE']).toBe('stale-parent-value');
+    });
+
+    it('removes inherited RISC0_DEV_MODE from production child execution without mutating the parent', async () => {
+      vi.stubEnv('RISC0_DEV_MODE', '1');
+      mockHostArtifacts(createValidCurrentHostOutput());
+
+      await executeRisc0ZkVM(createBaseInput(), {
+        executor: 'risc0',
+        evidence: 'production',
+      });
+
+      const childEnvironment = requireLastChildEnvironment();
+      expect(childEnvironment['RISC0_DEV_MODE']).toBeUndefined();
+      expect(process.env['RISC0_DEV_MODE']).toBe('1');
+    });
+
     it('rejects over-budget aggregate Merkle paths before writing input or spawning the host', async () => {
       const input = createBaseInput();
       const voteCount = 50_000;
@@ -274,7 +329,7 @@ describe('zkVM Executor', () => {
         if (pathValue.endsWith('-receipt.json')) {
           return Promise.resolve(JSON.stringify(mockReceipt));
         }
-        return Promise.resolve('{}');
+        return missingOptionalHostArtifact(filePath);
       });
       const votes: VoteWithProof[] = [
         {
@@ -364,7 +419,7 @@ describe('zkVM Executor', () => {
         if (pathValue.endsWith('-receipt.json')) {
           return Promise.resolve(JSON.stringify(mockReceipt));
         }
-        return Promise.resolve('{}');
+        return missingOptionalHostArtifact(filePath);
       });
 
       const input: ZkVMInput = {
@@ -436,7 +491,7 @@ describe('zkVM Executor', () => {
         if (pathValue.endsWith('-receipt.json')) {
           return Promise.resolve(JSON.stringify(mockReceipt));
         }
-        return Promise.resolve('{}');
+        return missingOptionalHostArtifact(filePath);
       });
       const votes: VoteWithProof[] = [
         {
@@ -504,7 +559,7 @@ describe('zkVM Executor', () => {
         if (pathValue.endsWith('-receipt.json')) {
           return Promise.resolve(JSON.stringify({ receipt: { journal: { bytes: [1, 2, 3] } } }));
         }
-        return Promise.resolve('{}');
+        return missingOptionalHostArtifact(filePath);
       });
 
       const input: ZkVMInput = {
@@ -561,7 +616,7 @@ describe('zkVM Executor', () => {
         if (pathValue.endsWith('-receipt.json')) {
           return Promise.resolve(JSON.stringify({ receipt: { journal: { bytes: [1, 2, 3] } } }));
         }
-        return Promise.resolve('{}');
+        return missingOptionalHostArtifact(filePath);
       });
 
       const input: ZkVMInput = {
@@ -618,7 +673,7 @@ describe('zkVM Executor', () => {
         if (pathValue.endsWith('-receipt.json')) {
           return Promise.resolve(JSON.stringify({ receipt: { journal: { bytes: [1, 2, 3] } } }));
         }
-        return Promise.resolve('{}');
+        return missingOptionalHostArtifact(filePath);
       });
 
       const input: ZkVMInput = {
@@ -679,7 +734,7 @@ describe('zkVM Executor', () => {
             }),
           );
         }
-        return Promise.resolve('{}');
+        return missingOptionalHostArtifact(filePath);
       });
 
       const input: ZkVMInput = {
@@ -797,6 +852,7 @@ describe('zkVM Executor', () => {
       const timeoutError = Object.assign(new Error('Command failed: timeout'), {
         code: 'ETIMEDOUT',
       });
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       mockExec.mockImplementationOnce((cmd: string, opts?: ExecOptions | ExecCallback, callback?: ExecCallback) => {
         void cmd;
         if (typeof opts === 'function') {
@@ -828,6 +884,10 @@ describe('zkVM Executor', () => {
       };
 
       await expect(executeZkVM(input)).rejects.toThrow('zkVM execution timeout');
+      const captured = JSON.stringify(errorSpy.mock.calls);
+      expect(captured).toContain('prover_failed');
+      expect(captured).not.toContain('Command failed: timeout');
+      errorSpy.mockRestore();
     });
   });
 });

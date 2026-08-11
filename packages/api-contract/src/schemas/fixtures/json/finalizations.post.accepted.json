@@ -1,0 +1,17 @@
+{
+  "data": {
+    "status": "pending",
+    "finalizationId": "mock-finalization-001",
+    "queuedAtMs": 1730000000000,
+    "runtimeDiagnostics": {
+      "asyncMode": "enabled",
+      "queue": {
+        "concurrencyLimit": 2,
+        "estimatedDurationMs": 360000
+      }
+    }
+  },
+  "meta": {
+    "requestId": "fixture-request-id"
+  }
+}

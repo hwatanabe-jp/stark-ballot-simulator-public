@@ -6,7 +6,6 @@ import {
 import {
   getRateLimitAttemptMultiplier,
   getZkVmRateLimitConfig,
-  resolveRateLimitStore,
 } from '@stark-ballot/aws-adapters/rate-limit/rateLimitConfig';
 import { ServerRateLimiter } from '@stark-ballot/aws-adapters/rate-limit/serverRateLimit';
 import { getSessionCreateRateLimiter } from '@stark-ballot/aws-adapters/rate-limit/sessionCreateRateLimit';
@@ -18,6 +17,7 @@ import { errorResponse } from '../../http/response';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashIpForLogging } from '@stark-ballot/diagnostics/logging';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 type MaybePromise<T> = T | Promise<T>;
 type VoteLimiter = {
@@ -71,44 +71,29 @@ export interface FinalizeRateLimitContext {
 let finalizeRateLimiterInstance: FinalizeLimiter | null = null;
 let finalizeAttemptLimiterInstance: FinalizeAttemptLimiter | null = null;
 
-function shouldAllowUnknownClientIp(): boolean {
-  const raw = process.env['ALLOW_UNKNOWN_CLIENT_IP'];
-  if (raw && raw.trim().length > 0) {
-    switch (raw.trim().toLowerCase()) {
-      case '1':
-      case 'true':
-      case 'yes':
-      case 'on':
-        return true;
-      default:
-        return false;
-    }
-  }
-  if (process.env['USE_MOCK_STORE'] === 'true') {
-    return true;
-  }
-  return process.env['NODE_ENV'] !== 'production';
+function shouldAllowUnknownClientIp(profile: ResolvedRuntimeProfile): boolean {
+  return profile.rateLimit.allowUnknownClientIp;
 }
 
-function resolveClientIp(clientIp?: string | null): string | null {
+function resolveClientIp(profile: ResolvedRuntimeProfile, clientIp?: string | null): string | null {
   if (clientIp && clientIp.trim().length > 0) {
     return clientIp.trim();
   }
-  return shouldAllowUnknownClientIp() ? '0.0.0.0' : null;
+  return shouldAllowUnknownClientIp(profile) ? '0.0.0.0' : null;
 }
 
-function getFinalizeRateLimiter(): FinalizeLimiter {
+function getFinalizeRateLimiter(profile: ResolvedRuntimeProfile): FinalizeLimiter {
   if (!finalizeRateLimiterInstance) {
     finalizeRateLimiterInstance =
-      resolveRateLimitStore() === 'dynamo' ? createDynamoServerRateLimiter() : new ServerRateLimiter();
+      profile.rateLimit.store === 'dynamo' ? createDynamoServerRateLimiter(profile) : new ServerRateLimiter();
   }
   return finalizeRateLimiterInstance;
 }
 
-function getFinalizeAttemptLimiter(): FinalizeAttemptLimiter {
+function getFinalizeAttemptLimiter(profile: ResolvedRuntimeProfile): FinalizeAttemptLimiter {
   if (!finalizeAttemptLimiterInstance) {
-    if (resolveRateLimitStore() === 'dynamo') {
-      finalizeAttemptLimiterInstance = createDynamoServerAttemptLimiter();
+    if (profile.rateLimit.store === 'dynamo') {
+      finalizeAttemptLimiterInstance = createDynamoServerAttemptLimiter(profile);
     } else {
       const config = getZkVmRateLimitConfig();
       const multiplier = getRateLimitAttemptMultiplier();
@@ -147,10 +132,11 @@ function handleRateLimitError(error: unknown): Response {
  * Enforce vote submission rate limits.
  */
 export async function enforceVoteRateLimit(
+  profile: ResolvedRuntimeProfile,
   clientIp?: string | null,
-  limiter: VoteAttemptLimiter = getVoteAttemptLimiter(),
+  limiter: VoteAttemptLimiter = getVoteAttemptLimiter(profile),
 ): Promise<VoteRateLimitContext | Response> {
-  const resolvedClientIp = resolveClientIp(clientIp);
+  const resolvedClientIp = resolveClientIp(profile, clientIp);
   if (!resolvedClientIp) {
     return errorResponse(ErrorCode.INVALID_REQUEST, { reason: 'client_ip_missing' });
   }
@@ -180,10 +166,11 @@ export async function enforceVoteRateLimit(
  * Enforce session creation rate limits.
  */
 export async function enforceSessionCreateRateLimit(
+  profile: ResolvedRuntimeProfile,
   clientIp?: string | null,
-  limiter: SessionCreateLimiter = getSessionCreateRateLimiter(),
+  limiter: SessionCreateLimiter = getSessionCreateRateLimiter(profile),
 ): Promise<SessionCreateRateLimitContext | Response> {
-  const resolvedClientIp = resolveClientIp(clientIp);
+  const resolvedClientIp = resolveClientIp(profile, clientIp);
   if (!resolvedClientIp) {
     return errorResponse(ErrorCode.INVALID_REQUEST, { reason: 'client_ip_missing' });
   }
@@ -214,10 +201,11 @@ export async function enforceSessionCreateRateLimit(
  * Enforce finalize-cancel rate limits.
  */
 export async function enforceFinalizeCancelRateLimit(
+  profile: ResolvedRuntimeProfile,
   clientIp?: string | null,
-  limiter: VoteAttemptLimiter = getFinalizeCancelRateLimiter(),
+  limiter: VoteAttemptLimiter = getFinalizeCancelRateLimiter(profile),
 ): Promise<FinalizeCancelRateLimitContext | Response> {
-  const resolvedClientIp = resolveClientIp(clientIp);
+  const resolvedClientIp = resolveClientIp(profile, clientIp);
   if (!resolvedClientIp) {
     return errorResponse(ErrorCode.INVALID_REQUEST, { reason: 'client_ip_missing' });
   }
@@ -248,8 +236,9 @@ export async function enforceFinalizeCancelRateLimit(
  * Consume vote rate limits after validation succeeds.
  */
 export async function consumeVoteRateLimit(
+  profile: ResolvedRuntimeProfile,
   clientIp: string,
-  limiter: VoteLimiter = getVoteRateLimiter(),
+  limiter: VoteLimiter = getVoteRateLimiter(profile),
 ): Promise<Response | null> {
   try {
     const rateResult =
@@ -295,17 +284,18 @@ function ensureGlobalLimitRetryAfter(result: GlobalLimitResult): number {
  * Enforce finalize rate limits (zkVM execution + global limits).
  */
 export async function enforceFinalizeRateLimit(
+  profile: ResolvedRuntimeProfile,
   clientIp?: string | null,
   options: { rateLimiter?: FinalizeLimiter; attemptLimiter?: FinalizeAttemptLimiter } = {},
 ): Promise<FinalizeRateLimitContext | Response> {
-  const resolvedClientIp = resolveClientIp(clientIp);
+  const resolvedClientIp = resolveClientIp(profile, clientIp);
   if (!resolvedClientIp) {
     return errorResponse(ErrorCode.INVALID_REQUEST, { reason: 'client_ip_missing' });
   }
-  const rateLimiter = options.rateLimiter ?? getFinalizeRateLimiter();
-  const attemptLimiter = options.attemptLimiter ?? getFinalizeAttemptLimiter();
+  const rateLimiter = options.rateLimiter ?? getFinalizeRateLimiter(profile);
+  const attemptLimiter = options.attemptLimiter ?? getFinalizeAttemptLimiter(profile);
 
-  if (process.env['USE_MOCK_STORE'] === 'true') {
+  if (profile.rateLimit.store === 'memory') {
     return { clientIp: resolvedClientIp, rateLimiter, shouldRecord: false };
   }
 

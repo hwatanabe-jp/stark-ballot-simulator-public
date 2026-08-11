@@ -15,7 +15,6 @@ import {
   clearSession,
   getSessionData,
   getSessionDataForIdentity,
-  getSessionAuthHeaders,
   isSessionReplacedForIdentity,
   isSessionReplaced,
   saveSessionDataForIdentity,
@@ -29,32 +28,19 @@ import {
 } from '@stark-ballot/web/knowledge';
 import { TurnstileWidget } from '@stark-ballot/web/components/security/TurnstileWidget';
 import { isBrowserTurnstileRequiredForAction } from '@stark-ballot/web/components/security/turnstilePolicy';
+import { clearClientFinalizedProjection } from '@stark-ballot/web/finalize/client-finalization-boundary';
 import {
-  clearClientFinalizedProjection,
-  hasFailClosedFinalizationStatus,
-} from '@stark-ballot/web/finalize/client-finalization-boundary';
-import {
+  projectFinalizationResourceToClientSnapshot,
   projectClientFinalizationSnapshotForKnowledge,
-  resolveCanonicalFinalizationPayload,
   type ClientFinalizationSnapshot,
 } from '@stark-ballot/web/finalize/client-finalization-result';
-import { resolveApiUrl } from '@stark-ballot/web/api/apiBaseUrl';
 import {
-  fetchFinalizationStatus,
+  fetchCurrentFinalization,
   resolveFinalizationStatusErrorCode,
-  type FinalizationStatusResponse,
-} from '@stark-ballot/web/finalize/finalization-status-client';
-import { apiFetch } from '@stark-ballot/web/api/apiFetch';
-import {
-  FinalizeAcceptedResponseSchema,
-  FinalizeSyncResponseSchema,
-} from '@stark-ballot/api-contract/validation/apiSchemas';
-import {
-  admitApiResponse,
-  readApiJson,
-  readStandardApiError,
-  readStandardApiErrorCode,
-} from '@stark-ballot/web/api/responseAdmission';
+  startFinalization,
+} from '@stark-ballot/web/api/finalizations';
+import type { FinalizationResource, FinalizationQueue } from '@stark-ballot/api-contract/schemas/finalizations';
+import { resolveApiClientErrorCode } from '@stark-ballot/web/api/client';
 import { useAppRouter } from '@stark-ballot/web/navigation/appNavigation';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
@@ -67,9 +53,7 @@ interface QueueInfo {
 
 const RESULT_TRANSITION_DELAY_MS = 500;
 
-type QueueStatus = NonNullable<FinalizationStatusResponse['queue']>;
-
-const toQueueInfo = (queue: QueueStatus): QueueInfo =>
+const toQueueInfo = (queue: FinalizationQueue): QueueInfo =>
   omitUndefinedProperties({
     concurrencyLimit: queue.concurrencyLimit,
     estimatedDurationMs: queue.estimatedDurationMs,
@@ -80,17 +64,6 @@ const knowledgeOptions = (expectedSessionId: string | undefined, omitKeys?: type
     omitKeys,
     expectedSessionId,
   });
-
-const isFinalizationResultReady = (status: FinalizationStatusResponse): boolean => {
-  if (!status.finalizationResult) {
-    return false;
-  }
-  const state = status.finalizationState;
-  if (!state) {
-    return true;
-  }
-  return state.status === 'succeeded';
-};
 
 export default function AggregatePage(): React.ReactElement {
   const { t } = useTranslation();
@@ -163,32 +136,26 @@ export default function AggregatePage(): React.ReactElement {
     setPhase('failed');
   }, [resolveSessionErrorMessage]);
 
-  const handleFailClosedStatus = useCallback(
-    (status: FinalizationStatusResponse): void => {
+  const handleTerminalFailure = useCallback(
+    (resource: Extract<FinalizationResource, { status: 'failed' | 'timeout' }>): void => {
       clearClientFinalizedProjection(expectedSessionIdentityRef.current);
       setQueueInfo({});
       setQueuedAt(null);
       setStartedAt(null);
       setPhase('failed');
 
-      const state = status.finalizationState;
-      if (state?.status === 'failed') {
-        setError(state.error.message || t('errors.generic'));
+      if (resource.status === 'failed') {
+        setError(resource.error.message || t('errors.generic'));
         return;
       }
-      if (state?.status === 'timeout') {
-        setError(t('pages.aggregate.errors.timeout'));
-        return;
-      }
-
-      setError(t('errors.generic'));
+      setError(t('pages.aggregate.errors.timeout'));
     },
     [t],
   );
 
-  const handleStatusFinalizeResult = useCallback(
-    (finalizationResult: unknown, context: string): void => {
-      const canonicalFinalizationResult = resolveCanonicalFinalizationPayload(finalizationResult);
+  const handleSucceededResource = useCallback(
+    (resource: Extract<FinalizationResource, { status: 'succeeded' }>, context: string): void => {
+      const canonicalFinalizationResult = projectFinalizationResourceToClientSnapshot(resource);
       if (!canonicalFinalizationResult) {
         clearClientFinalizedProjection(expectedSessionIdentityRef.current);
         handleMissingFinalizeResult(context);
@@ -197,6 +164,38 @@ export default function AggregatePage(): React.ReactElement {
       scheduleResultNavigation(canonicalFinalizationResult);
     },
     [handleMissingFinalizeResult, scheduleResultNavigation],
+  );
+
+  const applyFinalizationResource = useCallback(
+    (resource: FinalizationResource): void => {
+      const queue = resource.runtimeDiagnostics.queue;
+      switch (resource.status) {
+        case 'pending':
+          setPhase('queued');
+          setQueuedAt(resource.queuedAtMs);
+          setStartedAt(null);
+          setQueueInfo(queue ? toQueueInfo(queue) : {});
+          setError(null);
+          saveSessionDataForIdentity(expectedSessionIdentityRef.current, { phase: 'finalizing' });
+          return;
+        case 'running':
+          setPhase('running');
+          setQueuedAt(resource.queuedAtMs);
+          setStartedAt(resource.startedAtMs);
+          setQueueInfo(queue ? toQueueInfo(queue) : {});
+          setError(null);
+          saveSessionDataForIdentity(expectedSessionIdentityRef.current, { phase: 'finalizing' });
+          return;
+        case 'succeeded':
+          handleSucceededResource(resource, 'current-finalization');
+          return;
+        case 'failed':
+        case 'timeout':
+          handleTerminalFailure(resource);
+          return;
+      }
+    },
+    [handleSucceededResource, handleTerminalFailure],
   );
 
   useEffect(() => {
@@ -276,9 +275,8 @@ export default function AggregatePage(): React.ReactElement {
           return;
         }
 
-        const status = await fetchFinalizationStatus(sessionData.sessionId, {
+        const resource = await fetchCurrentFinalization(sessionData, {
           signal: controller.signal,
-          authHeaders: getSessionAuthHeaders(sessionData),
         });
         if (cancelled) {
           return;
@@ -289,58 +287,10 @@ export default function AggregatePage(): React.ReactElement {
           return;
         }
 
-        if (hasFailClosedFinalizationStatus(status)) {
-          handleFailClosedStatus(status);
+        if (!resource) {
           return;
         }
-
-        if (isFinalizationResultReady(status)) {
-          handleStatusFinalizeResult(status.finalizationResult, 'status-restore');
-          return;
-        }
-
-        const state = status.finalizationState;
-        if (!state) {
-          return;
-        }
-
-        switch (state.status) {
-          case 'pending':
-            setPhase('queued');
-            setQueuedAt(state.queuedAt);
-            setStartedAt(null);
-            setError(null);
-            if (status.queue) {
-              setQueueInfo(toQueueInfo(status.queue));
-            } else {
-              setQueueInfo({});
-            }
-            saveSessionDataForIdentity(expectedSessionIdentityRef.current, { phase: 'finalizing' });
-            break;
-          case 'running':
-            setPhase('running');
-            setQueuedAt(state.queuedAt);
-            setStartedAt(state.startedAt);
-            setError(null);
-            if (status.queue) {
-              setQueueInfo(toQueueInfo(status.queue));
-            } else {
-              setQueueInfo({});
-            }
-            saveSessionDataForIdentity(expectedSessionIdentityRef.current, { phase: 'finalizing' });
-            break;
-          case 'succeeded':
-            handleStatusFinalizeResult(status.finalizationResult, 'status-succeeded');
-            return;
-          case 'failed':
-            setPhase('failed');
-            setError(state.error.message || t('errors.generic'));
-            return;
-          case 'timeout':
-            setPhase('failed');
-            setError(t('pages.aggregate.errors.timeout'));
-            return;
-        }
+        applyFinalizationResource(resource);
       } catch (err) {
         if (!cancelled && resolveFinalizationStatusErrorCode(err) === 'SESSION_NOT_FOUND') {
           handleMissingSession();
@@ -358,7 +308,7 @@ export default function AggregatePage(): React.ReactElement {
       cancelled = true;
       controller.abort();
     };
-  }, [getExpectedSession, handleFailClosedStatus, handleMissingSession, handleStatusFinalizeResult, t]);
+  }, [applyFinalizationResource, getExpectedSession, handleMissingSession, t]);
 
   // Poll for finalization status when in queued/running phase
   useEffect(() => {
@@ -395,9 +345,8 @@ export default function AggregatePage(): React.ReactElement {
       }
 
       try {
-        const status = await fetchFinalizationStatus(sessionData.sessionId, {
+        const resource = await fetchCurrentFinalization(sessionData, {
           signal: controller.signal,
-          authHeaders: getSessionAuthHeaders(sessionData),
         });
         if (isPollingStopped()) return;
         if (!getExpectedSession()) {
@@ -406,51 +355,12 @@ export default function AggregatePage(): React.ReactElement {
           return;
         }
 
-        if (hasFailClosedFinalizationStatus(status)) {
-          handleFailClosedStatus(status);
+        if (!resource) {
           return;
         }
-
-        const state = status.finalizationState;
-        if (!state) {
-          // No async state - check if result is available
-          if (isFinalizationResultReady(status)) {
-            handleStatusFinalizeResult(status.finalizationResult, 'status-no-state');
-          }
+        applyFinalizationResource(resource);
+        if (resource.status === 'succeeded' || resource.status === 'failed' || resource.status === 'timeout') {
           return;
-        }
-
-        // Update phase and timing info
-        switch (state.status) {
-          case 'pending':
-            setPhase('queued');
-            setQueuedAt(state.queuedAt);
-            if (status.queue) {
-              setQueueInfo(toQueueInfo(status.queue));
-            } else {
-              // Clear queue info when unavailable (avoid stale UI)
-              setQueueInfo({});
-            }
-            break;
-          case 'running':
-            setPhase('running');
-            setQueuedAt(state.queuedAt);
-            setStartedAt(state.startedAt);
-            if (status.queue) {
-              setQueueInfo(toQueueInfo(status.queue));
-            }
-            break;
-          case 'succeeded':
-            handleStatusFinalizeResult(status.finalizationResult, 'status-succeeded');
-            return;
-          case 'failed':
-            setPhase('failed');
-            setError(state.error.message || t('errors.generic'));
-            return;
-          case 'timeout':
-            setPhase('failed');
-            setError(t('pages.aggregate.errors.timeout'));
-            return;
         }
 
         // Continue polling
@@ -476,15 +386,7 @@ export default function AggregatePage(): React.ReactElement {
         window.clearTimeout(timeoutId);
       }
     };
-  }, [
-    getExpectedSession,
-    handleFailClosedStatus,
-    handleMissingSession,
-    handleStatusFinalizeResult,
-    phase,
-    resolveSessionErrorMessage,
-    t,
-  ]);
+  }, [getExpectedSession, applyFinalizationResource, handleMissingSession, phase, resolveSessionErrorMessage, t]);
 
   const handleFinalize = useCallback(async () => {
     const sessionData = getExpectedSession();
@@ -511,56 +413,24 @@ export default function AggregatePage(): React.ReactElement {
       // scenarioId is stored for API continuity (hidden in Knowledge Panel)
 
       const scenarioId = selectedScenario;
-      const response = await apiFetch(resolveApiUrl('/api/finalize'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getSessionAuthHeaders(sessionData),
-        },
-        body: JSON.stringify({ scenarioId, ...(turnstileToken ? { turnstileToken } : {}) }),
-      });
-
-      if (!response.ok) {
-        const errorPayload = await readStandardApiError(response);
-        const errorCode = readStandardApiErrorCode(errorPayload);
+      let result;
+      try {
+        result = await startFinalization(sessionData, {
+          scenarioId,
+          ...(turnstileToken ? { turnstileToken } : {}),
+        });
+      } catch (requestError) {
+        const errorCode = resolveApiClientErrorCode(requestError);
         if (errorCode === 'CAPTCHA_FAILED') {
           setError(t('errors.captchaFailed'));
           setTurnstileToken(null);
           setPhase('idle');
           return;
         }
-        throw new Error(errorCode ?? 'Unknown error');
+        throw requestError;
       }
 
-      // Check for async (202) vs sync (200) response
-      if (response.status === 202) {
-        const resultPayload = admitApiResponse(
-          FinalizeAcceptedResponseSchema,
-          await readApiJson(response),
-          'finalize accepted response',
-        );
-        // Async response - extract queue info and start polling
-        const { state, queue } = resultPayload;
-
-        setQueuedAt(state.queuedAt);
-        if (queue) {
-          setQueueInfo(toQueueInfo(queue));
-        } else {
-          // Fallback when queue is null
-          setQueueInfo({
-            estimatedDurationMs: 360000,
-          });
-        }
-        setPhase('queued');
-      } else {
-        const resultPayload = admitApiResponse(
-          FinalizeSyncResponseSchema,
-          await readApiJson(response),
-          'finalize sync response',
-        );
-        // Sync response - save result and navigate
-        handleStatusFinalizeResult(resultPayload.data, 'sync');
-      }
+      applyFinalizationResource(result.data);
     } catch (err) {
       console.error('[AggregatePage] Finalize error:', err);
       setError(err instanceof Error ? err.message : t('errors.generic'));
@@ -572,7 +442,7 @@ export default function AggregatePage(): React.ReactElement {
     turnstileToken,
     requireFinalizeTurnstile,
     t,
-    handleStatusFinalizeResult,
+    applyFinalizationResource,
     resolveSessionErrorMessage,
   ]);
 

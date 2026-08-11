@@ -1,11 +1,11 @@
-import type { SessionData } from '@stark-ballot/domain/types/server';
+import type { SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
 import type {
   FinalizationResultAuthority,
   UserVotePayload,
   VoteReceiptPayload,
 } from '@stark-ballot/application/finalize/finalization-types';
 import { asLeafIndex, asVoteIndex, type VoteIndex } from '@stark-ballot/domain/types/identifiers';
-import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/domain/utils/hex';
+import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 
 export class UserVoteArtifactsUnavailableError extends Error {
   constructor(message: string) {
@@ -22,21 +22,21 @@ export type UserVoteArtifacts = {
 };
 
 export function buildUserVoteArtifacts(params: {
-  session: SessionData;
+  voting: SessionVotingRecord;
   finalizationResult: FinalizationResultAuthority;
 }): UserVoteArtifacts {
-  const { session, finalizationResult } = params;
-  if (typeof session.userVoteIndex !== 'number') {
+  const { voting, finalizationResult } = params;
+  if (voting.userParticipation.status !== 'cast') {
     throw new UserVoteArtifactsUnavailableError('User vote index is missing for finalization');
   }
   let userVoteIndex: VoteIndex;
   try {
-    userVoteIndex = asVoteIndex(session.userVoteIndex);
+    userVoteIndex = asVoteIndex(voting.userParticipation.voteIndex);
   } catch {
     throw new UserVoteArtifactsUnavailableError('User vote index is missing for finalization');
   }
 
-  const voteData = session.votes.get(userVoteIndex);
+  const voteData = voting.votes.get(userVoteIndex);
   if (!voteData) {
     throw new UserVoteArtifactsUnavailableError('Exact user vote record is missing for finalization');
   }
@@ -44,7 +44,7 @@ export function buildUserVoteArtifacts(params: {
     throw new UserVoteArtifactsUnavailableError('Vote identifier is missing for user vote');
   }
 
-  const bulletin = session.bulletin;
+  const bulletin = (voting as Partial<SessionVotingRecord>).bulletin;
   if (!bulletin || typeof bulletin.getInclusionProof !== 'function') {
     throw new UserVoteArtifactsUnavailableError('Bulletin inclusion proof function unavailable for user vote');
   }
@@ -89,7 +89,7 @@ export function buildUserVoteArtifacts(params: {
     commitment: normalizedCommitment,
     bulletinIndex: inclusionProof.leafIndex,
     bulletinRootAtCast,
-    timestamp: voteData.timestamp ?? Date.now(),
+    timestamp: voteData.timestamp,
     inputCommitment,
   };
 

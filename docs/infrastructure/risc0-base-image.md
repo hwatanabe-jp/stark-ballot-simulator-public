@@ -1,26 +1,29 @@
 # RISC Zero Toolchain Image - ARM64
 
 > **Status:** current technical and release-lane guide for the target AWS ARM64
-> Toolchain image. Repository procedure updated: 2026-07-26. Live evidence
+> Toolchain image. Repository procedure updated: 2026-08-09. Live evidence
 > last reconciled: 2026-07-24.
 
 The RISC Zero toolchain image prebuilds the large Rust/RISC Zero toolchain used
 by Prover image builds. A normal full App deployment uses one control source
-SHA for Foundation, Prover, and App. Its Prover record exact-links one immutable
-Toolchain artifact, but that artifact may have been built from an earlier
-source SHA. If the accepted Toolchain pointer already names the intended
-artifact, do not run the Toolchain lane.
+SHA for its same-source Foundation and App lanes, but it may reuse a compatible
+retained Prover built from another source when the recorded zkVM contract hash
+matches exactly. Each Prover record exact-links one immutable Toolchain
+artifact, which may itself have been built from an earlier source SHA. If the
+accepted Toolchain pointer already names the intended artifact, do not run the
+Toolchain lane.
 
 ## Sources of truth
 
-| Concern                      | Source                                                              |
-| ---------------------------- | ------------------------------------------------------------------- |
-| ARM64 image contents         | `infra/docker/Dockerfile.risc0-toolchain-arm64`                     |
-| Target build and scan checks | `buildspec-risc0-toolchain.yml`                                     |
-| Release pipeline             | `infra/terraform/bootstrap/foundation_pipeline_toolchain_release_*` |
-| ECR repository               | `infra/terraform/foundation/ecr.tf`                                 |
-| Operator procedure           | Private deployment and operator documentation                       |
-| Release record and pointer   | Versioned foundation manifest storage                               |
+| Concern                           | Source                                                              |
+| --------------------------------- | ------------------------------------------------------------------- |
+| ARM64 image contents              | `infra/docker/Dockerfile.risc0-toolchain-arm64`                     |
+| Target build and scan checks      | `buildspec-risc0-toolchain.yml`                                     |
+| Allowed target and lane authority | `packages/deployment-authority/deployment-targets.json`             |
+| Release pipeline                  | `infra/terraform/bootstrap/foundation_pipeline_toolchain_release_*` |
+| ECR repository                    | `infra/terraform/foundation/ecr.tf`                                 |
+| Operator procedure                | Private deployment and operator documentation                       |
+| Release record and pointer        | Versioned foundation manifest storage                               |
 
 The amd64 GHCR image built by
 `.github/workflows/risc0-toolchain-image-amd64.yml` is for CI. It is not the
@@ -50,6 +53,12 @@ versions, and the corresponding image labels. `existing` deliberately does
 not impose current-version pins: historical selection remains available for
 current semantic records identified by exact immutable coordinates.
 
+The build path uses the Amazon ECR credential helper already supplied by the
+managed ARM CodeBuild image. Its temporary Docker configuration admits only
+the exact target private registry and `public.ecr.aws`, disables the helper's
+token cache, and probes both registries before starting the long image build.
+Retained-artifact selection skips this Docker/ECR authentication path.
+
 ## When image contents change
 
 - The RISC Zero version or commit changes.
@@ -77,10 +86,22 @@ path.
 Source
   -> CandidateApproval / ApproveToolchainCandidateExecution
   -> PrepareToolchainCandidate
-     (build a new candidate or resolve one exact retained artifact)
+     -> render and validate the canonical, hash-bound Toolchain context
+     -> build a new candidate or resolve one exact retained artifact
   -> PromotionApproval / ApproveToolchainPromotion
   -> UpdateAcceptedPointer
+     (revalidate the same context for the pointer role and project)
 ```
+
+`packages/deployment-authority/deployment-targets.json` is the reviewed source
+for the allowed target, Toolchain lane, exact generated names, and lane policy.
+The candidate renders those values with the requested control, selected
+application, and framework source all bound to the exact Toolchain control SHA.
+It retains the canonical context and its SHA-256 beside `image-info.json`.
+Context loading verifies the full target-configuration hash, lane, account,
+region, resolved source, and exact CodeBuild role and project. Pointer promotion
+loads that same retained context against its own exact role and project before
+publishing authority.
 
 Do not start this lane until the user explicitly authorizes the intended build
 or retained selection. Follow the private deployment and operator
@@ -88,11 +109,15 @@ documentation for the exact dry-run and execution commands. Every selection
 must bind a full control source SHA. Retained-artifact selection must also bind
 the exact artifact key, S3 `VersionId`, and body SHA-256.
 
-Before execution, review the selected pipeline, fixed `stark-dev-operator`
-profile, region, control SHA, mode, exact retained coordinates when applicable,
-and independently selected account ID. The private starter passes the selected
-commit as the CodePipeline Source `COMMIT_ID` and `RequestedSourceSha`, verifies
-the selected account with STS, and requires an explicit execution option.
+Before execution, review the exact configured account, pipeline, Source action,
+region, fixed `stark-dev-operator` profile, control SHA, mode, and exact retained
+coordinates when applicable. The private starter derives the target values
+from deployment authority and rejects account, pipeline, Source-action, region,
+or profile alternatives. It passes the selected commit as both the CodePipeline
+Source `COMMIT_ID` and `RequestedSourceSha`, requires an explicit execution
+option plus an independently supplied expected account ID, and verifies both
+the exact account and reviewed IAM Identity Center operator role before it
+starts CodePipeline.
 
 ## Approval decisions by mode
 

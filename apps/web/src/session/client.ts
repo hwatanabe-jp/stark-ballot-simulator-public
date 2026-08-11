@@ -1,101 +1,93 @@
-import type { SessionData, SessionPhase } from './types';
-import { SESSION_CAPABILITY_HEADER, SESSION_ID_HEADER } from '@stark-ballot/web/session/capability';
-import { resolveCanonicalFinalizationPayload } from '@stark-ballot/web/finalize/client-finalization-result';
-import {
-  isBrowserCurrentContractGeneration,
-  resolveBrowserCurrentContractGeneration,
-} from '@stark-ballot/web/session/browserContractGeneration';
+import type { ClientFinalizationSnapshot } from '@stark-ballot/web/finalize/client-finalization-result';
+import type { ServerIssuedSessionIdentity, SessionData, SessionPhase, VoteChoice } from './types';
+import { admitStoredSessionData } from './storageAdmission';
 import {
   clearStoredSessionData,
-  ensureClientStorageSchema,
   hasClientStorageSupport,
   SESSION_LOCK_KEY,
   SESSION_STORAGE_KEY as SESSION_STORAGE_KEY_VALUE,
-} from './storageSchema';
+} from './storage';
 
 export const SESSION_PHASE_TIMEOUTS_MS: Record<SessionPhase, number> = {
-  voting: 30 * 60 * 1000, // 30 minutes to cover vote + aggregation latency
+  voting: 30 * 60 * 1000,
   finalizing: 30 * 60 * 1000,
-  verifying: 24 * 60 * 60 * 1000, // 24 hours to allow post-finalization auditing
+  verifying: 24 * 60 * 60 * 1000,
 };
 
 export const SESSION_ACTIVE_TIMEOUT_MS = SESSION_PHASE_TIMEOUTS_MS.voting;
 export const SESSION_VERIFICATION_TIMEOUT_MS = SESSION_PHASE_TIMEOUTS_MS.verifying;
-
-export const SESSION_HEARTBEAT_INTERVAL_MS = 60 * 1000; // 1 minute keep-alive cadence
-
+export const SESSION_HEARTBEAT_INTERVAL_MS = 60 * 1000;
 export const SESSION_STORAGE_KEY = SESSION_STORAGE_KEY_VALUE;
-const DEFAULT_PHASE: SessionPhase = 'voting';
-type StoredSessionData = Omit<SessionData, 'finalizeResult'> & { finalizeResult?: unknown };
-type SessionPatch = Partial<Omit<SessionData, 'finalizeResult' | 'verificationRequestedAt'>> & {
-  finalizeResult?: SessionData['finalizeResult'] | undefined;
-  verificationRequestedAt?: SessionData['verificationRequestedAt'] | undefined;
-};
 
 export type SessionIdentity = Pick<SessionData, 'sessionId' | 'capabilityToken'>;
 
+type SessionPatch = {
+  phase?: SessionPhase;
+  myVote?: VoteChoice | undefined;
+  myCommit?: string | undefined;
+  myRand?: string | undefined;
+  voteId?: string | undefined;
+  bulletinIndex?: number | undefined;
+  bulletinRootAtCast?: string | undefined;
+  verificationRequestedAt?: number | undefined;
+  finalizeResult?: ClientFinalizationSnapshot | undefined;
+};
+
+const SESSION_PATCH_KEYS = new Set<keyof SessionPatch>([
+  'phase',
+  'myVote',
+  'myCommit',
+  'myRand',
+  'voteId',
+  'bulletinIndex',
+  'bulletinRootAtCast',
+  'verificationRequestedAt',
+  'finalizeResult',
+]);
+const OPTIONAL_PATCH_KEYS = [
+  'myVote',
+  'myCommit',
+  'myRand',
+  'voteId',
+  'bulletinIndex',
+  'bulletinRootAtCast',
+  'verificationRequestedAt',
+  'finalizeResult',
+] as const;
+
 function hasStorageSupport(): boolean {
   return hasClientStorageSupport();
-}
-
-function ensureStorageSchema(): void {
-  ensureClientStorageSchema();
-}
-
-function sanitizeSessionData(session: SessionData | StoredSessionData): SessionData {
-  const { finalizeResult, ...sessionWithoutFinalizeResult } = session;
-  const baseSession: SessionData = { ...sessionWithoutFinalizeResult };
-
-  if (finalizeResult === undefined && session.phase !== 'verifying' && session.verificationRequestedAt === undefined) {
-    return baseSession;
-  }
-
-  const canonicalFinalizeResult = resolveCanonicalFinalizationPayload(finalizeResult);
-  if (canonicalFinalizeResult) {
-    return {
-      ...baseSession,
-      finalizeResult: canonicalFinalizeResult,
-    };
-  }
-
-  const sanitized: SessionData = { ...baseSession };
-  delete sanitized.finalizeResult;
-  delete sanitized.verificationRequestedAt;
-  if (sanitized.phase === 'verifying') {
-    sanitized.phase = DEFAULT_PHASE;
-    delete sanitized.expiresAt;
-  }
-  return sanitized;
-}
-
-function resolvePhase(data?: { phase?: SessionPhase }): SessionPhase {
-  if (!data?.phase) {
-    return DEFAULT_PHASE;
-  }
-  return data.phase;
 }
 
 function computeExpiry(phase: SessionPhase, now: number = Date.now()): number {
   return now + SESSION_PHASE_TIMEOUTS_MS[phase];
 }
 
+function hasOwn(value: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
 function parseSessionIdentity(value: unknown): SessionIdentity | null {
-  if (!value || typeof value !== 'object') {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
 
   const record = value as Record<string, unknown>;
-  const sessionId = record['sessionId'];
-  const capabilityToken = record['capabilityToken'];
   if (
-    typeof sessionId !== 'string' ||
-    sessionId.length === 0 ||
-    typeof capabilityToken !== 'string' ||
-    capabilityToken.length === 0
+    Object.keys(record).length !== 2 ||
+    !hasOwn(record, 'sessionId') ||
+    !hasOwn(record, 'capabilityToken') ||
+    typeof record['sessionId'] !== 'string' ||
+    record['sessionId'].length === 0 ||
+    typeof record['capabilityToken'] !== 'string' ||
+    record['capabilityToken'].length === 0
   ) {
     return null;
   }
-  return { sessionId, capabilityToken };
+  return {
+    sessionId: record['sessionId'],
+    capabilityToken: record['capabilityToken'],
+  };
 }
 
 function toSessionIdentity(
@@ -104,10 +96,24 @@ function toSessionIdentity(
   if (!value) {
     return null;
   }
-  return parseSessionIdentity(value);
+  return parseSessionIdentity({
+    sessionId: value.sessionId,
+    capabilityToken: value.capabilityToken,
+  });
 }
 
-function safeParseSessionRaw(): SessionData | null {
+function serializeAdmittedSession(value: unknown): { data: SessionData; json: string } | null {
+  try {
+    const json = JSON.stringify(value);
+    const parsed: unknown = JSON.parse(json);
+    const data = admitStoredSessionData(parsed);
+    return data ? { data, json } : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeParseSession(): SessionData | null {
   if (!hasStorageSupport()) {
     return null;
   }
@@ -116,42 +122,19 @@ function safeParseSessionRaw(): SessionData | null {
   if (!storedData) {
     return null;
   }
+
   try {
-    const parsed = JSON.parse(storedData) as unknown;
-    if (!isStoredSessionData(parsed)) {
-      clearStoredSessionData({ clearKnowledge: true, clearLock: true });
-      return null;
+    const parsed: unknown = JSON.parse(storedData);
+    const admitted = admitStoredSessionData(parsed);
+    if (admitted) {
+      return admitted;
     }
-    return sanitizeSessionData(parsed);
   } catch {
-    clearStoredSessionData({ clearKnowledge: true, clearLock: true });
-    return null;
-  }
-}
-
-function safeParseSession(): SessionData | null {
-  ensureStorageSchema();
-  return safeParseSessionRaw();
-}
-
-function isStoredSessionData(value: unknown): value is StoredSessionData {
-  if (!value || typeof value !== 'object') {
-    return false;
+    // Invalid JSON is handled by the same fail-closed clear below.
   }
 
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record['sessionId'] === 'string' &&
-    record['sessionId'].length > 0 &&
-    typeof record['capabilityToken'] === 'string' &&
-    record['capabilityToken'].length > 0 &&
-    typeof record['contractGeneration'] === 'string' &&
-    isBrowserCurrentContractGeneration(record['contractGeneration']) &&
-    typeof record['lastActivity'] === 'number' &&
-    Number.isFinite(record['lastActivity']) &&
-    (record['verificationRequestedAt'] === undefined ||
-      (typeof record['verificationRequestedAt'] === 'number' && Number.isFinite(record['verificationRequestedAt'])))
-  );
+  clearStoredSessionData({ clearKnowledge: true, clearLock: true });
+  return null;
 }
 
 function readSessionLock(): SessionIdentity | null {
@@ -165,17 +148,17 @@ function readSessionLock(): SessionIdentity | null {
   }
 
   try {
-    const parsed = JSON.parse(storedLock) as unknown;
+    const parsed: unknown = JSON.parse(storedLock);
     const identity = parseSessionIdentity(parsed);
-    if (!identity) {
-      sessionStorage.removeItem(SESSION_LOCK_KEY);
-      return null;
+    if (identity) {
+      return identity;
     }
-    return identity;
   } catch {
-    sessionStorage.removeItem(SESSION_LOCK_KEY);
-    return null;
+    // Invalid JSON is handled by clearing the lock below.
   }
+
+  sessionStorage.removeItem(SESSION_LOCK_KEY);
+  return null;
 }
 
 function writeSessionLock(identity: SessionIdentity): void {
@@ -186,7 +169,7 @@ function writeSessionLock(identity: SessionIdentity): void {
   try {
     sessionStorage.setItem(SESSION_LOCK_KEY, JSON.stringify(identity));
   } catch {
-    // Ignore storage errors
+    // Ignore storage errors.
   }
 }
 
@@ -201,11 +184,10 @@ function isSessionLockMismatch(session: SessionData | null, lock: SessionIdentit
   if (!session) {
     return true;
   }
-  const sessionIdentity: SessionIdentity = {
-    sessionId: session.sessionId,
-    capabilityToken: session.capabilityToken,
-  };
-  return !isSameSessionIdentity(sessionIdentity, lock);
+  return !isSameSessionIdentity(session, {
+    sessionId: lock.sessionId,
+    capabilityToken: lock.capabilityToken,
+  });
 }
 
 function readSessionForAccess({
@@ -238,123 +220,79 @@ function readSessionForAccess({
 }
 
 function writeSessionData(data: SessionData): void {
-  ensureStorageSchema();
   if (!hasStorageSupport()) {
     return;
   }
-  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sanitizeSessionData(data)));
+
+  const serialized = serializeAdmittedSession(data);
+  if (!serialized) {
+    throw new Error('Invalid browser session state');
+  }
+  localStorage.setItem(SESSION_STORAGE_KEY, serialized.json);
 }
 
 function isExpired(session: SessionData, now: number = Date.now()): boolean {
-  const phase = resolvePhase(session);
-  const expiresAt = session.expiresAt ?? session.lastActivity + SESSION_PHASE_TIMEOUTS_MS[phase];
-  return now > expiresAt;
-}
-
-function normalizeSessionData(session: SessionData, now: number = Date.now()): SessionData {
-  const phase = resolvePhase(session);
-  const lastActivity = typeof session.lastActivity === 'number' ? session.lastActivity : now;
-  const expiresAt = session.expiresAt ?? computeExpiry(phase, lastActivity);
-
-  return {
-    ...session,
-    phase,
-    lastActivity,
-    expiresAt,
-  };
-}
-
-function determineNextPhase(current: SessionData, patch: SessionPatch): SessionPhase {
-  if (patch.phase) {
-    if (patch.phase !== 'verifying') {
-      return resolvePhase(patch);
-    }
-    if (resolveCanonicalFinalizationPayload(patch.finalizeResult) || current.finalizeResult !== undefined) {
-      return 'verifying';
-    }
-    return resolvePhase(current);
-  }
-  if (resolveCanonicalFinalizationPayload(patch.finalizeResult)) {
-    return 'verifying';
-  }
-  return resolvePhase(current);
-}
-
-function hasOwnPatchKey<T extends object>(value: T, key: keyof T): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
+  return now > session.expiresAt;
 }
 
 function applySessionPatch(current: SessionData, patch: SessionPatch, now: number): SessionData {
-  const hasFinalizeResultPatch = hasOwnPatchKey(patch, 'finalizeResult');
-  const hasVerificationRequestedAtPatch = hasOwnPatchKey(patch, 'verificationRequestedAt');
-  const patchedFinalizeResult = hasFinalizeResultPatch
-    ? (resolveCanonicalFinalizationPayload(patch.finalizeResult) ?? undefined)
-    : undefined;
-  const nextPhase = determineNextPhase(current, patch);
-  const { finalizeResult, verificationRequestedAt, ...restPatch } = patch;
-  void finalizeResult;
-  const sanitizedPatch: Partial<SessionData> = {
-    ...restPatch,
-    ...(hasVerificationRequestedAtPatch && verificationRequestedAt !== undefined ? { verificationRequestedAt } : {}),
-  };
+  if (Object.keys(patch).some((key) => !SESSION_PATCH_KEYS.has(key as keyof SessionPatch))) {
+    throw new Error('Invalid browser session patch');
+  }
 
-  const updated: SessionData = {
-    ...current,
-    ...sanitizedPatch,
-    phase: nextPhase,
-    lastActivity: now,
-    expiresAt: computeExpiry(nextPhase, now),
-  };
-
-  if (hasFinalizeResultPatch) {
-    if (patchedFinalizeResult) {
-      updated.finalizeResult = patchedFinalizeResult;
-    } else if (patch.finalizeResult === undefined || current.finalizeResult === undefined) {
-      delete updated.finalizeResult;
+  const candidate: Record<string, unknown> = { ...current };
+  for (const key of OPTIONAL_PATCH_KEYS) {
+    if (!hasOwn(patch, key)) {
+      continue;
+    }
+    const value = patch[key];
+    if (value === undefined) {
+      delete candidate[key];
     } else {
-      updated.finalizeResult = current.finalizeResult;
+      candidate[key] = value;
     }
   }
 
-  if (hasVerificationRequestedAtPatch && verificationRequestedAt === undefined) {
-    delete updated.verificationRequestedAt;
+  if (hasOwn(patch, 'phase')) {
+    candidate['phase'] = patch.phase;
+  } else if (hasOwn(patch, 'finalizeResult') && patch.finalizeResult !== undefined) {
+    candidate['phase'] = 'verifying';
   }
 
-  return sanitizeSessionData(updated);
+  const phase = candidate['phase'];
+  if (phase !== 'voting' && phase !== 'finalizing' && phase !== 'verifying') {
+    throw new Error('Invalid browser session phase');
+  }
+  candidate['lastActivity'] = now;
+  candidate['expiresAt'] = computeExpiry(phase, now);
+
+  const admitted = serializeAdmittedSession(candidate)?.data;
+  if (!admitted) {
+    throw new Error('Invalid browser session state');
+  }
+  return admitted;
 }
 
-export function generateSessionId(
-  initialSessionId: string | undefined,
-  capabilityToken: string,
-  contractGeneration: string = resolveBrowserCurrentContractGeneration(),
-): string {
-  ensureStorageSchema();
-  const sessionId = initialSessionId ?? crypto.randomUUID();
-  const normalizedCapabilityToken = capabilityToken.trim();
-  const normalizedContractGeneration = contractGeneration.trim();
-  if (!normalizedCapabilityToken) {
-    throw new Error('capabilityToken is required');
-  }
-  if (!normalizedContractGeneration) {
-    throw new Error('contractGeneration is required');
-  }
+export function initializeSession(identity: ServerIssuedSessionIdentity): string {
   const now = Date.now();
-  const phase = DEFAULT_PHASE;
-  const sessionData: SessionData = {
-    sessionId,
-    capabilityToken: normalizedCapabilityToken,
-    contractGeneration: normalizedContractGeneration,
+  const serialized = serializeAdmittedSession({
+    ...identity,
+    phase: 'voting',
     lastActivity: now,
-    expiresAt: computeExpiry(phase, now),
-    phase,
-  };
-
-  writeSessionData(sessionData);
-  writeSessionLock({
-    sessionId: sessionData.sessionId,
-    capabilityToken: sessionData.capabilityToken,
+    expiresAt: computeExpiry('voting', now),
   });
-  return sessionId;
+  if (!serialized) {
+    throw new Error('Invalid server-issued session identity');
+  }
+
+  if (hasStorageSupport()) {
+    localStorage.setItem(SESSION_STORAGE_KEY, serialized.json);
+    writeSessionLock({
+      sessionId: serialized.data.sessionId,
+      capabilityToken: serialized.data.capabilityToken,
+    });
+  }
+  return serialized.data.sessionId;
 }
 
 export function captureSessionIdentity(
@@ -373,66 +311,48 @@ export function checkTimeout(): boolean {
     clearSession();
     return true;
   }
-
   return false;
 }
 
 export function clearSession(): void {
   try {
-    ensureStorageSchema();
-    if (!hasStorageSupport()) {
-      return;
+    if (hasStorageSupport()) {
+      clearStoredSessionData({ clearKnowledge: true, clearLock: true });
     }
-    clearStoredSessionData({ clearKnowledge: true, clearLock: true });
   } catch {
-    // Ignore storage errors (e.g., private mode)
+    // Ignore storage errors.
   }
+}
+
+function refreshSession(session: SessionData): void {
+  if (isExpired(session)) {
+    clearSession();
+    return;
+  }
+
+  const now = Date.now();
+  writeSessionData({
+    ...session,
+    lastActivity: now,
+    expiresAt: computeExpiry(session.phase, now),
+  });
 }
 
 export function updateLastActivity(): void {
   const session = readSessionForAccess();
-  if (!session) {
-    return;
+  if (session) {
+    refreshSession(session);
   }
-
-  if (isExpired(session)) {
-    clearSession();
-    return;
-  }
-
-  const now = Date.now();
-  const phase = resolvePhase(session);
-  const updated: SessionData = {
-    ...session,
-    phase,
-    lastActivity: now,
-    expiresAt: computeExpiry(phase, now),
-  };
-
-  writeSessionData(updated);
 }
 
 export function updateLastActivityForIdentity(expectedIdentity: SessionIdentity | null): void {
+  if (!expectedIdentity) {
+    return;
+  }
   const session = readSessionForAccess({ expectedIdentity });
-  if (!session) {
-    return;
+  if (session) {
+    refreshSession(session);
   }
-
-  if (isExpired(session)) {
-    clearSession();
-    return;
-  }
-
-  const now = Date.now();
-  const phase = resolvePhase(session);
-  const updated: SessionData = {
-    ...session,
-    phase,
-    lastActivity: now,
-    expiresAt: computeExpiry(phase, now),
-  };
-
-  writeSessionData(updated);
 }
 
 export function getSessionData(): SessionData | null {
@@ -440,31 +360,26 @@ export function getSessionData(): SessionData | null {
   if (!session) {
     return null;
   }
-
   if (isExpired(session)) {
     clearSession();
     return null;
   }
-
-  const normalized = normalizeSessionData(session);
-  writeSessionData(normalized);
-  return normalized;
+  return session;
 }
 
 export function getSessionDataForIdentity(expectedIdentity: SessionIdentity | null): SessionData | null {
+  if (!expectedIdentity) {
+    return null;
+  }
   const session = readSessionForAccess({ expectedIdentity });
   if (!session) {
     return null;
   }
-
   if (isExpired(session)) {
     clearSession();
     return null;
   }
-
-  const normalized = normalizeSessionData(session);
-  writeSessionData(normalized);
-  return normalized;
+  return session;
 }
 
 export function saveSessionData(data: SessionPatch): void {
@@ -472,71 +387,43 @@ export function saveSessionData(data: SessionPatch): void {
   if (!session) {
     return;
   }
-
   if (isExpired(session)) {
     clearSession();
     return;
   }
-
-  const now = Date.now();
-  const current = normalizeSessionData(session, now);
-  const updated = applySessionPatch(current, data, now);
-
-  writeSessionData(updated);
+  writeSessionData(applySessionPatch(session, data, Date.now()));
 }
 
 export function saveSessionDataForIdentity(expectedIdentity: SessionIdentity | null, data: SessionPatch): void {
+  if (!expectedIdentity) {
+    return;
+  }
   const session = readSessionForAccess({ expectedIdentity });
   if (!session) {
     return;
   }
-
   if (isExpired(session)) {
     clearSession();
     return;
   }
-
-  const now = Date.now();
-  const current = normalizeSessionData(session, now);
-  const updated = applySessionPatch(current, data, now);
-
-  writeSessionData(updated);
+  writeSessionData(applySessionPatch(session, data, Date.now()));
 }
 
 /**
- * Returns true when the current tab has a locked session and localStorage was replaced with another one.
+ * Returns true when the current tab has a locked session and localStorage was
+ * replaced with another one.
  */
 export function isSessionReplaced(): boolean {
-  const session = safeParseSession();
-  const lock = readSessionLock();
-  return isSessionLockMismatch(session, lock);
+  return isSessionLockMismatch(safeParseSession(), readSessionLock());
 }
 
 export function isSessionReplacedForIdentity(expectedIdentity: SessionIdentity | null): boolean {
   if (!expectedIdentity) {
     return false;
   }
-  const session = safeParseSession();
-  const currentIdentity = toSessionIdentity(session);
+  const currentIdentity = toSessionIdentity(safeParseSession());
   if (!currentIdentity) {
     return readSessionLock() !== null;
   }
   return !isSameSessionIdentity(currentIdentity, expectedIdentity);
-}
-
-/**
- * Build API auth headers for the current session.
- */
-export function getSessionAuthHeaders(
-  sessionOverride?: Pick<SessionData, 'sessionId' | 'capabilityToken'> | null,
-): Record<string, string> {
-  const session = sessionOverride ?? getSessionData();
-  if (!session?.sessionId || !session.capabilityToken) {
-    return {};
-  }
-
-  return {
-    [SESSION_ID_HEADER]: session.sessionId,
-    [SESSION_CAPABILITY_HEADER]: session.capabilityToken,
-  };
 }

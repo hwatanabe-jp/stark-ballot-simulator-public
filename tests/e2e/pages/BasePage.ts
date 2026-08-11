@@ -34,16 +34,6 @@ export class BasePage {
     }
   }
 
-  async waitForSessionId(): Promise<string> {
-    // Wait for session ID to be available in localStorage
-    await this.page.waitForFunction(() => {
-      const sessionId = localStorage.getItem('sessionId');
-      return sessionId !== null && sessionId !== '';
-    });
-
-    return await this.page.evaluate(() => localStorage.getItem('sessionId') || '');
-  }
-
   async getLocalStorageItem(key: string): Promise<string | null> {
     return await this.page.evaluate((k) => localStorage.getItem(k), key);
   }

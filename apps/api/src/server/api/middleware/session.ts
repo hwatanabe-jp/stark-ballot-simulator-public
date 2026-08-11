@@ -1,8 +1,8 @@
-import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
-import type { SessionData } from '@stark-ballot/domain/types/server';
+import type { SessionReadModel } from '@stark-ballot/application/session/session-read-model';
+import type { ApiContextStore } from '../context';
 import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
 import { errorResponse } from '../../http/response';
-import { SESSION_CAPABILITY_HEADER, SESSION_ID_HEADER } from '@stark-ballot/domain/session/capability';
+import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
 import {
   type SessionCapabilityPayload,
   verifySessionCapabilityToken,
@@ -11,13 +11,13 @@ import {
   resolveSessionCapabilitySecret,
   resolveSessionCapabilityTtlSeconds,
 } from '../security/sessionCapabilityRuntimeConfig';
-import { isRecoverableCurrentLiveSession } from '@stark-ballot/domain/contract';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 /**
  * Session validation result with session data and ID.
  */
 export interface SessionValidationResult {
-  session: SessionData;
+  session: SessionReadModel;
   sessionId: string;
 }
 
@@ -28,27 +28,17 @@ export interface SessionValidationOptions {
   updateActivity?: boolean;
 }
 
+export type SessionValidationStore = Pick<
+  ApiContextStore,
+  'getSessionIdentity' | 'getVotingRecord' | 'getCurrentFinalizationRecord' | 'touchSession'
+>;
+
 const defaultOptions: Required<SessionValidationOptions> = {
   updateActivity: true,
 };
 
 function resolveSessionOptions(options?: SessionValidationOptions): Required<SessionValidationOptions> {
   return { ...defaultOptions, ...options };
-}
-
-function isUnsupportedLiveSession(session: SessionData): boolean {
-  return !session.finalized && !isRecoverableCurrentLiveSession(session);
-}
-
-/**
- * Require a session ID header and return it when present.
- */
-export function requireSessionId(headers: Headers): string | Response {
-  const sessionId = headers.get(SESSION_ID_HEADER);
-  if (!sessionId) {
-    return errorResponse(ErrorCode.SESSION_ID_REQUIRED);
-  }
-  return sessionId;
 }
 
 /**
@@ -66,6 +56,7 @@ export function requireSessionCapability(headers: Headers): string | Response {
  * Validate capability token for a specific session ID.
  */
 export function validateSessionCapabilityForSession(
+  profile: ResolvedRuntimeProfile,
   headers: Headers,
   sessionId: string,
 ): SessionCapabilityPayload | Response {
@@ -77,8 +68,8 @@ export function validateSessionCapabilityForSession(
   let secret: string;
   let maxTtlSeconds: number;
   try {
-    secret = resolveSessionCapabilitySecret();
-    maxTtlSeconds = resolveSessionCapabilityTtlSeconds();
+    secret = resolveSessionCapabilitySecret(profile);
+    maxTtlSeconds = resolveSessionCapabilityTtlSeconds(profile);
   } catch (error) {
     return errorResponse(ErrorCode.INTERNAL_ERROR, {
       details: error instanceof Error ? error.message : 'Session capability secret misconfigured',
@@ -101,100 +92,29 @@ export function validateSessionCapabilityForSession(
  */
 export async function validateSessionById(
   sessionId: string,
-  store: VoteStore,
+  store: SessionValidationStore,
   options?: SessionValidationOptions,
 ): Promise<SessionValidationResult | Response> {
   const resolvedOptions = resolveSessionOptions(options);
-  const session = await store.getSession(sessionId);
-  if (!session) {
-    return errorResponse(ErrorCode.SESSION_NOT_FOUND);
-  }
-  if (isUnsupportedLiveSession(session)) {
+  const [identity, voting, finalization] = await Promise.all([
+    store.getSessionIdentity(sessionId),
+    store.getVotingRecord(sessionId),
+    store.getCurrentFinalizationRecord(sessionId),
+  ]);
+  if (!identity || !voting || identity.sessionId !== sessionId || voting.sessionId !== sessionId) {
     return errorResponse(ErrorCode.SESSION_NOT_FOUND);
   }
 
   if (resolvedOptions.updateActivity) {
-    await store.updateSession(sessionId);
+    await store.touchSession(sessionId);
   }
 
-  return { session, sessionId };
-}
-
-/**
- * Validate session from request headers and return session data.
- */
-export async function validateSession(
-  headers: Headers,
-  store: VoteStore,
-  options?: SessionValidationOptions,
-): Promise<SessionValidationResult | Response> {
-  const sessionIdResult = requireSessionId(headers);
-  if (sessionIdResult instanceof Response) {
-    return sessionIdResult;
-  }
-
-  return validateSessionById(sessionIdResult, store, options);
-}
-
-/**
- * Validate session ID + capability token + session existence.
- */
-export async function validateSessionWithCapability(
-  headers: Headers,
-  store: VoteStore,
-  options?: SessionValidationOptions,
-): Promise<SessionValidationResult | Response> {
-  const sessionIdResult = requireSessionId(headers);
-  if (sessionIdResult instanceof Response) {
-    return sessionIdResult;
-  }
-
-  const capabilityResult = validateSessionCapabilityForSession(headers, sessionIdResult);
-  if (capabilityResult instanceof Response) {
-    return capabilityResult;
-  }
-
-  return validateSessionById(sessionIdResult, store, options);
-}
-
-/**
- * Validate session and ensure the user has already voted.
- */
-export async function validateSessionWithVote(
-  headers: Headers,
-  store: VoteStore,
-  options?: SessionValidationOptions,
-): Promise<SessionValidationResult | Response> {
-  const result = await validateSession(headers, store, options);
-
-  if (result instanceof Response) {
-    return result;
-  }
-
-  if (result.session.userVoteIndex === undefined) {
-    return errorResponse(ErrorCode.USER_NOT_VOTED);
-  }
-
-  return result;
-}
-
-/**
- * Validate session and ensure it has been finalized.
- */
-export async function validateFinalizedSession(
-  headers: Headers,
-  store: VoteStore,
-  options?: SessionValidationOptions,
-): Promise<SessionValidationResult | Response> {
-  const result = await validateSession(headers, store, options);
-
-  if (result instanceof Response) {
-    return result;
-  }
-
-  if (!result.session.finalized) {
-    return errorResponse(ErrorCode.SESSION_NOT_FINALIZED);
-  }
-
-  return result;
+  return {
+    session: {
+      identity,
+      voting,
+      finalization,
+    },
+    sessionId,
+  };
 }

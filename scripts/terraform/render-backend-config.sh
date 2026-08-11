@@ -2,6 +2,10 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+terraform_backend_script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+deployment_target_configuration_path="${terraform_backend_script_dir}/../../packages/deployment-authority/deployment-targets.json"
+deployment_authority_module_path="${terraform_backend_script_dir}/../../packages/deployment-authority/src/index.js"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -11,13 +15,13 @@ Reads Terraform backend values from an optional .env-style file and writes a
 git-ignored backend config for terraform init. The command reports variable
 names only, not bucket names.
 
-Required:
+Required outside reviewed target mode:
   TERRAFORM_STATE_BUCKET or TERRAFORM_STATE_BUCKET_NAME
+  TERRAFORM_AWS_REGION, AWS_REGION, or AWS_DEFAULT_REGION
 
 Optional:
-  TERRAFORM_AWS_REGION, AWS_REGION, or AWS_DEFAULT_REGION  # default: ap-northeast-1
   TERRAFORM_ACCOUNT_ALIAS, TERRAFORM_DEPLOYMENT_ENVIRONMENT, TERRAFORM_STATE_SCOPE
-  TERRAFORM_STATE_KMS_KEY_ID or TERRAFORM_STATE_KMS_ALIAS
+  TERRAFORM_STATE_KMS_KEY_ID or TERRAFORM_STATE_KMS_ALIAS (outside reviewed target mode)
 EOF
 }
 
@@ -134,19 +138,46 @@ validate_state_scope() {
   esac
 }
 
-require_authorized_target_identity() {
-  local identity="$1"
+require_canonical_deployment_target_admission() {
+  if ! node --input-type=module --eval 'await import(process.argv[1]);' "$deployment_authority_module_path" >/dev/null 2>&1; then
+    echo "Reviewed deployment target configuration failed canonical admission." >&2
+    exit 2
+  fi
+}
 
-  case "$identity" in
-    stark-dev/develop/bootstrap|stark-dev/develop/foundation|stark-dev/develop/app)
-      return 0
-      ;;
-    *)
-      echo "Current backend rendering is authorized only for stark-dev/develop/bootstrap, stark-dev/develop/foundation, and stark-dev/develop/app." >&2
-      echo "Production bootstrap and app state identities require a later authorization record." >&2
-      exit 2
-      ;;
-  esac
+resolve_reviewed_target_root() {
+  local target_key="$1"
+  local lane="$2"
+  local resolved
+
+  require_canonical_deployment_target_admission
+  if ! resolved="$({
+    jq -er --arg target_key "$target_key" --arg lane "$lane" '
+      select(keys == ["allowedTargets", "configurationType"])
+      | select(.configurationType == "deployment-target-configuration")
+      | .allowedTargets[$target_key] as $target
+      | $target.lanes[$lane] as $root
+      | [
+          $target.region,
+          $root.stateIdentity,
+          $root.backendKey,
+          $target.sharedNames.terraformStateBucket,
+          $target.sharedNames.terraformStateKmsAlias
+        ] as $values
+      | select(
+          $target.targetKey == $target_key
+          and $root.scope == $lane
+          and all($values[]; type == "string" and length > 0)
+        )
+      | $values
+      | @tsv
+    ' "$deployment_target_configuration_path"
+  } 2>/dev/null)"; then
+    echo "Terraform target ${target_key}/${lane} is not authorized by the reviewed deployment configuration." >&2
+    exit 2
+  fi
+
+  printf '%s' "$resolved"
 }
 
 target_identity_mode() {
@@ -221,31 +252,21 @@ fi
 
 state_bucket="$(first_nonempty TERRAFORM_STATE_BUCKET TERRAFORM_STATE_BUCKET_NAME || true)"
 aws_region="$(first_nonempty TERRAFORM_AWS_REGION AWS_REGION AWS_DEFAULT_REGION || true)"
-aws_region="${aws_region:-ap-northeast-1}"
 account_alias="$(first_nonempty TERRAFORM_ACCOUNT_ALIAS || true)"
 deployment_environment="$(first_nonempty TERRAFORM_DEPLOYMENT_ENVIRONMENT || true)"
 state_scope="$(first_nonempty TERRAFORM_STATE_SCOPE || true)"
 state_kms_key_id="$(first_nonempty TERRAFORM_STATE_KMS_KEY_ID TERRAFORM_STATE_KMS_ALIAS || true)"
 
-missing=()
-if [ -z "$state_bucket" ]; then
-  missing+=("TERRAFORM_STATE_BUCKET")
-fi
-
-if [ "${#missing[@]}" -gt 0 ]; then
-  echo "Missing required Terraform backend values:" >&2
-  printf '  - %s\n' "${missing[@]}" >&2
-  exit 2
-fi
-
-reject_placeholder "TERRAFORM_STATE_BUCKET" "$state_bucket"
-reject_placeholder "TERRAFORM_AWS_REGION" "$aws_region"
-validate_bucket_name "$state_bucket"
-validate_region "$aws_region"
-
 backend_key="terraform.tfstate"
 target_mode=0
 if target_identity_mode; then
+  reviewed_backend_key=""
+  reviewed_region=""
+  reviewed_root=""
+  reviewed_state_identity=""
+  reviewed_state_bucket=""
+  reviewed_state_kms_alias=""
+  target_key="${account_alias}/${deployment_environment}"
   target_mode=1
   reject_placeholder "TERRAFORM_ACCOUNT_ALIAS" "$account_alias"
   reject_placeholder "TERRAFORM_DEPLOYMENT_ENVIRONMENT" "$deployment_environment"
@@ -253,9 +274,57 @@ if target_identity_mode; then
   validate_account_alias "$account_alias"
   validate_deployment_environment "$deployment_environment"
   validate_state_scope "$state_scope"
-  require_authorized_target_identity "${account_alias}/${deployment_environment}/${state_scope}"
-  backend_key="stark-ballot-simulator/${account_alias}/${deployment_environment}/${state_scope}/terraform.tfstate"
+  if ! reviewed_root="$(resolve_reviewed_target_root "$target_key" "$state_scope")"; then
+    exit 2
+  fi
+  IFS=$'\t' read -r \
+    reviewed_region \
+    reviewed_state_identity \
+    reviewed_backend_key \
+    reviewed_state_bucket \
+    reviewed_state_kms_alias \
+    <<< "$reviewed_root"
+  if [ "${account_alias}/${deployment_environment}/${state_scope}" != "$reviewed_state_identity" ]; then
+    echo "Terraform target state identity does not match the reviewed deployment configuration." >&2
+    exit 2
+  fi
+  if [ -n "$aws_region" ] && [ "$aws_region" != "$reviewed_region" ]; then
+    echo "Terraform target region does not match the reviewed deployment configuration." >&2
+    echo "Reviewed target region: $reviewed_region" >&2
+    exit 2
+  fi
+  if [ -n "$state_bucket" ]; then
+    reject_placeholder "TERRAFORM_STATE_BUCKET" "$state_bucket"
+    validate_bucket_name "$state_bucket"
+    if [ "$state_bucket" != "$reviewed_state_bucket" ]; then
+      echo "Terraform target state bucket does not match the reviewed deployment configuration." >&2
+      exit 2
+    fi
+  fi
+  if [ -n "$state_kms_key_id" ] && [ "$state_kms_key_id" != "$reviewed_state_kms_alias" ]; then
+    echo "Terraform target state KMS key does not match the reviewed deployment configuration." >&2
+    exit 2
+  fi
+  aws_region="$reviewed_region"
+  backend_key="$reviewed_backend_key"
+  state_bucket="$reviewed_state_bucket"
+  state_kms_key_id="$reviewed_state_kms_alias"
+else
+  if [ -z "$state_bucket" ]; then
+    echo "Missing required Terraform backend values:" >&2
+    echo "  - TERRAFORM_STATE_BUCKET" >&2
+    exit 2
+  fi
+  if [ -z "$aws_region" ]; then
+    echo "TERRAFORM_AWS_REGION, AWS_REGION, or AWS_DEFAULT_REGION is required outside reviewed target mode." >&2
+    exit 2
+  fi
+  reject_placeholder "TERRAFORM_STATE_BUCKET" "$state_bucket"
+  validate_bucket_name "$state_bucket"
 fi
+
+reject_placeholder "TERRAFORM_AWS_REGION" "$aws_region"
+validate_region "$aws_region"
 
 if [ -n "$state_kms_key_id" ]; then
   reject_placeholder "TERRAFORM_STATE_KMS_KEY_ID" "$state_kms_key_id"

@@ -409,7 +409,7 @@ describe('logger', () => {
   it('scrubs denied keys and sensitive value shapes while preserving public telemetry names', async () => {
     const capability = `v1.${'a'.repeat(64)}.${'b'.repeat(64)}`;
     const jwt = `${'a'.repeat(24)}.${'b'.repeat(24)}.${'c'.repeat(24)}`;
-    const rawHeaderSessionId = 'raw-header-session-id';
+    const rawLocatorSessionId = 'raw-locator-session-id';
     const rawSessionIdentifier = 'raw-session-identifier';
     const rawIp = '198.51.100.42';
     const rawForwardedIp = '203.0.113.8';
@@ -418,16 +418,16 @@ describe('logger', () => {
     const logSalt = 'private-log-hash-salt';
     const turnstileClientToken = 'private-turnstile-client-value';
     const rawRequestBody = 'private-request-body';
-    const rawObjectKey = 'sessions/raw-header-session-id/input.json';
+    const rawObjectKey = `sessions/${rawLocatorSessionId}/input.json`;
     const rawAlternateObjectKey = 'private/artifacts/bundle.zip';
     const sessionId = '550e8400-e29b-41d4-a716-446655440000';
     const requestId = 'c56a4180-65aa-42ec-a945-5fd21dec0538';
-    const executionId = 'c56a4180-65aa-42ec-a945-5fd21dec0539';
+    const finalizationId = 'c56a4180-65aa-42ec-a945-5fd21dec0539';
     const opaquePayload = JSON.stringify({ sessionId, token: 'private-serialized-token' });
     const rawS3ObjectUrl = [
       'https://private-bucket.',
       's3.ap-northeast-1.amazonaws.com/',
-      'sessions/raw-header-session-id/input.json',
+      `sessions/${rawLocatorSessionId}/input.json`,
     ].join('');
     const presigned = [
       'https://example.invalid/object?',
@@ -453,7 +453,6 @@ describe('logger', () => {
           Authorization: `Bearer ${capability}`,
           cookieValue: 'private-cookie',
           sessionId,
-          'X-Session-ID': rawHeaderSessionId,
           sessionIdentifier: rawSessionIdentifier,
           sourceIp: rawIp,
           'X-Real-IP': rawForwardedIp,
@@ -479,7 +478,7 @@ describe('logger', () => {
           journal_hash: `0x${'a'.repeat(64)}`,
           bundle_key_prefix: 'key_53c8bca0f861',
           request_id: requestId,
-          execution_id: executionId,
+          finalization_id: finalizationId,
           turnstile: { status: 'passed', error_code: 'none' },
           turnstile_status: 'passed',
           turnstile_error_code: 'none',
@@ -501,7 +500,7 @@ describe('logger', () => {
       'private-secret',
       'private-cookie',
       sessionId,
-      rawHeaderSessionId,
+      rawLocatorSessionId,
       rawSessionIdentifier,
       rawIp,
       rawForwardedIp,
@@ -528,7 +527,7 @@ describe('logger', () => {
     expect(parsed['journal_hash']).toBe(`0x${'a'.repeat(64)}`);
     expect(parsed['bundle_key_prefix']).toBe('key_53c8bca0f861');
     expect(parsed['request_id']).toBe(requestId);
-    expect(parsed['execution_id']).toBe(executionId);
+    expect(parsed['finalization_id']).toBe(finalizationId);
     expect(parsed['turnstile']).toEqual({ status: 'passed', error_code: 'none' });
     expect(parsed['turnstile_status']).toBe('passed');
     expect(parsed['turnstile_error_code']).toBe('none');
@@ -541,9 +540,10 @@ describe('logger', () => {
 
   it('scrubs raw session route values while retaining bounded structured error evidence', async () => {
     const rawSessionId = '550e8400-e29b-41d4-a716-446655440000';
-    const rawRoute = `/api/sessions/${rawSessionId}/status`;
-    const bundleRoute = `/api/verification/bundles/${rawSessionId}/execution-safe`;
-    const reportRoute = `${bundleRoute}/report`;
+    const rawRoute = `/api/sessions/${rawSessionId}/finalizations/current`;
+    const artifactBase = `/api/sessions/${rawSessionId}/finalizations/finalization-safe/artifacts`;
+    const bundleRoute = `${artifactBase}/bundle`;
+    const reportRoute = `${artifactBase}/report`;
 
     await withLogger({ level: 'info', format: 'json' }, (logger) => {
       logger.error('structured failure', {
@@ -572,18 +572,22 @@ describe('logger', () => {
     expect(serializedError?.['message']).toBe('[REDACTED]');
   });
 
-  it('retains canonical route templates without allowing raw bundle paths through http.path', async () => {
-    const template = '/api/verification/bundles/:sessionId/:executionId/report';
-    const rawPath = '/api/verification/bundles/550e8400-e29b-41d4-a716-446655440000/execution-safe/report';
-    const mixedRawSessionPath = '/api/verification/bundles/550e8400-e29b-41d4-a716-446655440000/:executionId/report';
-    const mixedRawExecutionPath = '/api/verification/bundles/:sessionId/execution-safe/:artifactName';
+  it('retains canonical route templates without allowing raw session paths through http.path', async () => {
+    const template = '/api/sessions/:sessionId/finalizations/:finalizationId/artifacts/report';
+    const rawPath =
+      '/api/sessions/550e8400-e29b-41d4-a716-446655440000/finalizations/finalization-safe/artifacts/report';
+    const mixedRawSessionPath =
+      '/api/sessions/550e8400-e29b-41d4-a716-446655440000/finalizations/:finalizationId/artifacts/report';
+    const mixedRawFinalizationPath = '/api/sessions/:sessionId/finalizations/finalization-safe/artifacts/report';
+    const retiredRawArtifactPath = '/api/verification/bundles/raw-session/finalization-safe/report';
 
     await withLogger({ level: 'info', format: 'json' }, (logger) => {
       logger.info('template', {
         http: { path: template },
         raw_http: { path: rawPath },
         mixed_raw_session_http: { path: mixedRawSessionPath },
-        mixed_raw_execution_http: { path: mixedRawExecutionPath },
+        mixed_raw_finalization_http: { path: mixedRawFinalizationPath },
+        retired_raw_artifact_http: { path: retiredRawArtifactPath },
       });
     });
 
@@ -591,9 +595,11 @@ describe('logger', () => {
     expect(getRecord(parsed['http'])?.['path']).toBe(template);
     expect(getRecord(parsed['raw_http'])?.['path']).toBe('[REDACTED]');
     expect(getRecord(parsed['mixed_raw_session_http'])?.['path']).toBe('[REDACTED]');
-    expect(getRecord(parsed['mixed_raw_execution_http'])?.['path']).toBe('[REDACTED]');
+    expect(getRecord(parsed['mixed_raw_finalization_http'])?.['path']).toBe('[REDACTED]');
+    expect(getRecord(parsed['retired_raw_artifact_http'])?.['path']).toBe('[REDACTED]');
     expect(firstStringCall(logSpy)).not.toContain('550e8400-e29b-41d4-a716-446655440000');
-    expect(firstStringCall(logSpy)).not.toContain('execution-safe');
+    expect(firstStringCall(logSpy)).not.toContain('finalization-safe');
+    expect(firstStringCall(logSpy)).not.toContain('raw-session');
   });
 
   it('rejects spoofed hash and key-prefix fields unless their name and value use an approved shape', async () => {
@@ -743,7 +749,7 @@ describe('logger', () => {
       runWithLogContext(
         {
           requestId: 'req-must-remain-dormant',
-          http: { path: '/api/sessions/raw-session-id/status' },
+          http: { path: '/api/sessions/raw-session-id/finalizations/current' },
         },
         () => {
           logger.info('safe text message');

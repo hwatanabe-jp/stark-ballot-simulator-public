@@ -1,11 +1,14 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { resolveAwsRequestId, toApiContext } from './hono';
-import { createMockVoteStore } from '@stark-ballot/test-support/testing/mockVoteStore';
+import { resolveAwsRequestId, toApiHandlerContext } from './hono';
+import { createMockVoteStore } from '../../__tests__/support/mockVoteStore';
 import { readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
-import { getStringProperty } from '@stark-ballot/domain/utils/guards';
+import { getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
 
-describe('toApiContext (Hono)', () => {
+const runtimeProfile = localRuntimeProfile();
+
+describe('toApiHandlerContext (Hono)', () => {
   const originalTrustedProxy = process.env['TRUSTED_PROXY'];
 
   afterEach(() => {
@@ -16,23 +19,25 @@ describe('toApiContext (Hono)', () => {
     }
   });
 
-  it('maps request, store, params, and client IP', async () => {
+  it('maps trusted request metadata, store, and client IP', async () => {
     process.env['TRUSTED_PROXY'] = 'api-gateway';
     // Given
     const store = createMockVoteStore();
     const app = new Hono();
 
     app.get('/api/test', (context) => {
-      const apiContext = toApiContext({
+      const apiContext = toApiHandlerContext({
         context,
+        runtimeProfile,
         store,
-        params: { voteId: 'vote-123' },
+        requestId: 'request-123',
+        operatorGatedDevelop: false,
       });
 
       return context.json({
-        requestUrl: apiContext.request.url,
+        requestOrigin: apiContext.requestOrigin,
+        requestId: apiContext.requestId,
         clientIp: apiContext.clientIp ?? null,
-        param: apiContext.params?.voteId ?? null,
         storeMatch: apiContext.store === store,
       });
     });
@@ -54,9 +59,9 @@ describe('toApiContext (Hono)', () => {
     // Then
     expect(response.status).toBe(200);
     const payload = await readJsonRecord(response, 'hono adapter response');
-    expect(getStringProperty(payload, 'requestUrl')).toBe('http://localhost/api/test');
+    expect(getStringProperty(payload, 'requestOrigin')).toBe('http://localhost');
+    expect(getStringProperty(payload, 'requestId')).toBe('request-123');
     expect(getStringProperty(payload, 'clientIp')).toBe('203.0.113.80');
-    expect(getStringProperty(payload, 'param')).toBe('vote-123');
     expect(payload['storeMatch']).toBe(true);
   });
 
@@ -66,9 +71,12 @@ describe('toApiContext (Hono)', () => {
     const app = new Hono();
 
     app.get('/api/test', (context) => {
-      const apiContext = toApiContext({
+      const apiContext = toApiHandlerContext({
         context,
+        runtimeProfile,
         store,
+        requestId: 'request-123',
+        operatorGatedDevelop: false,
       });
 
       return context.json({
@@ -96,9 +104,12 @@ describe('toApiContext (Hono)', () => {
     const app = new Hono();
 
     app.get('/api/test', (context) => {
-      const apiContext = toApiContext({
+      const apiContext = toApiHandlerContext({
         context,
+        runtimeProfile,
         store,
+        requestId: 'request-123',
+        operatorGatedDevelop: false,
       });
 
       return context.json({

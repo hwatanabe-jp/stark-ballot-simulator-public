@@ -40,12 +40,12 @@ export interface VerificationBundleResult {
   metadataPath: string;
   reportPath: string;
   sessionId: string;
-  executionId: string;
+  finalizationId: string;
 }
 
 export interface ProofBundlePersistenceInput {
   sessionId: string;
-  contractGeneration: string;
+  finalizationId: string;
   verifierWorkDir?: string;
   zkvmInput: ZkVMInput;
   electionConfig: ElectionConfig;
@@ -61,7 +61,7 @@ export interface BundlePublicationResult {
   bundleArchivePath: string;
   s3BundleKey?: string;
   s3ReportKey?: string;
-  s3UploadedAt?: string;
+  s3UploadedAtMs?: number;
 }
 
 export interface ApiProofBundleRuntimeOptions {
@@ -74,15 +74,15 @@ export interface ApiProofBundleDependencies {
   publishBundleArtifacts: (input: {
     bundlePath: string;
     sessionId: string;
-    executionId: string;
+    finalizationId: string;
     upload: boolean;
   }) => Promise<BundlePublicationResult>;
   recordBundlePublication?: (input: {
     sessionId: string;
-    executionId: string;
+    finalizationId: string;
     s3BundleKey?: string;
     s3ReportKey?: string;
-    s3UploadedAt?: string;
+    s3UploadedAtMs?: number;
   }) => Promise<void>;
   createMockVerificationReport: (input: {
     bundle: VerificationBundleResult;
@@ -99,7 +99,7 @@ export function createApiProofBundleService(
       try {
         const bundle = await deps.persistBundle({
           sessionId: options.sessionId,
-          contractGeneration: options.contractGeneration,
+          finalizationId: options.finalizationId,
           ...omitUndefinedProperties({ verifierWorkDir: runtime.verifierWorkDir }),
           zkvmInput: options.zkvmInput,
           electionConfig: options.electionConfig,
@@ -107,13 +107,14 @@ export function createApiProofBundleService(
           zkvmResult: options.zkvmResult,
           normalizedReceipt: options.normalizedReceipt,
         });
+        assertPersistedBundleIdentity(bundle, options);
 
         if (options.verificationMode === 'mock') {
           const mockInvocation = await deps.createMockVerificationReport({ bundle, options });
           const publication = await deps.publishBundleArtifacts({
             bundlePath: bundle.bundlePath,
             sessionId: bundle.sessionId,
-            executionId: bundle.executionId,
+            finalizationId: bundle.finalizationId,
             upload: true,
           });
           await recordBundlePublication(deps, bundle, publication);
@@ -137,7 +138,7 @@ export function createApiProofBundleService(
         const publication = await deps.publishBundleArtifacts({
           bundlePath: bundle.bundlePath,
           sessionId: bundle.sessionId,
-          executionId: bundle.executionId,
+          finalizationId: bundle.finalizationId,
           upload: accepted,
         });
         if (invocation.status === 'dev_mode' && options.allowDevMode) {
@@ -148,7 +149,7 @@ export function createApiProofBundleService(
             ok: false,
             error: {
               type: 'verifier_failed',
-              executionId: bundle.executionId,
+              finalizationId: bundle.finalizationId,
               status: invocation.status,
               report: invocation.report,
             },
@@ -176,6 +177,15 @@ export function createApiProofBundleService(
   };
 }
 
+function assertPersistedBundleIdentity(bundle: VerificationBundleResult, options: ProofBundleOptions): void {
+  if (bundle.sessionId !== options.sessionId) {
+    throw new Error('Persisted proof bundle session identity does not match the request');
+  }
+  if (bundle.finalizationId !== options.finalizationId) {
+    throw new Error('Persisted proof bundle finalization identity does not match the request');
+  }
+}
+
 async function recordBundlePublication(
   deps: ApiProofBundleDependencies,
   bundle: VerificationBundleResult,
@@ -187,10 +197,10 @@ async function recordBundlePublication(
 
   await deps.recordBundlePublication({
     sessionId: bundle.sessionId,
-    executionId: bundle.executionId,
+    finalizationId: bundle.finalizationId,
     ...(publication.s3BundleKey ? { s3BundleKey: publication.s3BundleKey } : {}),
     ...(publication.s3ReportKey ? { s3ReportKey: publication.s3ReportKey } : {}),
-    ...(publication.s3UploadedAt ? { s3UploadedAt: publication.s3UploadedAt } : {}),
+    ...(publication.s3UploadedAtMs !== undefined ? { s3UploadedAtMs: publication.s3UploadedAtMs } : {}),
   });
 }
 
@@ -199,7 +209,7 @@ function buildVerificationOutcome(options: {
   bundle: VerificationBundleResult;
 }): {
   verificationResult: VerificationResult;
-  executionId: string;
+  finalizationId: string;
 } {
   const { invocation, bundle } = options;
 
@@ -208,6 +218,6 @@ function buildVerificationOutcome(options: {
       status: invocation.status,
       report: invocation.report,
     },
-    executionId: bundle.executionId,
+    finalizationId: bundle.finalizationId,
   };
 }

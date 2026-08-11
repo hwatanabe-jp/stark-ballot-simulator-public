@@ -1,8 +1,9 @@
 import js from '@eslint/js';
 import prettierConfig from 'eslint-config-prettier/flat';
 import importPlugin from 'eslint-plugin-import';
+import { existsSync, readdirSync } from 'fs';
 import globals from 'globals';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import reactPlugin from 'eslint-plugin-react';
 import reactHooksPlugin from 'eslint-plugin-react-hooks';
@@ -34,6 +35,48 @@ const ignores = [
 const jsFiles = ['**/*.{js,jsx}'];
 const tsFiles = ['**/*.{ts,tsx}'];
 const nodeFiles = ['**/*.{js,cjs,mjs}'];
+const workspaceTestRoots = ['apps', 'packages']
+  .flatMap((parent) =>
+    readdirSync(join(__dirname, parent), { withFileTypes: true })
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          existsSync(join(__dirname, parent, entry.name, 'package.json')) &&
+          existsSync(join(__dirname, parent, entry.name, 'tsconfig.test.json')),
+      )
+      .map((entry) => `${parent}/${entry.name}`),
+  )
+  .sort();
+
+function vitestProjectConfig(root, project = `./${root}/tsconfig.test.json`, additionalFiles = []) {
+  return {
+    files: [`${root}/**/*.{test,spec}.{ts,tsx}`, `${root}/**/__tests__/**/*.{ts,tsx}`, ...additionalFiles],
+    languageOptions: {
+      parserOptions: {
+        project: [project],
+        projectService: false,
+        tsconfigRootDir: __dirname,
+      },
+    },
+  };
+}
+
+const vitestProjectConfigs = [
+  ...workspaceTestRoots.map((root) => vitestProjectConfig(root)),
+  vitestProjectConfig('scripts'),
+  vitestProjectConfig('infra'),
+  vitestProjectConfig('tooling', './tooling/tsconfig.test.json', ['tooling/vitest/setup-node.ts']),
+  {
+    files: ['tooling/vitest/setup-web.ts'],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tooling/tsconfig.web-test.json'],
+        projectService: false,
+        tsconfigRootDir: __dirname,
+      },
+    },
+  },
+];
 export const serverConsoleFiles = [
   'apps/api/src/server/**/*.{ts,tsx}',
   'packages/aws-adapters/src/aws/**/*.ts',
@@ -114,13 +157,24 @@ const eslintConfig = tseslint.config(
     files: tsFiles,
     languageOptions: {
       parserOptions: {
-        project: ['./tsconfig.eslint.json'],
+        projectService: true,
         tsconfigRootDir: __dirname,
       },
     },
     rules: {
       ...rulesCommon,
       ...rulesTypeScriptExtra,
+    },
+  },
+  ...vitestProjectConfigs,
+  {
+    files: ['packages/runtime-config/src/env/browserRuntime.ts'],
+    languageOptions: {
+      parserOptions: {
+        project: ['./packages/runtime-config/tsconfig.browser.json'],
+        projectService: false,
+        tsconfigRootDir: __dirname,
+      },
     },
   },
   {

@@ -2,6 +2,11 @@
   "name": "@stark-ballot/validation",
   "private": true,
   "type": "module",
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec eslint packages/validation",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/validation",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.declaration.json && tsc --noEmit -p tsconfig.test.json"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./definedProperties": "./src/definedProperties.ts",
@@ -12,9 +17,10 @@
     "./image-id-policy": "./src/image-id-policy.ts",
     "./log-hash-salt": "./src/log-hash-salt.ts",
     "./safe-verifier-segment": "./src/safe-verifier-segment.ts",
-    "./schema": "./src/schema.ts"
+    "./schema": "./src/schema.ts",
+    "./unknown-value-guards": "./src/unknown-value-guards.ts"
   },
   "devDependencies": {
-    "vitest": "4.1.10"
+    "vitest": "catalog:testing"
   }
 }

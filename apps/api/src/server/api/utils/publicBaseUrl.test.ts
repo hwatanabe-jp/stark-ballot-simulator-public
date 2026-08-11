@@ -26,8 +26,10 @@ describe('resolvePublicBaseUrl', () => {
   it('prefers VERIFIER_PUBLIC_BASE_URL when configured', () => {
     process.env['VERIFIER_PUBLIC_BASE_URL'] = 'https://verifier.example.com/base';
 
-    const request = new Request('https://fallback.example.com/api/verify');
-    const result = resolvePublicBaseUrl(request);
+    const result = resolvePublicBaseUrl({
+      origin: 'https://fallback.example.com',
+      headers: {},
+    });
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -38,8 +40,10 @@ describe('resolvePublicBaseUrl', () => {
   it('rejects invalid VERIFIER_PUBLIC_BASE_URL values', () => {
     process.env['VERIFIER_PUBLIC_BASE_URL'] = 'not-a-url';
 
-    const request = new Request('https://fallback.example.com/api/verify');
-    const result = resolvePublicBaseUrl(request);
+    const result = resolvePublicBaseUrl({
+      origin: 'https://fallback.example.com',
+      headers: {},
+    });
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -51,8 +55,10 @@ describe('resolvePublicBaseUrl', () => {
     vi.stubEnv('NODE_ENV', 'production');
     delete process.env['VERIFIER_PUBLIC_BASE_URL'];
 
-    const request = new Request('https://fallback.example.com/api/verify');
-    const result = resolvePublicBaseUrl(request);
+    const result = resolvePublicBaseUrl({
+      origin: 'https://fallback.example.com',
+      headers: {},
+    });
 
     expect(result.ok).toBe(false);
   });
@@ -61,14 +67,13 @@ describe('resolvePublicBaseUrl', () => {
     vi.stubEnv('NODE_ENV', 'development');
     delete process.env['VERIFIER_PUBLIC_BASE_URL'];
 
-    const request = new Request('https://fallback.example.com/api/verify', {
+    const result = resolvePublicBaseUrl({
+      origin: 'https://fallback.example.com',
       headers: {
-        'x-forwarded-host': 'preview.example.com',
-        'x-forwarded-proto': 'http',
+        'X-Forwarded-Host': 'preview.example.com',
+        'X-Forwarded-Proto': 'http',
       },
     });
-
-    const result = resolvePublicBaseUrl(request);
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -80,8 +85,10 @@ describe('resolvePublicBaseUrl', () => {
     vi.stubEnv('NODE_ENV', 'development');
     delete process.env['VERIFIER_PUBLIC_BASE_URL'];
 
-    const request = new Request('https://fallback.example.com/api/verify');
-    const result = resolvePublicBaseUrl(request);
+    const result = resolvePublicBaseUrl({
+      origin: 'https://fallback.example.com',
+      headers: {},
+    });
 
     expect(result.ok).toBe(true);
     if (result.ok) {

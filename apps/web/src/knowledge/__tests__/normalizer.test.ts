@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeKnowledgeData, normalizeBotData } from '../normalizer';
+import { normalizeKnowledgeData } from '../normalizer';
 
 describe('normalizeKnowledgeData', () => {
   it('should ignore null object fields without throwing', () => {
@@ -22,14 +22,21 @@ describe('normalizeKnowledgeData', () => {
           commitment: '0xabc123',
           bulletinIndex: 5,
           bulletinRootAtCast: '0xdef456',
-          timestamp: 1730000000000,
+          castAtMs: 1730000000000,
           inputCommitment: '0x789',
         },
       };
 
       const result = normalizeKnowledgeData(input);
 
-      expect(result['user.voteReceipt']).toEqual(input.voteReceipt);
+      expect(result['user.voteReceipt']).toEqual({
+        voteId: 'test-uuid',
+        commitment: '0xabc123',
+        bulletinIndex: 5,
+        bulletinRootAtCast: '0xdef456',
+        timestamp: 1730000000000,
+        inputCommitment: '0x789',
+      });
       // Should NOT extract individual fields from voteReceipt
       expect(result['user.voteId']).toBeUndefined();
       expect(result['user.commitment']).toBeUndefined();
@@ -42,13 +49,19 @@ describe('normalizeKnowledgeData', () => {
           commitment: '0xabc123',
           bulletinIndex: 0,
           bulletinRootAtCast: '0xdef456',
-          timestamp: 1730000000000,
+          castAtMs: 1730000000000,
         },
       };
 
       const result = normalizeKnowledgeData(input);
 
-      expect(result['user.voteReceipt']).toEqual(input.voteReceipt);
+      expect(result['user.voteReceipt']).toEqual({
+        voteId: 'test-uuid',
+        commitment: '0xabc123',
+        bulletinIndex: 0,
+        bulletinRootAtCast: '0xdef456',
+        timestamp: 1730000000000,
+      });
     });
 
     it('should ignore voteReceipt missing canonical fields', () => {
@@ -57,7 +70,7 @@ describe('normalizeKnowledgeData', () => {
           voteId: 'test-uuid',
           commitment: '0xabc123',
           bulletinIndex: 5,
-          timestamp: 1730000000000,
+          castAtMs: 1730000000000,
         },
       };
 
@@ -194,13 +207,26 @@ describe('normalizeKnowledgeData', () => {
   });
 
   describe('verificationReport normalization', () => {
-    it('should normalize verificationReport object', () => {
-      const report = { status: 'verified', duration_ms: 5000 };
+    it('projects only the current knowledge summary from a full verifier report', () => {
+      const report = {
+        status: 'success',
+        verifier_version: 'test-verifier',
+        verified_at: '2026-08-02T00:00:00.000Z',
+        duration_ms: 5000,
+        expected_image_id: `0x${'1'.repeat(64)}`,
+        receipt_image_id: `0x${'1'.repeat(64)}`,
+        dev_mode_receipt: false,
+        errors: ['diagnostic'],
+      };
       const input = { verificationReport: report };
 
       const result = normalizeKnowledgeData(input);
 
-      expect(result['verification.reportSummary']).toEqual(report);
+      expect(result['verification.reportSummary']).toEqual({
+        status: 'success',
+        duration_ms: 5000,
+        errors: ['diagnostic'],
+      });
     });
   });
 
@@ -222,53 +248,5 @@ describe('normalizeKnowledgeData', () => {
       expect(result.validVotes).toBe(62);
       expect(result['totalExpected']).toBe(64);
     });
-  });
-});
-
-describe('normalizeBotData', () => {
-  it('should normalize bot data from API response', () => {
-    const input = {
-      id: 42,
-      vote: 'C',
-      random: '0xrandom',
-      commitment: '0xcommit',
-      voteId: 'bot-vote-id',
-      timestamp: 1730000000000,
-    };
-
-    const result = normalizeBotData(input);
-
-    expect(result['bot.id']).toBe(42);
-    expect(result['bot.bulletinIndex']).toBe(42);
-    expect(result['bot.choice']).toBe('C');
-    expect(result['bot.random']).toBe('0xrandom');
-    expect(result['bot.commitment']).toBe('0xcommit');
-    expect(result['bot.voteId']).toBe('bot-vote-id');
-    expect(result['bot.voteTimestamp']).toBe(1730000000000);
-  });
-
-  it('should normalize bot proof to bot.merklePath', () => {
-    const input = {
-      id: 10,
-      vote: 'A',
-      random: '0x1',
-      commitment: '0x2',
-      proof: {
-        leafIndex: 10,
-        treeSize: 64,
-        merklePath: ['0xa', '0xb'],
-        bulletinRootAtCast: '0xroot',
-      },
-    };
-
-    const result = normalizeBotData(input);
-
-    expect(result['bot.merklePath']).toEqual({
-      leafIndex: 10,
-      treeSize: 64,
-      merklePath: ['0xa', '0xb'],
-      bulletinRootAtCast: '0xroot',
-    });
-    expect(result['bot.bulletinRootAtCast']).toBe('0xroot');
   });
 });

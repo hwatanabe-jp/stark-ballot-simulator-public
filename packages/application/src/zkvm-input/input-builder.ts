@@ -5,7 +5,11 @@
 
 import type { ZkVMInput, VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
-import type { SessionData, VoteData } from '@stark-ballot/domain/types/server';
+import type {
+  SessionIdentityRecord,
+  SessionVotingRecord,
+  StoredVoteRecord,
+} from '@stark-ballot/domain/types/sessionRecords';
 import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
 import { hasMatchingElectionConfigHash } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import {
@@ -66,10 +70,15 @@ export function choiceToNumber(choice: VoteChoice): number {
   return mapping[choice];
 }
 
-function getLatestVoteTimestamp(session: Pick<SessionData, 'votes'>): number | undefined {
+export interface ZkVMInputSessionRecords {
+  identity: SessionIdentityRecord;
+  voting: SessionVotingRecord;
+}
+
+function getLatestVoteTimestamp(voting: Pick<SessionVotingRecord, 'votes'>): number | undefined {
   let latestTimestamp: number | undefined;
 
-  for (const vote of session.votes.values()) {
+  for (const vote of voting.votes.values()) {
     if (typeof vote.timestamp === 'number' && Number.isInteger(vote.timestamp) && vote.timestamp > 0) {
       latestTimestamp = latestTimestamp === undefined ? vote.timestamp : Math.max(latestTimestamp, vote.timestamp);
     }
@@ -79,12 +88,9 @@ function getLatestVoteTimestamp(session: Pick<SessionData, 'votes'>): number | u
 }
 
 function getLiveBulletinSnapshot(
-  session: Pick<SessionData, 'bulletin' | 'votes'>,
+  voting: Pick<SessionVotingRecord, 'bulletin' | 'votes'>,
 ): { root: string; treeSize: number; timestamp: number } | undefined {
-  const bulletin = session.bulletin;
-  if (!bulletin) {
-    return undefined;
-  }
+  const bulletin = voting.bulletin;
 
   const treeSize = typeof bulletin.getSize === 'function' ? bulletin.getSize() : undefined;
   if (treeSize === undefined || treeSize <= 0) {
@@ -95,7 +101,7 @@ function getLiveBulletinSnapshot(
     return {
       root: normalizeHexOrZero(bulletin.getCurrentRoot()),
       treeSize,
-      timestamp: getLatestVoteTimestamp(session) ?? Date.now(),
+      timestamp: getLatestVoteTimestamp(voting) ?? Date.now(),
     };
   } catch {
     return undefined;
@@ -103,22 +109,22 @@ function getLiveBulletinSnapshot(
 }
 
 function getLatestSTHSnapshot(
-  session: SessionData,
+  voting: SessionVotingRecord,
   options: BuildZkVMInputOptions,
 ): { root: string; treeSize: number; timestamp: number } {
-  const persistedSnapshot = getLatestPersistedSTHSnapshot(session);
+  const persistedSnapshot = getLatestPersistedSTHSnapshot(voting);
   if (persistedSnapshot !== undefined) {
     return persistedSnapshot;
   }
 
   if (options.allowSparseVoteIndices) {
-    const liveBulletinSnapshot = getLiveBulletinSnapshot(session);
+    const liveBulletinSnapshot = getLiveBulletinSnapshot(voting);
     if (liveBulletinSnapshot !== undefined) {
       return liveBulletinSnapshot;
     }
   }
 
-  const latestSnapshot = getLatestCanonicalBulletinSnapshot(session);
+  const latestSnapshot = getLatestCanonicalBulletinSnapshot(voting);
   if (latestSnapshot !== undefined) {
     return latestSnapshot;
   }
@@ -127,9 +133,9 @@ function getLatestSTHSnapshot(
 }
 
 function getLatestPersistedSTHSnapshot(
-  session: SessionData,
+  voting: SessionVotingRecord,
 ): { root: string; treeSize: number; timestamp: number } | undefined {
-  const persistedHistory = parsePersistedRootHistory(session.bulletinRootHistory);
+  const persistedHistory = parsePersistedRootHistory(voting.bulletinRootHistory);
   if (!persistedHistory || persistedHistory.length === 0) {
     return undefined;
   }
@@ -138,10 +144,7 @@ function getLatestPersistedSTHSnapshot(
   if (!latestSnapshot) {
     return undefined;
   }
-  const bulletin = session.bulletin;
-  if (!bulletin) {
-    return latestSnapshot;
-  }
+  const bulletin = voting.bulletin;
 
   const bulletinSize = typeof bulletin.getSize === 'function' ? bulletin.getSize() : undefined;
   if (bulletinSize === undefined || bulletinSize <= 0) {
@@ -170,29 +173,34 @@ function getLatestPersistedSTHSnapshot(
  * @param electionConfigHash Optional election config hash (defaults to zero for PoC)
  * @returns ZkVMInput structure ready for zkVM execution
  */
-export function buildZkVMInputFromSession(session: SessionData, options: BuildZkVMInputOptions = {}): ZkVMInput {
-  if (!session.electionId) {
-    throw new Error('Missing electionId for session');
+export function buildZkVMInputFromSession(
+  records: ZkVMInputSessionRecords,
+  options: BuildZkVMInputOptions = {},
+): ZkVMInput {
+  const { identity, voting } = records;
+  if (identity.sessionId !== voting.sessionId) {
+    throw new Error('Session identity and voting records do not match');
   }
-  if (!session.electionConfig) {
+  const { electionConfig, logId: rawLogId } = identity as Partial<SessionIdentityRecord>;
+  if (!electionConfig) {
     throw new Error('Missing electionConfig for session');
   }
-  if (!session.electionConfigHash) {
-    throw new Error('Missing electionConfigHash for session');
-  }
-  if (!hasMatchingElectionConfigHash(session.electionConfig, session.electionConfigHash)) {
+  if (!hasMatchingElectionConfigHash(electionConfig, identity.electionConfigHash)) {
     throw new Error('Session electionConfig does not match electionConfigHash');
   }
+  if (!rawLogId) {
+    throw new Error('Missing logId for session');
+  }
 
-  const electionId = session.electionId;
-  const electionConfigHash = session.electionConfigHash;
+  const electionId = identity.electionId;
+  const electionConfigHash = identity.electionConfigHash;
 
-  const sthSnapshot = getLatestSTHSnapshot(session, options);
+  const sthSnapshot = getLatestSTHSnapshot(voting, options);
   const bulletinRoot = normalizeHexOrZero(sthSnapshot.root);
   const treeSize = sthSnapshot.treeSize;
-  const totalExpected = session.electionConfig.totalExpected;
-  const logId = getLogId(session);
-  const votesWithProofs = buildVotesWithProofs(session, electionId, treeSize, options);
+  const totalExpected = electionConfig.totalExpected;
+  const logId = normalizeHexOrZero(rawLogId);
+  const votesWithProofs = buildVotesWithProofs(voting, electionId, treeSize, options);
 
   return {
     electionId,
@@ -206,7 +214,10 @@ export function buildZkVMInputFromSession(session: SessionData, options: BuildZk
   };
 }
 
-function resolveInputVoteIndices(votes: ReadonlyMap<number, VoteData>, options: BuildZkVMInputOptions): VoteIndex[] {
+function resolveInputVoteIndices(
+  votes: ReadonlyMap<number, StoredVoteRecord>,
+  options: BuildZkVMInputOptions,
+): VoteIndex[] {
   const sortedIndices = Array.from(votes.keys()).sort((a, b) => a - b);
 
   if (!options.allowSparseVoteIndices) {
@@ -222,15 +233,15 @@ function resolveInputVoteIndices(votes: ReadonlyMap<number, VoteData>, options: 
 }
 
 function buildVotesWithProofs(
-  session: SessionData,
+  voting: SessionVotingRecord,
   electionId: string,
   treeSize: number,
   options: BuildZkVMInputOptions,
 ): VoteWithProof[] {
-  const sortedIndices = resolveInputVoteIndices(session.votes, options);
+  const sortedIndices = resolveInputVoteIndices(voting.votes, options);
 
   return sortedIndices.map((index) => {
-    const voteData = session.votes.get(index);
+    const voteData = voting.votes.get(index);
     if (!voteData) {
       throw new Error(`Vote data not found for index ${index}`);
     }
@@ -242,36 +253,25 @@ function buildVotesWithProofs(
       choice,
       random,
       index,
-      merklePath: resolveMerklePath(session, index, voteData, treeSize),
+      merklePath: resolveMerklePath(voting, index, voteData, treeSize),
     };
   });
 }
 
 /**
- * Resolve the Merkle inclusion path for a vote index using available session data.
- * Prefers pre-computed paths, falls back to dynamically generated proofs when possible.
+ * Resolve the Merkle inclusion path for a vote index from the canonical
+ * bulletin authority. Stored vote records deliberately carry no proof path.
  */
-function resolveMerklePath(session: SessionData, index: VoteIndex, voteData: VoteData, treeSize: number): string[] {
-  const bulletinProof = resolvePathFromBulletin(session, index, voteData, treeSize);
+function resolveMerklePath(
+  voting: SessionVotingRecord,
+  index: VoteIndex,
+  voteData: StoredVoteRecord,
+  treeSize: number,
+): string[] {
+  const bulletinProof = resolvePathFromBulletin(voting, index, voteData, treeSize);
   if (bulletinProof) {
     if (bulletinProof.path.length > 0 || bulletinProof.treeSize <= 1) {
       return bulletinProof.path;
-    }
-  }
-
-  if (Array.isArray(voteData.path)) {
-    if (typeof voteData.treeSize !== 'number') {
-      throw new CtProofUnavailableError(index, { reason: 'missing_tree_size', expectedTreeSize: treeSize });
-    }
-    if (voteData.treeSize !== treeSize) {
-      throw new CtProofUnavailableError(index, {
-        reason: 'tree_size_mismatch',
-        expectedTreeSize: treeSize,
-        actualTreeSize: voteData.treeSize,
-      });
-    }
-    if (voteData.path.length > 0 || treeSize <= 1) {
-      return voteData.path.map((node) => normalizeHexOrZero(node));
     }
   }
 
@@ -279,28 +279,18 @@ function resolveMerklePath(session: SessionData, index: VoteIndex, voteData: Vot
 }
 
 function resolvePathFromBulletin(
-  session: SessionData,
+  voting: SessionVotingRecord,
   index: VoteIndex,
-  voteData: VoteData,
+  voteData: StoredVoteRecord,
   treeSize: number,
 ): { path: string[]; treeSize: number } | null {
-  // SessionData.bulletin is already typed as SimpleBulletinBoard | undefined
-  // No type casting needed
-  const bulletin = session.bulletin;
-  if (!bulletin || typeof bulletin.getInclusionProof !== 'function') {
-    return null;
-  }
-
-  // Get voteId from voteData, or fallback to querying bulletin by index
-  const voteEntry = typeof bulletin.getVoteByIndex === 'function' ? bulletin.getVoteByIndex(index) : undefined;
-  const voteId = voteData.voteId ?? voteEntry?.voteId;
-
-  if (!voteId) {
+  const bulletin = voting.bulletin;
+  if (typeof bulletin.getInclusionProof !== 'function') {
     return null;
   }
 
   try {
-    const proof = bulletin.getInclusionProof(voteId, treeSize);
+    const proof = bulletin.getInclusionProof(voteData.voteId, treeSize);
     if (!proof || !Array.isArray(proof.proofNodes)) {
       return null;
     }
@@ -328,16 +318,6 @@ function resolvePathFromBulletin(
     logger.warn('[zkVM] Failed to obtain CT inclusion proof from bulletin:', error);
     return null;
   }
-}
-
-function getLogId(session: SessionData): string {
-  const rawLogId = session.logId ?? (session.bulletin ? session.bulletin.getLogId() : undefined);
-
-  if (!rawLogId) {
-    throw new Error('Missing logId for session');
-  }
-
-  return normalizeHexOrZero(rawLogId);
 }
 
 /**

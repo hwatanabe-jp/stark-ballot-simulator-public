@@ -1,105 +1,114 @@
-import type { SessionData } from '@stark-ballot/domain/types/server';
 import type { FinalizationTransitionMetadata } from '@stark-ballot/diagnostics/canonicalEvents';
-import type { FinalizationExecutionId, FinalizationResultAuthority, FinalizationState } from './finalization-types';
+import type { FinalizationRecord } from './finalization-record';
+import type {
+  FinalizationBitmapDisposition,
+  FinalizationId,
+  FinalizationReceiptPublication,
+  FinalizationResultAuthority,
+  FinalizationScenarioContext,
+  FinalizationState,
+} from './finalization-types';
+import type { VerificationResult } from '@stark-ballot/verification/shared/types';
 
 export type FinalizationFailedError = Extract<FinalizationState, { status: 'failed' }>['error'];
+export type FinalizationSucceededState = Extract<FinalizationState, { status: 'succeeded' }>;
 
 export type FinalizationQueuedPayload = {
-  executionId: FinalizationExecutionId;
-  queuedAt: number;
-  contractGeneration: string;
+  finalizationId: FinalizationId;
+  queuedAtMs: number;
+  scenarioContext: FinalizationScenarioContext;
   observability?: FinalizationTransitionMetadata;
 };
 
-export type FinalizationRunningPayload = FinalizationQueuedPayload & {
-  startedAt: number;
+export type FinalizationRunningPayload = {
+  finalizationId: FinalizationId;
+  queuedAtMs: number;
+  startedAtMs: number;
+  scenarioContext?: FinalizationScenarioContext;
+  observability?: FinalizationTransitionMetadata;
 };
 
-export type FinalizationSucceededPayload = FinalizationRunningPayload & {
-  completedAt: number;
+export type FinalizationSucceededPayload = {
+  finalizationId: FinalizationId;
+  queuedAtMs: number;
+  startedAtMs: number;
+  completedAtMs: number;
+  scenarioContext?: FinalizationScenarioContext;
   finalizationResult: FinalizationResultAuthority;
+  observability?: FinalizationTransitionMetadata;
 };
 
-export type FinalizationFailedPayload = FinalizationQueuedPayload & {
-  startedAt?: number;
-  failedAt: number;
+export type FinalizationFailedPayload = {
+  finalizationId: FinalizationId;
+  queuedAtMs: number;
+  startedAtMs?: number;
+  failedAtMs: number;
+  scenarioContext?: FinalizationScenarioContext;
   error: FinalizationFailedError;
+  observability?: FinalizationTransitionMetadata;
 };
 
-export type FinalizationTimedOutPayload = FinalizationQueuedPayload & {
-  startedAt?: number;
-  timeoutAt: number;
+export type FinalizationTimedOutPayload = {
+  finalizationId: FinalizationId;
+  queuedAtMs: number;
+  startedAtMs?: number;
+  timeoutAtMs: number;
+  scenarioContext?: FinalizationScenarioContext;
+  observability?: FinalizationTransitionMetadata;
 };
 
+/**
+ * Application-facing lifecycle capability. Adapters implement these commands
+ * through the revisioned transition coordinator and exact FinalizationRecord
+ * persistence.
+ */
 export interface FinalizationLifecycleStore {
-  finalizeSession(
-    sessionId: string,
-    result: FinalizationResultAuthority,
-    contractGeneration: string,
-    executionId: FinalizationExecutionId,
-  ): Promise<void>;
+  getCurrentFinalizationRecord(sessionId: string): Promise<FinalizationRecord | null>;
 
-  markFinalizationQueued(
-    sessionId: string,
-    payload: FinalizationQueuedPayload & {
-      scenarioContext?: SessionData['finalizationScenarioContext'] | null;
-    },
-  ): Promise<FinalizationState>;
+  getFinalizationRecord(sessionId: string, finalizationId: FinalizationId): Promise<FinalizationRecord | null>;
 
-  markFinalizationRunning(
-    sessionId: string,
-    payload: FinalizationRunningPayload & {
-      scenarioContext?: SessionData['finalizationScenarioContext'] | null;
-    },
-  ): Promise<FinalizationState>;
+  markFinalizationQueued(sessionId: string, payload: FinalizationQueuedPayload): Promise<FinalizationRecord>;
 
-  markFinalizationSucceeded(sessionId: string, payload: FinalizationSucceededPayload): Promise<FinalizationState>;
+  markFinalizationRunning(sessionId: string, payload: FinalizationRunningPayload): Promise<FinalizationRecord>;
 
-  markFinalizationFailed(sessionId: string, payload: FinalizationFailedPayload): Promise<FinalizationState>;
+  markFinalizationSucceeded(sessionId: string, payload: FinalizationSucceededPayload): Promise<FinalizationRecord>;
 
-  markFinalizationTimedOut(sessionId: string, payload: FinalizationTimedOutPayload): Promise<FinalizationState>;
+  markFinalizationFailed(sessionId: string, payload: FinalizationFailedPayload): Promise<FinalizationRecord>;
+
+  markFinalizationTimedOut(sessionId: string, payload: FinalizationTimedOutPayload): Promise<FinalizationRecord>;
 }
 
-export interface FinalizationReceiptBoardStore {
-  finalizeSessionWithReceiptPublication?(
-    sessionId: string,
-    result: FinalizationResultAuthority,
-    contractGeneration: string,
-    receipt: { receipt: string; timestamp: number },
-    executionId: FinalizationExecutionId,
-  ): Promise<{ receiptHash: string; boardIndex: number }>;
+export interface SuccessfulFinalizationCommitInput {
+  record: Extract<FinalizationRecord, { state: { status: 'succeeded' } }>;
+  receipt?: { receipt: string; timestamp: number };
+  bitmap: FinalizationBitmapDisposition;
+  verificationResult?: VerificationResult;
+  observability?: FinalizationTransitionMetadata;
 }
 
-export interface FinalizationArtifactMetadataStore {
-  updateFinalizationArtifactMetadata(
-    sessionId: string,
-    metadata: {
-      finalizationContractGeneration?: string;
-      hasPersistedFinalizationBranch?: boolean;
-      finalizationArtifactState?: SessionData['finalizationArtifactState'];
-    },
-  ): Promise<SessionData | void>;
+export interface SuccessfulFinalizationCommitResult {
+  record: Extract<FinalizationRecord, { state: { status: 'succeeded' } }>;
+  bitmap: FinalizationBitmapDisposition;
+  receiptPublication?: FinalizationReceiptPublication;
+}
+
+export interface SuccessfulFinalizationStore {
+  commitSuccessfulFinalization(input: SuccessfulFinalizationCommitInput): Promise<SuccessfulFinalizationCommitResult>;
 }
 
 export interface FinalizationBitmapData {
   sessionId: string;
+  finalizationId: FinalizationId;
   includedBitmap: boolean[];
   includedBitmapRoot: string;
   seenBitmap?: boolean[];
   seenBitmapRoot?: string;
   treeSize: number;
-  finalizedAt: number;
+  finalizedAtMs: number;
 }
-
-export type FinalizationBitmapWrite = Omit<FinalizationBitmapData, 'sessionId'>;
 
 export interface FinalizationBitmapStore {
-  saveBitmapData?(sessionId: string, bitmapData: FinalizationBitmapWrite): Promise<void>;
-
-  getBitmapData?(sessionId: string): Promise<FinalizationBitmapData | null>;
+  getBitmapData(sessionId: string, finalizationId: FinalizationId): Promise<FinalizationBitmapData | null>;
 }
 
-export type FinalizationStore = FinalizationLifecycleStore &
-  FinalizationReceiptBoardStore &
-  FinalizationBitmapStore &
-  FinalizationArtifactMetadataStore;
+export type FinalizationStore = FinalizationLifecycleStore & FinalizationBitmapStore & SuccessfulFinalizationStore;

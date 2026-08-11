@@ -59,7 +59,7 @@ describe('Bitmap Proof Integration Test', () => {
       includedBitmap,
       includedBitmapRoot: zkVMResult.includedBitmapRoot,
       treeSize: zkVMResult.treeSize,
-      finalizedAt: Date.now(),
+      finalizedAtMs: Date.now(),
     };
     expect(storedBitmap.includedBitmapRoot).toBe(zkVMResult.includedBitmapRoot);
 

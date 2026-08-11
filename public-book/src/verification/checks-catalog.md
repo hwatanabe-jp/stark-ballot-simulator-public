@@ -30,7 +30,7 @@
 | `demo`   | dev-mode receipt を許可した場合に、`zk` 証拠種別の表示用結果として使うデモ証拠        |
 
 定義上のチェックは `local` / `public` / `zk` のいずれかを持ちます。
-ただし、`RISC0_DEV_MODE=1` の receipt が明示的に許可された場合、表示用のチェック結果では `zk` 証拠が `demo` に置き換えられます。
+`RISC0_DEV_MODE=1` の receipt が明示的に許可された場合だけ、表示用のチェック結果で `zk` 証拠が `demo` に置き換えられます（正規化と表示のルールは [ゲーティングロジック](gating-logic.md#stark-検証のゲーティング)）。
 `demo` 証拠は `demo_only` 扱いであり、production STARK proof としての `Verified` にはなりません。
 
 ### 重要度
@@ -79,7 +79,11 @@
 ## Cast-as-Intended（4 チェック）
 
 投票者の意図通りにコミットメントが生成されたかを検証するチェック群です。
-クライアントはこのカテゴリを、`voteReceipt`（`/api/verify` 応答）とローカル投票意図（`electionId`/`myVote`/`myRand`）から評価します。
+ブラウザはこのカテゴリを、capability 保護された
+`GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` の `voterEvidence`
+が `available` の場合に得られる `voteReceipt` と、保存済みのローカル投票意図
+（`electionId` / `myVote` / `myRand`）から評価します。API 応答上の Cast チェックは
+いったん `not_run` とし、ブラウザがローカルで再計算した結果を overlay します。
 
 | ID                      | 説明                                                         | 証拠種別 | 重要度     |
 | ----------------------- | ------------------------------------------------------------ | -------- | ---------- |
@@ -155,8 +159,12 @@ proof の `treeSize` が `voteReceipt.bulletinIndex + 1` と一致しない場�
 #### `recorded_consistency_proof`
 
 投票時のツリー（oldSize, oldRoot）から最終ツリー（newSize, newRoot）への RFC 6962 整合性証明を検証します。
-bulletin provider から取得した old/new 両時点の root が期待値と一致することを確認し、投票時ルートが最終ツリーの追記専用プレフィックスであることを保証します。
-`treeSize` チェックは包含証明と同条件です。
+evidence の取得と admission は acquisition boundary が担います（[設計原則 4](design-and-flow.md#原則-4-evidence-の取得admission-と評価を分ける)）。判定条件は次のとおりです。
+
+- evidence の old/new 両時点の tree size と root が、receipt / 最終 bulletin authority の期待値と一致すること
+- 投票時ルートが最終ツリーの追記専用プレフィックスであること
+- `treeSize` チェックは包含証明と同条件
+- evidence が `unavailable` の場合は `not_run`、`malformed` または `transport_failed` の場合は `failed`
 
 #### `recorded_sth_third_party`
 
@@ -230,19 +238,25 @@ fail-closed（安全側に倒す）な除外数が 0 であることを確認し
 #### `counted_election_manifest_consistent`
 
 `election-manifest.json` の `electionConfigHash` を再計算し、manifest 自身の宣言値と一致することを確認します。
-そのうえで `electionId` と `electionConfigHash` を、セッション値、`publicInputArtifact` から導出した内部 `publicInputSummary`、ジャーナルに含まれる対応値と相互照合します。
+そのうえで `electionId` と `electionConfigHash` を、セッション値、`publicInputArtifact`
+を厳密に admit して得た内部 `publicInputAuthority`、ジャーナルに含まれる対応値と相互照合します。
 
 #### `counted_close_statement_consistent`
 
 `close-statement.json` から `sthDigest` を再計算し、宣言された snapshot と一致することを確認します。
-そのうえで `timestamp` が、`publicInputArtifact` から導出した内部 `publicInputSummary.timestamp` と一致することを確認します。
+そのうえで `timestamp` が、`publicInputArtifact` を厳密に admit して得た内部
+`publicInputAuthority.timestamp` と一致することを確認します。
 さらに `logId` / `treeSize` / `bulletinRoot` / `sthDigest` が、検証入力やジャーナルと矛盾しないことを確認します。
 
 #### `counted_my_vote_included`
 
 `includedBitmapRoot` に対する bitmap Merkle 証明を検証し、投票者のインデックスに対応するビットが 1（counted に含まれた）であることを確認します。
 
-`seenBitmapRoot` もある場合は `/api/bitmap-proof?kind=included|seen` の両方を使い、`presented but invalid` / `not presented to the prover` / `unknown excluded` を説明可能にします。
+verification handler は対象 finalization の `included` proof evidence と、`seenBitmapRoot` がある場合の
+`seen` proof evidence を取得・admit してから evaluator に渡します。両方の evidence がある場合は、
+`presented but invalid` / `not presented to the prover` / `unknown excluded` を説明可能にします。
+owner-scoped な proof building block の現行 endpoint は
+`GET /api/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex` です。
 
 証明材料が取得できない場合は `not_run` になり、補助 note が付くことがあります。
 
@@ -274,22 +288,16 @@ STARK status が `success` に解決された後で、期待 Image ID、verifier
 #### `stark_receipt_verify`
 
 サーバー側の Rust 検証サービスが `Receipt::verify(image_id)` を実行し、Seal（STARK 証明）が暗号学的に正当であることを確認します。
-チェック結果は `success` / `failed` / `not_run` / `running` で表現され、`dev_mode` は [ゲーティングロジック](gating-logic.md#stark-検証のゲーティング) に従って正規化されます。
-`RISC0_DEV_MODE=1` で生成された dev-mode receipt はフェイクレシートであり、production STARK proof として扱いません。
+チェック結果は `success` / `failed` / `not_run` / `running` で表現され、`dev_mode` は [ゲーティングロジック](gating-logic.md#stark-検証のゲーティング) に従って正規化されます（[証拠種別](#証拠種別) を参照）。
 
 ---
 
-## チェックステータスの遷移
+## チェックステータスの解決
 
-```mermaid
-stateDiagram-v2
-  [*] --> not_run: 初期状態
-  not_run --> pending: 依存条件の待機
-  not_run --> running: 検証開始
-  pending --> running: 依存条件の解消
-  running --> success: 検証成功
-  running --> failed: 検証失敗
-```
+チェックごとの永続的な状態機械は持ちません。evaluator はその時点で admit 済みの入力と
+依存する STARK status から各チェックの snapshot status を再計算します。そのため、証拠の取得や
+検証結果の更新により、`not_run` または `pending` から `success` / `failed` へ直接解決する
+ことがあります。
 
 | ステータス | 説明                                 | `required` の場合の影響 |
 | ---------- | ------------------------------------ | ----------------------- |

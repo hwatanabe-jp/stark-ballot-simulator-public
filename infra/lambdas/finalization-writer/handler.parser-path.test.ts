@@ -1,22 +1,19 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
 import type {
+  FinalizationBitmapStore,
   FinalizationFailedPayload,
   FinalizationLifecycleStore,
   FinalizationQueuedPayload,
-  FinalizationRunningPayload,
   FinalizationSucceededPayload,
-  FinalizationTimedOutPayload,
 } from '@stark-ballot/application/finalize/finalization-store';
-import type {
-  AwsFinalizationRuntimeState,
-  AwsPersistedFinalizationResult,
-} from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
+import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
+import type { FinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-types';
 import type {
   AwsFinalizationFailedPayload,
   AwsFinalizationRunningPayload,
+  AwsFinalizationRuntimeState,
   AwsFinalizationRuntimeTransitionStore,
   AwsFinalizationSucceededPayload,
   AwsFinalizationTimedOutPayload,
@@ -26,35 +23,44 @@ import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpe
 import { createTestPublicInputArtifact } from '@stark-ballot/test-support/testing/public-input-artifact';
 import { buildCloseStatement, buildElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
 import { buildDefaultElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
+import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
+import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
+
+interface RestoreBundleInput {
+  profile: ResolvedRuntimeProfile;
+  bundleS3Key: string;
+  finalizationId: string;
+  finalizedAtMs: number;
+}
 
 const mocks = vi.hoisted(() => {
   const state = {
-    restoredResult: undefined as AwsPersistedFinalizationResult | undefined,
+    restoredResult: undefined as FinalizationResultAuthority | undefined,
     store: undefined as
-      (FinalizationLifecycleStore & AwsFinalizationRuntimeTransitionStore & Pick<VoteStore, 'getSession'>) | undefined,
+      (FinalizationLifecycleStore & AwsFinalizationRuntimeTransitionStore & FinalizationBitmapStore) | undefined,
   };
 
   return {
     state,
-    buildFinalizationResultFromS3Bundle: vi.fn(() => {
-      if (!state.restoredResult) {
-        throw new Error('restored result not configured');
-      }
-      return Promise.resolve(state.restoredResult);
-    }),
-    buildAsyncProverArtifactKeys: vi.fn((sessionId: string, executionId: string) => ({
-      inputS3Key: `sessions/${sessionId}/${executionId}/input.json`,
-      outputS3Prefix: `sessions/${sessionId}/${executionId}/`,
-      bundleS3Key: `sessions/${sessionId}/${executionId}/bundle.zip`,
-    })),
+    buildFinalizationResultFromS3Bundle: vi.fn<(options: RestoreBundleInput) => Promise<FinalizationResultAuthority>>(
+      () => {
+        if (!state.restoredResult) {
+          throw new Error('restored result not configured');
+        }
+        return Promise.resolve(state.restoredResult);
+      },
+    ),
     readAsyncProverFailureCategory: vi.fn(() => Promise.resolve(undefined)),
-    validateAsyncProverBundleKey: vi.fn((sessionId: string, executionId: string, bundleS3Key: string) => {
-      const expected = `sessions/${sessionId}/${executionId}/bundle.zip`;
-      if (bundleS3Key !== expected) {
-        throw new Error('Async prover bundle key must match the canonical session/execution S3 layout');
-      }
-      return expected;
-    }),
+    validateAsyncProverBundleKey: vi.fn(
+      (_profile: unknown, sessionId: string, finalizationId: string, bundleS3Key: string) => {
+        const expected = `sessions/${sessionId}/${finalizationId}/bundle.zip`;
+        if (bundleS3Key !== expected) {
+          throw new Error('Async prover bundle key must match the canonical session/finalization S3 layout');
+        }
+        return expected;
+      },
+    ),
   };
 });
 
@@ -76,7 +82,6 @@ vi.mock('@stark-ballot/aws-adapters/store/storeInstance', () => ({
 }));
 
 vi.mock('@stark-ballot/aws-adapters/finalize/async-prover-artifacts', () => ({
-  buildAsyncProverArtifactKeys: mocks.buildAsyncProverArtifactKeys,
   buildFinalizationResultFromS3Bundle: mocks.buildFinalizationResultFromS3Bundle,
   readAsyncProverFailureCategory: mocks.readAsyncProverFailureCategory,
   validateAsyncProverBundleKey: mocks.validateAsyncProverBundleKey,
@@ -85,24 +90,53 @@ vi.mock('@stark-ballot/aws-adapters/finalize/async-prover-artifacts', () => ({
 const { handler } = await import('./handler');
 
 const sessionId = '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b';
-const executionId = '01HVN5WA1CEH94868G90QGJ7HX';
-const contractGeneration = '2026-04-zkvm-current-v1';
-const queuedAt = 1_700_000_000_000;
-const startedAt = 1_700_000_001_000;
+const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
+const queuedAtMs = 1_700_000_000_000;
+const startedAtMs = 1_700_000_001_000;
 const executionArn = 'arn:aws:states:ap-northeast-1:123456789012:execution:machine:exec-1';
+let consoleLogSpy: MockInstance<typeof console.log>;
+
+function expectLifecycleOutput(to: string, reason: string): void {
+  expect(consoleLogSpy.mock.calls).toHaveLength(2);
+  expect(consoleLogSpy.mock.calls[0]).toHaveLength(1);
+  expect(consoleLogSpy.mock.calls[1]).toHaveLength(1);
+  expect(consoleLogSpy.mock.calls[0]?.[0]).toEqual(
+    expect.objectContaining({
+      level: 'info',
+      service: 'finalization-writer',
+      event: 'finalize_transition_attempted',
+      to,
+      source: 'writer_update',
+      reason,
+      finalization_id: finalizationId,
+    }),
+  );
+  expect(consoleLogSpy.mock.calls[1]?.[0]).toEqual(
+    expect.objectContaining({
+      level: 'info',
+      service: 'finalization-writer',
+      event: 'finalization_update_received',
+      transport: 'direct_writer',
+      auth_result: 'not_applicable',
+      outcome_code: 'applied',
+      finalization_id: finalizationId,
+    }),
+  );
+  consoleLogSpy.mockClear();
+}
 
 function createStateMachinePayload(): Record<string, unknown> {
   return {
-    messageVersion: 1,
+    recordType: 'prover-work',
+    inputSource: 's3',
     sessionId,
-    contractGeneration,
-    executionId,
-    queuedAt,
-    startedAt,
+    finalizationId,
+    queuedAtMs,
+    startedAtMs,
     expectedImageId: `0x${'1'.repeat(64)}`,
-    inputS3Key: `sessions/${sessionId}/${executionId}/input.json`,
-    outputS3Prefix: `sessions/${sessionId}/${executionId}/`,
-    bundleS3Key: `sessions/${sessionId}/${executionId}/bundle.zip`,
+    inputS3Key: `sessions/${sessionId}/${finalizationId}/input.json`,
+    outputS3Prefix: `sessions/${sessionId}/${finalizationId}/`,
+    bundleS3Key: `sessions/${sessionId}/${finalizationId}/bundle.zip`,
     scenarios: ['S0'],
     simulateTampering: false,
     scenarioContext: {
@@ -116,7 +150,7 @@ function createStateMachinePayload(): Record<string, unknown> {
 }
 
 function expectNoProverWorkFields(value: Record<string, unknown>): void {
-  expect(value).not.toHaveProperty('messageVersion');
+  expect(value).not.toHaveProperty('recordType');
   expect(value).not.toHaveProperty('expectedImageId');
   expect(value).not.toHaveProperty('inputS3Key');
   expect(value).not.toHaveProperty('outputS3Prefix');
@@ -125,6 +159,7 @@ function expectNoProverWorkFields(value: Record<string, unknown>): void {
   expect(value).not.toHaveProperty('simulateTampering');
   expect(value).not.toHaveProperty('scenarioContext');
   expect(value).not.toHaveProperty('proverResult');
+  expect(value).not.toHaveProperty('contractGeneration');
 }
 
 function getStepFunctionsArn(payload: object): string | undefined {
@@ -132,8 +167,12 @@ function getStepFunctionsArn(payload: object): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-function createRestoredFinalizationResult(): AwsPersistedFinalizationResult {
+function createRestoredFinalizationResult(): FinalizationResultAuthority {
   const baseJournal = createTestJournal();
+  const includedBitmap = Array.from({ length: baseJournal.treeSize }, (_, index) => index % 2 === 0);
+  const seenBitmap = Array.from({ length: baseJournal.treeSize }, () => true);
+  const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
+  const seenBitmapRoot = computeIncludedBitmapRoot(seenBitmap);
   const electionManifest = buildElectionManifest(baseJournal.electionId, buildDefaultElectionConfig());
   const closeStatement = buildCloseStatement({
     logId: `0x${'3'.repeat(64)}`,
@@ -144,12 +183,14 @@ function createRestoredFinalizationResult(): AwsPersistedFinalizationResult {
   const journal = {
     ...baseJournal,
     electionConfigHash: electionManifest.electionConfigHash,
+    includedBitmapRoot,
+    seenBitmapRoot,
     sthDigest: closeStatement.sthDigest,
   };
   const publicInputArtifact = createTestPublicInputArtifact({
     source: 'bundle',
-    executionId,
-    bundleKey: `sessions/${sessionId}/${executionId}/bundle.zip`,
+    finalizationId,
+    bundleKey: `sessions/${sessionId}/${finalizationId}/bundle.zip`,
     typedAuthority: {
       electionId: journal.electionId,
       electionConfigHash: journal.electionConfigHash,
@@ -172,71 +213,139 @@ function createRestoredFinalizationResult(): AwsPersistedFinalizationResult {
       closeStatement,
     }),
     publicInputArtifact,
-    verificationExecutionId: executionId,
-    s3BundleKey: `sessions/${sessionId}/${executionId}/bundle.zip`,
-    s3UploadedAt: '2026-06-17T00:00:05.000Z',
+    bitmapData: {
+      includedBitmap,
+      includedBitmapRoot,
+      seenBitmap,
+      seenBitmapRoot,
+      treeSize: journal.treeSize,
+      finalizedAtMs: Date.parse('2026-06-17T00:00:05.000Z'),
+    },
+    bitmapProofSource: 'real',
   };
 }
 
 function createStore(): {
-  store: FinalizationLifecycleStore & AwsFinalizationRuntimeTransitionStore & Pick<VoteStore, 'getSession'>;
-  markFinalizationRunning: ReturnType<typeof vi.fn>;
-  markFinalizationSucceeded: ReturnType<typeof vi.fn>;
-  markFinalizationFailed: ReturnType<typeof vi.fn>;
-  markFinalizationTimedOut: ReturnType<typeof vi.fn>;
-  markAwsFinalizationRunning: ReturnType<typeof vi.fn>;
+  store: FinalizationLifecycleStore & AwsFinalizationRuntimeTransitionStore & FinalizationBitmapStore;
+  markFinalizationRunning: ReturnType<typeof vi.fn<FinalizationLifecycleStore['markFinalizationRunning']>>;
+  markFinalizationSucceeded: ReturnType<typeof vi.fn<FinalizationLifecycleStore['markFinalizationSucceeded']>>;
+  markFinalizationFailed: ReturnType<typeof vi.fn<FinalizationLifecycleStore['markFinalizationFailed']>>;
+  markFinalizationTimedOut: ReturnType<typeof vi.fn<FinalizationLifecycleStore['markFinalizationTimedOut']>>;
+  markAwsFinalizationRunning: ReturnType<
+    typeof vi.fn<AwsFinalizationRuntimeTransitionStore['markAwsFinalizationRunning']>
+  >;
+  markAwsFinalizationSucceeded: ReturnType<
+    typeof vi.fn<AwsFinalizationRuntimeTransitionStore['markAwsFinalizationSucceeded']>
+  >;
 } {
-  const getSession = vi.fn(() => Promise.resolve(null));
-  const markFinalizationRunning = vi.fn((_sessionId: string, payload: FinalizationRunningPayload) => {
-    return Promise.resolve({
-      status: 'running' as const,
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      startedAt: payload.startedAt,
-    });
-  });
-  const markFinalizationSucceeded = vi.fn((_sessionId: string, payload: FinalizationSucceededPayload) => {
-    return Promise.resolve({
-      status: 'succeeded' as const,
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      startedAt: payload.startedAt,
-      completedAt: payload.completedAt,
-    });
-  });
-  const markFinalizationFailed = vi.fn((_sessionId: string, payload: FinalizationFailedPayload) => {
-    return Promise.resolve({
+  const scenarioContext = {
+    scenarios: ['S0'],
+    tamperMode: 'none' as const,
+    claimedCounts: { A: 0, B: 0, C: 0, D: 0, E: 0 },
+    claimedTotalVotes: 0,
+    summary: {
+      ignoredCount: 0,
+      recountedCount: 0,
+      userRecountChoice: null,
+    },
+  };
+  let currentRecord: FinalizationRecord = {
+    sessionId,
+    finalizationId,
+    scenarioContext,
+    state: {
+      status: 'pending',
+      finalizationId,
+      queuedAtMs,
+    },
+  };
+  const setCurrentRecord = (
+    nextState: FinalizationRecord['state'],
+    finalizationResult?: FinalizationSucceededPayload['finalizationResult'],
+  ): FinalizationRecord => {
+    if (nextState.status === 'succeeded') {
+      if (!finalizationResult) {
+        throw new Error('Succeeded test record requires a finalization result');
+      }
+      currentRecord = {
+        sessionId,
+        finalizationId: nextState.finalizationId,
+        scenarioContext,
+        state: nextState,
+        finalizationResult: {
+          ...finalizationResult,
+          finalizationId: nextState.finalizationId,
+        },
+      };
+      return currentRecord;
+    }
+    currentRecord = {
+      sessionId,
+      finalizationId: nextState.finalizationId,
+      scenarioContext,
+      state: nextState,
+    };
+    return currentRecord;
+  };
+  const markFinalizationRunning = vi.fn<FinalizationLifecycleStore['markFinalizationRunning']>(
+    (_sessionId, payload) => {
+      const state = {
+        status: 'running' as const,
+        finalizationId: payload.finalizationId,
+        queuedAtMs: payload.queuedAtMs,
+        startedAtMs: payload.startedAtMs,
+      };
+      return Promise.resolve(setCurrentRecord(state));
+    },
+  );
+  const markFinalizationSucceeded = vi.fn<FinalizationLifecycleStore['markFinalizationSucceeded']>(
+    (_sessionId, payload) => {
+      const state = {
+        status: 'succeeded' as const,
+        finalizationId: payload.finalizationId,
+        queuedAtMs: payload.queuedAtMs,
+        startedAtMs: payload.startedAtMs,
+        completedAtMs: payload.completedAtMs,
+      };
+      return Promise.resolve(setCurrentRecord(state, payload.finalizationResult));
+    },
+  );
+  const markFinalizationFailed = vi.fn<FinalizationLifecycleStore['markFinalizationFailed']>((_sessionId, payload) => {
+    const state = {
       status: 'failed' as const,
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      ...(payload.startedAt !== undefined ? { startedAt: payload.startedAt } : {}),
-      failedAt: payload.failedAt,
+      finalizationId: payload.finalizationId,
+      queuedAtMs: payload.queuedAtMs,
+      ...(payload.startedAtMs !== undefined ? { startedAtMs: payload.startedAtMs } : {}),
+      failedAtMs: payload.failedAtMs,
       error: payload.error,
-    });
+    };
+    return Promise.resolve(setCurrentRecord(state));
   });
-  const markFinalizationTimedOut = vi.fn((_sessionId: string, payload: FinalizationTimedOutPayload) => {
-    return Promise.resolve({
-      status: 'timeout' as const,
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      ...(payload.startedAt !== undefined ? { startedAt: payload.startedAt } : {}),
-      timeoutAt: payload.timeoutAt,
-    });
-  });
+  const markFinalizationTimedOut = vi.fn<FinalizationLifecycleStore['markFinalizationTimedOut']>(
+    (_sessionId, payload) => {
+      const state = {
+        status: 'timeout' as const,
+        finalizationId: payload.finalizationId,
+        queuedAtMs: payload.queuedAtMs,
+        ...(payload.startedAtMs !== undefined ? { startedAtMs: payload.startedAtMs } : {}),
+        timeoutAtMs: payload.timeoutAtMs,
+      };
+      return Promise.resolve(setCurrentRecord(state));
+    },
+  );
   const storeMarkAwsFinalizationRunning = vi.fn((_sessionId: string, payload: AwsFinalizationRunningPayload) => {
     const stepFunctionsArn = getStepFunctionsArn(payload);
     const state: AwsFinalizationRuntimeState = {
       status: 'running',
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      startedAt: payload.startedAt,
+      finalizationId: payload.finalizationId,
+      queuedAtMs: payload.queuedAtMs,
+      startedAtMs: payload.startedAtMs,
       ...(stepFunctionsArn ? { stepFunctionsArn } : {}),
     };
     void markFinalizationRunning(_sessionId, {
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      contractGeneration: payload.contractGeneration,
-      startedAt: payload.startedAt,
+      finalizationId: payload.finalizationId,
+      queuedAtMs: payload.queuedAtMs,
+      startedAtMs: payload.startedAtMs,
     });
     return Promise.resolve(state);
   });
@@ -244,19 +353,18 @@ function createStore(): {
     const stepFunctionsArn = getStepFunctionsArn(payload);
     const state: AwsFinalizationRuntimeState = {
       status: 'succeeded',
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      startedAt: payload.startedAt,
-      completedAt: payload.completedAt,
+      finalizationId: payload.finalizationId,
+      queuedAtMs: payload.queuedAtMs,
+      startedAtMs: payload.startedAtMs,
+      completedAtMs: payload.completedAtMs,
       ...(payload.bundleMetadata ? { bundleMetadata: payload.bundleMetadata } : {}),
       ...(stepFunctionsArn ? { stepFunctionsArn } : {}),
     };
     void markFinalizationSucceeded(_sessionId, {
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      contractGeneration: payload.contractGeneration,
-      startedAt: payload.startedAt,
-      completedAt: payload.completedAt,
+      finalizationId: payload.finalizationId,
+      queuedAtMs: payload.queuedAtMs,
+      startedAtMs: payload.startedAtMs,
+      completedAtMs: payload.completedAtMs,
       finalizationResult: payload.finalizationResult,
     });
     return Promise.resolve(state);
@@ -265,19 +373,18 @@ function createStore(): {
     const stepFunctionsArn = getStepFunctionsArn(payload);
     const state: AwsFinalizationRuntimeState = {
       status: 'failed',
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      ...(payload.startedAt !== undefined ? { startedAt: payload.startedAt } : {}),
-      failedAt: payload.failedAt,
+      finalizationId: payload.finalizationId,
+      queuedAtMs: payload.queuedAtMs,
+      ...(payload.startedAtMs !== undefined ? { startedAtMs: payload.startedAtMs } : {}),
+      failedAtMs: payload.failedAtMs,
       error: payload.error,
       ...(stepFunctionsArn ? { stepFunctionsArn } : {}),
     };
     void markFinalizationFailed(_sessionId, {
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      contractGeneration: payload.contractGeneration,
-      ...(payload.startedAt !== undefined ? { startedAt: payload.startedAt } : {}),
-      failedAt: payload.failedAt,
+      finalizationId: payload.finalizationId,
+      queuedAtMs: payload.queuedAtMs,
+      ...(payload.startedAtMs !== undefined ? { startedAtMs: payload.startedAtMs } : {}),
+      failedAtMs: payload.failedAtMs,
       error: payload.error,
     });
     return Promise.resolve(state);
@@ -286,33 +393,39 @@ function createStore(): {
     const stepFunctionsArn = getStepFunctionsArn(payload);
     const state: AwsFinalizationRuntimeState = {
       status: 'timeout',
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      ...(payload.startedAt !== undefined ? { startedAt: payload.startedAt } : {}),
-      timeoutAt: payload.timeoutAt,
+      finalizationId: payload.finalizationId,
+      queuedAtMs: payload.queuedAtMs,
+      ...(payload.startedAtMs !== undefined ? { startedAtMs: payload.startedAtMs } : {}),
+      timeoutAtMs: payload.timeoutAtMs,
       ...(stepFunctionsArn ? { stepFunctionsArn } : {}),
     };
     void markFinalizationTimedOut(_sessionId, {
-      executionId: payload.executionId,
-      queuedAt: payload.queuedAt,
-      contractGeneration: payload.contractGeneration,
-      ...(payload.startedAt !== undefined ? { startedAt: payload.startedAt } : {}),
-      timeoutAt: payload.timeoutAt,
+      finalizationId: payload.finalizationId,
+      queuedAtMs: payload.queuedAtMs,
+      ...(payload.startedAtMs !== undefined ? { startedAtMs: payload.startedAtMs } : {}),
+      timeoutAtMs: payload.timeoutAtMs,
     });
     return Promise.resolve(state);
   });
-
   return {
     store: {
-      getSession,
-      finalizeSession: vi.fn(() => Promise.resolve(undefined)),
-      markFinalizationQueued: vi.fn((_sessionId: string, payload: FinalizationQueuedPayload) =>
-        Promise.resolve({
-          status: 'pending' as const,
-          executionId: payload.executionId,
-          queuedAt: payload.queuedAt,
-        }),
+      getCurrentFinalizationRecord: vi.fn(() => Promise.resolve(currentRecord)),
+      getFinalizationRecord: vi.fn((_sessionId: string, requestedFinalizationId: string) =>
+        Promise.resolve(currentRecord.finalizationId === requestedFinalizationId ? currentRecord : null),
       ),
+      markFinalizationQueued: vi.fn((_sessionId: string, payload: FinalizationQueuedPayload) => {
+        currentRecord = {
+          sessionId,
+          finalizationId: payload.finalizationId,
+          scenarioContext: payload.scenarioContext,
+          state: {
+            status: 'pending',
+            finalizationId: payload.finalizationId,
+            queuedAtMs: payload.queuedAtMs,
+          },
+        };
+        return Promise.resolve(currentRecord);
+      }),
       markFinalizationRunning,
       markFinalizationSucceeded,
       markFinalizationFailed,
@@ -321,28 +434,33 @@ function createStore(): {
       markAwsFinalizationSucceeded: storeMarkAwsFinalizationSucceeded,
       markAwsFinalizationFailed: storeMarkAwsFinalizationFailed,
       markAwsFinalizationTimedOut: storeMarkAwsFinalizationTimedOut,
+      getBitmapData: () => Promise.resolve(null),
     },
     markFinalizationRunning,
     markFinalizationSucceeded,
     markFinalizationFailed,
     markFinalizationTimedOut,
     markAwsFinalizationRunning: storeMarkAwsFinalizationRunning,
+    markAwsFinalizationSucceeded: storeMarkAwsFinalizationSucceeded,
   };
 }
 
 describe('target finalization-writer real parser admission', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env['TARGET_AWS_RUNTIME'] = '1';
-    process.env['USE_MOCK_STORE'] = 'false';
-    process.env['USE_S3'] = 'true';
-    process.env['AWS_ACCOUNT_ID'] = '123456789012';
-    process.env['AWS_REGION'] = 'ap-northeast-1';
-    process.env['DYNAMODB_SESSIONS_TABLE'] = 'sessions';
-    process.env['DYNAMODB_VOTES_TABLE'] = 'votes';
-    process.env['S3_PROOF_BUCKET'] = 'proofs';
-    process.env['S3_PROOF_PREFIX'] = 'sessions';
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    delete process.env['VITE_SESSION_CREATE_TURNSTILE_REQUIRED'];
+    delete process.env['SESSION_CAPABILITY_SECRET'];
+    Object.assign(process.env, targetRuntimeProfileEnv());
     mocks.state.restoredResult = createRestoredFinalizationResult();
+  });
+
+  afterEach(() => {
+    try {
+      expect(consoleLogSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleLogSpy.mockRestore();
+    }
   });
 
   it('does not keep an unreachable error-shaped success response variant', () => {
@@ -352,7 +470,7 @@ describe('target finalization-writer real parser admission', () => {
   });
 
   it('projects successful Step Functions payloads before strict application parsing', async () => {
-    const { store, markFinalizationSucceeded } = createStore();
+    const { store, markFinalizationSucceeded, markAwsFinalizationSucceeded } = createStore();
     mocks.state.store = store;
 
     const response = await handler({
@@ -369,67 +487,145 @@ describe('target finalization-writer real parser admission', () => {
     );
     expect(response.state).toEqual(
       expect.objectContaining({
-        stepFunctionsArn: executionArn,
-        bundleMetadata: {
-          s3BundleKey: `sessions/${sessionId}/${executionId}/bundle.zip`,
-          s3UploadedAt: '2026-06-17T00:00:05.000Z',
-        },
+        status: 'succeeded',
+        finalizationId,
+        completedAtMs: Date.parse('2026-06-17T00:00:05.000Z'),
       }),
     );
+    expect(response.state).not.toHaveProperty('stepFunctionsArn');
+    expect(response.state).not.toHaveProperty('bundleMetadata');
 
-    expect(mocks.buildFinalizationResultFromS3Bundle).toHaveBeenCalledWith({
-      bundleS3Key: `sessions/${sessionId}/${executionId}/bundle.zip`,
-      verificationExecutionId: executionId,
-      s3UploadedAt: '2026-06-17T00:00:05.000Z',
-      finalizedAt: Date.parse('2026-06-17T00:00:05.000Z'),
+    const restoreOptions = mocks.buildFinalizationResultFromS3Bundle.mock.calls[0]?.[0];
+    expect(restoreOptions?.profile.name).toBe('target-aws-async');
+    expect(restoreOptions).toMatchObject({
+      bundleS3Key: `sessions/${sessionId}/${finalizationId}/bundle.zip`,
+      finalizationId: finalizationId,
+      finalizedAtMs: Date.parse('2026-06-17T00:00:05.000Z'),
     });
     expect(markFinalizationSucceeded).toHaveBeenCalledTimes(1);
     const succeededPayload = markFinalizationSucceeded.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(succeededPayload).toEqual(
       expect.objectContaining({
-        executionId,
-        queuedAt,
-        startedAt,
-        completedAt: Date.parse('2026-06-17T00:00:05.000Z'),
+        finalizationId,
+        queuedAtMs,
+        startedAtMs,
+        completedAtMs: Date.parse('2026-06-17T00:00:05.000Z'),
       }),
     );
     expect(succeededPayload).not.toHaveProperty('stepFunctionsArn');
     expect(succeededPayload).not.toHaveProperty('bundleMetadata');
     expectNoProverWorkFields(succeededPayload);
+    expect(markAwsFinalizationSucceeded).toHaveBeenCalledOnce();
+    expect(markAwsFinalizationSucceeded.mock.calls[0]?.[1].finalizationResult.bitmapData).toEqual(
+      mocks.state.restoredResult?.bitmapData,
+    );
+    expectLifecycleOutput('succeeded', 'RUNTIME_UPDATE_RECEIVED');
   });
 
-  it('ignores the retired top-level s3BundleKey alias', async () => {
+  it('keeps successful finalization compatible when the restored result has no bitmap evidence', async () => {
     const { store } = createStore();
     mocks.state.store = store;
-    const payload = createStateMachinePayload();
-    delete payload['bundleS3Key'];
-    payload['s3BundleKey'] = 'sessions/retired-alias/other-execution/bundle.zip';
+    const restoredResult = createRestoredFinalizationResult();
+    delete restoredResult.bitmapData;
+    delete restoredResult.bitmapProofSource;
+    mocks.state.restoredResult = restoredResult;
 
     await expect(
       handler({
         status: 'SUCCEEDED',
         executionArn,
-        payload,
+        payload: createStateMachinePayload(),
       }),
-    ).resolves.toEqual(expect.objectContaining({ status: 'success' }));
-    expect(mocks.buildFinalizationResultFromS3Bundle).toHaveBeenCalledWith(
+    ).resolves.toEqual(expect.objectContaining({ status: 'success', sessionId }));
+
+    expectLifecycleOutput('succeeded', 'RUNTIME_UPDATE_RECEIVED');
+  });
+
+  it('keeps pending authority when the atomic successful commit fails and repairs it on callback retry', async () => {
+    const { store, markAwsFinalizationSucceeded } = createStore();
+    mocks.state.store = store;
+    markAwsFinalizationSucceeded.mockRejectedValueOnce(new Error('atomic successful finalization commit unavailable'));
+    const event = {
+      status: 'SUCCEEDED',
+      executionArn,
+      payload: createStateMachinePayload(),
+    };
+
+    await expect(handler(event)).rejects.toThrow('atomic successful finalization commit unavailable');
+
+    await expect(store.getCurrentFinalizationRecord(sessionId)).resolves.toMatchObject({
+      state: { status: 'pending' },
+    });
+    expect(consoleLogSpy.mock.calls).toHaveLength(2);
+    expect(consoleLogSpy.mock.calls[1]?.[0]).toEqual(
       expect.objectContaining({
-        bundleS3Key: `sessions/${sessionId}/${executionId}/bundle.zip`,
+        event: 'finalization_update_received',
+        outcome_code: 'application_failed',
+        finalization_id: finalizationId,
       }),
     );
+    expect(consoleLogSpy.mock.calls).not.toEqual(
+      expect.arrayContaining([
+        [
+          expect.objectContaining({
+            event: 'finalization_update_received',
+            outcome_code: 'applied',
+          }),
+        ],
+      ]),
+    );
+    consoleLogSpy.mockClear();
+
+    await expect(handler(event)).resolves.toEqual(expect.objectContaining({ status: 'success', sessionId }));
+
+    expect(markAwsFinalizationSucceeded).toHaveBeenCalledTimes(2);
+    await expect(store.getCurrentFinalizationRecord(sessionId)).resolves.toMatchObject({
+      state: { status: 'succeeded' },
+    });
+    expectLifecycleOutput('succeeded', 'RUNTIME_UPDATE_RECEIVED');
+  });
+
+  it('does not use the retired top-level s3BundleKey alias as current bundle identity', async () => {
+    const { store, markFinalizationFailed } = createStore();
+    mocks.state.store = store;
+    const payload = createStateMachinePayload();
+    delete payload['bundleS3Key'];
+    payload['s3BundleKey'] = 'sessions/retired-alias/other-execution/bundle.zip';
+
+    const response = await handler({
+      status: 'SUCCEEDED',
+      executionArn,
+      payload,
+    });
+
+    expect(response.status).toBe('success');
+    expect(response.state.status).toBe('failed');
+    expect(response.state.finalizationId).toBe(finalizationId);
+    if (response.state.status !== 'failed') {
+      throw new Error('Expected missing current bundle identity to fail finalization');
+    }
+    expect(response.state.error.code).toBe('FINALIZATION_BUNDLE_KEY_MISSING');
+    expect(mocks.buildFinalizationResultFromS3Bundle).not.toHaveBeenCalled();
+    expect(markFinalizationFailed).toHaveBeenCalledTimes(1);
+    const failedCall = markFinalizationFailed.mock.calls[0] as
+      [sessionId: string, payload: FinalizationFailedPayload] | undefined;
+    expect(failedCall?.[0]).toBe(sessionId);
+    expect(failedCall?.[1].finalizationId).toBe(finalizationId);
+    expect(failedCall?.[1].error.code).toBe('FINALIZATION_BUNDLE_KEY_MISSING');
+    expectLifecycleOutput('failed', 'FINALIZATION_BUNDLE_KEY_MISSING');
   });
 
   it('normalizes RUNNING direct events and returns the applied running state', async () => {
     const { store, markFinalizationRunning } = createStore();
-    const proverStartedAt = '2026-06-17T00:00:01.000Z';
+    const proverStartedAtIso = '2026-06-17T00:00:01.000Z';
     const payload = createStateMachinePayload();
-    delete payload['startedAt'];
+    delete payload['startedAtMs'];
     mocks.state.store = store;
 
     const response = await handler({
       status: 'RUNNING',
       executionArn,
-      startedAt: proverStartedAt,
+      startedAtIso: proverStartedAtIso,
       payload,
     });
 
@@ -438,45 +634,50 @@ describe('target finalization-writer real parser admission', () => {
       sessionId,
       state: {
         status: 'running',
-        executionId,
-        queuedAt,
-        startedAt: Date.parse(proverStartedAt),
-        stepFunctionsArn: executionArn,
+        finalizationId,
+        queuedAtMs,
+        startedAtMs: Date.parse(proverStartedAtIso),
       },
     });
     expect(markFinalizationRunning).toHaveBeenCalledTimes(1);
     const runningPayload = markFinalizationRunning.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(runningPayload).toEqual(
       expect.objectContaining({
-        executionId,
-        queuedAt,
-        startedAt: Date.parse(proverStartedAt),
+        finalizationId,
+        queuedAtMs,
+        startedAtMs: Date.parse(proverStartedAtIso),
       }),
     );
     expect(runningPayload).not.toHaveProperty('stepFunctionsArn');
     expectNoProverWorkFields(runningPayload);
+    expectLifecycleOutput('running', 'RUNTIME_UPDATE_RECEIVED');
   });
 
   it('returns a terminal failed state when RUNNING is blocked by a cancelled session', async () => {
-    const { store, markAwsFinalizationRunning } = createStore();
-    const failedState: AwsFinalizationRuntimeState = {
+    const { store, markFinalizationFailed, markAwsFinalizationRunning } = createStore();
+    const failedState: NonNullable<AwsFinalizationRuntimeState> = {
       status: 'failed',
-      executionId,
-      queuedAt,
-      failedAt: startedAt,
+      finalizationId,
+      queuedAtMs,
+      failedAtMs: startedAtMs,
       error: {
         code: 'USER_CANCELLED',
         message: 'User cancelled finalization',
       },
-      stepFunctionsArn: executionArn,
     };
     markAwsFinalizationRunning.mockResolvedValueOnce(failedState);
+    await markFinalizationFailed(sessionId, {
+      finalizationId,
+      queuedAtMs,
+      failedAtMs: startedAtMs,
+      error: failedState.error,
+    });
     mocks.state.store = store;
 
     const response = await handler({
       status: 'RUNNING',
       executionArn,
-      startedAt: '2026-06-17T00:00:01.000Z',
+      startedAtIso: '2026-06-17T00:00:01.000Z',
       payload: createStateMachinePayload(),
     });
 
@@ -485,6 +686,7 @@ describe('target finalization-writer real parser admission', () => {
       sessionId,
       state: failedState,
     });
+    expectLifecycleOutput('running', 'RUNTIME_UPDATE_RECEIVED');
   });
 
   it('projects failed Step Functions payloads with extra work fields before strict application parsing', async () => {
@@ -494,6 +696,7 @@ describe('target finalization-writer real parser admission', () => {
     const response = await handler({
       status: 'FAILED',
       executionArn,
+      failedAtIso: '2026-06-17T00:00:05.000Z',
       payload: createStateMachinePayload(),
       error: {
         code: 'PROVER_TASK_FAILED',
@@ -511,15 +714,16 @@ describe('target finalization-writer real parser admission', () => {
         sessionId,
       }),
     );
-    expect(response.state).toEqual(expect.objectContaining({ stepFunctionsArn: executionArn }));
+    expect(response.state).not.toHaveProperty('stepFunctionsArn');
 
     expect(markFinalizationFailed).toHaveBeenCalledTimes(1);
     const failedPayload = markFinalizationFailed.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(failedPayload).toEqual(
       expect.objectContaining({
-        executionId,
-        queuedAt,
-        startedAt,
+        finalizationId,
+        queuedAtMs,
+        startedAtMs,
+        failedAtMs: Date.parse('2026-06-17T00:00:05.000Z'),
         error: {
           code: 'PROVER_TASK_FAILED',
           message: 'Target prover task failed',
@@ -529,17 +733,18 @@ describe('target finalization-writer real parser admission', () => {
     );
     expect(failedPayload).not.toHaveProperty('stepFunctionsArn');
     expectNoProverWorkFields(failedPayload);
+    expectLifecycleOutput('failed', 'PROVER_TASK_FAILED');
   });
 
   it('projects timed-out Step Functions payloads with extra work fields before strict application parsing', async () => {
     const { store, markFinalizationTimedOut } = createStore();
-    const timeoutAt = '2026-06-17T00:00:10.000Z';
+    const timeoutAtIso = '2026-06-17T00:00:10.000Z';
     mocks.state.store = store;
 
     const response = await handler({
       status: 'TIMED_OUT',
       executionArn,
-      timeoutAt,
+      timeoutAtIso,
       payload: {
         ...createStateMachinePayload(),
         error: {
@@ -555,20 +760,21 @@ describe('target finalization-writer real parser admission', () => {
         sessionId,
       }),
     );
-    expect(response.state).toEqual(expect.objectContaining({ stepFunctionsArn: executionArn }));
+    expect(response.state).not.toHaveProperty('stepFunctionsArn');
 
     expect(markFinalizationTimedOut).toHaveBeenCalledTimes(1);
     const timedOutPayload = markFinalizationTimedOut.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(timedOutPayload).toEqual(
       expect.objectContaining({
-        executionId,
-        queuedAt,
-        startedAt,
-        timeoutAt: Date.parse(timeoutAt),
+        finalizationId,
+        queuedAtMs,
+        startedAtMs,
+        timeoutAtMs: Date.parse(timeoutAtIso),
       }),
     );
     expect(timedOutPayload).not.toHaveProperty('stepFunctionsArn');
     expect(timedOutPayload).not.toHaveProperty('error');
     expectNoProverWorkFields(timedOutPayload);
+    expectLifecycleOutput('timeout', 'RUNTIME_UPDATE_RECEIVED');
   });
 });

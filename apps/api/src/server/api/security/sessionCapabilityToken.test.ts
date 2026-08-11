@@ -10,17 +10,23 @@ import {
   clearRuntimeConfigReferenceResolver,
   installStaticRuntimeConfigReferenceResolver,
 } from '@stark-ballot/runtime-config/env/runtimeConfigReferences';
+import {
+  localRuntimeProfile,
+  targetRuntimeProfile,
+} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
 
 const TEST_SECRET = 'test-session-capability-secret-0123456789abcdef';
 const RESOLVED_SESSION_SECRET = 'resolved-session-capability-secret-0123456789abcdef';
 const UNRESOLVED_RUNTIME_SECRET_PLACEHOLDER = '<value will be resolved during runtime>';
 const SESSION_SECRET_REF = '/stark-ballot-simulator/stark-dev/develop/app/secrets/session-capability-secret';
 const SESSION_TTL_REF = '/stark-ballot-simulator/stark-dev/develop/app/config/session-capability-ttl-seconds';
+const LOCAL_RUNTIME_PROFILE = localRuntimeProfile();
+const TARGET_RUNTIME_PROFILE = targetRuntimeProfile();
+const DEVELOP_REFERENCE_AUTHORITY = { expectedDeploymentEnvironment: 'develop' } as const;
 
 describe('sessionCapabilityToken', () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
-    delete process.env['USE_MOCK_STORE'];
     delete process.env['SESSION_CAPABILITY_SECRET_REF'];
     delete process.env['SESSION_CAPABILITY_TTL_SECONDS_REF'];
     clearRuntimeConfigReferenceResolver();
@@ -126,7 +132,7 @@ describe('sessionCapabilityToken', () => {
     vi.stubEnv('NODE_ENV', 'test');
     delete process.env['SESSION_CAPABILITY_SECRET'];
 
-    expect(() => resolveSessionCapabilitySecret()).toThrow(
+    expect(() => resolveSessionCapabilitySecret(LOCAL_RUNTIME_PROFILE)).toThrow(
       'SESSION_CAPABILITY_SECRET must be set to at least 32 characters',
     );
   });
@@ -135,7 +141,7 @@ describe('sessionCapabilityToken', () => {
     vi.stubEnv('NODE_ENV', 'development');
     delete process.env['SESSION_CAPABILITY_SECRET'];
 
-    expect(() => resolveSessionCapabilitySecret()).toThrow(
+    expect(() => resolveSessionCapabilitySecret(LOCAL_RUNTIME_PROFILE)).toThrow(
       'SESSION_CAPABILITY_SECRET must be set to at least 32 characters',
     );
   });
@@ -144,7 +150,7 @@ describe('sessionCapabilityToken', () => {
     vi.stubEnv('NODE_ENV', 'production');
     process.env['SESSION_CAPABILITY_SECRET'] = UNRESOLVED_RUNTIME_SECRET_PLACEHOLDER;
 
-    expect(() => resolveSessionCapabilitySecret()).toThrow(
+    expect(() => resolveSessionCapabilitySecret(LOCAL_RUNTIME_PROFILE)).toThrow(
       'SESSION_CAPABILITY_SECRET was not resolved from runtime secret references',
     );
   });
@@ -156,9 +162,12 @@ describe('sessionCapabilityToken', () => {
     vi.stubEnv('NODE_ENV', 'production');
     process.env['SESSION_CAPABILITY_SECRET'] = secretReference;
     process.env['SESSION_CAPABILITY_SECRET_REF'] = SESSION_SECRET_REF;
-    installStaticRuntimeConfigReferenceResolver(new Map([[SESSION_SECRET_REF, RESOLVED_SESSION_SECRET]]));
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[SESSION_SECRET_REF, RESOLVED_SESSION_SECRET]]),
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
 
-    expect(() => resolveSessionCapabilitySecret()).toThrow(
+    expect(() => resolveSessionCapabilitySecret(LOCAL_RUNTIME_PROFILE)).toThrow(
       'SESSION_CAPABILITY_SECRET must contain raw secret material, not a reference',
     );
   });
@@ -167,21 +176,51 @@ describe('sessionCapabilityToken', () => {
     vi.stubEnv('NODE_ENV', 'development');
     delete process.env['SESSION_CAPABILITY_SECRET'];
     process.env['SESSION_CAPABILITY_SECRET_REF'] = SESSION_SECRET_REF;
-    installStaticRuntimeConfigReferenceResolver(new Map([[SESSION_SECRET_REF, RESOLVED_SESSION_SECRET]]));
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[SESSION_SECRET_REF, RESOLVED_SESSION_SECRET]]),
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
 
-    expect(resolveSessionCapabilitySecret()).toBe(RESOLVED_SESSION_SECRET);
+    expect(resolveSessionCapabilitySecret(TARGET_RUNTIME_PROFILE)).toBe(RESOLVED_SESSION_SECRET);
   });
 
   it('rejects raw session capability secrets in target non-mock runtime', () => {
     vi.stubEnv('NODE_ENV', 'development');
-    process.env['USE_MOCK_STORE'] = 'false';
     process.env['SESSION_CAPABILITY_SECRET'] = TEST_SECRET;
     process.env['SESSION_CAPABILITY_SECRET_REF'] = SESSION_SECRET_REF;
-    installStaticRuntimeConfigReferenceResolver(new Map([[SESSION_SECRET_REF, RESOLVED_SESSION_SECRET]]));
-
-    expect(() => resolveSessionCapabilitySecret()).toThrow(
-      'SESSION_CAPABILITY_SECRET must not be set directly when USE_MOCK_STORE=false; use SESSION_CAPABILITY_SECRET_REF',
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[SESSION_SECRET_REF, RESOLVED_SESSION_SECRET]]),
+      DEVELOP_REFERENCE_AUTHORITY,
     );
+
+    expect(() => resolveSessionCapabilitySecret(TARGET_RUNTIME_PROFILE)).toThrow(
+      'SESSION_CAPABILITY_SECRET must not be set directly for target AWS runtime; use SESSION_CAPABILITY_SECRET_REF',
+    );
+  });
+
+  it('rejects a direct target secret from the injected target profile', () => {
+    const env = {
+      NODE_ENV: 'test',
+      SESSION_CAPABILITY_SECRET: TEST_SECRET,
+      SESSION_CAPABILITY_SECRET_REF: SESSION_SECRET_REF,
+    };
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[SESSION_SECRET_REF, RESOLVED_SESSION_SECRET]]),
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
+
+    expect(() => resolveSessionCapabilitySecret(targetRuntimeProfile(), env)).toThrow(
+      'SESSION_CAPABILITY_SECRET must not be set directly for target AWS runtime; use SESSION_CAPABILITY_SECRET_REF',
+    );
+  });
+
+  it('accepts a local direct secret from the injected local profile', () => {
+    const env = {
+      NODE_ENV: 'test',
+      SESSION_CAPABILITY_SECRET: TEST_SECRET,
+    };
+
+    expect(resolveSessionCapabilitySecret(localRuntimeProfile(), env)).toBe(TEST_SECRET);
   });
 
   it('fails closed when the session capability secret reference is unresolved', () => {
@@ -189,7 +228,7 @@ describe('sessionCapabilityToken', () => {
     delete process.env['SESSION_CAPABILITY_SECRET'];
     process.env['SESSION_CAPABILITY_SECRET_REF'] = SESSION_SECRET_REF;
 
-    expect(() => resolveSessionCapabilitySecret()).toThrow(
+    expect(() => resolveSessionCapabilitySecret(LOCAL_RUNTIME_PROFILE)).toThrow(
       'SESSION_CAPABILITY_SECRET_REF is configured but no target runtime resolver returned a value',
     );
   });
@@ -197,77 +236,79 @@ describe('sessionCapabilityToken', () => {
   it('uses the default ttl when the configured value is unset', () => {
     delete process.env['SESSION_CAPABILITY_TTL_SECONDS'];
 
-    expect(resolveSessionCapabilityTtlSeconds()).toBe(DEFAULT_SESSION_CAPABILITY_TTL_SECONDS);
+    expect(resolveSessionCapabilityTtlSeconds(LOCAL_RUNTIME_PROFILE)).toBe(DEFAULT_SESSION_CAPABILITY_TTL_SECONDS);
   });
 
   it('resolves session capability ttl from a target reference resolver', () => {
     delete process.env['SESSION_CAPABILITY_TTL_SECONDS'];
     process.env['SESSION_CAPABILITY_TTL_SECONDS_REF'] = SESSION_TTL_REF;
-    installStaticRuntimeConfigReferenceResolver(new Map([[SESSION_TTL_REF, '3600']]));
+    installStaticRuntimeConfigReferenceResolver(new Map([[SESSION_TTL_REF, '3600']]), DEVELOP_REFERENCE_AUTHORITY);
 
-    expect(resolveSessionCapabilityTtlSeconds()).toBe(3600);
+    expect(resolveSessionCapabilityTtlSeconds(TARGET_RUNTIME_PROFILE)).toBe(3600);
   });
 
   it('rejects raw session capability ttl in target non-mock runtime', () => {
     vi.stubEnv('NODE_ENV', 'development');
-    process.env['USE_MOCK_STORE'] = 'false';
     process.env['SESSION_CAPABILITY_TTL_SECONDS'] = '3600';
     process.env['SESSION_CAPABILITY_TTL_SECONDS_REF'] = SESSION_TTL_REF;
-    installStaticRuntimeConfigReferenceResolver(new Map([[SESSION_TTL_REF, '120']]));
+    installStaticRuntimeConfigReferenceResolver(new Map([[SESSION_TTL_REF, '120']]), DEVELOP_REFERENCE_AUTHORITY);
 
-    expect(() => resolveSessionCapabilityTtlSeconds()).toThrow(
-      'SESSION_CAPABILITY_TTL_SECONDS must not be set directly when USE_MOCK_STORE=false; use SESSION_CAPABILITY_TTL_SECONDS_REF',
+    expect(() => resolveSessionCapabilityTtlSeconds(TARGET_RUNTIME_PROFILE)).toThrow(
+      'SESSION_CAPABILITY_TTL_SECONDS must not be set directly for target AWS runtime; use SESSION_CAPABILITY_TTL_SECONDS_REF',
     );
   });
 
   it('fails closed when the session capability ttl reference resolves to an invalid value', () => {
     delete process.env['SESSION_CAPABILITY_TTL_SECONDS'];
     process.env['SESSION_CAPABILITY_TTL_SECONDS_REF'] = SESSION_TTL_REF;
-    installStaticRuntimeConfigReferenceResolver(new Map([[SESSION_TTL_REF, 'not-a-number']]));
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[SESSION_TTL_REF, 'not-a-number']]),
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
 
-    expect(() => resolveSessionCapabilityTtlSeconds()).toThrow(
+    expect(() => resolveSessionCapabilityTtlSeconds(LOCAL_RUNTIME_PROFILE)).toThrow(
       'Invalid SESSION_CAPABILITY_TTL_SECONDS value: not-a-number. Expected a positive integer.',
     );
   });
 
   it('throws when configured ttl is invalid', () => {
     process.env['SESSION_CAPABILITY_TTL_SECONDS'] = 'abc';
-    expect(() => resolveSessionCapabilityTtlSeconds()).toThrow(
+    expect(() => resolveSessionCapabilityTtlSeconds(LOCAL_RUNTIME_PROFILE)).toThrow(
       'Invalid SESSION_CAPABILITY_TTL_SECONDS value: abc. Expected a positive integer.',
     );
   });
 
   it('throws when configured ttl is non-integer', () => {
     process.env['SESSION_CAPABILITY_TTL_SECONDS'] = '0.5';
-    expect(() => resolveSessionCapabilityTtlSeconds()).toThrow(
+    expect(() => resolveSessionCapabilityTtlSeconds(LOCAL_RUNTIME_PROFILE)).toThrow(
       'Invalid SESSION_CAPABILITY_TTL_SECONDS value: 0.5. Expected a positive integer.',
     );
   });
 
   it('throws when configured ttl is zero', () => {
     process.env['SESSION_CAPABILITY_TTL_SECONDS'] = '0';
-    expect(() => resolveSessionCapabilityTtlSeconds()).toThrow(
+    expect(() => resolveSessionCapabilityTtlSeconds(LOCAL_RUNTIME_PROFILE)).toThrow(
       'Invalid SESSION_CAPABILITY_TTL_SECONDS value: 0. Expected a positive integer.',
     );
   });
 
   it('throws when configured ttl is negative', () => {
     process.env['SESSION_CAPABILITY_TTL_SECONDS'] = '-1';
-    expect(() => resolveSessionCapabilityTtlSeconds()).toThrow(
+    expect(() => resolveSessionCapabilityTtlSeconds(LOCAL_RUNTIME_PROFILE)).toThrow(
       'Invalid SESSION_CAPABILITY_TTL_SECONDS value: -1. Expected a positive integer.',
     );
   });
 
   it('throws when configured ttl is above the accepted maximum', () => {
     process.env['SESSION_CAPABILITY_TTL_SECONDS'] = String(MAX_SESSION_CAPABILITY_TTL_SECONDS + 1);
-    expect(() => resolveSessionCapabilityTtlSeconds()).toThrow(
+    expect(() => resolveSessionCapabilityTtlSeconds(LOCAL_RUNTIME_PROFILE)).toThrow(
       `SESSION_CAPABILITY_TTL_SECONDS must be ${MAX_SESSION_CAPABILITY_TTL_SECONDS} or less.`,
     );
   });
 
   it('uses a valid configured ttl', () => {
     process.env['SESSION_CAPABILITY_TTL_SECONDS'] = '3600';
-    expect(resolveSessionCapabilityTtlSeconds()).toBe(3600);
+    expect(resolveSessionCapabilityTtlSeconds(LOCAL_RUNTIME_PROFILE)).toBe(3600);
   });
 
   it('ignores non-integer ttl option when creating token', () => {

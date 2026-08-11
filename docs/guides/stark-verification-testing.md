@@ -1,74 +1,108 @@
 # STARK証明検証テストガイド
 
-このドキュメントでは、STARK Ballot Simulatorで **STARK証明の生成・検証を現行のCLI/スクリプトで確認する方法** をまとめます。
+このドキュメントでは、STARK Ballot Simulator で STARK 証明の生成と receipt 検証を確認するための、
+現行 CLI / host / `verifier-service` の使い分けを説明します。mock と development receipt は
+production STARK proof の証拠ではありません。
 
-## 前提
+## テスト経路と build を選ぶ
 
-- `RISC0_DEV_MODE=1` は **Fake receipt** のみ生成します（実証明ではありません）。
-- 実際のSTARK証明は **数分（64票で約6分）** かかります。
-- まずは `pnpm build:zkvm` と `pnpm build:verifier-service` を済ませておくとスムーズです。
-- カスタム host input を使う場合、現行 guest は `tree_size` / `total_expected` / 提示 vote 数 / 各候補 tally を
-  `1,000,000` 以下、各 Merkle path を `u16::MAX` 長以下、aggregate Merkle path node 数を `1,000,000` 以下、
-  structural/serialized input budget を `64 MiB` 以下に制限します。超過入力は journal field を出す前に fail-closed します。
+| 目的                              | 実行 profile / 証拠                                          | 事前 build                                                           | 実行コマンド                   |
+| --------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------- | ------------------------------ |
+| 最速の application E2E            | `static-mock-e2e` / mock artifact                            | Rust build 不要。CLI が `pnpm build:local-mock` を実行               | `pnpm test:cli:mock`           |
+| TypeScript / Rust contract の確認 | `local-proof-development` / fake development receipt         | `pnpm build:zkvm:dev-mode` と `pnpm build:verifier-service:dev-mode` | `pnpm test:cli:real-dev`       |
+| host fixture の低レベル診断       | host を `RISC0_DEV_MODE=1` で実行 / fake development receipt | `pnpm build:zkvm:dev-mode`                                           | `./scripts/tests/test-zkvm.sh` |
+| production proof smoke            | `local-proof-production` / production RISC Zero receipt      | `pnpm build:zkvm` と `pnpm build:verifier-service`                   | `pnpm test:cli:real-prod:s0`   |
 
-## 1. 推奨: CLI E2E テスト
+`RISC0_DEV_MODE=1` は development build で fake receipt を生成するための設定です。production feature
+付きの host / verifier binary は dev mode を拒否します。`test-zkvm.sh` は host binary がない場合だけ
+development build を行うため、production binary を直前に build した場合は、先に
+`pnpm build:zkvm:dev-mode` で置き換えてください。
 
-エンドツーエンドで最も確実な確認方法です。詳細は `docs/guides/cli.md` を参照してください。
+production proof は環境により数分かかります。64票では約6分が目安ですが、保証値ではありません。
+
+## CLI E2E workflow
+
+CLI harness は session 作成、投票、finalize、verification resource の確認、capability-protected artifact
+の download、receipt 検証までを browser なしで実行します。
 
 ```bash
-# モック（最速）
+# mock S0、choice A
 pnpm test:cli:mock
 
-# 実zkVM + dev receipts
+# direct harness。scenario 未指定時は S0 + S1
+pnpm test:cli -- --user-choice A
+
+# mock の S0-S5 matrix
+pnpm test:cli -- --user-choice A --all-scenarios
+
+# real zkVM + fake development receipt、S0
 pnpm test:cli:real-dev
 
-# 実zkVM + 本番STARK（S0のみ）
+# real zkVM + production STARK、S0
 pnpm test:cli:real-prod:s0
-
-# 直接ハーネス起動（ユーザー票指定）
-pnpm test:cli -- --user-choice A
 ```
 
-補足:
+`pnpm test:cli:mock` は package script で `--user-choice A --scenario S0` を指定します。その他の choice
+や scenario を選ぶ場合は direct harness を使います。全 option は [CLI guide](./cli.md) を参照してください。
 
-- `pnpm test:cli -- --user-choice A` はデフォルトで S0 + S1 を実行します。
-- `pnpm test:cli:mock` は package script 側で `--scenario S0` を指定しています。モックの S0-S5 matrix を回す場合は
-  `docs/guides/cli.md` の直接ハーネス例を参照してください。
-- `--skip-build` は既存の `pnpm build:ci` 出力を再利用するオプションです。出力がない場合は指定しないでください。
-
-## 2. zkVM 単体スモークテスト（dev mode）
-
-簡易スモークとして `scripts/tests/test-zkvm.sh` を使用します。テストデータは `zkvm/test-data/test-fixture-*.json` を使います。
+CLI が server を所有する場合、実行前に選択した local runtime profile で `pnpm build:local-mock` を実行します。
+`--skip-build` はこの build を省略して既存の `dist/` を再利用します。`dist/` が存在し、今回の CLI run と
+同じ `VITE_RUNTIME_PROFILE` で生成されたことを確認できる場合だけ指定してください。
 
 ```bash
+pnpm test:cli -- --user-choice A --skip-build
+```
+
+## Custom host input の上限
+
+host は proving を始める前に serialized size と shared contract / structural budget を検証し、guest は
+contract / structural budget を journal field の emit 前に再検証します。
+
+| Input / budget                     | 現行上限                   | Enforcement  |
+| ---------------------------------- | -------------------------- | ------------ |
+| `tree_size`                        | `1..=1,000,000`            | host / guest |
+| `total_expected`                   | `1,000,000` 以下           | host / guest |
+| 提示 vote record 数                | `1,000,000` 以下           | host / guest |
+| 1 record の Merkle path node 数    | `u16::MAX`（`65,535`）以下 | host / guest |
+| 全 record の Merkle path node 合計 | `1,000,000` 以下           | host / guest |
+| structural byte estimate           | `64 MiB` 以下              | host / guest |
+| input file の serialized size      | `64 MiB` 以下              | host         |
+
+候補ごとの tally も提示 vote 数を超えず、guest は counter overflow と `1,000,000` 超過を拒否します。
+上限違反は journal field を emit する前に失敗します。
+
+## Host fixture の低レベル診断
+
+`scripts/tests/test-zkvm.sh` は `zkvm/test-data/test-fixture-valid.json` と
+`zkvm/test-data/test-fixture-tampered.json` を development host に渡します。これは application E2E や
+production proof の代替ではありません。
+
+```bash
+pnpm build:zkvm:dev-mode
 ./scripts/tests/test-zkvm.sh
 ```
 
-## 3. Receipt / Journal 解析
+実行後、host は同じ directory に `*-output.json`、`*-receipt.json`、bitmap artifact を生成します。
+これらは checked-in fixture ではなく local artifact です。
 
-### 3.1 Journal の正しいパース方法
+## Journal artifact を区別する
 
-Journal の byte-level 解析は `packages/verification/src/verification/journal-parser.ts` が **正** です。現行 contract の確認はまず `packages/verification/src/verification/journal-parser.test.ts` を使ってください。
+同じ guest output に由来していても、次の表現は交換可能ではありません。
+
+| 表現                                        | 内容と用途                                                                                                                                             |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `*-receipt.json` / bundle の `receipt.json` | RISC Zero receipt envelope。内部の `receipt.journal.bytes` は RISC Zero serde encoding であり、下記の 272-byte parser へ直接渡さない                   |
+| host の `*-output.json`                     | host が `receipt.journal.decode::<VerificationOutput>()` した結果と host-provided `imageId`。local host 診断で field を確認する入口                    |
+| bundle の `journal.json`                    | decoded proof-bound field を allowlist した canonical public artifact。application / bundle audit で journal field を確認する入口                      |
+| `parseJournalBytes()` の 272-byte layout    | `packages/verification/src/verification/journal-parser.ts` とその unit test が所有する低レベル packed layout。固定 layout の test bytes にだけ使用する |
+
+272-byte parser の現行 contract は次の test で確認します。
 
 ```bash
 pnpm vitest run packages/verification/src/verification/journal-parser.test.ts
 ```
 
-`zkvm/test-data/*-receipt.json` と `*-output.json` は checked-in fixture ではなく、host 実行で生成されるローカル artifact です。現行の
-`parseJournalBytes()` にそのまま渡せる 272-byte journal とも限りません。手早く現行 field を確認したい場合は、
-`./scripts/tests/test-zkvm.sh` または host CLI 実行後に生成された `*-output.json` を参照します。検証 bundle では、
-`receipt.json` ではなく canonical な `journal.json` が公開 journal field の確認入口です。
-
-```bash
-# ./scripts/tests/test-zkvm.sh 実行後の生成物を読む例
-pnpm tsx -e "import fs from 'node:fs'; const output = JSON.parse(fs.readFileSync('zkvm/test-data/test-fixture-valid-output.json','utf-8')); console.log({ methodVersion: output.methodVersion, excludedSlots: output.excludedSlots, rejectedRecords: output.rejectedRecords, inputCommitment: output.inputCommitment });"
-```
-
-`parseJournalBytes()` を手元で直接叩く対象は、unit test と同じ 272-byte 固定レイアウトの journal bytes に限ってください。RISC Zero の receipt 内部 journal や bundle の `receipt.json` は serde / receipt wrapper 由来の形式を含むため、272-byte parser の入力としては扱わないでください。古い手動 receipt inspection helper は退役済みです。
-
-### 3.2 Journal フォーマット（現行: methodVersion 14）
-
-`parseJournalBytes` は現行実装で `methodVersion=14` のみ受け付けます。順序・サイズは以下です（272 bytes 固定）：
+`parseJournalBytes()` は `methodVersion=14` だけを受け付け、次の順序を要求します。
 
 1. `electionId` (16 bytes)
 2. `electionConfigHash` (32 bytes)
@@ -88,41 +122,66 @@ pnpm tsx -e "import fs from 'node:fs'; const output = JSON.parse(fs.readFileSync
 16. `includedBitmapRoot` (32 bytes)
 17. `excludedSlots` (u32 LE)
 18. `inputCommitment` (32 bytes)
-19. `methodVersion` (u32 LE, 現行は `14`)
+19. `methodVersion` (u32 LE、現行は `14`)
 
-## 4. Bundle 検証（verifier-service）
-
-`verifier-service` で bundle を検証できます。bundle は `/verify` ページやCLIの出力URLから取得します。
+host fixture の decoded output は次のように確認できます。
 
 ```bash
-# local x86_64 proof/receipt を検証するときは x86_64 variant を明示します。
+pnpm tsx -e "import fs from 'node:fs'; const output = JSON.parse(fs.readFileSync('zkvm/test-data/test-fixture-valid-output.json','utf-8')); console.log({ methodVersion: output.methodVersion, excludedSlots: output.excludedSlots, rejectedRecords: output.rejectedRecords, inputCommitment: output.inputCommitment });"
+```
+
+## Bundle から receipt / ImageID を検証する
+
+`/verify` page は session capability を使って、current finalization の bundle を download します。CLI も
+finalize response の top-level `finalizationId` から次の capability-protected endpoint を組み立て、
+`X-Session-Capability` を送信します。
+
+```text
+/api/sessions/:sessionId/finalizations/:finalizationId/artifacts/bundle
+```
+
+CLI が download した zip は次の path に保存されます。CLI output では URL ではなく、authenticated delivery、
+extract した local directory、SHA-256 digest を確認します。
+
+```text
+.tmp/cli-bundles/<sessionId>/bundle-authenticated-endpoint-<epoch-ms>-<uuid>.zip
+```
+
+local x86_64 build の receipt を手動で検証する場合は、同じ guest build の ImageID variant を明示します。
+
+```bash
 export EXPECTED_IMAGE_ID="$(node verifier-service/scripts/read-image-id.mjs public/imageId-mapping.json --variant x86_64)"
 
 ./verifier-service/target/release/verifier-service verify /path/to/bundle-or-receipt
 ```
 
-現行 methodVersion `14` は target-account `default` / ARM64 と local `x86_64` の trust material を保持します。
-検証対象 bundle の実際の guest build / deployment と一致する variant を明示して選んでください。詳細は `verifier-service/README.md` を参照してください。
+現行 methodVersion `14` は、target の accepted managed ARM64 Prover release に対応する `default` と、
+local production guest build に対応する `x86_64` の trust material を持ちます。variant 間の fallback は
+ないため、検証対象を生成した guest build / deployment と一致する variant を選択してください。
 
-## トラブルシューティング
+`verifier-service` が bundle directory または zip を受け取った場合、内部の `receipt.json` を探して
+`Receipt::verify(expectedImageId)` と top-level `image_id` の一致を検証します。これは **bundle 内の
+receipt / ImageID 検証** であり、`journal.json`、`public-input.json`、election manifest、close statement
+などを含む whole-bundle integrity 検証ではありません。application 全体の verdict には
+[Verification pipeline](../verification/README.md) に定義された全 required check が必要です。
 
-- **遅い**: 本番STARKは数分かかります。開発時は `RISC0_DEV_MODE=1` を使用してください。
-- **検証失敗**: ImageID の不一致がないか `public/imageId-mapping.json` を確認してください。
-- **Fake receipt**: `RISC0_DEV_MODE=1` の結果は本番検証では失敗します。
-- **`*-output.json` がない**: `./scripts/tests/test-zkvm.sh` または `zkvm/target/release/host` を先に実行して、ローカル生成物を作成してください。
+verifier の主な結果は次のとおりです。
 
-## 開発時の読み順
+| Exit code / status | 意味                                               |
+| ------------------ | -------------------------------------------------- |
+| `0` / `success`    | production receipt と expected ImageID の検証成功  |
+| `2` / `dev_mode`   | fake receipt を検出し、production proof として拒否 |
+| `3` / `failed`     | receipt または ImageID の検証失敗                  |
 
-1. [Verification pipeline](../verification/README.md) で required check、bundle、
-   authenticated report delivery の境界を確認する。
-2. [CLI guide](./cli.md) で最小の session → vote → finalize → verify flow を選ぶ。
-3. 実 receipt を扱う場合は
-   [verifier-service README](../../verifier-service/README.md) と
-   [zkVM documentation](../zkvm/README.md) を確認する。
-4. 変更範囲に応じて mock、real dev、real production の順に必要な証拠だけを追加する。
+ImageID mismatch の場合は `public/imageId-mapping.json` の method version、variant、state を確認します。
+`*-output.json` がない場合は development host の `test-zkvm.sh`、または目的に合う build の host CLI を
+先に実行してください。
 
-関連資料:
+## 関連資料
 
+- [CLI guide](./cli.md)
+- [Verification pipeline](../verification/README.md)
+- [verifier-service README](../../verifier-service/README.md)
+- [zkVM documentation](../zkvm/README.md)
 - [RISC Zero セットアップ](./risc0-setup.md)
-- [System architecture](../architecture/README.md)
 - [STARK proof structure](../zkvm/stark-proof-structure.md)

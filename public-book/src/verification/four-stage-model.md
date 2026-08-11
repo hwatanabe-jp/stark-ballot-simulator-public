@@ -71,7 +71,10 @@ flowchart LR
 
 ### 必要な証拠
 
-選挙 ID、選択肢、乱数はクライアントセッション（`localStorage.starkBallotSession`）に保持され、投票レシートは `GET /api/verify` 応答（`voteReceipt`）から取得します。
+選挙 ID、選択肢、乱数はクライアントセッション（`localStorage.starkBallotSession`）に保持されます。
+投票レシートは capability で保護された
+`GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` 応答の
+`data.voterEvidence` が `availability: "available"` のときに、その `voteReceipt` から取得します。
 
 | 証拠         | 説明                                                         |
 | ------------ | ------------------------------------------------------------ |
@@ -80,17 +83,17 @@ flowchart LR
 | 乱数         | 投票時にクライアントが生成した 32 バイト乱数                 |
 | 投票レシート | commitment, voteId, bulletinIndex, bulletinRootAtCast を含む |
 
-`voteReceipt` は [cast-time 証跡](../appendix/glossary.md#cast-time-証跡cast-time-ct-artifact)が再構成できた場合のみ返されます（[設計原則 3](design-and-flow.md#原則-3-チェック評価と集約の責務を分ける) 参照）。
+[cast-time 証跡](../appendix/glossary.md#cast-time-証跡cast-time-ct-artifact)を再構成できない場合、`data.voterEvidence` は `availability: "unavailable"` と reason を返し、投票レシートは得られません（取得と fail-closed 挙動の正本は [設計と実行フロー](design-and-flow.md#実行責務)）。
 
 ### 失敗モード
 
-| 症状                   | 原因                                                               | 深刻度   |
-| ---------------------- | ------------------------------------------------------------------ | -------- |
-| ローカル証拠の欠落     | `localStorage` 消去や別端末アクセスで投票時データを復元できない    | 検証不能 |
-| 投票レシート証跡の欠落 | store から cast-time 証跡を再構成できず、`voteReceipt` が省略      | 検証不能 |
-| コミットメント不一致   | 投票時データと投票レシートの不整合、またはエンコーディングの不整合 | 重大     |
-| 選択肢の範囲外         | 不正な入力（`A`〜`E` の範囲外）                                    | 重大     |
-| 乱数フォーマット不正   | 32 バイト hex でない                                               | 重大     |
+| 症状                   | 原因                                                                    | 深刻度   |
+| ---------------------- | ----------------------------------------------------------------------- | -------- |
+| ローカル証拠の欠落     | `localStorage` 消去や別端末アクセスで投票時データを復元できない         | 検証不能 |
+| 投票レシート証跡の欠落 | store から cast-time 証跡を再構成できず、`voterEvidence` が unavailable | 検証不能 |
+| コミットメント不一致   | 投票時データと投票レシートの不整合、またはエンコーディングの不整合      | 重大     |
+| 選択肢の範囲外         | 不正な入力（`A`〜`E` の範囲外）                                         | 重大     |
+| 乱数フォーマット不正   | 32 バイト hex でない                                                    | 重大     |
 
 ### 限界
 
@@ -147,20 +150,22 @@ RFC 6962 の SUBPROOF アルゴリズムに基づく整合性証明により、�
 
 ### 必要な証拠
 
-| 証拠                                  | 取得元                                       | 説明                                                                |
-| ------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------- |
-| 包含証明の検証結果                    | `/api/verify`                                | サーバー側で RFC 6962 包含証明を評価したチェック結果                |
-| 整合性証明の検証結果                  | `/api/verify`                                | サーバー側で RFC 6962 整合性証明を評価したチェック結果              |
-| 投票時のルートハッシュ                | 投票レシート                                 | 投票受理時のツリールート                                            |
-| 投票時のツリーサイズ（oldSize）       | `/api/verify` の `userVote.proof.treeSize`   | 整合性証明の oldSize                                                |
-| 最終ルートハッシュ/最終ツリーサイズ   | `/api/verify`                                | 集計時の最終状態                                                    |
-| 独立検証用の包含証明材料（任意）      | `/api/bulletin/:voteId/proof`                | クライアント外で個別に包含証明を再検証するための材料                |
-| 補助 tooling の整合性証明材料（任意） | `/api/bulletin/consistency-proof`            | 補助 tooling 用（現行 `/verify` の最終判定には使用しない）          |
-| STH スナップショット                  | 設定済み STH ソース（例: `/api/sth` + 外部） | 第三者ソースの照合対象（必須は digest、root/treeSize は返却時のみ） |
+Recorded の検証リソースは
+`GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` の `data` です。
 
-`userVote.proof.treeSize` は整合性証明の oldSize として参照されます。
+| 証拠                                  | 取得元                                                                                | 説明                                                                                           |
+| ------------------------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| 包含証明の検証結果                    | `data.verification.checks`                                                            | サーバー側で RFC 6962 包含証明を評価したチェック結果                                           |
+| 整合性証明の検証結果                  | `data.verification.checks`                                                            | サーバー側で RFC 6962 整合性証明を評価したチェック結果                                         |
+| 投票時のルートハッシュ                | `data.voterEvidence.voteReceipt.bulletinRootAtCast`                                   | `voterEvidence.availability="available"` のときの投票受理時ツリールート                        |
+| 投票時のツリーサイズ（oldSize）       | `data.voterEvidence.userVote.proof.treeSize`                                          | `voterEvidence.availability="available"` のときの整合性証明の oldSize                          |
+| 最終ルートハッシュ/最終ツリーサイズ   | `data.proofAuthority.bulletinRoot` / `data.proofAuthority.treeSize`                   | 集計時の proof-bound な最終状態                                                                |
+| 独立検証用の包含証明材料（任意）      | `/api/sessions/:sessionId/votes/:voteId/inclusion-proof`                              | capability で保護された、個別に包含証明を再検証するための材料                                  |
+| 補助 tooling の整合性証明材料（任意） | `/api/sessions/:sessionId/bulletin/consistency-proof?fromTreeSize=...&toTreeSize=...` | capability で保護された補助 tooling 用。verification handler の最終判定はこの route を呼ばない |
+| STH スナップショット                  | 設定済み STH ソース（same-origin template と外部 HTTPS）                              | same-origin template は `/api/sessions/:sessionId/bulletin/sth`。外部応答の必須値は digest     |
 
-関連: [fail-closed](../appendix/glossary.md#fail-closed)（cast-time 証跡が欠ける場合の動作） / [設計原則 3](design-and-flow.md#原則-3-チェック評価と集約の責務を分ける) / [チェック一覧](checks-catalog.md#recorded_inclusion_proof)（判定の詳細）。
+cast-time 証跡（`voteReceipt` と、oldSize を与える `userVote.proof.treeSize`）を再構成できない場合、Recorded の必須チェックは `not_run` となり、全体判定は [fail-closed](../appendix/glossary.md#fail-closed) で `missing_evidence` 側へ倒れます。
+取得と admission の分離は [設計原則 4](design-and-flow.md#原則-4-evidence-の取得admission-と評価を分ける) を、check 単位の判定は [チェック一覧](checks-catalog.md#recorded_inclusion_proof) を参照してください。
 
 ### 失敗モード
 
@@ -194,18 +199,20 @@ RFC 6962 の SUBPROOF アルゴリズムに基づく整合性証明により、�
 
 ### 必要な証拠
 
-| 証拠                     | 取得元                                               | 説明                                                                                                                       |
-| ------------------------ | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| zkVM ジャーナル（詳細）  | `/api/verify?includeJournal=1`                       | 集計結果、除外情報、`inputCommitment`、`includedBitmapRoot`、`seenBitmapRoot` などの詳細                                   |
-| 集計サマリー（通常応答） | `/api/verify`                                        | `missingSlots` / `invalidPresentedSlots` / `rejectedRecords` / `excludedSlots` / `totalExpected` / `treeSize` などの上位値 |
-| 公開入力サマリー         | サーバー内部評価用                                   | `public-input.json` 相当から組み立てた、秘密データを含まない入力要約                                                       |
-| 選挙マニフェスト         | 公開監査アーティファクト（`election-manifest.json`） | `electionId` と `electionConfigHash` を束縛する公開可能アーティファクト                                                    |
-| 締め処理ステートメント   | 公開監査アーティファクト（`close-statement.json`）   | `logId` / `treeSize` / `bulletinRoot` / `timestamp` / `sthDigest` を束縛する公開可能アーティファクト                       |
-| ビットマップ証明材料     | `/api/bitmap-proof`                                  | `kind=included` と `kind=seen` を使い分け、自分のインデックスが counted されたことや prover に提示されたかを説明する材料   |
-| ビットマップルート       | ジャーナル                                           | zkVM ゲストが計算した `includedBitmapRoot` と `seenBitmapRoot`                                                             |
+| 証拠                     | 取得元                                                                                                        | 説明                                                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| zkVM ジャーナル（詳細）  | `/api/sessions/:sessionId/finalizations/:finalizationId/verification?include=journal` の `data.journal.value` | `data.journal.representation="included"` のときの集計結果、除外情報、bitmap root など                               |
+| 集計サマリー（通常応答） | 同じ verification resource の `data.proofAuthority`                                                           | `missingSlots` / `invalidPresentedSlots` / `rejectedRecords` / `excludedSlots` / `totalExpected` / `treeSize` など  |
+| 公開入力サマリー         | サーバー内部評価用                                                                                            | `public-input.json` 相当から組み立てた、秘密データを含まない入力要約                                                |
+| 選挙マニフェスト         | 公開監査アーティファクト（`election-manifest.json`）                                                          | `electionId` と `electionConfigHash` を束縛する公開可能アーティファクト                                             |
+| 締切ステートメント       | 公開監査アーティファクト（`close-statement.json`）                                                            | `logId` / `treeSize` / `bulletinRoot` / `timestamp` / `sthDigest` を束縛する公開可能アーティファクト                |
+| ビットマップ証明材料     | `/api/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex`                               | `kind` の `included` と `seen` を使い分け、自分の index が counted されたことや prover に提示されたかを説明する材料 |
+| ビットマップルート       | ジャーナル / `data.proofAuthority`                                                                            | zkVM ゲストが計算した `includedBitmapRoot` と `seenBitmapRoot`                                                      |
 
 公開入力サマリーはサーバー内部表現であり、レスポンスにそのまま含まれません。
 `inputCommitment` が束縛するのは `public-input.json` の部分集合です。
+通常応答で proof-bound な値は `data.proofAuthority`、claimed tally は
+`data.presentation.tally` に分離され、旧 flat field への fallback はありません。
 各チェックの判定ロジックは [チェック一覧](checks-catalog.md#counted-as-recorded10-チェック) を参照してください。
 
 ### 重要な判定: 除外数（`excludedSlots`）
@@ -222,7 +229,7 @@ RFC 6962 の SUBPROOF アルゴリズムに基づく整合性証明により、�
 | 公開集計値の不一致                     | 公開表示された `tally.counts` が zkVM の `verifiedTally` と一致しない                        | 重大（claimed tally 改ざんシナリオ S2/S4 で発火） |
 | 集計合計の不一致                       | `verifiedTally` の合計が `validVotes` または `tally.totalVotes` と一致しない                 | 重大                                              |
 | 選挙マニフェスト不整合                 | `electionId` または `electionConfigHash` が verification inputs と一致しない                 | 重大（必須チェック失敗）                          |
-| 締め処理ステートメント不整合           | `logId` / `timestamp` / `sthDigest` / `bulletinRoot` / `treeSize` が一致しない               | 重大（必須チェック失敗）                          |
+| 締切ステートメント不整合               | `logId` / `timestamp` / `sthDigest` / `bulletinRoot` / `treeSize` が一致しない               | 重大（必須チェック失敗）                          |
 | 入力コミットメント不一致               | 公開入力のうち inputCommitment 対象フィールドと zkVM 実行で使用された入力が異なる            | 重大                                              |
 | 自票のビットマップ証明が失敗または欠落 | bit が 0、proof source 不可、またはルート不一致                                              | 重大（required check が `failed/not_run`）        |
 | ツリーサイズの不一致                   | `totalExpected` と `treeSize` が異なる（暗黙の除外、または close/input side の不整合を示す） | 重大（必須チェック失敗）                          |
@@ -282,16 +289,18 @@ Image ID はゲストプログラムから導出される暗号的識別子で�
 ### 開発モードの検出
 
 `RISC0_DEV_MODE=1` で生成された dev-mode receipt はフェイクレシートであり、本物の STARK 証明ではありません。
-`dev_mode` ステータスの検出と正規化のルールは [ゲーティングロジック](gating-logic.md#stark-検証のゲーティング) を参照してください。
+`dev_mode` ステータスの検出、正規化、`Demo Only`（`demo_only`）表示のルールは [ゲーティングロジック](gating-logic.md#stark-検証のゲーティング) を参照してください。
+profile ごとの帰結は次節の失敗モード表にまとめています。
 
-### 失敗モード
+### 失敗モードと非 production evidence
 
-| 症状             | 原因                                                                         | 深刻度 |
-| ---------------- | ---------------------------------------------------------------------------- | ------ |
-| Image ID 不一致  | マッピングが古い、ホスト主張値が誤っている、またはプローバーイメージが異なる | 重大   |
-| レシート検証失敗 | 証明が暗号学的に無効                                                         | 重大   |
-| 開発モード検出   | フェイクレシートが混入                                                       | 重大   |
+| 症状               | 原因                                                                         | 影響                               |
+| ------------------ | ---------------------------------------------------------------------------- | ---------------------------------- |
+| Image ID 不一致    | マッピングが古い、ホスト主張値が誤っている、またはプローバーイメージが異なる | 重大。Verification Failed          |
+| レシート検証失敗   | 証明が暗号学的に無効                                                         | 重大。Verification Failed          |
+| 開発モード検出     | 非 production profile でフェイクレシートを検出                               | `Demo Only`。`Verified` をブロック |
+| 未許可の開発モード | production または dev-mode を許可しない profile でフェイクレシートを検出     | fail-closed。`Verified` をブロック |
 
 UI ステップの対応チェック、集約ルール、最終判定の決定方法は [ゲーティングロジック](gating-logic.md) を参照してください。
 
-<!-- source: apps/api/src/server/api/handlers/verify.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/build-verification-steps.ts, apps/web/src/routes/verify/hooks/useVerificationData.ts, apps/web/src/routes/verify/hooks/useVerificationSequence.ts, packages/verification/src/verification/consistency-verifier.ts -->
+<!-- source: packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/verification.ts, apps/api/src/server/api/handlers/verify.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/build-verification-steps.ts, packages/verification/src/verification/verification-presentation-policy.ts, apps/web/src/routes/verify/lib/local-cast-evidence.ts, apps/web/src/routes/verify/hooks/useVerificationData.ts, apps/web/src/routes/verify/hooks/useVerificationSequence.ts, packages/verification/src/verification/consistency-verifier.ts -->

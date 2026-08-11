@@ -16,7 +16,7 @@ import { omitUndefinedProperties } from '@stark-ballot/validation/definedPropert
 
 export function persistProofVerificationBundle(
   input: Omit<VerificationBundleArtifactContext, 'createdAt'> &
-    Pick<PersistVerificationBundleArtifactsInput, 'verifierWorkDir'>,
+    Pick<PersistVerificationBundleArtifactsInput, 'finalizationId' | 'verifierWorkDir'>,
 ): Promise<VerificationBundleResult> {
   const { verifierWorkDir, ...artifactInput } = input;
   const { artifacts } = buildVerificationBundleArtifacts({
@@ -26,6 +26,7 @@ export function persistProofVerificationBundle(
 
   return persistVerificationBundleArtifacts({
     sessionId: input.sessionId,
+    finalizationId: input.finalizationId,
     ...omitUndefinedProperties({ verifierWorkDir: verifierWorkDir }),
     artifacts,
   }).then((persisted) => ({
@@ -38,7 +39,7 @@ export function persistProofVerificationBundle(
     metadataPath: path.join(persisted.bundlePath, 'metadata.json'),
     reportPath: path.join(persisted.bundlePath, 'verification.json'),
     sessionId: persisted.sessionId,
-    executionId: persisted.executionId,
+    finalizationId: persisted.finalizationId,
   }));
 }
 
@@ -62,7 +63,7 @@ export async function createMockVerificationReport(input: {
 
   logger.info('[API] Persisted mock verification report for bundle download contract', {
     session_id_hash: hashSessionIdForLogging(bundle.sessionId),
-    executionId: bundle.executionId,
+    finalization_id: bundle.finalizationId,
   });
 
   return {

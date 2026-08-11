@@ -4,27 +4,18 @@ IFS=$'\n\t'
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENTRYPOINT_PATH="${ROOT_DIR}/infra/docker/entrypoint.sh"
-CURRENT_CONTRACT_GENERATION="$(
-  sed -n "s/^export const DEFAULT_CONTRACT_GENERATION = '\\([^']*\\)';$/\\1/p" \
-    "${ROOT_DIR}/packages/domain/src/lib/contract/contractGenerationConstants.ts"
-)"
 CURRENT_METHOD_VERSION="$(
   sed -n "s/^CURRENT_METHOD_VERSION=\\([0-9][0-9]*\\)$/\\1/p" \
     "$ENTRYPOINT_PATH"
 )"
-
-if [[ -z "$CURRENT_CONTRACT_GENERATION" ]]; then
-  echo "Failed to resolve current contract generation"
-  exit 1
-fi
 
 if [[ -z "$CURRENT_METHOD_VERSION" ]]; then
   echo "Failed to resolve current method version"
   exit 1
 fi
 
-export CURRENT_CONTRACT_GENERATION
 export CURRENT_METHOD_VERSION
+export PUBLIC_BUNDLE_MANIFEST_PATH="${ROOT_DIR}/packages/verification/src/verification/public-bundle-manifest.json"
 
 export ENTRYPOINT_SKIP_MAIN=1
 
@@ -38,14 +29,14 @@ cleanup() {
 trap cleanup EXIT
 
 summary_log="${tmp_dir}/prover-summary.log"
-TARGET_AWS_RUNTIME=1 \
+RUNTIME_PROFILE=target-aws-async \
   RUNTIME_DEPLOYMENT_ENV=develop \
   DEPLOYMENT_ID=dep_0123456789abcdef0123456789abcdef \
   APP_SOURCE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   DEPLOY_MODE=normal \
-  EXECUTION_ID=01J00000000000000000000000 \
+  FINALIZATION_ID=01J00000000000000000000000 \
   LOG_IP_HASH_SALT=private-summary-salt \
-  OUTPUT_S3_PREFIX=private/session/execution \
+  OUTPUT_S3_PREFIX=private/session/finalization \
   emit_prover_summary start started none 0 >"$summary_log"
 python3 - "$summary_log" <<'PY'
 import json
@@ -59,7 +50,7 @@ assert record["phase"] == "start"
 assert record["result"] == "started"
 assert record["category"] == "none"
 assert record["duration_ms"] == 0
-assert record["execution_id"] == "01J00000000000000000000000"
+assert record["finalization_id"] == "01J00000000000000000000000"
 assert record["deployment_id"] == "dep_0123456789abcdef0123456789abcdef"
 assert record["app_source_sha"] == "a" * 40
 assert record["deploy_mode"] == "normal"
@@ -70,11 +61,11 @@ PY
 
 invalid_observability_log="${tmp_dir}/invalid-prover-observability.log"
 if (
-  TARGET_AWS_RUNTIME=1 \
+  RUNTIME_PROFILE=target-aws-async \
     DEPLOYMENT_ID=dep_invalid \
     APP_SOURCE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     DEPLOY_MODE=normal \
-    EXECUTION_ID=01J00000000000000000000000 \
+    FINALIZATION_ID=01J00000000000000000000000 \
     LOG_IP_HASH_SALT=private-summary-salt \
     validate_prover_observability
 ) >"$invalid_observability_log" 2>&1; then
@@ -114,26 +105,26 @@ if grep -Eq "${tmp_dir}|private-input-canary" "$missing_input_log"; then
 fi
 
 owner_error="${tmp_dir}/owner-error.txt"
-if (TARGET_AWS_RUNTIME=1 INPUT_S3_BUCKET=proof-inputs AWS_ACCOUNT_ID='' validate_expected_bucket_owner) >"$owner_error" 2>&1; then
+if (RUNTIME_PROFILE=target-aws-async INPUT_S3_BUCKET=proof-inputs AWS_ACCOUNT_ID='' validate_expected_bucket_owner) >"$owner_error" 2>&1; then
   echo "target S3 mode should reject a missing AWS_ACCOUNT_ID"
   exit 1
 fi
 grep -q "AWS_ACCOUNT_ID must be a 12-digit account ID" "$owner_error"
 
-if (TARGET_AWS_RUNTIME=1 OUTPUT_S3_BUCKET=proof-outputs AWS_ACCOUNT_ID=not-an-account validate_expected_bucket_owner) >"$owner_error" 2>&1; then
+if (RUNTIME_PROFILE=target-aws-async OUTPUT_S3_BUCKET=proof-outputs AWS_ACCOUNT_ID=not-an-account validate_expected_bucket_owner) >"$owner_error" 2>&1; then
   echo "target S3 mode should reject a malformed AWS_ACCOUNT_ID"
   exit 1
 fi
 grep -q "AWS_ACCOUNT_ID must be a 12-digit account ID" "$owner_error"
 
-dev_mode_error="${tmp_dir}/dev-mode-error.txt"
-if (RISC0_DEV_MODE=1 INPUT_S3_BUCKET=proof-inputs validate_production_proof_mode) >"$dev_mode_error" 2>&1; then
-  echo "S3-backed async prover mode should reject RISC0_DEV_MODE=1"
+profile_error="${tmp_dir}/profile-error.txt"
+if (RUNTIME_PROFILE=local-proof-production INPUT_S3_BUCKET=proof-inputs validate_production_proof_mode) >"$profile_error" 2>&1; then
+  echo "S3-backed async prover mode should reject a non-target runtime profile"
   exit 1
 fi
-grep -q "RISC0_DEV_MODE=1 is not allowed for S3-backed async prover execution" "$dev_mode_error"
+grep -q "target-aws-async is required for S3-backed async prover execution" "$profile_error"
 
-RISC0_DEV_MODE=1 validate_production_proof_mode
+RUNTIME_PROFILE=local-proof-production validate_production_proof_mode
 
 aws_log="${tmp_dir}/aws-args.txt"
 aws() {
@@ -530,7 +521,14 @@ if (
     printf '%s ' "$@" >>"$fatal_marker_main_aws_log"
     printf '\n' >>"$fatal_marker_main_aws_log"
   }
-  TARGET_AWS_RUNTIME=0 \
+  RUNTIME_PROFILE=target-aws-async \
+    RUNTIME_DEPLOYMENT_ENV=develop \
+    DEPLOYMENT_ID=dep_0123456789abcdef0123456789abcdef \
+    APP_SOURCE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    DEPLOY_MODE=normal \
+    FINALIZATION_ID=01J00000000000000000000000 \
+    LOG_IP_HASH_SALT=private-summary-salt \
+    AWS_ACCOUNT_ID=123456789012 \
     HOST_BIN="$fatal_host" \
     INPUT_PATH='' \
     INPUT_S3_BUCKET='' \
@@ -602,7 +600,6 @@ import os
 import sys
 
 output_path, receipt_path, bitmap_path, seen_bitmap_path, input_path = sys.argv[1:6]
-current_contract_generation = os.environ["CURRENT_CONTRACT_GENERATION"]
 current_method_version = int(os.environ["CURRENT_METHOD_VERSION"])
 
 def hex_bytes(hex_str):
@@ -780,7 +777,6 @@ with open(input_path, "w", encoding="utf-8") as handle:
             "log_id": hex_bytes(log_id),
             "timestamp": timestamp,
             "total_expected": tree_size,
-            "contract_generation": current_contract_generation,
             "votes": [
                 {
                     "commitment": hex_bytes(votes[0]["commitment"]),
@@ -852,7 +848,7 @@ environment.update(
         "OUTPUT_DIR": output_dir,
         "OUTPUT_S3_BUCKET": "",
         "OUTPUT_S3_PREFIX": "",
-        "TARGET_AWS_RUNTIME": "0",
+        "RUNTIME_PROFILE": "local-proof-production",
         "ZKVM_TIMEOUT_SECONDS": "30",
         "ZKVM_TERMINATION_GRACE_SECONDS": "1" if os.environ["PROBE_IGNORE_SIGNAL"] == "1" else "10",
     }
@@ -974,6 +970,68 @@ if echo "$entries" | grep -q "^failure-marker.json$"; then
   exit 1
 fi
 
+python3 - "$bundle_zip" <<'PY'
+import sys
+import zipfile
+
+expected = sorted([
+    "public-input.json",
+    "election-manifest.json",
+    "close-statement.json",
+    "receipt.json",
+    "journal.json",
+])
+with zipfile.ZipFile(sys.argv[1], "r") as archive:
+    actual = sorted(info.filename for info in archive.infolist())
+assert actual == expected, (actual, expected)
+PY
+
+inspect_public_bundle_archive "$bundle_zip" async
+
+invalid_bundle_dir="${tmp_dir}/invalid-public-bundles"
+mkdir -p "$invalid_bundle_dir"
+python3 - "$invalid_bundle_dir" <<'PY'
+import os
+import sys
+import warnings
+import zipfile
+
+output_dir = sys.argv[1]
+common = [
+    "public-input.json",
+    "election-manifest.json",
+    "close-statement.json",
+    "receipt.json",
+    "journal.json",
+]
+
+def write(name, members):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(os.path.join(output_dir, name), "w") as archive:
+            for member in members:
+                archive.writestr(member, "{}")
+
+write("missing.zip", common[:-1])
+write("private.zip", common + ["input.json"])
+write("mode-inconsistent.zip", common + ["metadata.json"])
+write("unknown.zip", common + ["failure-marker.json"])
+write("duplicate.zip", common + ["journal.json"])
+write("case-conflict.zip", common + ["JOURNAL.JSON"])
+write("nested.zip", common[:-1] + ["nested/journal.json"])
+write("traversal.zip", common + ["../input.json"])
+write("absolute.zip", common + ["/input.json"])
+with open(os.path.join(output_dir, "malformed.zip"), "wb") as handle:
+    handle.write(b"not-a-zip")
+PY
+
+for invalid_bundle in "$invalid_bundle_dir"/*.zip; do
+  if inspect_public_bundle_archive "$invalid_bundle" async >/dev/null 2>&1; then
+    echo "public bundle inspector should reject $(basename "$invalid_bundle")"
+    exit 1
+  fi
+done
+
 python3 - "$bundle_zip" "${output_dir}/included-bitmap.json" "${output_dir}/seen-bitmap.json" <<'PY'
 import hashlib
 import json
@@ -982,7 +1040,6 @@ import subprocess
 import sys
 
 bundle_zip, bitmap_path, seen_bitmap_path = sys.argv[1:4]
-current_contract_generation = os.environ["CURRENT_CONTRACT_GENERATION"]
 current_method_version = int(os.environ["CURRENT_METHOD_VERSION"])
 
 def uint32le(value):
@@ -1092,7 +1149,7 @@ assert journal["imageId"] == "0x" + "ab" * 32
 
 assert public_input["schema"] == "stark-ballot.public_input"
 assert public_input["version"] == "1.1"
-assert public_input["contractGeneration"] == current_contract_generation
+assert "contractGeneration" not in public_input
 assert public_input["electionId"] == "550e8400-e29b-41d4-a716-446655440000"
 assert public_input["electionConfigHash"] == journal["electionConfigHash"]
 assert public_input["bulletinRoot"] == "0x" + "22" * 32

@@ -2,6 +2,12 @@ import { handle } from 'hono/aws-lambda';
 import { createHonoApp } from '@stark-ballot/api/server';
 import { ensureAwsRuntimeConfigReferencesLoaded } from '@stark-ballot/aws-adapters/config/awsRuntimeConfigReferenceResolver';
 import { validateTargetObservabilityEnv } from '@stark-ballot/runtime-config/env/observability';
+import { RuntimeConfigValidationError } from '@stark-ballot/runtime-config/env/configValidationError';
+import {
+  type ResolvedRuntimeProfile,
+  resolveRuntimeProfile,
+  validateRuntimeProfileSelection,
+} from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { validateEnv } from '@stark-ballot/runtime-config/env/validate';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { bootstrapLambdaRuntime } from '../runtimeBootstrap.js';
@@ -47,22 +53,48 @@ function admitApiGatewayV2Invocation(value: unknown): InvocationAdmission {
   return { ok: true };
 }
 
-const app = createHonoApp({ basePath: '/api', mode: 'lambda' });
-const honoHandler = handle(app);
+type HonoLambdaHandler = ReturnType<typeof handle>;
+let runtimeProfile: ReturnType<typeof resolveRuntimeProfile> | undefined;
+let honoHandler: HonoLambdaHandler | undefined;
 
-export const handler: typeof honoHandler = async (...args) => {
+function validatePublicApiRuntime(profile: ResolvedRuntimeProfile): void {
+  if (profile.target.kind !== 'aws' || profile.external.kind !== 'aws') {
+    throw new RuntimeConfigValidationError(
+      ['RUNTIME_PROFILE'],
+      undefined,
+      'A target AWS runtime profile is required for public API Lambda execution',
+    );
+  }
+}
+
+export const handler: HonoLambdaHandler = async (...args) => {
+  const env = process.env;
+  const resolvedRuntimeProfile = runtimeProfile ?? resolveRuntimeProfile(env);
+  runtimeProfile = resolvedRuntimeProfile;
   await bootstrapLambdaRuntime({
     serviceName: 'public-api',
+    runtimeProfile: resolvedRuntimeProfile,
     resolveRuntimeReferences: async (invalidNameCollector) =>
-      await ensureAwsRuntimeConfigReferencesLoaded('public_api', { invalidNameCollector }),
+      await ensureAwsRuntimeConfigReferencesLoaded('public_api', {
+        profile: resolvedRuntimeProfile,
+        invalidNameCollector,
+        env,
+      }),
     validationSteps: [
       {
-        validate: validateTargetObservabilityEnv,
+        validate: () => validateRuntimeProfileSelection(resolvedRuntimeProfile, env),
       },
       {
-        validate: validateEnv,
+        validate: () => validatePublicApiRuntime(resolvedRuntimeProfile),
+      },
+      {
+        validate: () => validateTargetObservabilityEnv(resolvedRuntimeProfile, env),
+      },
+      {
+        validate: () => validateEnv(resolvedRuntimeProfile, env),
       },
     ],
+    env,
   });
 
   const admission = admitApiGatewayV2Invocation(args[0]);
@@ -75,5 +107,6 @@ export const handler: typeof honoHandler = async (...args) => {
     throw new Error('Invalid API Gateway v2 invocation');
   }
 
+  honoHandler ??= handle(createHonoApp({ basePath: '/api', mode: 'lambda', runtimeProfile: resolvedRuntimeProfile }));
   return await honoHandler(...args);
 };

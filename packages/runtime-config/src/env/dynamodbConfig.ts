@@ -1,6 +1,6 @@
 import { isIP } from 'node:net';
-import { resolveRuntimeEnvMode } from '@stark-ballot/runtime-config/env/runtimeMode';
 import { RuntimeConfigValidationError } from '@stark-ballot/runtime-config/env/configValidationError';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 export function resolveDynamoDbRegion(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const region = env['AWS_REGION']?.trim() || env['AWS_DEFAULT_REGION']?.trim();
@@ -47,7 +47,10 @@ function isLocalDynamoDbEndpointHost(hostname: string): boolean {
   return false;
 }
 
-export function assertDynamoDbEndpointAllowed(env: NodeJS.ProcessEnv = process.env): void {
+export function assertDynamoDbEndpointAllowed(
+  profile: ResolvedRuntimeProfile,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
   const endpoint = resolveDynamoDbEndpoint(env);
   if (!endpoint) {
     return;
@@ -60,15 +63,12 @@ export function assertDynamoDbEndpointAllowed(env: NodeJS.ProcessEnv = process.e
       'DYNAMODB_ENDPOINT must use a local loopback host for local endpoint exceptions.',
     );
   }
-  if (env['NODE_ENV'] === 'test') {
-    return;
-  }
-  if (env['DYNAMODB_ENDPOINT_ALLOW_LOCAL'] === 'true' && resolveRuntimeEnvMode(env) === 'non-production') {
+  if (profile.sessionStore.kind !== 'dynamo') {
     return;
   }
   throw new RuntimeConfigValidationError(
-    ['DYNAMODB_ENDPOINT', 'DYNAMODB_ENDPOINT_ALLOW_LOCAL', 'RUNTIME_DEPLOYMENT_ENV'],
+    ['DYNAMODB_ENDPOINT', 'RUNTIME_PROFILE'],
     undefined,
-    'DYNAMODB_ENDPOINT is local/test-only and requires an explicit local endpoint exception.',
+    'DYNAMODB_ENDPOINT is local/test-only and is not allowed by the selected runtime profile.',
   );
 }

@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Export environment variables BEFORE Vite builds and the Hono server starts.
-# These override .env.local values (OS env vars take precedence)
-export USE_MOCK_ZKVM=true
-export USE_MOCK_STORE=true
+# Export environment variables before Vite builds and the Hono server starts.
+# The test server is launched directly so developer-local env files cannot
+# reintroduce retired selectors into this deterministic profile.
+export RUNTIME_PROFILE=static-mock-e2e
+export VITE_RUNTIME_PROFILE=static-mock-e2e
 export NODE_ENV=production
-
-# Allow mock/dev zkVM in production-mode CI builds (safe for tests only).
-if [ -z "${ALLOW_INSECURE_ZKVM:-}" ]; then
-  export ALLOW_INSECURE_ZKVM=true
-fi
 
 # Provide safe defaults for CI/local mock tests when not explicitly configured.
 if [ -z "${EXPECTED_IMAGE_ID_VARIANT:-}" ]; then
@@ -19,14 +15,8 @@ fi
 if [ -z "${VERIFIER_PUBLIC_BASE_URL:-}" ]; then
   export VERIFIER_PUBLIC_BASE_URL="http://localhost:3000"
 fi
-if [ -z "${TURNSTILE_BYPASS:-}" ]; then
-  export TURNSTILE_BYPASS=1
-fi
-if [ -z "${VITE_TURNSTILE_BYPASS:-}" ]; then
-  export VITE_TURNSTILE_BYPASS=1
-fi
 if [ -z "${VITE_STH_SOURCES:-}" ]; then
-  export VITE_STH_SOURCES="/api/sth,/api/sth?auditor=b"
+  export VITE_STH_SOURCES="/api/sessions/:sessionId/bulletin/sth,/api/sessions/:sessionId/bulletin/sth?auditorId=b"
 fi
 if [ -z "${RUNTIME_DEPLOYMENT_ENV:-}" ] && [ -z "${ENV_NAME:-}" ] && [ -z "${AWS_LAMBDA_FUNCTION_NAME:-}" ]; then
   export RUNTIME_DEPLOYMENT_ENV=develop
@@ -35,14 +25,8 @@ if [ -z "${LOG_LEVEL:-}" ]; then
   export LOG_LEVEL=error
 fi
 
-# Enable file-based persistence for mock store in production-mode local Hono.
-export PERSIST_MOCK_STORE=1
-
 # Mock mode: STH verification is configured through VITE_STH_SOURCES for the
 # local mock artifact only. Target production artifacts are built without it.
-
-# Mock mode: Async finalization disabled
-export FINALIZE_ASYNC_MODE=false
 
 load_env_defaults() {
   local env_file="$1"
@@ -74,14 +58,11 @@ load_env_defaults() {
 load_env_defaults "./scripts/tests/.env.test.defaults"
 
 echo "[Test Server] Starting with Mock zkVM"
-echo "  USE_MOCK_ZKVM=${USE_MOCK_ZKVM}"
-echo "  USE_MOCK_STORE=${USE_MOCK_STORE}"
-echo "  PERSIST_MOCK_STORE=${PERSIST_MOCK_STORE}"
+echo "  RUNTIME_PROFILE=${RUNTIME_PROFILE}"
+echo "  VITE_RUNTIME_PROFILE=${VITE_RUNTIME_PROFILE}"
 echo "  NODE_ENV=${NODE_ENV}"
 echo "  EXPECTED_IMAGE_ID_VARIANT=${EXPECTED_IMAGE_ID_VARIANT}"
 echo "  SESSION_CAPABILITY_SECRET=${SESSION_CAPABILITY_SECRET:+[set]}"
-echo "  ALLOW_INSECURE_ZKVM=${ALLOW_INSECURE_ZKVM:-}"
-echo "  FINALIZE_ASYNC_MODE=${FINALIZE_ASYNC_MODE}"
 echo "  VITE_STH_SOURCES=${VITE_STH_SOURCES:+[set]}"
 
 # Clean up old mock session files before starting
@@ -98,4 +79,4 @@ if [ "${SKIP_VITE_BUILD:-}" = "1" ]; then
 else
   pnpm run build:local-mock
 fi
-pnpm start
+pnpm tsx scripts/dev/static-hono-server.ts

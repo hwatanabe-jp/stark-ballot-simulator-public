@@ -1,6 +1,8 @@
 # 待ち行列仕様（Finalization Queue）
 
-UI リデザインに合わせた **待ち行列（queue）情報**の仕様をまとめる。
+集計処理の待機状態、典型所要時間、および時間ベースの進捗表示について、現在の
+server API と UI の契約をまとめる。ここで扱う queue 情報は presentation 用の
+static estimate であり、実際の待ち行列位置や実測進捗ではない。
 
 ## 参照（優先順）
 
@@ -9,147 +11,196 @@ UI リデザインに合わせた **待ち行列（queue）情報**の仕様を�
 3. `docs/ui/finalization-lifecycle/zkvm-progress.md`
 4. `docs/zkvm/final-design.md`（語彙の迷いがある場合）
 
-## 目的
+## Target profile の admission
 
-- API は集計処理の同時実行枠と典型所要時間を返す。UI は典型所要時間のみを表示する。
-- 実行中の進捗は **実測ではなく**、`startedAt` / `estimatedDurationMs` から UI が算出する。
-- `queue.*` は position / depth を含まない。Step Functions semaphore 導入後の
-  SQS depth は dispatch backlog であり、semaphore 待ちの execution 数や正確な
-  queue position ではないため、UI には表示しない。
-- `concurrencyLimit` は runtime config、`estimatedDurationMs` は典型所要時間の
-  固定値であり、どちらも live queue position ではない。現在の UI は capacity や
-  source label を表示しない。
+Queue authority は loose な環境変数フラグではなく、起動時に解決済みの runtime
+profile から決まる。
 
-## 用語
+- 通常の target UI/API path は `target-aws-async` を使う。この profile は
+  finalization mode が async で、SQS と Step Functions を選択する。
+- `target-aws-async-quiesced` も既存の async work を読み取れる server recovery
+  posture だが、新しい public session は受け付けず、browser profile ではない。
+- Target async profile は `PROVER_WORK_QUEUE_URL` を必須とする。値が欠落または
+  target account / region / resource name と整合しない場合は profile resolution
+  が fail closed になり、handler の queue projection まで進まない。
+- Local server profile の finalization mode は sync であり、target prover queue
+  authority を持たない。Browser mock が表示確認用の estimate を返す場合も、AWS
+  queue の実測 evidence ではない。
 
-- `queuedAt`: キュー投入時刻（epoch ms）
-- `startedAt`: 実行開始時刻（epoch ms）。semaphore 導入後は prover capacity を
-  取得して proof 実行を開始する時刻を指す
-- `estimatedDurationMs`: 推定所要時間（ms）
-- `queue.concurrencyLimit`: prover 同時実行枠。`PROVER_MAX_CONCURRENT_PROVERS`
-  が最優先、legacy `PROVER_LAMBDA_CONCURRENCY` が fallback、未設定時は `2`
-- `queue.estimatedDurationMs`: 典型所要時間。現在は **360000**（6分）の固定値
+## Finalization lifecycle
 
-現在の target async flow では、`pending` が SQS 待機、dispatcher handoff、
-Step Functions setup、および Step Functions semaphore 待ちを含む。`running`
-は `MarkProverStarted` が semaphore slot 取得後に記録した時点から始まり、
-`startedAt` は prover capacity を取得して proof 実行を開始する時刻である。
-dispatcher が `StartExecution` に成功しただけでは `running` にしない。
+### `pending`
 
-## API 仕様（UI 契約）
+`queuedAtMs` は finalization work を queue に投入した時刻（epoch ms）である。
+Target async flow の `pending` は、SQS 待機、dispatcher handoff、Step Functions
+setup、および DynamoDB semaphore の slot 待ちを含む。Dispatcher が
+`StartExecution` に成功しただけでは `running` に遷移しない。
 
-### POST `/api/finalize`（Async 202）
+### `running`
 
-- `queue` を返す（返せない場合は `null`）。
-- `queue` を返す場合、payload は `{ concurrencyLimit, estimatedDurationMs }` のみ。
-- `position`、`depth`、`estimatedStartAt`、`estimatedCompletionAt` は存在しない。
+Step Functions が prover slot を取得した後、`MarkProverStarted` が running state
+を記録する。`startedAtMs` はこの proof 実行開始時刻（epoch ms）であり、UI と API
+の擬似進捗はこの時刻を起点にする。
+
+### Terminal state
+
+`succeeded`、`failed`、`timeout` は terminal state である。Queue estimate は
+pending/running の presentation aid なので、current resource の terminal state
+では `runtimeDiagnostics.queue` は `null` になる。
+
+## Queue estimate の authority
+
+Queue info path は SQS `GetQueueAttributes` を呼ばない。SQS の
+`ApproximateNumberOfMessages*` は dispatcher backlog の運用指標であり、Step
+Functions semaphore の待機 execution 数や exact queue position ではないため、
+public queue payload の source にしない。
+
+`runtimeDiagnostics.queue` が存在する場合の shape は次の 2 field だけである。
+
+```ts
+type FinalizationQueue = {
+  concurrencyLimit: number;
+  estimatedDurationMs: number;
+};
+```
+
+- `concurrencyLimit` は `PROVER_MAX_CONCURRENT_PROVERS` を数値化し、有限かつ
+  `0` より大きい場合は `Math.floor` した値を使い、それ以外は `2` とする。Target Terraform は
+  `var.prover_max_concurrent_provers` を positive integer として検証し、この環境変数へ
+  渡す。Terraform default は `2` である。
+- `estimatedDurationMs` は典型所要時間であり、現在は **360000**（6分）の固定値である。
+- `position`、`depth`、`estimatedStartAt`、`estimatedCompletionAt`、source label は
+  public queue payload に含めない。
+
+## Status ごとの queue projection
+
+| Response path / state                                 | `runtimeDiagnostics.queue` |
+| ----------------------------------------------------- | -------------------------- |
+| Target async POST accepted (`202`, `pending`)         | static estimate object     |
+| Target async current (`pending` / `running`)          | static estimate object     |
+| Current resource (`succeeded` / `failed` / `timeout`) | `null`                     |
+| Non-async current resource                            | `null`                     |
+| Sync POST succeeded (`200`)                           | field を省略               |
+
+Public schema は `runtimeDiagnostics.queue` の object、`null`、省略を受理する。Target
+async profile の queue URL は admission 時に必須なので、正常に解決された target
+pending/running path では static estimate object を返す。Queue projection 自体は
+SQS read を行わないため、SQS attribute 取得失敗によって payload が欠落する経路はない。
+
+## API envelope
+
+Finalization success response は共通して top-level の
+`{ data, meta: { requestId } }` envelope を使う。
+
+### POST `/api/sessions/:sessionId/finalizations`（Async 202）
 
 ```json
 {
-  "executionId": "string",
-  "statusUrl": "https://.../api/sessions/:sessionId/status",
-  "state": {
+  "data": {
     "status": "pending",
-    "executionId": "string",
-    "queuedAt": 1730000000000
+    "finalizationId": "string",
+    "queuedAtMs": 1730000000000,
+    "runtimeDiagnostics": {
+      "asyncMode": "enabled",
+      "queue": {
+        "concurrencyLimit": 2,
+        "estimatedDurationMs": 360000
+      }
+    }
   },
-  "queue": {
-    "concurrencyLimit": 2,
-    "estimatedDurationMs": 360000
+  "meta": {
+    "requestId": "request-id"
   }
 }
 ```
 
-### GET `/api/sessions/:id/status`（200 / pending）
+### GET `/api/sessions/:sessionId/finalizations/current`（200 / pending）
 
-- `pending` では、`PROVER_WORK_QUEUE_URL` が設定されていれば static estimate として
-  `queue` を返す。
-- `pending` では `progress` を返さない。
-- slot 待ち中は `pending` のまま扱う。
-- SQS depth が 0 でも `queue: null` にはしない。SQS depth は表示しない。
+Pending resource は `runtimeDiagnostics.progress` を返さない。Semaphore slot 待ち中も
+pending のままであり、SQS depth が 0 であっても target queue authority が存在する
+限り static estimate object を返す。
 
 ```json
 {
-  "sessionId": "uuid",
-  "finalizationState": {
+  "data": {
     "status": "pending",
-    "executionId": "string",
-    "queuedAt": 1730000000000
+    "finalizationId": "string",
+    "queuedAtMs": 1730000000000,
+    "runtimeDiagnostics": {
+      "asyncMode": "enabled",
+      "queue": {
+        "concurrencyLimit": 2,
+        "estimatedDurationMs": 360000
+      }
+    }
   },
-  "queue": {
-    "concurrencyLimit": 2,
-    "estimatedDurationMs": 360000
-  },
-  "finalizationResult": null,
-  "stepFunctions": null,
-  "asyncFinalizationMode": "enabled"
+  "meta": {
+    "requestId": "request-id"
+  }
 }
 ```
 
-### GET `/api/sessions/:id/status`（200 / running）
+### GET `/api/sessions/:sessionId/finalizations/current`（200 / running）
 
-- `running` でも queue info を返せる場合は同じ payload shape を返す。
-- `progress` は `startedAt` と `queue.estimatedDurationMs` から補間する。
-- `running` は semaphore slot 取得後の proof 実行開始を意味する。
+Running resource は queue estimate に加え、`runtimeDiagnostics.progress` を derived
+hint として返しうる。`runtimeDiagnostics.orchestrator` は Step Functions details を
+取得できた場合だけ返す optional diagnostics であり、progress や finalization state
+の authority ではない。
 
 ```json
 {
-  "sessionId": "uuid",
-  "finalizationState": {
+  "data": {
     "status": "running",
-    "executionId": "string",
-    "queuedAt": 1730000000000,
-    "startedAt": 1730000360000
+    "finalizationId": "string",
+    "queuedAtMs": 1730000000000,
+    "startedAtMs": 1730000360000,
+    "runtimeDiagnostics": {
+      "asyncMode": "enabled",
+      "queue": {
+        "concurrencyLimit": 2,
+        "estimatedDurationMs": 360000
+      },
+      "progress": {
+        "phase": "running",
+        "source": "derived",
+        "percent": 12,
+        "updatedAtMs": 1730000390000
+      },
+      "orchestrator": {
+        "status": "RUNNING",
+        "startTimeMs": 1730000060000,
+        "stopTimeMs": null
+      }
+    }
   },
-  "queue": {
-    "concurrencyLimit": 2,
-    "estimatedDurationMs": 360000
-  },
-  "progress": {
-    "phase": "running",
-    "source": "derived",
-    "percent": 42,
-    "updatedAt": 1730000390000
-  },
-  "finalizationResult": null,
-  "stepFunctions": null,
-  "asyncFinalizationMode": "enabled"
+  "meta": {
+    "requestId": "request-id"
+  }
 }
 ```
 
-## 推定値の算出ルール（バックエンド）
+## Progress duration fallback
 
-### 取得元
+API の `runtimeDiagnostics.progress` と UI の `ProgressDisplay` は同じ補間関数を使う。
 
-Queue info path は SQS `GetQueueAttributes` を呼ばない。SQS の
-`ApproximateNumberOfMessages*` は dispatch backlog の運用指標であり、UI queue
-payload の source ではない。
+- `running` では `elapsed = now - startedAtMs` として 1–99% を導出する。
+- Queue object がある場合は `runtimeDiagnostics.queue.estimatedDurationMs` を duration
+  に使う。
+- Queue duration が欠落した場合は **360000ms** を使う。Target server の current
+  producer が返す static estimate は常に正の固定値である。
+- Pending では API の `runtimeDiagnostics.progress` を省略し、UI は 0% に保つ。
+- 時間経過だけで 100% にはしない。UI は完了状態を受け取ったときだけ短い animation
+  で 100% へ遷移する。
 
-### 算出式
+API の `runtimeDiagnostics.progress.percent` は presentation 用の derived hint であり、
+実測進捗ではない。UI は `startedAtMs` と duration から再計算した値を表示の authority
+とする。
 
-- `concurrencyLimit`
-  - `PROVER_MAX_CONCURRENT_PROVERS` があれば優先
-  - それ以外は legacy `PROVER_LAMBDA_CONCURRENCY`
-  - それ以外は `2`
-  - target Terraform では `PROVER_MAX_CONCURRENT_PROVERS` が
-    `var.prover_max_concurrent_provers` から渡される
-- `estimatedDurationMs`
-  - **360000**（6分）で固定
+## UI presentation
 
-## フォールバック / 省略条件
-
-- `FINALIZE_ASYNC_MODE !== 'true'` の場合は `queue: null`。
-- `PROVER_WORK_QUEUE_URL` 未設定の場合は `queue: null`。
-- SQS 読み取りは行わないため、SQS 取得失敗による `queue: null` は存在しない。
-- いずれの場合も **API 自体は成功**させ、UI は欠落を許容する。
-
-## UI 側の前提
-
-- pending 中は進捗バーを 0% に保ち、`queue` があれば典型所要時間のみを表示する。
-  API が返す `concurrencyLimit` は UI の表示値ではなく、capacity、position、source
-  label のいずれも表示しない。
-- running 中は `startedAt` / `estimatedDurationMs` から `ProgressDisplay` が補間する。
-- 100% への遷移は時間ではなく、完了状態を受け取ったときの UI アニメーションで行う。
-- API の `progress.percent` は参照値に留め、表示上の進捗は UI の補間を正とする。
-- UI は exact queue position、SQS depth、推定開始時刻、real-time push notification
-  を約束しない。
+- Pending では queue object がある場合だけ queue panel を表示し、典型所要時間だけを
+  見せる。`concurrencyLimit`、capacity、position、depth、source label は表示しない。
+- Running では queue panel を表示せず、時間ベースの進捗と単一の processing label を
+  表示する。
+- UI は exact queue position、SQS depth、推定開始/完了時刻、real-time push
+  notification を約束しない。

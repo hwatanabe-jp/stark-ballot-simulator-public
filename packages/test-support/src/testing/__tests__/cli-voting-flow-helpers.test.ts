@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FinalizeScenarioData } from '../cli-test-helpers';
+import { buildCliVerificationPresentationFixture } from '../cli-verification-fixtures';
 import { createTestJournal } from '../test-helpers';
 import {
   collectCliVerificationContractErrors,
@@ -12,26 +13,9 @@ import {
   resolveVerificationStepStatuses,
   shouldFetchVoteProof,
 } from '../cli-voting-flow-helpers';
-import type { VerificationCheck } from '@stark-ballot/verification/checks';
-import type { VerificationStep } from '@stark-ballot/verification/steps';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
-
-function buildCheck(id: VerificationCheck['id'], status: VerificationCheck['status']): VerificationCheck {
-  return {
-    id,
-    status,
-    evidence: id === 'stark_receipt_verify' ? 'zk' : 'public',
-    inputs: ['proofBundleStatus'],
-  };
-}
-
-function buildStep(id: VerificationStep['id'], status: VerificationStep['status']): VerificationStep {
-  return {
-    id,
-    status,
-    inputs: [],
-  };
-}
+import { VERIFICATION_CHECK_DEFINITIONS, type VerificationCheck } from '@stark-ballot/verification/checks';
+import { deriveVerificationPresentationPolicy } from '@stark-ballot/verification/presentation-policy';
 
 describe('cli-voting-flow-helpers', () => {
   it('resolves tally using bulletinRoot fallback', () => {
@@ -144,13 +128,18 @@ describe('cli-voting-flow-helpers', () => {
 
   it('resolves verification check and step statuses for the current contract', () => {
     const data: FinalizeScenarioData = {
-      verificationSteps: [buildStep('counted_as_recorded', 'success'), buildStep('stark_verification', 'success')],
-      verificationChecks: [
-        buildCheck('counted_expected_vs_tree_size', 'success'),
-        buildCheck('counted_election_manifest_consistent', 'success'),
-        buildCheck('counted_close_statement_consistent', 'success'),
-        buildCheck('stark_receipt_verify', 'success'),
-      ],
+      ...buildCliVerificationPresentationFixture({
+        steps: [
+          { id: 'counted_as_recorded', status: 'success' },
+          { id: 'stark_verification', status: 'success' },
+        ],
+        checks: [
+          { id: 'counted_expected_vs_tree_size', status: 'success' },
+          { id: 'counted_election_manifest_consistent', status: 'success' },
+          { id: 'counted_close_statement_consistent', status: 'success' },
+          { id: 'stark_receipt_verify', status: 'success' },
+        ],
+      }),
       journal: createTestJournal({ totalExpected: 64, validVotes: 64 }),
     };
 
@@ -168,35 +157,125 @@ describe('cli-voting-flow-helpers', () => {
     expect(data.journal?.methodVersion).toBe(CURRENT_METHOD_VERSION);
   });
 
-  it('flags counted-stage success when manifest consistency fails', () => {
+  it.each(['counted_my_vote_included', 'counted_input_commitment_match', 'stark_image_id_match'] as const)(
+    'rejects a CLI payload that omits canonical required check %s',
+    (missingCheckId) => {
+      const data: FinalizeScenarioData = {
+        ...buildCliVerificationPresentationFixture({
+          steps: [
+            { id: 'counted_as_recorded', status: 'success' },
+            { id: 'stark_verification', status: 'success' },
+          ],
+          checks: [
+            { id: 'counted_expected_vs_tree_size', status: 'success' },
+            { id: 'counted_election_manifest_consistent', status: 'success' },
+            { id: 'counted_close_statement_consistent', status: 'success' },
+            { id: 'stark_receipt_verify', status: 'success' },
+          ],
+        }),
+        journal: createTestJournal({ totalExpected: 64, validVotes: 64 }),
+      };
+      if (!data.verificationChecks) {
+        throw new Error('Expected the CLI fixture to include verification checks');
+      }
+      data.verificationChecks = data.verificationChecks.filter((check) => check.id !== missingCheckId);
+
+      expect(collectCliVerificationContractErrors(data)).toContain(
+        `CLI verification payload missing required check ${missingCheckId}`,
+      );
+    },
+  );
+
+  it('prefers shared-policy stage statuses over stale flat step statuses', () => {
+    const checks = VERIFICATION_CHECK_DEFINITIONS.map((definition): VerificationCheck => ({
+      id: definition.id,
+      status: definition.id === 'counted_election_manifest_consistent' ? 'failed' : 'success',
+      evidence: definition.evidence,
+      inputs: [...definition.inputs],
+      ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
+    }));
+    const presentationPolicy = deriveVerificationPresentationPolicy({
+      availability: 'available',
+      checks,
+      context: {
+        missingSlots: 0,
+        invalidPresentedSlots: 0,
+        rejectedRecords: 0,
+        excludedSlots: 0,
+        sthSourcesConfigured: false,
+      },
+      verificationStatus: 'success',
+      verificationReportStatus: 'success',
+    });
     const data: FinalizeScenarioData = {
-      verificationSteps: [buildStep('counted_as_recorded', 'success'), buildStep('stark_verification', 'success')],
-      verificationChecks: [
-        buildCheck('counted_expected_vs_tree_size', 'success'),
-        buildCheck('counted_election_manifest_consistent', 'failed'),
-        buildCheck('counted_close_statement_consistent', 'success'),
-        buildCheck('stark_receipt_verify', 'success'),
+      verificationChecks: checks,
+      verificationSteps: [
+        { id: 'counted_as_recorded', status: 'success' },
+        { id: 'stark_verification', status: 'success' },
       ],
-      journal: createTestJournal({ totalExpected: 64, validVotes: 64 }),
+      presentationPolicy,
     };
 
+    expect(resolveVerificationStepStatuses(data)).toMatchObject({
+      counted_as_recorded: 'failed',
+      stark_verification: 'success',
+    });
+  });
+
+  it('does not admit flat verification step statuses without the shared presentation policy', () => {
+    const data: FinalizeScenarioData = {
+      verificationSteps: [
+        { id: 'counted_as_recorded', status: 'success' },
+        { id: 'stark_verification', status: 'success' },
+      ],
+    };
+
+    expect(resolveVerificationStepStatuses(data)).toEqual({});
     expect(collectCliVerificationContractErrors(data)).toEqual(
       expect.arrayContaining([
-        'CLI verification required check counted_election_manifest_consistent was failed',
-        'Verification contract mismatch: counted_as_recorded was success while counted_election_manifest_consistent=failed',
+        'CLI verification payload missing required step counted_as_recorded',
+        'CLI verification payload missing required step stark_verification',
       ]),
     );
   });
 
+  it('derives counted-stage failure when manifest consistency fails', () => {
+    const data: FinalizeScenarioData = {
+      ...buildCliVerificationPresentationFixture({
+        steps: [
+          { id: 'counted_as_recorded', status: 'success' },
+          { id: 'stark_verification', status: 'success' },
+        ],
+        checks: [
+          { id: 'counted_expected_vs_tree_size', status: 'success' },
+          { id: 'counted_election_manifest_consistent', status: 'failed' },
+          { id: 'counted_close_statement_consistent', status: 'success' },
+          { id: 'stark_receipt_verify', status: 'success' },
+        ],
+      }),
+      journal: createTestJournal({ totalExpected: 64, validVotes: 64 }),
+    };
+
+    expect(data.presentationPolicy?.stageStatuses.counted_as_recorded).toBe('failed');
+    expect(collectCliVerificationContractErrors(data)).toEqual([
+      'CLI verification required check counted_election_manifest_consistent was failed',
+    ]);
+  });
+
   it('allows fail-closed scenarios to leave downstream required checks not run', () => {
     const data: FinalizeScenarioData = {
-      verificationSteps: [buildStep('counted_as_recorded', 'failed'), buildStep('stark_verification', 'not_run')],
-      verificationChecks: [
-        buildCheck('counted_expected_vs_tree_size', 'failed'),
-        buildCheck('counted_election_manifest_consistent', 'not_run'),
-        buildCheck('counted_close_statement_consistent', 'not_run'),
-        buildCheck('stark_receipt_verify', 'not_run'),
-      ],
+      ...buildCliVerificationPresentationFixture({
+        steps: [
+          { id: 'counted_as_recorded', status: 'failed' },
+          { id: 'stark_verification', status: 'not_run' },
+        ],
+        checks: [
+          { id: 'counted_expected_vs_tree_size', status: 'failed' },
+          { id: 'counted_election_manifest_consistent', status: 'not_run' },
+          { id: 'counted_close_statement_consistent', status: 'not_run' },
+          { id: 'stark_receipt_verify', status: 'not_run' },
+        ],
+      }),
       journal: createTestJournal({ totalExpected: 64, validVotes: 63, excludedSlots: 1 }),
     };
 
@@ -205,13 +284,18 @@ describe('cli-voting-flow-helpers', () => {
 
   it('flags legacy methodVersion in current-contract CLI fixtures', () => {
     const data: FinalizeScenarioData = {
-      verificationSteps: [buildStep('counted_as_recorded', 'success'), buildStep('stark_verification', 'success')],
-      verificationChecks: [
-        buildCheck('counted_expected_vs_tree_size', 'success'),
-        buildCheck('counted_election_manifest_consistent', 'success'),
-        buildCheck('counted_close_statement_consistent', 'success'),
-        buildCheck('stark_receipt_verify', 'success'),
-      ],
+      ...buildCliVerificationPresentationFixture({
+        steps: [
+          { id: 'counted_as_recorded', status: 'success' },
+          { id: 'stark_verification', status: 'success' },
+        ],
+        checks: [
+          { id: 'counted_expected_vs_tree_size', status: 'success' },
+          { id: 'counted_election_manifest_consistent', status: 'success' },
+          { id: 'counted_close_statement_consistent', status: 'success' },
+          { id: 'stark_receipt_verify', status: 'success' },
+        ],
+      }),
       journal: {
         ...createTestJournal({ totalExpected: 64, validVotes: 64 }),
         methodVersion: 10,
@@ -225,13 +309,18 @@ describe('cli-voting-flow-helpers', () => {
 
   it('flags current count mirrors that disagree with the journal authority', () => {
     const data: FinalizeScenarioData = {
-      verificationSteps: [buildStep('counted_as_recorded', 'success'), buildStep('stark_verification', 'success')],
-      verificationChecks: [
-        buildCheck('counted_expected_vs_tree_size', 'success'),
-        buildCheck('counted_election_manifest_consistent', 'success'),
-        buildCheck('counted_close_statement_consistent', 'success'),
-        buildCheck('stark_receipt_verify', 'success'),
-      ],
+      ...buildCliVerificationPresentationFixture({
+        steps: [
+          { id: 'counted_as_recorded', status: 'success' },
+          { id: 'stark_verification', status: 'success' },
+        ],
+        checks: [
+          { id: 'counted_expected_vs_tree_size', status: 'success' },
+          { id: 'counted_election_manifest_consistent', status: 'success' },
+          { id: 'counted_close_statement_consistent', status: 'success' },
+          { id: 'stark_receipt_verify', status: 'success' },
+        ],
+      }),
       journal: createTestJournal({
         totalExpected: 64,
         validVotes: 61,

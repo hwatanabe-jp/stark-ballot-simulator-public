@@ -73,7 +73,9 @@ locals {
     var.image_signature_verifier_selected_authority == null
     ? true
     : (
-      var.image_signature_verifier_selected_authority.execution_role_arn
+      var.image_signature_verifier_selected_authority.function_arn
+      == "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:${local.image_signature_verifier_name}"
+      && var.image_signature_verifier_selected_authority.execution_role_arn
       == "arn:aws:iam::${var.aws_account_id}:role/${local.image_signature_verifier_role_name}"
       && var.image_signature_verifier_selected_authority.execution_role_assume_policy_sha256
       == local.image_signature_verifier_execution_role_assume_policy_sha256
@@ -99,6 +101,7 @@ locals {
     IMAGE_SIGNATURE_VERIFIER_STATUS_ATTEMPTS                = tostring(var.image_signature_status_max_attempts)
     IMAGE_SIGNATURE_VERIFIER_STATUS_RETRY_DELAY_MS          = tostring(var.image_signature_status_retry_delay_ms)
     IMAGE_SIGNATURE_VERIFIER_TIMEOUT_MS                     = tostring(var.image_signature_verifier_process_timeout_ms)
+    NODE_ENV                                                = "production"
   }
 
   # Keep default/empty fields explicit so runtime deployment evidence cannot

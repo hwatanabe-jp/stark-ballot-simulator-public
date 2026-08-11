@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import {
-  getSessionAuthHeaders,
   getSessionDataForIdentity,
   isSessionReplaced,
   isSessionReplacedForIdentity,
@@ -15,22 +14,23 @@ import {
   saveKnowledgeData,
   VERIFICATION_GATED_KEYS,
 } from '@stark-ballot/web/knowledge';
-import { resolveApiUrl } from '@stark-ballot/web/api/apiBaseUrl';
-import { apiFetch } from '@stark-ballot/web/api/apiFetch';
+import { getVerification } from '@stark-ballot/web/api/verification';
+import { ApiClientError } from '@stark-ballot/web/api/client';
 import {
   getStarkVerificationSnapshot,
   subscribeStarkVerificationSnapshot,
 } from '@stark-ballot/web/verification/stark-verification-polling';
 import { resolveCanonicalFinalizationPayload } from '@stark-ballot/web/finalize/client-finalization-result';
 import {
-  readResponseJsonSafely,
   resolveVerificationClientApiError,
+  resolveVerificationUnavailableError,
 } from '@stark-ballot/web/verification/client-api-errors';
-import { VerifyFailClosedResponseSchema, VerifyResponseSchema } from '@stark-ballot/api-contract/validation/apiSchemas';
-import { readStandardApiErrorCode } from '@stark-ballot/web/api/responseAdmission';
 import type { VerificationPayload } from '../lib/verification-data';
-import { applyLocalCastAsIntended, buildBundleCandidates, parseVerificationPayload } from '../lib/verification-data';
+import { projectVerificationResource, resolveBundleCandidate } from '../lib/verification-data';
+import { admitVerificationResourceSnapshot } from '../lib/verification-response-admission';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import { readBrowserPublicEnv } from '@stark-ballot/runtime-config/env/browserPublic';
+import { resolveConfiguredSthSources } from '@stark-ballot/web/verification/sthSources';
 
 const SESSION_ERROR_KEY = 'pages.verify.sessionError';
 const SESSION_REPLACED_ERROR_KEY = 'pages.verify.sessionReplaced';
@@ -59,6 +59,18 @@ const hasContinuationAuthority = (session: ReturnType<typeof getSessionDataForId
   typeof session?.verificationRequestedAt === 'number' &&
   Boolean(resolveCanonicalFinalizationPayload(session.finalizeResult));
 
+function resolveFailClosedResourceError(
+  availability: 'unavailable' | 'corrupt',
+  message: string,
+  sessionIdentity: SessionIdentity | null,
+): Error {
+  return resolveVerificationUnavailableError({
+    code: availability === 'unavailable' ? 'VERIFICATION_UNAVAILABLE' : 'INVALID_VERIFICATION_ARTIFACT',
+    message,
+    sessionIdentity,
+  });
+}
+
 export function useVerificationData({
   t,
   sessionIdentityRef,
@@ -78,14 +90,25 @@ export function useVerificationData({
   const initialSession = initialSessionIdentity ? getSessionDataForIdentity(initialSessionIdentity) : null;
   const initialFinalizationSnapshot = resolveCanonicalFinalizationPayload(initialSession?.finalizeResult);
   const initialSnapshotAt =
-    initialSnapshot && initialSession?.sessionId === initialSnapshot.sessionId && initialFinalizationSnapshot
+    initialSnapshot &&
+    initialSession?.sessionId === initialSnapshot.sessionId &&
+    initialFinalizationSnapshot?.finalizationId === initialSnapshot.finalizationId
       ? initialSnapshot.receivedAt
       : 0;
-  if (initialSnapshot && initialSession?.sessionId === initialSnapshot.sessionId && initialFinalizationSnapshot) {
-    try {
-      initialData = applyLocalCastAsIntended(parseVerificationPayload(initialSnapshot.payload), initialSession);
-    } catch {
-      initialData = null;
+  if (
+    initialSnapshot &&
+    initialSession?.sessionId === initialSnapshot.sessionId &&
+    initialFinalizationSnapshot?.finalizationId === initialSnapshot.finalizationId
+  ) {
+    const resource = admitVerificationResourceSnapshot(
+      initialSnapshot.payload,
+      initialFinalizationSnapshot.finalizationId,
+    );
+    const projection = projectVerificationResource(resource, initialSession, {
+      sthSourcesConfigured: resolveConfiguredSthSources(readBrowserPublicEnv).length > 0,
+    });
+    if (projection.availability === 'available') {
+      initialData = projection.data;
     }
   }
   const [fetchTrigger, setFetchTrigger] = useState(0);
@@ -104,7 +127,8 @@ export function useVerificationData({
       if (!session || session.sessionId !== snapshot.sessionId) {
         return;
       }
-      if (!resolveCanonicalFinalizationPayload(session.finalizeResult)) {
+      const finalization = resolveCanonicalFinalizationPayload(session.finalizeResult);
+      if (!finalization) {
         return;
       }
       if (!serverValidated) {
@@ -113,15 +137,28 @@ export function useVerificationData({
       if (snapshot.receivedAt <= latestSnapshotAtRef.current) {
         return;
       }
-      try {
-        const parsed = applyLocalCastAsIntended(parseVerificationPayload(snapshot.payload), session);
-        latestSnapshotAtRef.current = snapshot.receivedAt;
-        setData(parsed);
-        setError(null);
+      latestSnapshotAtRef.current = snapshot.receivedAt;
+      if (snapshot.finalizationId !== finalization.finalizationId) {
+        setData(null);
+        setServerValidated(false);
+        setError('Verification snapshot finalization identity mismatch');
         setLoading(false);
-      } catch {
-        // ignore malformed snapshot
+        return;
       }
+      const resource = admitVerificationResourceSnapshot(snapshot.payload, finalization.finalizationId);
+      const projection = projectVerificationResource(resource, session, {
+        sthSourcesConfigured: resolveConfiguredSthSources(readBrowserPublicEnv).length > 0,
+      });
+      if (projection.availability !== 'available') {
+        setData(null);
+        setServerValidated(false);
+        setError(projection.message);
+        setLoading(false);
+        return;
+      }
+      setData(projection.data);
+      setError(null);
+      setLoading(false);
     });
     return unsubscribe;
   }, [serverValidated, sessionIdentityRef]);
@@ -133,76 +170,50 @@ export function useVerificationData({
       throw new Error(resolveSessionErrorMessage());
     }
     setHasVerificationContinuationAuthority(hasContinuationAuthority(session));
+    const finalization = resolveCanonicalFinalizationPayload(session.finalizeResult);
+    if (!finalization) {
+      setHasVerificationContinuationAuthority(false);
+      throw new Error(resolveSessionErrorMessage());
+    }
 
-    const endpoint = resolveApiUrl('/api/verify');
-    const response = await apiFetch(endpoint, {
-      headers: getSessionAuthHeaders(session),
+    let resource;
+    try {
+      resource = await getVerification(session, finalization.finalizationId);
+    } catch (error) {
+      if (error instanceof ApiClientError) {
+        throw resolveVerificationClientApiError({
+          rawBody: error.responseBody,
+          responseStatus: error.status,
+          responseStatusText: error.statusText,
+          sessionIdentity: sessionIdentityRef.current,
+          resolveSessionErrorMessage,
+          fallbackMessage: 'Verification API error',
+        });
+      }
+      throw error;
+    }
+
+    const projection = projectVerificationResource(resource, session, {
+      sthSourcesConfigured: resolveConfiguredSthSources(readBrowserPublicEnv).length > 0,
     });
-
-    const rawBody = await readResponseJsonSafely(response);
-
-    const maybeBoundaryError = readStandardApiErrorCode(rawBody)
-      ? resolveVerificationClientApiError({
-          rawBody,
-          responseStatus: response.status,
-          responseStatusText: response.statusText,
-          sessionIdentity: sessionIdentityRef.current,
-          resolveSessionErrorMessage,
-          fallbackMessage: 'Verification API error',
-        })
-      : null;
-
-    if (response.ok && maybeBoundaryError?.invalidation === 'clear_finalized_projection') {
-      throw maybeBoundaryError;
+    if (projection.availability !== 'available') {
+      throw resolveFailClosedResourceError(projection.availability, projection.message, sessionIdentityRef.current);
     }
 
-    if (!response.ok) {
-      throw (
-        maybeBoundaryError ??
-        resolveVerificationClientApiError({
-          rawBody,
-          responseStatus: response.status,
-          responseStatusText: response.statusText,
-          sessionIdentity: sessionIdentityRef.current,
-          resolveSessionErrorMessage,
-          fallbackMessage: 'Verification API error',
-        })
-      );
-    }
-
-    const failClosedBody = VerifyFailClosedResponseSchema.safeParse(rawBody);
-    if (failClosedBody.success) {
-      throw resolveVerificationClientApiError({
-        rawBody: failClosedBody.data,
-        responseStatus: response.status,
-        responseStatusText: response.statusText,
-        sessionIdentity: sessionIdentityRef.current,
-        resolveSessionErrorMessage,
-        fallbackMessage: 'Verification API error',
-      });
-    }
-
-    const admittedBody = VerifyResponseSchema.safeParse(rawBody);
-    if (!admittedBody.success) {
-      const firstIssue = admittedBody.error.issues[0];
-      throw new Error(`Invalid verification response payload: ${firstIssue?.message ?? 'schema validation failed'}`);
-    }
-
-    const bodyData = admittedBody.data.data;
-    const parsed = applyLocalCastAsIntended(parseVerificationPayload(bodyData), session);
+    const parsed = projection.data;
     latestSnapshotAtRef.current = Math.max(latestSnapshotAtRef.current, Date.now());
     setServerValidated(true);
     // Save verification data to knowledge store
     mergeKnowledgeFromApi(
       'verify',
-      { ...bodyData },
+      { ...parsed },
       {
         omitKeys: VERIFICATION_GATED_KEYS,
         ...omitUndefinedProperties({ expectedSessionId: sessionIdentityRef.current?.sessionId }),
       },
     );
     // Set proof bundle status when verification data is available
-    if (buildBundleCandidates(parsed, session.sessionId).length > 0) {
+    if (resolveBundleCandidate(parsed, session.sessionId)) {
       const currentBundleStatus = getKnowledgeValue('proofBundleStatus');
       if (currentBundleStatus !== 'downloaded') {
         saveKnowledgeData(

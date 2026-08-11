@@ -5,13 +5,13 @@ import type { ElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-c
 import type { ReceiptWithImageId } from '@stark-ballot/verification/image-id-types';
 import type { AdmittedReceiptPayload } from '@stark-ballot/verification/receipt-normalizer';
 import type { ElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
-import type { FinalizationExecutionId } from './finalization-types';
+import type { FinalizationId } from './finalization-types';
 
 export type ProofBundleVerificationResult = VerificationResult;
 
 export interface ProofBundleOptions {
   sessionId: string;
-  contractGeneration: string;
+  finalizationId: FinalizationId;
   zkvmInput: ZkVMInput;
   electionConfig: ElectionConfig;
   electionManifest?: ElectionManifest;
@@ -28,7 +28,7 @@ export interface ProofBundleOptions {
 export type ProofBundleFailure =
   | {
       type: 'verifier_failed';
-      executionId: FinalizationExecutionId;
+      finalizationId: FinalizationId;
       status: VerificationStatus;
       report: NonNullable<VerificationResult['report']>;
     }
@@ -41,7 +41,7 @@ export type ProofBundleOutcome =
   | {
       ok: true;
       verificationResult: ProofBundleVerificationResult;
-      executionId: FinalizationExecutionId;
+      finalizationId: FinalizationId;
     }
   | { ok: false; error: ProofBundleFailure };
 

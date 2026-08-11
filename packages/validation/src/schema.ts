@@ -44,10 +44,63 @@ export type SafeParseResult<T> =
       error: SchemaError;
     };
 
-export type Infer<TSchema> = TSchema extends Schema<infer TOutput> ? TOutput : never;
+declare const schemaOutput: unique symbol;
+
+interface SchemaLike<TOutput = unknown> {
+  readonly [schemaOutput]: TOutput;
+  parseInternal(input: unknown, path: (string | number)[]): ParseResult<this[typeof schemaOutput]>;
+}
+
+export type Infer<TSchema extends SchemaTypeAny> = TSchema[typeof schemaOutput];
 export type SchemaTypeAny = Schema<unknown>;
 export type SchemaShape = Record<string, SchemaTypeAny>;
 export type UnknownKeyPolicy = 'strip' | 'strict' | 'passthrough';
+
+type Simplify<TValue> = { [TKey in keyof TValue]: TValue[TKey] };
+
+type OptionalShapeKey<TShape extends SchemaShape> = {
+  [TKey in keyof TShape]-?: undefined extends Infer<TShape[TKey]> ? TKey : never;
+}[keyof TShape];
+
+type RequiredShapeKey<TShape extends SchemaShape> = Exclude<keyof TShape, OptionalShapeKey<TShape>>;
+
+type ObjectShapeOutput<TShape extends SchemaShape> = Simplify<
+  { [TKey in RequiredShapeKey<TShape>]: Infer<TShape[TKey]> } & {
+    [TKey in OptionalShapeKey<TShape>]?: Infer<TShape[TKey]>;
+  }
+>;
+
+type ExactObjectShapeOutput<TShape extends SchemaShape> = keyof TShape extends never
+  ? Record<string, never>
+  : ObjectShapeOutput<TShape>;
+
+type ObjectOutput<
+  TShape extends SchemaShape,
+  TUnknownKeys extends UnknownKeyPolicy,
+  TCatchall extends SchemaTypeAny,
+> = TCatchall extends NeverSchema
+  ? TUnknownKeys extends 'passthrough'
+    ? ObjectShapeOutput<TShape> & Record<string, unknown>
+    : ExactObjectShapeOutput<TShape>
+  : keyof TShape extends never
+    ? Record<string, Infer<TCatchall>>
+    : ObjectShapeOutput<TShape> & Record<string, Infer<TCatchall> | Infer<TShape[keyof TShape]>>;
+
+type ExtendedShape<TShape extends SchemaShape, TExtension extends SchemaShape> = Omit<TShape, keyof TExtension> &
+  TExtension;
+
+type DefaultOutput<TSchema extends SchemaTypeAny> = Exclude<Infer<TSchema>, undefined>;
+
+type BivariantCallback<TArgs extends unknown[], TResult> = {
+  bivarianceHack(...args: TArgs): TResult;
+}['bivarianceHack'];
+
+type IntersectionOutput<TLeft extends SchemaTypeAny, TRight extends SchemaTypeAny> =
+  Infer<TLeft> extends Record<string, unknown>
+    ? Infer<TRight> extends Record<string, unknown>
+      ? Simplify<Omit<Infer<TLeft>, keyof Infer<TRight>> & Infer<TRight>>
+      : Infer<TRight>
+    : Infer<TRight>;
 
 export class SchemaError extends Error {
   public readonly issues: SchemaIssue[];
@@ -120,7 +173,8 @@ function cloneDefaultValue(value: unknown): unknown {
   return value;
 }
 
-export abstract class Schema<TOutput = unknown> {
+export abstract class Schema<TOutput = unknown> implements SchemaLike<TOutput> {
+  declare public readonly [schemaOutput]: TOutput;
   public readonly _def: BaseDef;
   public readonly description?: string;
 
@@ -147,40 +201,42 @@ export abstract class Schema<TOutput = unknown> {
     throw result.error;
   }
 
-  public optional(): OptionalSchema {
+  public optional(): OptionalSchema<this> {
     return new OptionalSchema(this);
   }
 
-  public nullable(): NullableSchema {
+  public nullable(): NullableSchema<this> {
     return new NullableSchema(this);
   }
 
-  public default(defaultValue: unknown): DefaultSchema {
-    return new DefaultSchema(this, () => defaultValue);
+  public default(defaultValue: Exclude<TOutput, undefined>): DefaultSchema<Schema<TOutput>> {
+    return new DefaultSchema<Schema<TOutput>>(this, () => defaultValue);
   }
 
   public refine(predicate: (value: TOutput) => boolean, options?: { message?: string }): EffectsSchema<TOutput> {
     return new EffectsSchema(this, {
       kind: 'refinement',
       refine: (value, ctx) => {
-        if (!predicate(value as TOutput)) {
+        if (!predicate(value)) {
           ctx.addIssue({ message: options?.message ?? 'Invalid input' });
         }
       },
+      output: (value) => value,
     });
   }
 
   public superRefine(refine: (value: TOutput, ctx: RefinementContext) => void): EffectsSchema<TOutput> {
     return new EffectsSchema(this, {
       kind: 'refinement',
-      refine: (value, ctx) => refine(value as TOutput, ctx),
+      refine,
+      output: (value) => value,
     });
   }
 
-  public transform<TNext>(transform: (value: TOutput) => TNext): EffectsSchema<TNext> {
+  public transform<TNext>(transform: (value: TOutput) => TNext): EffectsSchema<TNext, TOutput> {
     return new EffectsSchema(this, {
       kind: 'transform',
-      transform: (value) => transform(value as TOutput),
+      transform,
     });
   }
 
@@ -190,11 +246,19 @@ export abstract class Schema<TOutput = unknown> {
     return this;
   }
 
-  public and(right: SchemaTypeAny): IntersectionSchema {
+  public and<TRight extends SchemaTypeAny>(right: TRight): IntersectionSchema<this, TRight> {
     return new IntersectionSchema(this, right);
   }
 
   public abstract parseInternal(input: unknown, path: (string | number)[]): ParseResult<TOutput>;
+}
+
+function parseWithSchema<TSchema extends SchemaTypeAny>(
+  schema: TSchema,
+  input: unknown,
+  path: (string | number)[],
+): ParseResult<Infer<TSchema>> {
+  return schema.parseInternal(input, path);
 }
 
 export class NeverSchema extends Schema<never> {
@@ -384,61 +448,68 @@ export class EnumSchema<TValues extends readonly string[]> extends Schema<TValue
   }
 }
 
-export class OptionalSchema extends Schema<unknown> {
-  public readonly _def: BaseDef & { innerType: SchemaTypeAny };
+export class OptionalSchema<TInner extends SchemaTypeAny = SchemaTypeAny> extends Schema<Infer<TInner> | undefined> {
+  public readonly _def: BaseDef & { innerType: TInner };
 
-  public constructor(innerType: SchemaTypeAny) {
-    super({ innerType } as BaseDef & { innerType: SchemaTypeAny });
+  public constructor(innerType: TInner) {
+    super({ innerType } as BaseDef & { innerType: TInner });
     this._def = { innerType };
   }
 
-  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<unknown> {
-    return input === undefined ? ok(undefined) : this._def.innerType.parseInternal(input, path);
+  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<Infer<TInner> | undefined> {
+    return input === undefined ? ok(undefined) : parseWithSchema(this._def.innerType, input, path);
   }
 }
 
-export class NullableSchema extends Schema<unknown> {
-  public readonly _def: BaseDef & { innerType: SchemaTypeAny };
+export class NullableSchema<TInner extends SchemaTypeAny = SchemaTypeAny> extends Schema<Infer<TInner> | null> {
+  public readonly _def: BaseDef & { innerType: TInner };
 
-  public constructor(innerType: SchemaTypeAny) {
-    super({ innerType } as BaseDef & { innerType: SchemaTypeAny });
+  public constructor(innerType: TInner) {
+    super({ innerType } as BaseDef & { innerType: TInner });
     this._def = { innerType };
   }
 
-  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<unknown> {
-    return input === null ? ok(null) : this._def.innerType.parseInternal(input, path);
+  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<Infer<TInner> | null> {
+    return input === null ? ok(null) : parseWithSchema(this._def.innerType, input, path);
   }
 }
 
-export class DefaultSchema extends Schema<unknown> {
-  public readonly _def: BaseDef & { innerType: SchemaTypeAny; defaultValue: () => unknown };
+export class DefaultSchema<TInner extends SchemaTypeAny = SchemaTypeAny> extends Schema<DefaultOutput<TInner>> {
+  public readonly _def: BaseDef & { innerType: TInner; defaultValue: () => DefaultOutput<TInner> };
 
-  public constructor(innerType: SchemaTypeAny, defaultValue: () => unknown) {
-    super({ innerType, defaultValue } as BaseDef & { innerType: SchemaTypeAny; defaultValue: () => unknown });
+  public constructor(innerType: TInner, defaultValue: () => DefaultOutput<TInner>) {
+    super({ innerType, defaultValue } as BaseDef & {
+      innerType: TInner;
+      defaultValue: () => DefaultOutput<TInner>;
+    });
     this._def = { innerType, defaultValue };
   }
 
-  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<unknown> {
+  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<DefaultOutput<TInner>> {
     const value = input === undefined ? cloneDefaultValue(this._def.defaultValue()) : input;
-    return this._def.innerType.parseInternal(value, path);
+    return parseWithSchema(this._def.innerType, value, path) as ParseResult<DefaultOutput<TInner>>;
   }
 }
 
-type EffectDefinition<TOutput> =
+type EffectDefinition<TInput, TOutput> =
   | {
       kind: 'transform';
-      transform: (value: unknown) => TOutput;
+      transform: BivariantCallback<[value: TInput], TOutput>;
     }
   | {
       kind: 'refinement';
-      refine: (value: unknown, ctx: RefinementContext) => void;
+      refine: BivariantCallback<[value: TInput, ctx: RefinementContext], void>;
+      output: BivariantCallback<[value: TInput], TOutput>;
     };
 
-export class EffectsSchema<TOutput = unknown> extends Schema<TOutput> {
-  public readonly _def: BaseDef & { schema: SchemaTypeAny; effect: EffectDefinition<TOutput> };
+export class EffectsSchema<TOutput = unknown, TInput = TOutput> extends Schema<TOutput> {
+  public readonly _def: BaseDef & { schema: Schema<TInput>; effect: EffectDefinition<TInput, TOutput> };
 
-  public constructor(schema: SchemaTypeAny, effect: EffectDefinition<TOutput>) {
-    super({ schema, effect } as BaseDef & { schema: SchemaTypeAny; effect: EffectDefinition<TOutput> });
+  public constructor(schema: Schema<TInput>, effect: EffectDefinition<TInput, TOutput>) {
+    super({ schema, effect } as BaseDef & {
+      schema: Schema<TInput>;
+      effect: EffectDefinition<TInput, TOutput>;
+    });
     this._def = { schema, effect };
   }
 
@@ -458,24 +529,24 @@ export class EffectsSchema<TOutput = unknown> extends Schema<TOutput> {
         issues.push({ path: issue.path ?? path, message: issue.message });
       },
     });
-    return issues.length === 0 ? ok(inner.data as TOutput) : failIssues(issues);
+    return issues.length === 0 ? ok(this._def.effect.output(inner.data)) : failIssues(issues);
   }
 }
 
-export class ArraySchema extends Schema<unknown[]> {
-  public readonly _def: BaseDef & { type: SchemaTypeAny };
+export class ArraySchema<TItem extends SchemaTypeAny = SchemaTypeAny> extends Schema<Infer<TItem>[]> {
+  public readonly _def: BaseDef & { type: TItem };
   private readonly checks: ((value: unknown[], path: (string | number)[]) => ParseFailure | null)[];
 
   public constructor(
-    type: SchemaTypeAny,
+    type: TItem,
     checks: ((value: unknown[], path: (string | number)[]) => ParseFailure | null)[] = [],
   ) {
-    super({ type } as BaseDef & { type: SchemaTypeAny });
+    super({ type } as BaseDef & { type: TItem });
     this._def = { type };
     this.checks = checks;
   }
 
-  public min(length: number, message?: string): ArraySchema {
+  public min(length: number, message?: string): ArraySchema<TItem> {
     return new ArraySchema(this._def.type, [
       ...this.checks,
       (value, path) =>
@@ -483,7 +554,7 @@ export class ArraySchema extends Schema<unknown[]> {
     ]);
   }
 
-  public length(length: number, message?: string): ArraySchema {
+  public length(length: number, message?: string): ArraySchema<TItem> {
     return new ArraySchema(this._def.type, [
       ...this.checks,
       (value, path) =>
@@ -491,7 +562,7 @@ export class ArraySchema extends Schema<unknown[]> {
     ]);
   }
 
-  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<unknown[]> {
+  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<Infer<TItem>[]> {
     if (!Array.isArray(input)) {
       return fail('Expected array', path);
     }
@@ -499,9 +570,9 @@ export class ArraySchema extends Schema<unknown[]> {
     const issues = mergeIssues(
       this.checks.map((check) => check(input, path)).filter((result): result is ParseFailure => result !== null),
     );
-    const parsed: unknown[] = [];
+    const parsed: Infer<TItem>[] = [];
     input.forEach((item, index) => {
-      const result = this._def.type.parseInternal(item, [...path, index]);
+      const result = parseWithSchema(this._def.type, item, [...path, index]);
       if (result.success) {
         parsed.push(result.data);
       } else {
@@ -513,41 +584,53 @@ export class ArraySchema extends Schema<unknown[]> {
   }
 }
 
-export class ObjectSchema extends Schema<Record<string, unknown>> {
-  public readonly _def: BaseDef & { shape: SchemaShape; unknownKeys: UnknownKeyPolicy; catchall: SchemaTypeAny };
-  public readonly shape: SchemaShape;
+export class ObjectSchema<
+  TShape extends SchemaShape = SchemaShape,
+  TUnknownKeys extends UnknownKeyPolicy = UnknownKeyPolicy,
+  TCatchall extends SchemaTypeAny = SchemaTypeAny,
+> extends Schema<ObjectOutput<TShape, TUnknownKeys, TCatchall>> {
+  public readonly _def: BaseDef & {
+    shape: TShape;
+    unknownKeys: TUnknownKeys;
+    catchall: TCatchall;
+  };
+  public readonly shape: TShape;
 
-  public constructor(
-    shape: SchemaShape,
-    unknownKeys: UnknownKeyPolicy = 'strip',
-    catchall: SchemaTypeAny = new NeverSchema(),
-  ) {
+  public constructor(shape: TShape, unknownKeys: TUnknownKeys, catchall: TCatchall) {
     super({ shape, unknownKeys, catchall } as BaseDef & {
-      shape: SchemaShape;
-      unknownKeys: UnknownKeyPolicy;
-      catchall: SchemaTypeAny;
+      shape: TShape;
+      unknownKeys: TUnknownKeys;
+      catchall: TCatchall;
     });
     this.shape = shape;
     this._def = { shape, unknownKeys, catchall };
   }
 
-  public strict(): ObjectSchema {
+  public strict(): ObjectSchema<TShape, 'strict', TCatchall> {
     return new ObjectSchema(this.shape, 'strict', this._def.catchall);
   }
 
-  public passthrough(): ObjectSchema {
+  public passthrough(): ObjectSchema<TShape, 'passthrough', TCatchall> {
     return new ObjectSchema(this.shape, 'passthrough', this._def.catchall);
   }
 
-  public catchall(schema: SchemaTypeAny): ObjectSchema {
+  public catchall<TNextCatchall extends SchemaTypeAny>(
+    schema: TNextCatchall,
+  ): ObjectSchema<TShape, TUnknownKeys, TNextCatchall> {
     return new ObjectSchema(this.shape, this._def.unknownKeys, schema);
   }
 
-  public extend(extension: SchemaShape): ObjectSchema {
-    return new ObjectSchema({ ...this.shape, ...extension }, this._def.unknownKeys, this._def.catchall);
+  public extend<TExtension extends SchemaShape>(
+    extension: TExtension,
+  ): ObjectSchema<ExtendedShape<TShape, TExtension>, TUnknownKeys, TCatchall> {
+    const shape = { ...this.shape, ...extension } as ExtendedShape<TShape, TExtension>;
+    return new ObjectSchema(shape, this._def.unknownKeys, this._def.catchall);
   }
 
-  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<Record<string, unknown>> {
+  public parseInternal(
+    input: unknown,
+    path: (string | number)[],
+  ): ParseResult<ObjectOutput<TShape, TUnknownKeys, TCatchall>> {
     if (!isPlainRecord(input)) {
       return fail('Expected object', path);
     }
@@ -556,7 +639,7 @@ export class ObjectSchema extends Schema<Record<string, unknown>> {
     const issues: SchemaIssue[] = [];
 
     for (const [key, schema] of Object.entries(this.shape)) {
-      const result = schema.parseInternal(input[key], [...path, key]);
+      const result = parseWithSchema(schema, input[key], [...path, key]);
       if (result.success) {
         if (result.data !== undefined || Object.hasOwn(input, key)) {
           output[key] = result.data;
@@ -571,7 +654,7 @@ export class ObjectSchema extends Schema<Record<string, unknown>> {
         continue;
       }
       if (!(this._def.catchall instanceof NeverSchema)) {
-        const result = this._def.catchall.parseInternal(input[key], [...path, key]);
+        const result = parseWithSchema(this._def.catchall, input[key], [...path, key]);
         if (result.success) {
           output[key] = result.data;
         } else {
@@ -586,24 +669,26 @@ export class ObjectSchema extends Schema<Record<string, unknown>> {
       }
     }
 
-    return issues.length === 0 ? ok(output) : failIssues(issues);
+    return issues.length === 0 ? ok(output as ObjectOutput<TShape, TUnknownKeys, TCatchall>) : failIssues(issues);
   }
 }
 
-export class UnionSchema extends Schema<unknown> {
-  public readonly _def: BaseDef & { options: readonly SchemaTypeAny[] };
+export class UnionSchema<TOptions extends readonly SchemaTypeAny[] = readonly SchemaTypeAny[]> extends Schema<
+  Infer<TOptions[number]>
+> {
+  public readonly _def: BaseDef & { options: TOptions };
 
-  public constructor(options: readonly SchemaTypeAny[]) {
-    super({ options } as BaseDef & { options: readonly SchemaTypeAny[] });
+  public constructor(options: TOptions) {
+    super({ options } as BaseDef & { options: TOptions });
     this._def = { options };
   }
 
-  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<unknown> {
+  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<Infer<TOptions[number]>> {
     const failures: ParseFailure[] = [];
     for (const option of this._def.options) {
-      const result = option.parseInternal(input, path);
+      const result = parseWithSchema(option, input, path);
       if (result.success) {
-        return result;
+        return ok(result.data as Infer<TOptions[number]>);
       }
       failures.push(result);
     }
@@ -612,19 +697,24 @@ export class UnionSchema extends Schema<unknown> {
   }
 }
 
-export class DiscriminatedUnionSchema extends UnionSchema {}
+export class DiscriminatedUnionSchema<
+  TOptions extends readonly SchemaTypeAny[] = readonly SchemaTypeAny[],
+> extends UnionSchema<TOptions> {}
 
-export class IntersectionSchema extends Schema<unknown> {
-  public readonly _def: BaseDef & { left: SchemaTypeAny; right: SchemaTypeAny };
+export class IntersectionSchema<
+  TLeft extends SchemaTypeAny = SchemaTypeAny,
+  TRight extends SchemaTypeAny = SchemaTypeAny,
+> extends Schema<IntersectionOutput<TLeft, TRight>> {
+  public readonly _def: BaseDef & { left: TLeft; right: TRight };
 
-  public constructor(left: SchemaTypeAny, right: SchemaTypeAny) {
-    super({ left, right } as BaseDef & { left: SchemaTypeAny; right: SchemaTypeAny });
+  public constructor(left: TLeft, right: TRight) {
+    super({ left, right } as BaseDef & { left: TLeft; right: TRight });
     this._def = { left, right };
   }
 
-  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<unknown> {
-    const left = this._def.left.parseInternal(input, path);
-    const right = this._def.right.parseInternal(input, path);
+  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<IntersectionOutput<TLeft, TRight>> {
+    const left = parseWithSchema(this._def.left, input, path);
+    const right = parseWithSchema(this._def.right, input, path);
     if (!left.success || !right.success) {
       const failures: ParseFailure[] = [];
       if (!left.success) {
@@ -636,9 +726,9 @@ export class IntersectionSchema extends Schema<unknown> {
       return failIssues(mergeIssues(failures));
     }
     if (isPlainRecord(left.data) && isPlainRecord(right.data)) {
-      return ok({ ...left.data, ...right.data });
+      return ok({ ...left.data, ...right.data } as IntersectionOutput<TLeft, TRight>);
     }
-    return right;
+    return ok(right.data as IntersectionOutput<TLeft, TRight>);
   }
 }
 
@@ -670,24 +760,25 @@ function enumSchema<const TValues extends readonly string[]>(values: TValues): E
   return new EnumSchema(values);
 }
 
-function object(shape: SchemaShape): ObjectSchema {
-  return new ObjectSchema(shape);
+function object<const TShape extends SchemaShape>(shape: TShape): ObjectSchema<TShape, 'strip', NeverSchema> {
+  return new ObjectSchema(shape, 'strip', new NeverSchema());
 }
 
-function array(item: SchemaTypeAny): ArraySchema {
+function array<TItem extends SchemaTypeAny>(item: TItem): ArraySchema<TItem> {
   return new ArraySchema(item);
 }
 
-function union(options: readonly [SchemaTypeAny, SchemaTypeAny, ...SchemaTypeAny[]]): UnionSchema {
+function union<const TOptions extends readonly [SchemaTypeAny, SchemaTypeAny, ...SchemaTypeAny[]]>(
+  options: TOptions,
+): UnionSchema<TOptions> {
   return new UnionSchema(options);
 }
 
-function intersection(left: SchemaTypeAny, right: SchemaTypeAny): IntersectionSchema {
+function intersection<TLeft extends SchemaTypeAny, TRight extends SchemaTypeAny>(
+  left: TLeft,
+  right: TRight,
+): IntersectionSchema<TLeft, TRight> {
   return new IntersectionSchema(left, right);
-}
-
-function typedSchema<TOutput>(schema: SchemaTypeAny): Schema<TOutput> {
-  return schema as Schema<TOutput>;
 }
 
 export const s = {
@@ -717,7 +808,6 @@ export const s = {
   number,
   object,
   string,
-  typed: typedSchema,
   undefined: undefinedSchema,
   union,
   unknown,

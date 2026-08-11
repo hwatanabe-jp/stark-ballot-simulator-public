@@ -130,6 +130,56 @@ data "aws_iam_policy_document" "foundation_deploy_permissions_boundary" {
     actions   = ["iam:*"]
     resources = [local.foundation_pipeline_role_arn_pattern]
   }
+
+  statement {
+    sid    = "FoundationEcrRetentionRoleReadGuardrail"
+    effect = "Allow"
+    actions = [
+      "iam:GetRole",
+      "iam:GetRolePolicy",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListInstanceProfilesForRole",
+      "iam:ListRolePolicies",
+      "iam:ListRoleTags",
+    ]
+    resources = [local.foundation_ecr_retention_role_arn]
+  }
+
+  statement {
+    sid    = "FoundationEcrRetentionBoundaryReadGuardrail"
+    effect = "Allow"
+    actions = [
+      "iam:GetPolicy*",
+      "iam:ListPolicyVersions",
+    ]
+    resources = [local.foundation_ecr_retention_boundary_policy_arn]
+  }
+
+  statement {
+    sid    = "FoundationEcrRetentionLambdaReadGuardrail"
+    effect = "Allow"
+    actions = [
+      "lambda:GetFunction",
+      "lambda:GetFunctionCodeSigningConfig",
+      "lambda:GetFunctionConcurrency",
+      "lambda:GetPolicy",
+      "lambda:GetRuntimeManagementConfig",
+      "lambda:ListTags",
+      "lambda:ListVersionsByFunction",
+    ]
+    resources = [local.foundation_ecr_retention_function_arn]
+  }
+
+  statement {
+    sid    = "FoundationEcrRetentionScheduleReadGuardrail"
+    effect = "Allow"
+    actions = [
+      "events:DescribeRule",
+      "events:ListTagsForResource",
+      "events:ListTargetsByRule",
+    ]
+    resources = [local.foundation_ecr_retention_schedule_arn]
+  }
 }
 
 resource "aws_iam_policy" "foundation_deploy_permissions_boundary" {
@@ -146,4 +196,13 @@ resource "aws_iam_policy" "foundation_deploy_permissions_boundary" {
   tags = merge(local.common_tags, {
     StateScope = "foundation"
   })
+
+  lifecycle {
+    precondition {
+      condition = (
+        length(jsonencode(jsondecode(data.aws_iam_policy_document.foundation_deploy_permissions_boundary[0].json))) <= 6144
+      )
+      error_message = "Foundation deploy permissions boundary exceeds the IAM managed-policy size quota."
+    }
+  }
 }

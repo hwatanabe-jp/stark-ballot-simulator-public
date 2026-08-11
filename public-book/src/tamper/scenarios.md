@@ -22,20 +22,17 @@
 
 - 1 回の finalize で選択されるシナリオは 1 つ（S0〜S5）
   - UI: `/aggregate` は single-select（S0〜S5 のラジオボタン）
-  - API: `POST /api/finalize` は `scenarioId` を 1 つ受け取る
+  - API: `POST /api/sessions/:sessionId/finalizations` は `scenarioId` を 1 つ受け取る
 - `totalExpected` は 64（ユーザー 1 + ボット 63）
 - 掲示板（CT Merkle）は追記専用で、シナリオ適用で既存エントリは削除しない
 - `tamperMode` は `none` / `input` / `claim` の 3 種
 
 ### 実行モードと検証の前提
 
-- 本章は実 API 経路（`/api/finalize` → `finalize-session` → `finalize-sync|async`）を基準に説明する
-- finalize 実行モードは `FINALIZE_ASYNC_MODE` で切り替わる（`false`: 同期, `true`: 非同期）
-- AWS 運用では通常 `FINALIZE_ASYNC_MODE=true`
-- mock mode の差分:
-  - `VITE_USE_MOCK_API=true` の mock API fixture は本章と異なるチェック結果を返すことがある
-  - `USE_MOCK_ZKVM=true` の mock zkVM executor は production STARK proof を生成しない
-- `RISC0_DEV_MODE=1` の dev-mode receipt も production STARK proof ではない
+- 本章は実 API 経路（`POST /api/sessions/:sessionId/finalizations` → `finalizeSessionHandler` → `finalizeSessionUsecase` → `finalizeSync|finalizeAsync`）を基準に説明する
+- finalize 実行モード（同期 / 非同期）は `RUNTIME_PROFILE` が一意に決める。profile ごとの意味論は [AWS runtime 境界](../aws/runtime-boundary.md#semantic-runtime-profiles) を参照
+- mock mode の差分: browser mock（`VITE_RUNTIME_PROFILE=local-demo`）の API fixture は本章と異なるチェック結果を返すことがあり、`local-demo` / `static-mock-e2e` の mock zkVM executor は production STARK proof を生成しない
+- `local-proof-development` の dev-mode receipt も production STARK proof ではない
 - 本章の「主な失敗点」は STARK 検証が `success` の局面を前提とする（zkGate の詳細は [検出メカニズム](detection-mechanism.md) を参照）
 
 `tamperMode` は、シナリオ変更を zkVM 入力へ反映するかどうかを決めます。
@@ -48,6 +45,19 @@ flowchart TD
   C --> E[zkVM 実行]
   D --> E
 ```
+
+## シナリオ一覧表
+
+| シナリオ | 類型         | tamperMode | zkVM 入力             |
+| -------- | ------------ | ---------- | --------------------- |
+| S0       | 正常         | `none`     | 元の 64 票            |
+| S1       | 除外         | `input`    | 63 票（ユーザー除外） |
+| S2       | 主張改ざん   | `claim`    | 元の 64 票            |
+| S3       | 除外         | `input`    | 63 票（ボット除外）   |
+| S4       | 主張改ざん   | `claim`    | 元の 64 票            |
+| S5       | ランダム除外 | `input`    | 63 票（通常）         |
+
+シナリオ別に失敗するチェックは [検出メカニズム > シナリオ別の主な失敗チェック](detection-mechanism.md#シナリオ別の主な失敗チェックstark-解決後) を参照してください。
 
 ## S0: 正常（改ざんなし）
 
@@ -71,11 +81,7 @@ flowchart TD
 | claimed と verified | 一致（どちらも 63 票入力ベース）                               |
 | ジャーナル統計      | `missingSlots=1`, `invalidPresentedSlots=0`, `excludedSlots=1` |
 
-### S1 の検出
-
-- 掲示板上のユーザー票エントリは残る
-- 検出は主に完全性チェック（`excludedSlots > 0`）
-- ビットマップ証明が利用可能なら `counted_my_vote_included` でも検出可能
+失敗するチェックは [検出メカニズム](detection-mechanism.md#シナリオ別の主な失敗チェックstark-解決後) を参照してください。
 
 ## S2: ユーザー票に関する主張集計の改ざん
 
@@ -90,11 +96,7 @@ zkVM には元の 64 票を渡します。
 | `excludedSlots`     | 0（通常）                                  |
 | `inputCommitment`   | zkVM 入力由来のため通常は一致              |
 
-### S2 の検出
-
-- 「票の中身を zkVM 入力で差し替える」実装ではない
-- レシートや STARK 証明は通常どおり有効
-- 検出の主因は `counted_tally_consistent` の失敗
+失敗するチェックは [検出メカニズム](detection-mechanism.md#s2s4-の主張集計改ざん) を参照してください。
 
 ## S3: ボット票の除外
 
@@ -125,10 +127,7 @@ zkVM 入力は元の 64 票のままです。
 | `excludedSlots`     | 0（通常）                                      |
 | `inputCommitment`   | zkVM 入力由来のため通常は一致                  |
 
-### S4 の検出
-
-- S2 と同様に、改ざん対象は `tally.counts` 側
-- 検出の主因は `counted_tally_consistent` の失敗
+S2 と同様に、改ざん対象は `tally.counts` 側です。失敗するチェックは [検出メカニズム](detection-mechanism.md#s2s4-の主張集計改ざん) を参照してください。
 
 ## S5: ランダムな票の除外
 
@@ -139,7 +138,7 @@ zkVM 入力は元の 64 票のままです。
 
 - `tamperMode` は常に `input` のため、zkVM 入力は常に `modifiedVotes` が使われる
 - シナリオ変更は `IGNORED` として記録され、`ignoredCount=1`, `recountedCount=0` になる
-- 元の掲示板インデックスは保存されるため、検出は主に `missingSlots=1` と `excludedSlots=1` による完全性違反になる
+- 元の掲示板インデックスは保存される（失敗するチェックは [検出メカニズム](detection-mechanism.md#s5-の除外処理) を参照）
 
 | 項目           | 値                                                             |
 | -------------- | -------------------------------------------------------------- |
@@ -148,23 +147,12 @@ zkVM 入力は元の 64 票のままです。
 | シナリオ変更   | ランダムに選ばれた 1 票を `IGNORED`                            |
 | ジャーナル統計 | `missingSlots=1`, `invalidPresentedSlots=0`, `excludedSlots=1` |
 
-## シナリオ一覧表
-
-| シナリオ | 類型         | tamperMode | zkVM 入力             | 主な失敗点（STARK 解決後） |
-| -------- | ------------ | ---------- | --------------------- | -------------------------- |
-| S0       | 正常         | `none`     | 元の 64 票            | なし                       |
-| S1       | 除外         | `input`    | 63 票（ユーザー除外） | `excludedSlots > 0`        |
-| S2       | 主張改ざん   | `claim`    | 元の 64 票            | claimed ≠ verified         |
-| S3       | 除外         | `input`    | 63 票（ボット除外）   | `excludedSlots > 0`        |
-| S4       | 主張改ざん   | `claim`    | 元の 64 票            | claimed ≠ verified         |
-| S5       | ランダム除外 | `input`    | 63 票（通常）         | `excludedSlots > 0`        |
-
 ## ジャーナル統計の扱い（sync / async 共通）
 
 現行実装では、`missingSlots` / `invalidPresentedSlots` / `excludedSlots` / `validVotes` などのジャーナル統計は、sync / async いずれも **zkVM が返した proof-derived な値をそのまま使います**。
 
 - sync / async いずれも、finalize 後にジャーナル統計を上書きしない
-- async finalize はコールバックで `bundle.zip` から復元した `journal` をそのまま使う
+- target async finalize は finalization writer が S3 の `bundle.zip` から復元した `journal` をそのまま使う
 
 シナリオ由来の `ignoredCount` / `recountedCount` / `claimedCounts` は presentation 用であり、`journal` の統計値を書き換えません。
 
@@ -188,4 +176,4 @@ flowchart TB
   H --> G
 ```
 
-<!-- source: packages/domain/src/lib/scenarios/processor.ts, packages/domain/src/lib/finalize/scenario-application.ts, packages/application/src/finalize/usecases/finalize-session.ts, packages/application/src/finalize/usecases/finalize-sync.ts, packages/application/src/finalize/finalization-result.ts, apps/api/src/server/api/handlers/finalize.ts, infra/lambdas/finalization-writer/handler.ts, apps/web/src/mock-api/fetcher.ts, .env.local.example -->
+<!-- source: packages/api-contract/src/routes/inventory.ts, packages/runtime-config/src/env/runtimeProfile.ts, packages/domain/src/lib/scenarios/processor.ts, packages/domain/src/lib/finalize/scenario-application.ts, packages/application/src/finalize/usecases/finalize-session.ts, packages/application/src/finalize/usecases/finalize-sync.ts, packages/application/src/finalize/finalization-result.ts, packages/node-adapters/src/zkvm/executor.ts, apps/api/src/server/api/handlers/finalize.ts, infra/lambdas/finalization-writer/handler.ts, packages/aws-adapters/src/finalize/async-prover-artifacts.ts, apps/web/src/mock-api/fixtures.ts, apps/web/src/mock-api/handlers.ts, .env.local.example -->

@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 
 /**
- * Fixture generator for zkVM host inputs (Phase 8 structure).
+ * Fixture generator for current zkVM host inputs.
  *
  * Produces two JSON fixtures:
  *  - test-valid.json: Fully valid votes that should pass zkVM verification
@@ -10,13 +10,14 @@
 
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
 import { serializeZkvmAggregatorInput } from '@stark-ballot/zkvm-contract/zkvm/host-io';
 import type { ZkVMInput, VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { asUnixTimestampMillis, computeCommitment, computeSTHDigest } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { generateElectionConfigHash } from '@stark-ballot/test-support/testing/test-helpers';
-import { addHexPrefix } from '@stark-ballot/domain/utils/hex';
+import { addHexPrefix } from '@stark-ballot/crypto-primitives';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -25,7 +26,7 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   return value;
 }
 
-const OUTPUT_DIR = path.resolve(__dirname, '../../zkvm/test-data');
+const OUTPUT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../zkvm/test-data');
 
 type HexString = `0x${string}`;
 

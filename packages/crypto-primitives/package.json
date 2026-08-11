@@ -1,0 +1,19 @@
+{
+  "name": "@stark-ballot/crypto-primitives",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec eslint packages/crypto-primitives",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/crypto-primitives",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@noble/hashes": "catalog:crypto-testing"
+  },
+  "devDependencies": {
+    "vitest": "catalog:testing"
+  }
+}

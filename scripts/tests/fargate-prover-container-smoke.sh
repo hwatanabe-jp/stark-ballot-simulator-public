@@ -55,12 +55,40 @@ docker run "${container_posture[@]}" \
     done
   '
 
-docker run "${container_posture[@]}" \
-  --mount type=bind,src="$fixture_dir",dst=/input,readonly \
-  --env HOST_BIN=/bin/true \
-  --env INPUT_PATH=/input/test-fixture-valid.json \
-  --env TARGET_AWS_RUNTIME=0 \
-  "$image_uri"
+success_probe_output=""
+if ! success_probe_output="$(
+  docker run "${container_posture[@]}" \
+    --mount type=bind,src="$fixture_dir",dst=/input,readonly \
+    --env HOST_BIN=/bin/true \
+    --env INPUT_PATH=/input/test-fixture-valid.json \
+    --env RUNTIME_PROFILE=local-proof-production \
+    "$image_uri" 2>&1
+)"; then
+  echo "The prover successful stub-host probe failed." >&2
+  printf '%s\n' "$success_probe_output" >&2
+  exit 1
+fi
+
+expected_no_artifact_warning='[WARN] No output artifacts detected'
+expected_warning_count="$(printf '%s\n' "$success_probe_output" | grep -Fc "$expected_no_artifact_warning" || true)"
+warning_count="$(printf '%s\n' "$success_probe_output" | grep -Fc '[WARN]' || true)"
+if [[ "$expected_warning_count" != "1" ]]; then
+  echo "The prover successful stub-host probe expected exactly one no-artifact warning." >&2
+  printf '%s\n' "$success_probe_output" >&2
+  exit 1
+fi
+if [[ "$warning_count" != "$expected_warning_count" ]]; then
+  echo "The prover successful stub-host probe emitted unexpected warning output." >&2
+  printf '%s\n' "$success_probe_output" >&2
+  exit 1
+fi
+
+sanitized_success_probe_output="$(
+  printf '%s\n' "$success_probe_output" | grep -Fv "$expected_no_artifact_warning" || true
+)"
+if [[ -n "$sanitized_success_probe_output" ]]; then
+  printf '%s\n' "$sanitized_success_probe_output"
+fi
 
 failure_output_dir="$(mktemp -d /tmp/fargate-prover-container-smoke.XXXXXX)"
 cleanup() {
@@ -78,17 +106,51 @@ trap cleanup EXIT
 # The candidate runs as UID 10001, while CodeBuild creates the host bind as root.
 chmod 0733 "$failure_output_dir"
 
-if docker run "${container_posture[@]}" \
-  --mount type=bind,src="$fixture_dir",dst=/input,readonly \
-  --mount type=bind,src="$failure_output_dir",dst=/var/task/output \
-  --env HOST_BIN=/bin/false \
-  --env INPUT_PATH=/input/test-fixture-valid.json \
-  --env OUTPUT_DIR=/var/task/output \
-  --env TARGET_AWS_RUNTIME=0 \
-  "$image_uri"; then
+failure_probe_output=""
+set +e
+failure_probe_output="$(
+  docker run "${container_posture[@]}" \
+    --mount type=bind,src="$fixture_dir",dst=/input,readonly \
+    --mount type=bind,src="$failure_output_dir",dst=/var/task/output \
+    --env HOST_BIN=/bin/false \
+    --env INPUT_PATH=/input/test-fixture-valid.json \
+    --env OUTPUT_DIR=/var/task/output \
+    --env RUNTIME_PROFILE=local-proof-production \
+    "$image_uri" 2>&1
+)"
+failure_probe_status="$?"
+set -e
+if (( failure_probe_status == 0 )); then
   echo "The prover failure-marker probe unexpectedly succeeded." >&2
+  printf '%s\n' "$failure_probe_output" >&2
   exit 1
 fi
+
+expected_prover_error='[ERROR] zkVM execution failed with exit code 1'
+expected_error_count="$(printf '%s\n' "$failure_probe_output" | grep -Fc "$expected_prover_error" || true)"
+error_count="$(printf '%s\n' "$failure_probe_output" | grep -Fc '[ERROR]' || true)"
+warning_count="$(printf '%s\n' "$failure_probe_output" | grep -Fc '[WARN]' || true)"
+structured_error_count="$(printf '%s\n' "$failure_probe_output" | grep -Fc '"level":"error"' || true)"
+structured_prover_error_count="$(
+  printf '%s\n' "$failure_probe_output" | grep -Fc '"result":"error","category":"prover_execution"' || true
+)"
+structured_warning_count="$(printf '%s\n' "$failure_probe_output" | grep -Fc '"level":"warn"' || true)"
+if [[ "$expected_error_count" != "1" ]]; then
+  echo "The prover failure-marker probe expected exactly one prover execution error." >&2
+  printf '%s\n' "$failure_probe_output" >&2
+  exit 1
+fi
+if [[ "$structured_error_count" != "1" || "$structured_prover_error_count" != "1" ]]; then
+  echo "The prover failure-marker probe expected exactly one structured prover error summary." >&2
+  printf '%s\n' "$failure_probe_output" >&2
+  exit 1
+fi
+if [[ "$error_count" != "$expected_error_count" || "$warning_count" != "0" || "$structured_warning_count" != "0" ]]; then
+  echo "The prover failure-marker probe emitted unexpected warning or error output." >&2
+  printf '%s\n' "$failure_probe_output" >&2
+  exit 1
+fi
+echo "Prover failure-marker probe produced the expected diagnostics and marker."
 
 failure_marker_path="${failure_output_dir}/failure-marker.json"
 if [[ ! -f "$failure_marker_path" ]]; then

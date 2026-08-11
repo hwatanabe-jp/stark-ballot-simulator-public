@@ -5,11 +5,16 @@
  */
 
 import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
-import { executeMockZkVM, shouldUseMockZkVM } from './mock-executor';
-import { assertZkvmModeAllowed, resolveZkvmMode } from './zkvm-mode';
+import { executeMockZkVM } from './mock-executor';
 import { executeZkVM } from './executor';
 import type { ZkVMExecutionResult } from '@stark-ballot/zkvm-contract/zkvm/host-io';
 import { logger } from './logger';
+
+export type ZkVMProofProfile =
+  | { readonly executor: 'mock'; readonly evidence: 'mock' }
+  | { readonly executor: 'risc0'; readonly evidence: 'development' | 'production' };
+
+export type Risc0ProofProfile = Extract<ZkVMProofProfile, { readonly executor: 'risc0' }>;
 
 export interface ZkVMExecutor {
   execute: (input: ZkVMInput) => Promise<ZkVMExecutionResult>;
@@ -17,20 +22,11 @@ export interface ZkVMExecutor {
   version: string;
 }
 
-export interface ZkVMConfig {
-  useMock?: boolean;
-  verbose?: boolean;
-}
-
 /**
- * Create a zkVM v2 executor based on configuration
+ * Create a zkVM executor from the resolved runtime proof profile.
  */
-export function createZkVMExecutor(config?: ZkVMConfig): Promise<ZkVMExecutor> {
-  const useMock = config?.useMock ?? shouldUseMockZkVM();
-  const mode = resolveZkvmMode({ useMock });
-  assertZkvmModeAllowed(mode);
-
-  if (useMock) {
+export function createZkVMExecutor(proofProfile: ZkVMProofProfile): Promise<ZkVMExecutor> {
+  if (proofProfile.executor === 'mock') {
     logger.info('[zkVM] Using mock executor for fast testing');
     return Promise.resolve({
       execute: executeMockZkVM,
@@ -40,39 +36,21 @@ export function createZkVMExecutor(config?: ZkVMConfig): Promise<ZkVMExecutor> {
   }
 
   logger.info('[zkVM] Using real zkVM executor with STARK proof generation');
-  if (process.env['RISC0_DEV_MODE'] === '1') {
-    logger.warn('[zkVM] WARNING: RISC0_DEV_MODE=1 - No real STARK proofs will be generated!');
+  if (proofProfile.evidence === 'development') {
+    logger.warn('[zkVM] WARNING: development evidence selected - No real STARK proofs will be generated!');
   }
 
   return Promise.resolve({
-    execute: executeZkVM,
+    execute: (input) => executeZkVM(input, proofProfile),
     type: 'real',
     version: '1.0',
   });
 }
 
 /**
- * Default executor instance (cached)
- * Automatically selects mock or real based on environment
+ * Create the default executor for the already-resolved proof profile.
  */
-let defaultExecutor: ZkVMExecutor | null = null;
-let lastUseMockZkVM: string | undefined = undefined;
-let lastRisc0DevMode: string | undefined = undefined;
-
-export async function getDefaultExecutor(): Promise<ZkVMExecutor> {
-  // Check if environment changed and recreate executor if needed
-  const currentUseMock = process.env['USE_MOCK_ZKVM'];
-  const currentRiscMode = process.env['RISC0_DEV_MODE'];
-
-  if (defaultExecutor && lastUseMockZkVM === currentUseMock && lastRisc0DevMode === currentRiscMode) {
-    return defaultExecutor;
-  }
-
-  // Environment changed or first time, create new executor
-  logger.info('[zkVM] Creating executor with current environment settings');
-  defaultExecutor = await createZkVMExecutor();
-  lastUseMockZkVM = currentUseMock;
-  lastRisc0DevMode = currentRiscMode;
-
-  return defaultExecutor;
+export function getDefaultExecutor(proofProfile: ZkVMProofProfile): Promise<ZkVMExecutor> {
+  logger.info('[zkVM] Creating executor from resolved runtime profile');
+  return createZkVMExecutor(proofProfile);
 }

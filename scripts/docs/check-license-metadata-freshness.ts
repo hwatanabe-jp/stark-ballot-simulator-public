@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -23,6 +24,64 @@ type PnpmLockPackages = {
   required: Set<string>;
   directProduction: Set<string>;
 };
+
+type LicenseArtifactManifestEntry = {
+  path: string;
+  mustExist: boolean;
+  mustBeTracked: boolean;
+  mustNotBeIgnored: boolean;
+};
+
+export const LICENSE_ARTIFACT_MANIFEST: readonly LicenseArtifactManifestEntry[] = [
+  {
+    path: 'docs/licenses/cargo-licenses-verifier.csv',
+    mustExist: true,
+    mustBeTracked: true,
+    mustNotBeIgnored: true,
+  },
+  {
+    path: 'docs/licenses/cargo-licenses-zkvm.csv',
+    mustExist: true,
+    mustBeTracked: true,
+    mustNotBeIgnored: true,
+  },
+  {
+    path: 'docs/licenses/cargo-metadata-verifier.json',
+    mustExist: true,
+    mustBeTracked: true,
+    mustNotBeIgnored: true,
+  },
+  {
+    path: 'docs/licenses/cargo-metadata-zkvm.json',
+    mustExist: true,
+    mustBeTracked: true,
+    mustNotBeIgnored: true,
+  },
+  {
+    path: 'docs/licenses/pnpm-licenses-all.csv',
+    mustExist: true,
+    mustBeTracked: true,
+    mustNotBeIgnored: true,
+  },
+  {
+    path: 'docs/licenses/pnpm-licenses-all.json',
+    mustExist: true,
+    mustBeTracked: true,
+    mustNotBeIgnored: true,
+  },
+  {
+    path: 'docs/licenses/pnpm-licenses-prod.csv',
+    mustExist: true,
+    mustBeTracked: true,
+    mustNotBeIgnored: true,
+  },
+  {
+    path: 'docs/licenses/pnpm-licenses-prod.json',
+    mustExist: true,
+    mustBeTracked: true,
+    mustNotBeIgnored: true,
+  },
+];
 
 const CARGO_LANES = [
   {
@@ -70,6 +129,62 @@ function readJsonFile(repoRoot: string, relativePath: string): unknown {
   } catch (error: unknown) {
     throw new Error(`${relativePath} is not valid JSON: ${describeError(error)}`);
   }
+}
+
+function hasOwnGitWorktree(repoRoot: string): boolean {
+  const result = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  return result.status === 0 && path.resolve(result.stdout.trim()) === repoRoot;
+}
+
+function gitPathStatus(repoRoot: string, args: readonly string[]): number | null {
+  const result = spawnSync('git', args, {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  return result.status;
+}
+
+function auditLicenseArtifactManifest(repoRoot: string): string[] {
+  const findings: string[] = [];
+  const presentArtifacts = new Set<string>();
+
+  for (const artifact of LICENSE_ARTIFACT_MANIFEST) {
+    const absolutePath = path.join(repoRoot, artifact.path);
+    if (artifact.mustExist && (!existsSync(absolutePath) || !statSync(absolutePath).isFile())) {
+      findings.push(`${artifact.path} must exist as a generated license artifact`);
+      continue;
+    }
+    if (existsSync(absolutePath) && statSync(absolutePath).isFile()) {
+      presentArtifacts.add(artifact.path);
+    }
+  }
+
+  if (!hasOwnGitWorktree(repoRoot)) {
+    if (!existsSync(path.join(repoRoot, '.public-repository'))) {
+      findings.push('generated license artifact tracking could not be verified outside a Git worktree');
+    }
+    return findings;
+  }
+
+  for (const artifact of LICENSE_ARTIFACT_MANIFEST) {
+    if (!presentArtifacts.has(artifact.path)) {
+      continue;
+    }
+    if (artifact.mustBeTracked && gitPathStatus(repoRoot, ['ls-files', '--error-unmatch', '--', artifact.path]) !== 0) {
+      findings.push(`${artifact.path} must be tracked by Git`);
+    }
+    if (
+      artifact.mustNotBeIgnored &&
+      gitPathStatus(repoRoot, ['check-ignore', '--no-index', '--quiet', '--', artifact.path]) === 0
+    ) {
+      findings.push(`${artifact.path} must not be ignored by Git`);
+    }
+  }
+
+  return findings;
 }
 
 function parseTomlString(value: string, location: string): string {
@@ -640,6 +755,7 @@ function auditSafely(label: string, audit: () => string[]): string[] {
 export function checkLicenseMetadataFreshness(repoRoot: string): string[] {
   const resolvedRoot = path.resolve(repoRoot);
   return [
+    ...auditLicenseArtifactManifest(resolvedRoot),
     ...CARGO_LANES.flatMap((lane) => auditSafely(lane.label, () => auditCargoLane(resolvedRoot, lane))),
     ...auditSafely('pnpm license metadata', () => auditPnpmMetadata(resolvedRoot)),
   ];

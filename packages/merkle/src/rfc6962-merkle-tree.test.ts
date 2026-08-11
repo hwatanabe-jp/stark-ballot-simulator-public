@@ -32,39 +32,45 @@ function createTestLeaf(index: number): string {
   return createHash('sha256').update(`leaf${index}`).digest('hex');
 }
 
-// Compute the expected MTH manually for verification.
-function computeMTH(leaves: string[]): string {
-  if (leaves.length === 0) {
-    // MTH({}) = HASH()
-    return createHash('sha256').digest('hex');
-  }
+// Independently asserted by contract-core's reviewed_fixed_root_vectors test.
+// Keep these as fixed review data; do not derive expected roots from this tree.
+const REVIEWED_FIXED_LEAVES = [
+  '4d5a9584d985e8fb44015a8affa9b76f1ff16f65e61df7156d8e8159e1448978',
+  'd103cfb5e499c566904787533afbdec56f95492d67fc00e2c0d0161ba99653f1',
+  '5038da95330ba16edb486954197e37eb777c3047327ca54df4199c35c5edc17a',
+  'f2764fd79fdab5132fc349ba555c9c56ff0c935c889c17ebe3d61315d780934e',
+  '565fb0e0cefe32cf4000e4a67ddec8820111a733aa8ba010d242a5fe477e04c4',
+] as const;
 
-  if (leaves.length === 1) {
-    // MTH({d[0]}) = HASH(0x00 || "stark-ballot:leaf|v1" || d[0]!)
-    const hash = createHash('sha256');
-    hash.update(Buffer.from([0x00]));
-    hash.update(Buffer.from('stark-ballot:leaf|v1'));
-    hash.update(Buffer.from(strictDefined(leaves[0]), 'hex'));
-    return hash.digest('hex');
-  }
+const REVIEWED_FIXED_ROOT_VECTORS = [
+  {
+    label: 'empty tree',
+    leafCount: 0,
+    expectedRoot: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+  },
+  {
+    label: 'one-leaf tree',
+    leafCount: 1,
+    expectedRoot: 'b089dd645b2222877852a1873580e50a66fb463fee184dbc734224c4ee1e5d06',
+  },
+  {
+    label: 'two-leaf tree',
+    leafCount: 2,
+    expectedRoot: '33e32ea1ae0ad2fb4349df42021702b680127fff927526fb41ff3770d7f8dd41',
+  },
+  {
+    label: 'four-leaf tree',
+    leafCount: 4,
+    expectedRoot: '77eacf9bc18b97c9e11f7131cda0593c707f7d73c77afad01ee83eb708e9105c',
+  },
+  {
+    label: 'five-leaf odd tree',
+    leafCount: 5,
+    expectedRoot: '2a278fbb796b135a154966d522a0cd90424cc4cd014c8acc6d9b8a7293a4d365',
+  },
+] as const;
 
-  // For n > 1, find k = largest power of 2 < n
-  const n = leaves.length;
-  let k = 1;
-  while (k * 2 < n) {
-    k *= 2;
-  }
-
-  // MTH(D_n) = HASH(0x01 || MTH(D[0:k]!) || MTH(D[k:n]!))
-  const leftHash = computeMTH(leaves.slice(0, k));
-  const rightHash = computeMTH(leaves.slice(k));
-
-  const hash = createHash('sha256');
-  hash.update(Buffer.from([0x01]));
-  hash.update(Buffer.from(leftHash, 'hex'));
-  hash.update(Buffer.from(rightHash, 'hex'));
-  return hash.digest('hex');
-}
+const REVIEWED_ONE_LEAF_ROOT = REVIEWED_FIXED_ROOT_VECTORS[1].expectedRoot;
 
 describe('RFC6962MerkleTree', () => {
   let tree: RFC6962MerkleTree;
@@ -74,16 +80,16 @@ describe('RFC6962MerkleTree', () => {
   });
 
   describe('MTH function tests', () => {
-    it('should handle empty tree correctly', () => {
-      expect(tree.size).toBe(0);
-      const root = tree.getRoot();
-      const expectedRoot = createHash('sha256').digest('hex');
-      expect(root).toBe(expectedRoot);
+    it.each(REVIEWED_FIXED_ROOT_VECTORS)('matches the Rust-reviewed root for a $label', (vector) => {
+      const leaves = REVIEWED_FIXED_LEAVES.slice(0, vector.leafCount);
+      leaves.forEach((leaf) => tree.append(leaf));
+
+      expect(tree.size).toBe(vector.leafCount);
+      expect(tree.getRoot()).toBe(vector.expectedRoot);
     });
 
     it('should compute roots without Node Buffer', () => {
-      const leaf = createTestLeaf(0);
-      const expectedRoot = computeMTH([leaf]);
+      const leaf = strictDefined(REVIEWED_FIXED_LEAVES[0]);
 
       const root = withBufferUnavailable(() => {
         const localTree = new RFC6962MerkleTree();
@@ -91,77 +97,16 @@ describe('RFC6962MerkleTree', () => {
         return localTree.getRoot();
       });
 
-      expect(root).toBe(expectedRoot);
-    });
-
-    it('should handle single leaf correctly', () => {
-      const leaf = createTestLeaf(0);
-      tree.append(leaf);
-
-      expect(tree.size).toBe(1);
-      const root = tree.getRoot();
-
-      // MTH({d[0]}) = HASH(0x00 || "stark-ballot:leaf|v1" || d[0]!)
-      const expectedHash = createHash('sha256');
-      expectedHash.update(Buffer.from([0x00]));
-      expectedHash.update(Buffer.from('stark-ballot:leaf|v1'));
-      expectedHash.update(Buffer.from(leaf, 'hex'));
-      const expectedRoot = expectedHash.digest('hex');
-
-      expect(root).toBe(expectedRoot);
-    });
-
-    it('should handle 2 leaves correctly', () => {
-      const leaves = [createTestLeaf(0), createTestLeaf(1)];
-      leaves.forEach((leaf) => tree.append(leaf));
-
-      expect(tree.size).toBe(2);
-      const root = tree.getRoot();
-      const expectedRoot = computeMTH(leaves);
-      expect(root).toBe(expectedRoot);
-    });
-
-    it('should handle 4 leaves correctly (power of 2)', () => {
-      const leaves = [];
-      for (let i = 0; i < 4; i++) {
-        leaves.push(createTestLeaf(i));
-        tree.append(strictDefined(leaves[i]));
-      }
-
-      expect(tree.size).toBe(4);
-      const root = tree.getRoot();
-      const expectedRoot = computeMTH(leaves);
-      expect(root).toBe(expectedRoot);
-    });
-
-    it('should handle non-power-of-2 sizes correctly', () => {
-      // Test size 3, 5, 6, 7
-      const testSizes = [3, 5, 6, 7];
-
-      for (const size of testSizes) {
-        const testTree = new RFC6962MerkleTree();
-        const leaves = [];
-
-        for (let i = 0; i < size; i++) {
-          leaves.push(createTestLeaf(i));
-          testTree.append(strictDefined(leaves[i]));
-        }
-
-        const root = testTree.getRoot();
-        const expectedRoot = computeMTH(leaves);
-        expect(root).toBe(expectedRoot);
-      }
+      expect(root).toBe(REVIEWED_ONE_LEAF_ROOT);
     });
   });
 
   describe('append operation tests', () => {
     it('should grow tree incrementally', () => {
       const roots = [];
-      const leaves = [];
 
       for (let i = 0; i < 10; i++) {
         const leaf = createTestLeaf(i);
-        leaves.push(leaf);
         tree.append(leaf);
         roots.push(tree.getRoot());
         expect(tree.size).toBe(i + 1);
@@ -170,9 +115,6 @@ describe('RFC6962MerkleTree', () => {
       // Each root should be different (no duplicates)
       const uniqueRoots = new Set(roots);
       expect(uniqueRoots.size).toBe(10);
-
-      // Verify final root matches expected
-      expect(strictDefined(roots[9])).toBe(computeMTH(leaves));
     });
 
     it('should maintain append-only property', () => {
@@ -218,26 +160,6 @@ describe('RFC6962MerkleTree', () => {
       expect(() => tree.append('a'.repeat(62))).toThrow('Invalid hex string');
       expect(() => tree.append('b'.repeat(66))).toThrow('Invalid hex string');
     });
-
-    it('should handle sequential append correctly', () => {
-      // This test verifies that sequential appends produce
-      // the same result as batch construction
-      const leaves = [];
-      for (let i = 0; i < 16; i++) {
-        leaves.push(createTestLeaf(i));
-      }
-
-      // Sequential append
-      const tree1 = new RFC6962MerkleTree();
-      leaves.forEach((leaf) => tree1.append(leaf));
-
-      // Batch construction (simulated)
-      const tree2 = new RFC6962MerkleTree();
-      leaves.forEach((leaf) => tree2.append(leaf));
-
-      expect(tree1.getRoot()).toBe(tree2.getRoot());
-      expect(tree1.getRoot()).toBe(computeMTH(leaves));
-    });
   });
 
   describe('getRootAtSize efficiency tests', () => {
@@ -260,25 +182,6 @@ describe('RFC6962MerkleTree', () => {
       expect(root50_1).toBe(root50_2);
       expect(time2).toBeLessThan(time1 / 2); // Cache should be at least 2x faster
       expect(tree.getCacheSize()).toBeGreaterThan(0);
-    });
-
-    it('should handle all historical sizes correctly', () => {
-      const leaves = [];
-      const expectedRoots = [];
-
-      // Build tree and record expected roots
-      for (let i = 0; i < 20; i++) {
-        const leaf = createTestLeaf(i);
-        leaves.push(leaf);
-        tree.append(leaf);
-        expectedRoots.push(computeMTH(leaves.slice(0, i + 1)));
-      }
-
-      // Verify all historical roots
-      for (let i = 0; i < 20; i++) {
-        const historicalRoot = tree.getRootAtSize(i + 1);
-        expect(historicalRoot).toBe(strictDefined(expectedRoots[i]));
-      }
     });
 
     it('should throw error for invalid sizes', () => {

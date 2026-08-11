@@ -12,8 +12,7 @@
  */
 
 import { utf8ToBytes } from '@noble/hashes/utils.js';
-import { hexToBytesStrict, sha256Hex } from './shared/crypto';
-import { isValidHexString, normalizeHexString } from './shared/hex';
+import { hexToBytesStrict, isValidHexString, normalizeHexString, sha256Hex } from '@stark-ballot/crypto-primitives';
 import type { ConsistencyProof } from './consistency-proof';
 
 interface CacheStats {

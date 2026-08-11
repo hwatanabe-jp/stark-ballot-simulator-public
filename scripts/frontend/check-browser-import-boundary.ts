@@ -1,130 +1,23 @@
 import { promises as fs } from 'node:fs';
 import { builtinModules } from 'node:module';
 import path from 'node:path';
+import {
+  deriveViteAliases,
+  findRepositoryRoot,
+  loadRepositoryWorkspaceMetadata,
+} from '../../tooling/workspace/workspace-metadata';
 
 const DEFAULT_ENTRYPOINT = 'apps/web/src/main.tsx';
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
 const INTENTIONAL_ASSET_EXTENSIONS = ['.css', '.json'];
-const ALIAS_ROOTS: Array<{ prefix: string; root: string }> = [
-  { prefix: '@stark-ballot/api-contract/api-contract', root: 'packages/api-contract/src/api-contract' },
-  { prefix: '@stark-ballot/api-contract/errors', root: 'packages/api-contract/src/errors' },
-  { prefix: '@stark-ballot/api-contract/types/api', root: 'packages/api-contract/src/types/api' },
-  { prefix: '@stark-ballot/api-contract/validation', root: 'packages/api-contract/src/validation' },
-  { prefix: '@stark-ballot/merkle', root: 'packages/merkle/src' },
-  { prefix: '@stark-ballot/runtime-config/env', root: 'packages/runtime-config/src/env' },
-  { prefix: '@stark-ballot/validation', root: 'packages/validation/src' },
-  {
-    prefix: '@stark-ballot/verification/bitmap-proof-types',
-    root: 'packages/verification/src/verification/bitmap-proof-types.ts',
-  },
-  { prefix: '@stark-ballot/verification/bitmap-root', root: 'packages/verification/src/verification/bitmap-root.ts' },
-  {
-    prefix: '@stark-ballot/verification/bitmap-verifier',
-    root: 'packages/verification/src/verification/bitmap-verifier.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/bundle',
-    root: 'packages/verification/src/verification/verification-bundle.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/check-evaluator',
-    root: 'packages/verification/src/verification/engine/evaluate-checks.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/check-results',
-    root: 'packages/verification/src/verification/build-verification-checks.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/checks',
-    root: 'packages/verification/src/verification/verification-checks.ts',
-  },
-  { prefix: '@stark-ballot/verification/engine-types', root: 'packages/verification/src/verification/engine/types.ts' },
-  {
-    prefix: '@stark-ballot/verification/excluded-count',
-    root: 'packages/verification/src/verification/excluded-count.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/fail-closed-status',
-    root: 'packages/verification/src/verification/fail-closed-status.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/image-id',
-    root: 'packages/verification/src/verification/expected-image-id.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/image-id-policy',
-    root: 'packages/verification/src/verification/image-id-policy.js',
-  },
-  {
-    prefix: '@stark-ballot/verification/image-id-types',
-    root: 'packages/verification/src/verification/image-id-types.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/included-bitmap-artifact',
-    root: 'packages/verification/src/verification/included-bitmap-artifact.ts',
-  },
-  { prefix: '@stark-ballot/verification/merkle', root: 'packages/verification/src/verification/merkle.ts' },
-  { prefix: '@stark-ballot/verification/merkle', root: 'packages/verification/src/merkle' },
-  {
-    prefix: '@stark-ballot/verification/public-audit-artifacts',
-    root: 'packages/verification/src/verification/public-audit-artifacts.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/public-input',
-    root: 'packages/verification/src/verification/public-input-contract.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/public-result',
-    root: 'packages/verification/src/verification/public-verification-result.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/receipt-normalizer',
-    root: 'packages/verification/src/verification/receipt-normalizer.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/seen-bitmap-artifact',
-    root: 'packages/verification/src/verification/seen-bitmap-artifact.ts',
-  },
-  { prefix: '@stark-ballot/verification/shared', root: 'packages/verification/src/shared' },
-  {
-    prefix: '@stark-ballot/verification/stage-evaluators',
-    root: 'packages/verification/src/verification/engine/stage-evaluators.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/stage-status',
-    root: 'packages/verification/src/verification/engine/derive-stages.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/steps',
-    root: 'packages/verification/src/verification/build-verification-steps.ts',
-  },
-  { prefix: '@stark-ballot/verification/sth-verifier', root: 'packages/verification/src/verification/sth-verifier.ts' },
-  {
-    prefix: '@stark-ballot/verification/summary',
-    root: 'packages/verification/src/verification/verification-summary.ts',
-  },
-  {
-    prefix: '@stark-ballot/verification/tamper-detection',
-    root: 'packages/verification/src/verification/tamperDetection.ts',
-  },
-  { prefix: '@stark-ballot/verification/three-stage', root: 'packages/verification/src/verification/three-stage.ts' },
-  { prefix: '@stark-ballot/verification/types', root: 'packages/verification/src/verification/types.ts' },
-  { prefix: '@stark-ballot/zkvm-contract/zkvm', root: 'packages/zkvm-contract/src/zkvm' },
-  { prefix: '@stark-ballot/web/api', root: 'apps/web/src/api' },
-  { prefix: '@stark-ballot/web/components', root: 'apps/web/src/components' },
-  { prefix: '@stark-ballot/web/finalize', root: 'apps/web/src/finalize' },
-  { prefix: '@stark-ballot/web/hooks', root: 'apps/web/src/hooks' },
-  { prefix: '@stark-ballot/web/i18n', root: 'apps/web/src/i18n' },
-  { prefix: '@stark-ballot/web/knowledge', root: 'apps/web/src/knowledge' },
-  { prefix: '@stark-ballot/web/mock-api', root: 'apps/web/src/mock-api' },
-  { prefix: '@stark-ballot/web/navigation', root: 'apps/web/src/navigation' },
-  { prefix: '@stark-ballot/web/routes', root: 'apps/web/src/routes' },
-  { prefix: '@stark-ballot/web/session', root: 'apps/web/src/session' },
-  { prefix: '@stark-ballot/web/shared', root: 'apps/web/src/shared' },
-  { prefix: '@stark-ballot/web/styles', root: 'apps/web/src/styles' },
-  { prefix: '@stark-ballot/web/verification', root: 'apps/web/src/verification' },
-  { prefix: '@stark-ballot/web/vote', root: 'apps/web/src/vote' },
-];
+const WORKSPACE_METADATA_ROOT = findRepositoryRoot(import.meta.dirname);
+const WORKSPACE_ALIAS_SHAPES = deriveViteAliases(
+  loadRepositoryWorkspaceMetadata(WORKSPACE_METADATA_ROOT),
+  WORKSPACE_METADATA_ROOT,
+).map(({ find, replacement }) => ({
+  find,
+  repositoryRelativeReplacement: path.relative(WORKSPACE_METADATA_ROOT, replacement),
+}));
 const DENIED_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
   { label: 'Next runtime import', pattern: /from ['"]next\/(?:navigation|link|dynamic|font|headers|server)['"]/ },
   { label: 'server import', pattern: /from ['"]@\/server\// },
@@ -140,6 +33,7 @@ const NODE_BUILTIN_MODULES = new Set(
     return [moduleName, normalized, `node:${normalized}`];
   }),
 );
+const BROWSER_SAFE_APPLICATION_SPECIFIERS = new Set(['@stark-ballot/application/finalize/finalization-progress']);
 
 type Finding = {
   file: string;
@@ -185,25 +79,21 @@ function isLocalSpecifier(specifier: string): boolean {
 }
 
 function resolveAliasCandidates(specifier: string, cwd: string): string[] {
-  if (specifier.startsWith('@stark-ballot/')) {
-    const candidates = ALIAS_ROOTS.flatMap(({ prefix, root }) => {
-      if (specifier === prefix) {
-        return candidateRootsForFixture(cwd, root);
-      }
-      if (specifier.startsWith(`${prefix}/`)) {
-        return candidateRootsForFixture(cwd, root).map((candidateRoot) =>
-          path.join(candidateRoot, specifier.slice(prefix.length + 1)),
-        );
-      }
-      return [];
-    });
-    return candidates;
+  if (!specifier.startsWith('@stark-ballot/')) {
+    return [specifier];
   }
-  return [specifier];
-}
 
-function candidateRootsForFixture(cwd: string, root: string): string[] {
-  return [path.join(cwd, root)];
+  return WORKSPACE_ALIAS_SHAPES.flatMap(({ find, repositoryRelativeReplacement }) => {
+    const match = find.exec(specifier);
+    if (match === null) {
+      return [];
+    }
+
+    const wildcard = match[1];
+    const fixtureRelativeReplacement =
+      wildcard === undefined ? repositoryRelativeReplacement : repositoryRelativeReplacement.replace('$1', wildcard);
+    return [path.resolve(cwd, fixtureRelativeReplacement)];
+  });
 }
 
 function extractImportReferences(content: string): ImportReference[] {
@@ -283,11 +173,23 @@ function scanImportSpecifier(filePath: string, specifier: string): Finding[] {
   if (isStoreAliasSpecifier(specifier)) {
     findings.push({ file: filePath, reason: 'store implementation import' });
   }
+  if (isAwsAdapterSpecifier(specifier) && !isStoreAliasSpecifier(specifier)) {
+    findings.push({ file: filePath, reason: 'AWS adapter package import' });
+  }
+  if (isNodeAdapterSpecifier(specifier)) {
+    findings.push({ file: filePath, reason: 'Node adapter package import' });
+  }
   if (specifier.startsWith('@aws-sdk/')) {
     findings.push({ file: filePath, reason: 'AWS SDK import' });
   }
   if (specifier === '@stark-ballot/domain' || specifier.startsWith('@stark-ballot/domain/')) {
     findings.push({ file: filePath, reason: 'domain package import' });
+  }
+  if (
+    (specifier === '@stark-ballot/application' || specifier.startsWith('@stark-ballot/application/')) &&
+    !BROWSER_SAFE_APPLICATION_SPECIFIERS.has(specifier)
+  ) {
+    findings.push({ file: filePath, reason: 'application package import' });
   }
   if (isNodeBuiltinSpecifier(specifier)) {
     findings.push({ file: filePath, reason: 'Node builtin import' });
@@ -308,6 +210,14 @@ function isStoreAliasSpecifier(specifier: string): boolean {
   return specifier.startsWith('@stark-ballot/aws-adapters/store/');
 }
 
+function isAwsAdapterSpecifier(specifier: string): boolean {
+  return specifier === '@stark-ballot/aws-adapters' || specifier.startsWith('@stark-ballot/aws-adapters/');
+}
+
+function isNodeAdapterSpecifier(specifier: string): boolean {
+  return specifier === '@stark-ballot/node-adapters' || specifier.startsWith('@stark-ballot/node-adapters/');
+}
+
 function isServerAliasSpecifier(specifier: string): boolean {
   return specifier === '@stark-ballot/api/server' || specifier.startsWith('@stark-ballot/api/server/');
 }
@@ -323,6 +233,14 @@ function isResolvedImportUnder(cwd: string, resolved: string, root: string): boo
 
 function isResolvedStoreImport(cwd: string, resolved: string): boolean {
   return isResolvedImportUnder(cwd, resolved, 'packages/aws-adapters/src/store');
+}
+
+function isResolvedAwsAdapterImport(cwd: string, resolved: string): boolean {
+  return isResolvedImportUnder(cwd, resolved, 'packages/aws-adapters/src');
+}
+
+function isResolvedNodeAdapterImport(cwd: string, resolved: string): boolean {
+  return isResolvedImportUnder(cwd, resolved, 'packages/node-adapters/src');
 }
 
 function isResolvedServerImport(cwd: string, resolved: string): boolean {
@@ -359,8 +277,9 @@ export async function checkBrowserImportBoundary(options: CheckOptions = {}): Pr
     const content = await fs.readFile(filePath, 'utf-8');
     findings.push(...scanContent(filePath, content));
     for (const { specifier, typeOnly } of extractImportReferences(content)) {
-      findings.push(...scanImportSpecifier(filePath, specifier));
-      if (typeOnly || !isLocalSpecifier(specifier)) {
+      const specifierFindings = scanImportSpecifier(filePath, specifier);
+      findings.push(...specifierFindings);
+      if (specifierFindings.length > 0 || typeOnly || !isLocalSpecifier(specifier)) {
         continue;
       }
 
@@ -368,6 +287,16 @@ export async function checkBrowserImportBoundary(options: CheckOptions = {}): Pr
       if (resolved) {
         if (!isStoreAliasSpecifier(specifier) && isResolvedStoreImport(cwd, resolved)) {
           findings.push({ file: filePath, reason: 'store implementation import' });
+        }
+        if (
+          !isAwsAdapterSpecifier(specifier) &&
+          !isResolvedStoreImport(cwd, resolved) &&
+          isResolvedAwsAdapterImport(cwd, resolved)
+        ) {
+          findings.push({ file: filePath, reason: 'AWS adapter package import' });
+        }
+        if (!isNodeAdapterSpecifier(specifier) && isResolvedNodeAdapterImport(cwd, resolved)) {
+          findings.push({ file: filePath, reason: 'Node adapter package import' });
         }
         if (!isServerAliasSpecifier(specifier) && isResolvedServerImport(cwd, resolved)) {
           findings.push({ file: filePath, reason: 'server import' });

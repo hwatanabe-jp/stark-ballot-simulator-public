@@ -1,13 +1,14 @@
 import { existsSync, realpathSync } from 'node:fs';
 import path from 'node:path';
-import type { AwsPersistedFinalizationResult } from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashKeyPrefixForLogging, hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
+import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
 
 interface LocalBundleIdentity {
   bundlePath: string;
   sessionId: string;
-  executionId: string;
+  finalizationId: string;
   bundleKey?: string;
 }
 
@@ -15,16 +16,14 @@ export interface TrustedLocalBundleReference {
   bundlePath: string;
   reportPath: string;
   sessionId: string;
-  executionId: string;
+  finalizationId: string;
   bundleKey?: string;
 }
 
 interface TrustedLocalBundleOptions {
-  targetAwsRuntime?: boolean;
+  runtimeProfile: ResolvedRuntimeProfile;
   verifierWorkDir?: string;
 }
-
-const SAFE_BUNDLE_SEGMENT = /^[A-Za-z0-9-]+$/;
 
 function resolveVerifierWorkDirForBundleAuthority(configuredWorkDir?: string): string {
   const workDir = configuredWorkDir?.trim();
@@ -35,22 +34,26 @@ function resolveVerifierWorkDirForBundleAuthority(configuredWorkDir?: string): s
   return path.join(/* turbopackIgnore: true */ process.cwd(), '.verifier-bundles');
 }
 
-function resolveScopedVerifierBundlePath(sessionId: string, executionId: string, configuredWorkDir?: string): string {
+function resolveScopedVerifierBundlePath(
+  sessionId: string,
+  finalizationId: string,
+  configuredWorkDir?: string,
+): string {
   const workDir = configuredWorkDir?.trim();
   if (workDir) {
-    return path.join(/* turbopackIgnore: true */ path.resolve(workDir), sessionId, executionId);
+    return path.join(/* turbopackIgnore: true */ path.resolve(workDir), sessionId, finalizationId);
   }
 
-  return path.join(/* turbopackIgnore: true */ process.cwd(), '.verifier-bundles', sessionId, executionId);
+  return path.join(/* turbopackIgnore: true */ process.cwd(), '.verifier-bundles', sessionId, finalizationId);
 }
 
 function resolveTrustedBundleIdentity(
   bundlePath: string | undefined,
   authority: {
-    verificationExecutionId?: string;
+    finalizationId?: string;
     bundleKey?: string;
   },
-  options: TrustedLocalBundleOptions = {},
+  options: TrustedLocalBundleOptions,
 ): LocalBundleIdentity | undefined {
   if (!bundlePath || bundlePath.trim().length === 0) {
     return undefined;
@@ -89,26 +92,26 @@ function resolveTrustedBundleIdentity(
     return undefined;
   }
 
-  const [sessionId, executionId] = segments;
-  if (!sessionId || !executionId) {
+  const [sessionId, finalizationId] = segments;
+  if (!sessionId || !finalizationId) {
     return undefined;
   }
-  if (!isSafeBundleSegment(sessionId) || !isSafeBundleSegment(executionId)) {
+  if (!isSafeVerifierSegment(sessionId) || !isSafeVerifierSegment(finalizationId)) {
     logger.debug('[FinalizationResult] Ignoring local bundle path with unsafe segments', {
       requested_path_hash: hashKeyPrefixForLogging(bundlePath),
       resolved_path_hash: hashKeyPrefixForLogging(resolvedBundlePath),
       session_id_hash: hashSessionIdForLogging(sessionId),
-      executionId,
+      finalization_id: finalizationId,
     });
     return undefined;
   }
 
-  if (authority.verificationExecutionId && authority.verificationExecutionId !== executionId) {
-    logger.debug('[FinalizationResult] Ignoring local bundle path with mismatched execution identity', {
+  if (authority.finalizationId && authority.finalizationId !== finalizationId) {
+    logger.debug('[FinalizationResult] Ignoring local bundle path with mismatched finalization identity', {
       requested_path_hash: hashKeyPrefixForLogging(bundlePath),
       resolved_path_hash: hashKeyPrefixForLogging(resolvedBundlePath),
-      expectedExecutionId: authority.verificationExecutionId,
-      actualExecutionId: executionId,
+      expectedFinalizationId: authority.finalizationId,
+      actualFinalizationId: finalizationId,
     });
     return undefined;
   }
@@ -116,15 +119,15 @@ function resolveTrustedBundleIdentity(
   const expectedBundleIdentity = extractBundleIdentityFromKey(authority.bundleKey);
   if (
     expectedBundleIdentity &&
-    (expectedBundleIdentity.sessionId !== sessionId || expectedBundleIdentity.executionId !== executionId)
+    (expectedBundleIdentity.sessionId !== sessionId || expectedBundleIdentity.finalizationId !== finalizationId)
   ) {
     logger.debug('[FinalizationResult] Ignoring local bundle path with mismatched bundle key identity', {
       requested_path_hash: hashKeyPrefixForLogging(bundlePath),
       resolved_path_hash: hashKeyPrefixForLogging(resolvedBundlePath),
       expected_session_id_hash: hashSessionIdForLogging(expectedBundleIdentity.sessionId),
       actual_session_id_hash: hashSessionIdForLogging(sessionId),
-      expectedExecutionId: expectedBundleIdentity.executionId,
-      actualExecutionId: executionId,
+      expectedFinalizationId: expectedBundleIdentity.finalizationId,
+      actualFinalizationId: finalizationId,
     });
     return undefined;
   }
@@ -139,31 +142,31 @@ function resolveTrustedBundleIdentity(
   return {
     bundlePath: resolvedBundlePath,
     sessionId,
-    executionId,
+    finalizationId,
     ...(expectedBundleIdentity ? { bundleKey: authority.bundleKey } : {}),
   };
 }
 
 export function resolveTrustedLocalBundleReference(
   sessionId: string,
-  result: Pick<AwsPersistedFinalizationResult, 'verificationExecutionId' | 's3BundleKey' | 'verificationResult'>,
-  options: TrustedLocalBundleOptions = {},
+  result: { finalizationId: string; bundleKey?: string },
+  options: TrustedLocalBundleOptions,
 ): TrustedLocalBundleReference | undefined {
-  if (options.targetAwsRuntime ?? false) {
+  if (options.runtimeProfile.artifacts.kind !== 'local') {
     return undefined;
   }
 
-  const executionId = result.verificationExecutionId;
-  if (!isSafeBundleSegment(sessionId) || !executionId || !isSafeBundleSegment(executionId)) {
+  const finalizationId = result.finalizationId;
+  if (!isSafeVerifierSegment(sessionId) || !isSafeVerifierSegment(finalizationId)) {
     return undefined;
   }
 
-  const scopedBundlePath = resolveScopedVerifierBundlePath(sessionId, executionId, options.verifierWorkDir);
+  const scopedBundlePath = resolveScopedVerifierBundlePath(sessionId, finalizationId, options.verifierWorkDir);
   const localBundleIdentity = resolveTrustedBundleIdentity(
     scopedBundlePath,
     {
-      verificationExecutionId: executionId,
-      ...(result.s3BundleKey ? { bundleKey: result.s3BundleKey } : {}),
+      finalizationId,
+      ...(result.bundleKey ? { bundleKey: result.bundleKey } : {}),
     },
     options,
   );
@@ -188,7 +191,7 @@ export function resolveTrustedLocalBundleReference(
 
 function extractBundleIdentityFromKey(
   bundleKey: string | undefined,
-): { sessionId: string; executionId: string } | undefined {
+): { sessionId: string; finalizationId: string } | undefined {
   if (!bundleKey || bundleKey.trim().length === 0) {
     return undefined;
   }
@@ -199,17 +202,13 @@ function extractBundleIdentityFromKey(
   }
 
   const sessionId = segments[segments.length - 3];
-  const executionId = segments[segments.length - 2];
-  if (!sessionId || !executionId) {
+  const finalizationId = segments[segments.length - 2];
+  if (!sessionId || !finalizationId) {
     return undefined;
   }
-  if (!isSafeBundleSegment(sessionId) || !isSafeBundleSegment(executionId)) {
+  if (!isSafeVerifierSegment(sessionId) || !isSafeVerifierSegment(finalizationId)) {
     return undefined;
   }
 
-  return { sessionId, executionId };
-}
-
-function isSafeBundleSegment(value: string): boolean {
-  return SAFE_BUNDLE_SEGMENT.test(value);
+  return { sessionId, finalizationId };
 }

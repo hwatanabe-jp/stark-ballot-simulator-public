@@ -61,6 +61,8 @@ describe('TurnstileWidget', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'target-aws-async');
+    setBrowserPublicEnvForTests('VITE_APP_ENV', 'main');
     setBrowserPublicEnvForTests('VITE_TURNSTILE_SITE_KEY', 'site-key');
     resetMock = turnstileMockState.resetMock;
     resetMock.mockClear();
@@ -107,7 +109,9 @@ describe('TurnstileWidget', () => {
   });
 
   it('shows bypass banner and auto emits token when bypass enabled', () => {
-    setBrowserPublicEnvForTests('VITE_TURNSTILE_BYPASS', '1');
+    clearBrowserPublicEnvForTests();
+    setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'local-demo');
+    setBrowserPublicEnvForTests('VITE_TURNSTILE_SITE_KEY', 'site-key');
     const onTokenChange = vi.fn();
     render(<TurnstileWidget action="vote" onTokenChange={onTokenChange} />);
 

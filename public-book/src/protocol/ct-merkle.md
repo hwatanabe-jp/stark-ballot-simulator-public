@@ -158,7 +158,8 @@ leaf_data = hex_decode(normalized_commitment_hex) (32 バイト)
 | `proofNodes` | `merklePath`         |
 | `rootHash`   | `bulletinRootAtCast` |
 
-`/api/verify` の `userVote.proof` や `/api/bulletin/:voteId/proof` がこの構造に対応します。
+finalization-scoped verification GET の `voterEvidence.userVote.proof` や
+`/api/sessions/:sessionId/votes/:voteId/inclusion-proof` がこの構造に対応します。
 
 ### PATH アルゴリズム
 
@@ -223,15 +224,17 @@ graph TD
 
 ### 構造
 
-| フィールド | 説明                           |
-| ---------- | ------------------------------ |
-| oldSize    | 古いツリーのサイズ（m）        |
-| newSize    | 新しいツリーのサイズ（n）      |
-| proofNodes | 整合性を証明するハッシュの配列 |
+| API フィールド | 説明                           |
+| -------------- | ------------------------------ |
+| fromTreeSize   | 古いツリーのサイズ（m）        |
+| toTreeSize     | 新しいツリーのサイズ（n）      |
+| proofNodes     | 整合性を証明するハッシュの配列 |
 
-> **補足**: `/api/bulletin/consistency-proof` は `proofNodes` に加えて `rootAtOldSize` と `rootAtNewSize` も返します。
-> `/verify` の `recorded_consistency_proof` 判定は、主に bulletin provider から取得した old/new root と整合性証明を検証する経路で、HTTP エンドポイントは `consistency-verifier.ts` の補助系で利用されます。
-> 判定では old root をレシートの `bulletinRootAtCast`、new root を最終 `bulletinRoot` と照合します。
+> **補足**: `/api/sessions/:sessionId/bulletin/consistency-proof` は `proofNodes` に加えて
+> `rootAtFromTreeSize` と `rootAtToTreeSize` も返します。verification GET の
+> `recorded_consistency_proof` 判定では、サーバーが取得・検査済みの root と整合性証明だけを
+> 判定に使います。判定では from root を
+> レシートの `bulletinRootAtCast`、to root を最終 `bulletinRoot` と照合します。
 
 ### SUBPROOF アルゴリズム
 

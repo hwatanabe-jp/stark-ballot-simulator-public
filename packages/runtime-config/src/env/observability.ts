@@ -1,5 +1,6 @@
 import { isPublicDefaultLogSalt } from '@stark-ballot/validation/log-hash-salt';
 import { RuntimeConfigValidationError } from '@stark-ballot/runtime-config/env/configValidationError';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 export type TargetObservabilityConfigName =
   'LOG_IP_HASH_SALT_REF' | 'LOG_IP_HASH_SALT' | 'LOG_FORMAT' | 'DEPLOYMENT_ID' | 'APP_SOURCE_SHA' | 'DEPLOY_MODE';
@@ -16,15 +17,16 @@ function observabilityConfigError(name: TargetObservabilityConfigName, message: 
 function requireTargetEnv(env: NodeJS.ProcessEnv, name: TargetObservabilityConfigName): string {
   const value = readTrimmedEnv(env, name);
   if (!value) {
-    throw observabilityConfigError(name, `${name} must be set when TARGET_AWS_RUNTIME=1.`);
+    throw observabilityConfigError(name, `${name} must be set for the target AWS runtime profile.`);
   }
   return value;
 }
 
 export function collectInvalidTargetObservabilityEnvNames(
-  env: NodeJS.ProcessEnv = process.env,
+  profile: ResolvedRuntimeProfile,
+  env: NodeJS.ProcessEnv,
 ): TargetObservabilityConfigName[] {
-  if (env['TARGET_AWS_RUNTIME'] !== '1') {
+  if (profile.target.kind !== 'aws') {
     return [];
   }
 
@@ -54,8 +56,8 @@ export function collectInvalidTargetObservabilityEnvNames(
   return invalidNames;
 }
 
-export function validateTargetObservabilityEnv(env: NodeJS.ProcessEnv = process.env): void {
-  if (env['TARGET_AWS_RUNTIME'] !== '1') {
+export function validateTargetObservabilityEnv(profile: ResolvedRuntimeProfile, env: NodeJS.ProcessEnv): void {
+  if (profile.target.kind !== 'aws') {
     return;
   }
 
@@ -64,24 +66,24 @@ export function validateTargetObservabilityEnv(env: NodeJS.ProcessEnv = process.
   if (!logHashSalt) {
     throw observabilityConfigError(
       'LOG_IP_HASH_SALT',
-      'LOG_IP_HASH_SALT must be resolved from LOG_IP_HASH_SALT_REF when TARGET_AWS_RUNTIME=1.',
+      'LOG_IP_HASH_SALT must be resolved from LOG_IP_HASH_SALT_REF for the target AWS runtime profile.',
     );
   }
   if (isPublicDefaultLogSalt(logHashSalt)) {
     throw observabilityConfigError(
       'LOG_IP_HASH_SALT',
-      'LOG_IP_HASH_SALT must not use the public local-development default when TARGET_AWS_RUNTIME=1.',
+      'LOG_IP_HASH_SALT must not use the public local-development default for the target AWS runtime profile.',
     );
   }
   if (env['LOG_FORMAT'] !== 'json') {
-    throw observabilityConfigError('LOG_FORMAT', 'LOG_FORMAT=json is required when TARGET_AWS_RUNTIME=1.');
+    throw observabilityConfigError('LOG_FORMAT', 'LOG_FORMAT=json is required for the target AWS runtime profile.');
   }
 
   const deploymentId = requireTargetEnv(env, 'DEPLOYMENT_ID');
   if (!/^dep_[0-9a-f]{32}$/.test(deploymentId)) {
     throw observabilityConfigError(
       'DEPLOYMENT_ID',
-      'DEPLOYMENT_ID must be an opaque deployment digest when TARGET_AWS_RUNTIME=1.',
+      'DEPLOYMENT_ID must be an opaque deployment digest for the target AWS runtime profile.',
     );
   }
 
@@ -89,12 +91,15 @@ export function validateTargetObservabilityEnv(env: NodeJS.ProcessEnv = process.
   if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(appSourceSha)) {
     throw observabilityConfigError(
       'APP_SOURCE_SHA',
-      'APP_SOURCE_SHA must be the full selected source SHA when TARGET_AWS_RUNTIME=1.',
+      'APP_SOURCE_SHA must be the full selected source SHA for the target AWS runtime profile.',
     );
   }
 
   const deployMode = requireTargetEnv(env, 'DEPLOY_MODE');
   if (deployMode !== 'normal' && deployMode !== 'rollback') {
-    throw observabilityConfigError('DEPLOY_MODE', 'DEPLOY_MODE must be normal or rollback when TARGET_AWS_RUNTIME=1.');
+    throw observabilityConfigError(
+      'DEPLOY_MODE',
+      'DEPLOY_MODE must be normal or rollback for the target AWS runtime profile.',
+    );
   }
 }

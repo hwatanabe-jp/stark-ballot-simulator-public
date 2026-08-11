@@ -1,7 +1,6 @@
 variable "aws_region" {
   description = "AWS Region for foundation resources."
   type        = string
-  default     = "ap-northeast-1"
 
   validation {
     condition     = can(regex("^[a-z]{2}-[a-z]+-[0-9]{1}$", var.aws_region))
@@ -24,8 +23,8 @@ variable "account_alias" {
   type        = string
 
   validation {
-    condition     = var.account_alias == "stark-dev"
-    error_message = "foundation state is currently authorized only for stark-dev."
+    condition     = can(regex("^[a-z][a-z0-9-]{1,62}$", var.account_alias))
+    error_message = "account_alias must be a lowercase account alias."
   }
 }
 
@@ -34,15 +33,14 @@ variable "deployment_environment" {
   type        = string
 
   validation {
-    condition     = var.deployment_environment == "develop"
-    error_message = "foundation state is currently authorized only for develop."
+    condition     = can(regex("^[a-z][a-z0-9-]{1,62}$", var.deployment_environment))
+    error_message = "deployment_environment must be a lowercase environment identifier."
   }
 }
 
 variable "state_scope" {
   description = "Terraform state scope. This root supports foundation only."
   type        = string
-  default     = "foundation"
 
   validation {
     condition     = var.state_scope == "foundation"
@@ -53,38 +51,15 @@ variable "state_scope" {
 variable "project_name" {
   description = "Project name used for identity checks and tags."
   type        = string
-  default     = "stark-ballot-simulator"
 }
 
 variable "state_backend_key" {
   description = "Expected S3 backend key for this foundation state."
   type        = string
-
-  validation {
-    condition     = var.state_backend_key == "stark-ballot-simulator/${var.account_alias}/${var.deployment_environment}/foundation/terraform.tfstate"
-    error_message = "state_backend_key must match stark-ballot-simulator/<account_alias>/<deployment_environment>/foundation/terraform.tfstate."
-  }
-}
-
-variable "release_manifest_bucket_name" {
-  description = "Optional explicit bucket name for immutable release manifests."
-  type        = string
-  default     = null
-
-  validation {
-    condition = (
-      var.release_manifest_bucket_name == null
-      || (
-        can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.release_manifest_bucket_name))
-        && !can(regex("\\.\\.", var.release_manifest_bucket_name))
-      )
-    )
-    error_message = "release_manifest_bucket_name must be a valid S3 bucket name when set."
-  }
 }
 
 variable "public_hostname_disposition" {
-  description = "Plan 02 public hostname decision carried into the release-candidate handoff."
+  description = "Public hostname decision carried into the release-candidate handoff."
   type        = string
   default     = "external-dns-acm"
 

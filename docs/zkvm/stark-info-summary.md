@@ -1,22 +1,62 @@
 # STARK証明検証で得られる情報の現行整理
 
-## 現行仕様の要点
+## 証明 authority と Verified 判定
 
-現行実装では、zkVM は個別の投票内容そのものを公開せずに、**正しい集計結果と整合性メタデータ** を Journal と公開監査資料へ出力します。一方で、検証体験は Journal 単独では成立せず、**cast 時点の厳密な CT inclusion proof** と fail-closed なチェック評価も前提になります。
+現行実装の zkVM guest は、提示された入力を検証して集計し、個別の
+`choice` / `random` を含まない集計結果と整合性メタデータを Journal に出力します。
+guest は教育用の S0–S5 シナリオ自体を知りません。正しい Journal と照合する
+claimed tally、`scenarioId`、`tamperDetected`、`tamperSummary` は presentation state であり、
+proof authority ではありません。`tamperDetected` は `excludedSlots`、`rejectedRecords`、
+scenario metadata からサーバ側で導出します。
 
-### 基本原則
+現行の count は次の意味で分離されています。
 
-1. **zkVM は改ざんシナリオを知らない**: guest/journal は正しい集計と整合性情報のみを出力する
-2. **choice/random は公開しない**: witness を含む `input.json` は private artifact であり、Journal や public bundle には出ない
-3. **検出は複数の信号で行う**: claimed tally と `verifiedTally` の差分だけでなく、`missingSlots` / `invalidPresentedSlots` / `excludedSlots` / bitmap proof / verifier result を組み合わせる
-4. **`tamperDetected` は Journal の値ではない**: 現行では `excludedSlots`、`rejectedRecords`、scenario metadata などからサーバ側で導出する。legacy `excludedCount` は stale payload を fail-closed に倒す互換入力であり、現行 public contract では返さない
-5. **Verified 判定は fail-closed**: exact cast-time evidence が欠ける、required check が未実行/失敗、`excludedSlots > 0`、または proof verification が失敗した場合は、UI は `Verified` を出してはいけない
+- `missingSlots`: bulletin にあるが guest に提示されなかった slot 数
+- `invalidPresentedSlots`: guest に提示された in-range slot のうち、最終的に計上されなかった slot 数
+- `rejectedRecords`: duplicate や out-of-range を含む、検証で reject された record 数
+- `excludedSlots`: slot-based の除外数で、`missingSlots + invalidPresentedSlots` と一致する
 
-> **注意**: S2/S4 は教育用シミュレーションです。zkVM input / Journal / receipt は正しい集計のままで、UI の claimed tally との不一致を検出します。
+`missingIndices` / `invalidIndices` / `countedIndices` / `excludedCount` は廃止済みです。
+現行 Journal の admission はこれらを reject し、現行 field への正規化、fallback、
+互換 reader は提供しません。untyped な journal-like payload に廃止 field が残っている場合も、
+その payload を current journal として受理せず fail-closed に扱います。
 
-## 現行 Journal の公開情報
+UI が `Verified` を表示できるのは、shared presentation policy が
+`fullyVerifiedLabelEligible = true` と判定したときだけです。少なくとも次の条件を
+すべて満たす必要があります。
 
-Journal はバイナリですが、パース後の現行 public shape は概ね次の通りです。
+1. required check がすべて存在し、`success` である
+2. `missingSlots` / `invalidPresentedSlots` / `excludedSlots` がすべて 0 で、その関係も整合する
+3. cast 時点の exact CT evidence、counted/seen bitmap proof、必要な public audit artifact が整合する
+4. ImageID 照合と `Receipt::verify(expectedImageId)` が成功する
+5. 証拠が production proof であり、development/fake receipt ではない
+
+development 許可 path が fake receipt を検出できても、その結果は `demo_only` であり、
+production STARK proof や `Verified` 表示の根拠にはなりません。required check が欠落、
+`not_run`、`pending`、`running`、`failed` の場合や、verification resource が unavailable/corrupt の
+場合も `Verified` にはなりません。
+
+### cast 時点の exact evidence と browser-local opening
+
+「あなたの票が bulletin に記録された」ことは、最終 Journal だけでは確認できません。
+現行フローは次の exact cast-time evidence を照合します。
+
+- `voteReceipt.bulletinRootAtCast`
+- `userVote.proof` または
+  `GET /api/sessions/:sessionId/votes/:voteId/inclusion-proof` の RFC 6962 inclusion proof
+- store に保存された `rootAtCast`
+
+proof は cast 時点の `treeSize = leafIndex + 1` に対するもので、proof から得た root と
+保存済み `rootAtCast` が一致しなければなりません。不一致または再構成不能の場合、
+finalize / verification read / inclusion-proof flow は fail-closed に扱います。
+
+cast-as-intended の `choice` / `random` / commitment 照合は browser がローカルに保持する opening から
+再計算します。server へ送る最終 observation は 4 つの browser-local check status だけで、
+`choice`、`random`、commitment、receipt そのものは observation body に含めません。
+
+## Journal と証拠の公開境界
+
+Journal はバイナリの proof output です。パース後の canonical proof-bound field は次の形です。
 
 ```json
 {
@@ -38,144 +78,89 @@ Journal はバイナリですが、パース後の現行 public shape は概ね�
   "includedBitmapRoot": "0x...",
   "excludedSlots": 0,
   "inputCommitment": "0x...",
-  "methodVersion": 14,
-  "imageId": "0x..."
+  "methodVersion": 14
 }
 ```
 
-`imageId` は比較用の host metadata であり、Journal の canonical proof output そのものではありません。proof identity の最終確認は verifier result 側で行います。
+host-decoded output や application が扱う `journal.json` には、optional な `imageId` が付く場合が
+あります。これは比較用の host metadata であり、canonical proof output ではありません。
+proof identity は verifier report の `receipt_image_id` と expected ImageID の照合で最終確認します。
 
-### 公開される情報
+証拠の公開境界は次のとおりです。
 
-- 集計結果: `verifiedTally`
-- 整合性カウンタ: `totalVotes`, `validVotes`, `invalidVotes`, `seenIndicesCount`, `missingSlots`, `invalidPresentedSlots`, `rejectedRecords`, `excludedSlots`
-- 検証メタデータ: `bulletinRoot`, `sthDigest`, `inputCommitment`, `seenBitmapRoot`, `includedBitmapRoot`
-- public bundle に含まれる監査資料: `public-input.json`, `election-manifest.json`, `close-statement.json`, `receipt.json`, `journal.json`
+| 境界                       | 含まれる情報                                                                   | 含まれない情報                                                          |
+| -------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| Journal                    | 集計結果、count、`bulletinRoot`、`sthDigest`、`inputCommitment`、bitmap root   | `choice`、`random`、voter identity、`tamperDetected`、scenario metadata |
+| `public-input.json`        | vote ごとの `index`、`commitment`、`merklePath` と公開 input metadata          | `choice`、`random`                                                      |
+| public `bundle.zip`        | 下記の mode-aware manifest で許可された監査資料                                | private witness、full verifier report、exact bitmap artifact            |
+| protected/private artifact | `input.json`、`verification.json`、`included-bitmap.json`、`seen-bitmap.json`  | public bundle には収録しない                                            |
+| session-scoped response    | exact `voteReceipt`、`userVote.proof`、許可された個票の inclusion/bitmap proof | public bundle への無認証公開はしない                                    |
+| browser local              | user の `choice` / `random` opening、receipt                                   | server-side proof artifact や public bundle としては扱わない            |
 
-### 公開されない情報
+public bundle の exact member は次のとおりです。
 
-- 個々の投票内容そのもの: `choice`, `random`
-- 投票者と投票内容の対応
-- witness を含む `input.json`
-- verifier output の `verification.json`
-- private bitmap artifact: `included-bitmap.json`, `seen-bitmap.json`
+- sync: `public-input.json`, `election-manifest.json`, `close-statement.json`, `receipt.json`,
+  `journal.json`, `metadata.json`（optional: `sth.json`, `consistency-proof.json`）
+- async: `public-input.json`, `election-manifest.json`, `close-statement.json`, `receipt.json`,
+  `journal.json`
+- never public: `input.json`, `verification.json`, `included-bitmap.json`, `seen-bitmap.json`
 
-## exact cast-time 証跡について
+この manifest は default-deny です。未登録 member、required member の欠落、private member、
+duplicate/case conflict、非 canonical path を含む archive は公開より前に reject します。
 
-現行実装では、「あなたの票が bulletin に記録された」と言うために、単に最終 Journal を見るだけでは不十分です。次の情報が **exact cast-time evidence** として扱われます。
+`public-input.json` により、どの bulletin index が prover に提示されたかは監査できます。
+その index が counted されたかは、Journal の `includedBitmapRoot` と session-scoped な
+bitmap proof で別途確認します。そのため public bundle 単体は bundle-only audit の資料であり、
+session-scoped proof、browser-local opening、設定時の third-party STH evidence まで含む UI verdict を
+完全に再現するものではありません。
 
-- `voteReceipt.bulletinRootAtCast`
-- `userVote.proof` または `GET /api/bulletin/:voteId/proof` で得られる RFC 6962 inclusion proof
-- store に保存された `rootAtCast`
+## シナリオ別の検出（S0–S5）
 
-これらは、cast 時点の `treeSize = leafIndex + 1` に対する proof と、保存済み `rootAtCast` が一致してはじめて有効です。一致しない場合や再構成できない場合、現行の finalize / verify / bulletin proof flow は fail-closed で扱います。
+S0–S5 はすべて教育用シミュレーションです。S2/S4 は proof input ではなく claimed tally を
+変更し、S1/S3/S5 は vote を guest input から除く input tamper として扱います。
+どのシナリオも public artifact に `choice` / `random` を公開しません。
 
-## public bundle と private artifact
+### S0: 正常な投票
 
-### Public bundle に入るもの
+- `verifiedTally` と claimed tally が一致する
+- `missingSlots` / `invalidPresentedSlots` / `rejectedRecords` / `excludedSlots` は 0
+- scenario 由来の不一致がないため `tamperDetected = false`
 
-- sync: `public-input.json`, `election-manifest.json`, `close-statement.json`, `receipt.json`, `journal.json`, `metadata.json`（optional: `sth.json`, `consistency-proof.json`）
-- async: `public-input.json`, `election-manifest.json`, `close-statement.json`, `receipt.json`, `journal.json`
+### S1: あなたの票の除外
 
-### Public bundle に入れないもの
+- user の commitment は bulletin に記録済みだが、その vote を guest input から除く
+- original bulletin index を保ったまま sparse input を作るため、`missingSlots` と `excludedSlots` が増える
+- exact cast-time inclusion proof は成功し、`counted_my_vote_included` と bitmap proof が
+  「記録済みだが counted されていない」ことを示す
+- `counted_missing_indices_zero` と `counted_my_vote_included` が失敗し、overall verification は失敗する
 
-- `input.json`
-- `verification.json`
-- `included-bitmap.json`
-- `seen-bitmap.json`
+### S2: 発表結果改ざん・あなた
 
-> **補足**: `public-input.json` には zkVM input に提示された vote の `index` / `commitment` / `merklePath` が入ります。したがって「どの bulletin index が prover に提示されたか」は公開監査資料から分かりますが、それが counted されたかは `includedBitmapRoot` と bitmap proof で別途確認します。choice/random は依然として公開されません。
+- original vote を zkVM input に渡すため、Journal / receipt / verifier は正しい `verifiedTally` を支持する
+- presentation の claimed tally だけを変更し、`counted_tally_consistent` の失敗から
+  `published_tally_mismatch` として検出する
+- public bundle だけでは再集計先を個票に紐づけられない。session-scoped presentation には
+  `tamperSummary.userRecountedTo` が出る場合がある
 
-## シナリオ別の検出（S0-S5）
+### S3: ボット票の除外
 
-以下は教育用シナリオの見え方の要約です。いずれも個々の vote の choice/random は露出しません。
+- core/server シナリオは対象の bot vote 1 票を guest input から除く
+- original bulletin index を保つ sparse input のため `missingSlots` と `excludedSlots` が増え、
+  `validVotes` と `totalExpected` の間に欠落が出る
+- `counted_missing_indices_zero` が失敗し、overall verification は失敗する
+- public bundle から除外の発生は分かるが、対象票の `choice` は分からない
 
-### 1. 正常な投票（S0）
+### S4: 発表結果改ざん・ボット
 
-- `verifiedTally` と claimed tally が一致
-- `missingSlots` / `invalidPresentedSlots` / `excludedSlots` が 0
-- `rejectedRecords` も 0
-- `tamperDetected = false`
+- original bot vote を zkVM input に渡し、presentation の claimed tally だけを変更する
+- `verifiedTally` と claimed tally の不一致を `published_tally_mismatch` として検出する
+- public 情報からは個票の再集計先ではなく tally mismatch として観測される
 
-### 2. あなたの票の除外（S1）
+### S5: ランダムエラー注入
 
-**状況**: あなたのコミットメントは記録されるが、zkVM input から除外される。  
-**検出**:
-
-1. exact cast-time inclusion proof は成功する
-2. `missingSlots` または `invalidPresentedSlots` が増え、結果として `excludedSlots > 0` になる
-3. `counted_my_vote_included` と bitmap proof により、「記録済みだが counted されていない」ことを示せる
-4. fail-closed により overall verification は成功しない
-
-### 3. 発表結果改ざん・あなた（S2）
-
-**状況**: claimed tally が改ざんされ、あなたの票が別候補へ移されたように見える。  
-**検出**:
-
-1. `verifiedTally` は正しい集計のまま
-2. claimed tally と `verifiedTally` の不一致から `published_tally_mismatch` を検出する
-3. proof-derived / public bundle だけでは、個票の露出はなく、再集計先も統計的にしか分からない（session-scoped response では `tamperSummary.userRecountedTo` が出る場合がある）
-
-### 4. ボット票の除外（S3）
-
-**状況**: 1 体以上のボット票が zkVM input から除外される。  
-**検出**:
-
-- `missingSlots` / `invalidPresentedSlots` / `excludedSlots` が増える
-- `validVotes` と `totalExpected` の間に欠落が出る
-- `counted_missing_indices_zero` が失敗し、overall verification は fail-closed になる
-- 誰かの票が除外されたことは分かるが、公開 bundle だけでは個票の choice は分からない
-
-### 5. 発表結果改ざん・ボット（S4）
-
-**状況**: claimed tally が改ざんされ、ボット票が付け替えられたように見える。  
-**検出**:
-
-- `verifiedTally` と claimed tally の差分
-- Journal / receipt / verifier は正しい集計側を支持する
-- 個票特定ではなく、公開情報からは tally mismatch として観測される
-
-### 6. ランダムエラー注入（S5）
-
-**状況**: ランダムに 1 票を選び、現行実装では input tamper として除外する。
-**検出**:
-
-- `missingSlots` / `invalidPresentedSlots` / `excludedSlots` の増加が主信号になる
-- S5 は S2/S4 のような純粋な claimed tally tamper ではなく、modified input を guest に渡す教育用 input tamper として扱う
-
-## セキュリティとプライバシー
-
-### 保護される情報
-
-1. **すべての個別投票内容**
-   - 改ざんの有無に関わらず、choice/random は public artifact に出ない
-
-2. **投票者と投票内容の対応**
-   - 誰がどこに投票したかは公開 bundle からは分からない
-
-3. **改ざんの詳細そのもの**
-   - proof-derived な公開情報だけでは、choice/random や voter identity に紐づく詳細は特定できない
-
-### 露出する情報
-
-1. **集約結果と整合性メタデータ**
-   - Journal には `verifiedTally`, `missingSlots`, `invalidPresentedSlots`, `rejectedRecords`, `excludedSlots`, `inputCommitment`, bitmap root 群などが出る
-   - public bundle には `public-input.json`, `election-manifest.json`, `close-statement.json` などの監査資料が入る
-
-2. **zkVM input の index / commitment / path**
-   - `public-input.json` には vote ごとの `index` / `commitment` / `merklePath` が入る
-   - counted 済みかどうかは `includedBitmapRoot` と bitmap proof で確認する
-   - ただし choice/random や voter identity は含まれない
-
-3. **session-scoped な exact proof**
-   - `voteReceipt` や `userVote.proof`、`/api/bulletin/:voteId/proof` は public bundle ではなく session-scoped response として扱われる
-   - 現行実装では exact cast-time proof を再構成できない場合、この情報は fail-closed になる
-
-## まとめ
-
-現行の STARK 検証フローでは、**個票のプライバシーを保持しつつ、改ざんや欠落を fail-closed に検出する** ことを重視しています。
-
-- 発表結果の改ざん（S2/S4）は、正しい Journal と claimed tally の不一致として検出する
-- 票の除外（S1/S3）は、`excludedSlots` と user inclusion 系チェックで検出する
-- `tamperDetected` は Journal の値ではなく、`excludedSlots` だけでなく `rejectedRecords` 等も含めて導出される
-- exact cast-time CT evidence や required check が欠ける場合、UI は `Verified` を出さない
+- core/server シナリオはランダムに選んだ 1 票を guest input から除く
+- browser-mock の current fixture は、デモ用に `missingSlots = 4`,
+  `invalidPresentedSlots = 0`, `excludedSlots = 4` をモデル化する
+- どちらも欠落した bulletin slot を表す `missingSlots` が主信号であり、
+  presented in-range slot の検証失敗を表す `invalidPresentedSlots` とは区別する
+- S2/S4 の claimed-tally tamper とは異なり、overall verification は exclusion として失敗する

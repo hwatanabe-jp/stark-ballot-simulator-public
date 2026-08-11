@@ -1,6 +1,6 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import { hexToBytesStrict } from '@stark-ballot/domain/crypto/sha256';
+import { hexToBytesStrict } from '@stark-ballot/crypto-primitives';
 import { computeDomainVoteCommitment } from './commitmentCore';
 
 /**

@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { interpolateProgress } from '@stark-ballot/application/finalize/finalization-progress';
 import { ProgressBar } from '@stark-ballot/web/components/ui/ProgressBar';
-import { interpolateProgress } from '@stark-ballot/web/finalize/progress-interpolation';
 import { useTranslation } from '@stark-ballot/web/hooks';
 
 type FinalizationStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'timeout';

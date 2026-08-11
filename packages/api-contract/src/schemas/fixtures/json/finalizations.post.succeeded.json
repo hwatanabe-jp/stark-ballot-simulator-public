@@ -1,0 +1,146 @@
+{
+  "data": {
+    "status": "succeeded",
+    "finalizationId": "mock-finalization-001",
+    "queuedAtMs": 1730000000000,
+    "startedAtMs": 1730000005000,
+    "completedAtMs": 1730000245000,
+    "runtimeDiagnostics": {
+      "asyncMode": "disabled"
+    },
+    "result": {
+      "authority": {
+        "imageId": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "journal": {
+          "electionId": "550e8400-e29b-41d4-a716-446655440000",
+          "electionConfigHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bulletinRoot": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "treeSize": 64,
+          "totalExpected": 64,
+          "sthDigest": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "verifiedTally": [13, 12, 14, 11, 14],
+          "totalVotes": 64,
+          "validVotes": 64,
+          "invalidVotes": 0,
+          "seenIndicesCount": 64,
+          "missingSlots": 0,
+          "invalidPresentedSlots": 0,
+          "rejectedRecords": 0,
+          "seenBitmapRoot": "0x5555555555555555555555555555555555555555555555555555555555555555",
+          "includedBitmapRoot": "0x2222222222222222222222222222222222222222222222222222222222222222",
+          "excludedSlots": 0,
+          "inputCommitment": "0x3333333333333333333333333333333333333333333333333333333333333333",
+          "methodVersion": 14,
+          "imageId": "0x4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        "receipt": {
+          "imageId": "0x4444444444444444444444444444444444444444444444444444444444444444",
+          "seal": "base64-seal",
+          "journal": "base64-journal",
+          "metadata": {
+            "isFake": false
+          }
+        },
+        "electionManifest": {
+          "electionId": "550e8400-e29b-41d4-a716-446655440000",
+          "totalExpected": 64,
+          "choices": ["A", "B", "C", "D", "E"],
+          "version": "v1.0",
+          "botCount": 63,
+          "merkleTreeDepth": 6,
+          "electionConfigHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "closeStatement": {
+          "logId": "0x6666666666666666666666666666666666666666666666666666666666666666",
+          "treeSize": 64,
+          "timestamp": 1730000245000,
+          "bulletinRoot": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "sthDigest": "0x1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      "presentation": {
+        "tally": {
+          "counts": {
+            "A": 13,
+            "B": 12,
+            "C": 14,
+            "D": 11,
+            "E": 14
+          },
+          "totalVotes": 64,
+          "tamperedCount": 0
+        },
+        "verifiedTally": [13, 12, 14, 11, 14],
+        "tamperDetected": false,
+        "scenarios": [],
+        "bulletinRoot": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "missingSlots": 0,
+        "invalidPresentedSlots": 0,
+        "rejectedRecords": 0,
+        "totalExpected": 64,
+        "treeSize": 64,
+        "excludedSlots": 0,
+        "sthDigest": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "seenBitmapRoot": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "includedBitmapRoot": "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "inputCommitment": "0x3333333333333333333333333333333333333333333333333333333333333333",
+        "seenIndicesCount": 64,
+        "verificationStatus": "success",
+        "verificationReport": {
+          "status": "success",
+          "verifier_version": "1.0.0",
+          "verified_at": "2026-01-01T00:00:00Z",
+          "duration_ms": 1234,
+          "expected_image_id": "0x4444444444444444444444444444444444444444444444444444444444444444",
+          "receipt_image_id": "0x4444444444444444444444444444444444444444444444444444444444444444",
+          "dev_mode_receipt": false,
+          "errors": []
+        },
+        "tamperSummary": {
+          "ignoredVotes": 0,
+          "recountedVotes": 0,
+          "userRecountedTo": null,
+          "affectedBotIds": []
+        }
+      },
+      "voterEvidence": {
+        "state": "available",
+        "voteReceipt": {
+          "voteId": "00000000-0000-4000-8000-000000000001",
+          "commitment": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "bulletinIndex": 0,
+          "bulletinRootAtCast": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "castAtMs": 1730000000000,
+          "inputCommitment": "0x3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "userVote": {
+          "commitment": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "voteId": "00000000-0000-4000-8000-000000000001",
+          "proof": {
+            "leafIndex": 0,
+            "merklePath": [
+              "0x1111111111111111111111111111111111111111111111111111111111111111",
+              "0x2222222222222222222222222222222222222222222222222222222222222222"
+            ],
+            "treeSize": 64,
+            "bulletinRootAtCast": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          }
+        },
+        "receiptPublication": {
+          "receiptHash": "0x9999999999999999999999999999999999999999999999999999999999999999",
+          "boardIndex": 1,
+          "timestamp": 1710000000000
+        }
+      },
+      "artifactAvailability": {
+        "bundle": "available",
+        "report": "available",
+        "includedBitmap": "available",
+        "seenBitmap": "available"
+      }
+    }
+  },
+  "meta": {
+    "requestId": "fixture-request-id"
+  }
+}

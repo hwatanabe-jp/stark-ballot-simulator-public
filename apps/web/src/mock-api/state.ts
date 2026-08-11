@@ -1,12 +1,10 @@
 import type { VoteChoice } from '@stark-ballot/web/session/types';
 import type { VerificationStatus } from '@stark-ballot/verification/shared/types';
 import type { ScenarioId } from './types';
-import { resolveBrowserCurrentContractGeneration } from '@stark-ballot/web/session/browserContractGeneration';
 
 export interface MockState {
   sessionId: string;
   capabilityToken: string;
-  contractGeneration: string;
   electionId: string;
   electionConfigHash: string;
   logId: string;
@@ -20,10 +18,11 @@ export interface MockState {
   voteTimestamp?: number;
   botVotingStartedAt?: number;
   scenarioId: ScenarioId;
-  finalizationQueuedAt?: number;
-  finalizationStartedAt?: number;
-  finalizationCompletedAt?: number;
-  finalizationFailedAt?: number;
+  finalizationId?: string;
+  finalizationQueuedAtMs?: number;
+  finalizationStartedAtMs?: number;
+  finalizationCompletedAtMs?: number;
+  finalizationFailedAtMs?: number;
   finalizationError?: {
     code: string;
     message: string;
@@ -35,7 +34,7 @@ export interface MockState {
     errors?: string[];
   };
   verificationObservation?: {
-    executionId: string;
+    finalizationId: string;
     fingerprint: string;
   };
 }
@@ -55,7 +54,6 @@ const createHex = (char: string) => `0x${char.repeat(64)}`;
 const createInitialState = (): MockState => ({
   sessionId: generateUuid(DEFAULT_SESSION_ID),
   capabilityToken: generateUuid('mock-capability-token'),
-  contractGeneration: resolveBrowserCurrentContractGeneration(),
   electionId: generateUuid(DEFAULT_ELECTION_ID),
   electionConfigHash: createHex('a'),
   logId: createHex('b'),

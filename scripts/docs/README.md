@@ -6,6 +6,16 @@ license metadata.
 
 ## Active Helpers
 
+### build-mdbook.sh
+
+Builds the Public Specs with the exact supported `mdbook` 0.5.4 and
+`mdbook-mermaid` 0.17.0 pair. The preprocessor declares a semver-compatible
+`mdbook-preprocessor` 0.5.x dependency but emits an exact-patch mismatch
+diagnostic; the helper removes only that one known message for this exact
+pair. It preserves every other diagnostic and the original build exit status.
+Local and generated Pages workflows use this as the single mdBook build entry
+point.
+
 ### create-mdbook-readme-aliases.sh
 
 Creates `README.html` redirect aliases for every top-level public-book section
@@ -30,12 +40,19 @@ pnpm docs:links:check -- --root public-book/src
 ```
 
 An explicit `--root` is required outside a generated public repository.
+For a repository-root check, use `pnpm docs:links:check -- --root .`. An
+optional reviewed historical-reference manifest admits only exact
+source-line/destination pairs under its declared historical roots. Unlisted
+broken links and stale manifest entries still fail the check.
 
 ### check-license-metadata-freshness.ts
 
 Compares the tracked pnpm and Cargo license JSON/CSV artifacts with the current
-lockfiles without modifying files or accessing the network. The package script
-is:
+lockfiles without modifying files or accessing the network. Its explicit
+eight-artifact manifest also requires each generated license file to exist, be
+tracked, and remain unignored in a Git checkout. Generated public trees enforce
+artifact existence before they become their own Git checkout. The package
+script is:
 
 ```bash
 pnpm licenses:check

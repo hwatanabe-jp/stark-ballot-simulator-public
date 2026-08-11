@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from '@stark-ballot/web/hooks';
 import {
   captureSessionIdentity,
-  getSessionAuthHeaders,
   getSessionData,
   getSessionDataForIdentity,
   isSessionReplacedForIdentity,
@@ -18,60 +17,44 @@ import { useKnowledgeHighlight } from '@stark-ballot/web/components/knowledge';
 import { UnifiedVerificationCard } from '@stark-ballot/web/components/verification/UnifiedVerificationCard';
 import { InlineAlert } from '@stark-ballot/web/components/ui/InlineAlert';
 import { Button } from '@stark-ballot/web/components/ui/Button';
-import { apiFetch } from '@stark-ballot/web/api/apiFetch';
-import { resolveApiUrl } from '@stark-ballot/web/api/apiBaseUrl';
+import { ApiClientError } from '@stark-ballot/web/api/client';
+import { runVerification } from '@stark-ballot/web/api/verification';
+import { downloadBundle, fetchVerificationReport } from '@stark-ballot/web/api/artifacts';
 import { readBrowserPublicEnv } from '@stark-ballot/runtime-config/env/browserPublic';
 import { resolveConfiguredSthSources } from '@stark-ballot/web/verification/sthSources';
 import { detectTampering } from '@stark-ballot/verification/tamper-detection';
 import type { TamperDetectionResult } from '@stark-ballot/verification/types';
-import type { VerificationCheckId } from '@stark-ballot/verification/checks';
+import type { VerificationSummaryStatus } from '@stark-ballot/verification/summary';
 import {
-  deriveVerificationSummary,
-  type VerificationSummaryContext,
-  type VerificationSummaryStatus,
-} from '@stark-ballot/verification/summary';
+  deriveVerificationPresentationPolicy,
+  type VerificationDisplayStatus,
+} from '@stark-ballot/verification/presentation-policy';
 import {
   isVerificationClientInvalidationError,
-  readResponseJsonSafely,
   resolveVerificationClientApiError,
 } from '@stark-ballot/web/verification/client-api-errors';
 import { useVerificationData } from './hooks/useVerificationData';
 import { useVerificationObservation } from './hooks/useVerificationObservation';
 import { useVerificationSequence } from './hooks/useVerificationSequence';
 import {
-  buildBundleCandidates,
   buildDetectionReceipt,
   buildDetectionVote,
-  buildReportCandidates,
+  resolveBundleCandidate,
+  resolveReportCandidate,
   resolveStarkStatus,
 } from './lib/verification-data';
-import { downloadBundle, fetchVerificationReport } from './lib/download';
-import {
-  resolveVerifyPageOverallStatusOverride,
-  resolveVerifyPageRenderReadiness,
-  resolveVerifyPageRenderedOverallStatus,
-  resolveVerifyPageStatusForSummaryTone,
-  type VerifyPageOverallStatusOverrideSource,
-} from './lib/overall-status';
 import { resolveHighlightedKnowledge } from './lib/verification-highlights';
+import { resolveEligibleRenderedVerificationStatus } from './lib/verification-presentation';
 import { isStarkTimeoutError } from './lib/stark-timeout';
 import { useAppRouter } from '@stark-ballot/web/navigation/appNavigation';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import { resolveCanonicalFinalizationPayload } from '@stark-ballot/web/finalize/client-finalization-result';
 
 type OverallStatusOverride = {
-  status: 'verified' | 'failed' | 'warning' | 'demo_only';
+  status: VerificationDisplayStatus;
   message: string;
   subMessage?: string;
 };
-
-const HARD_FAILURE_CHECKS: VerificationCheckId[] = [
-  'recorded_consistency_proof',
-  'counted_missing_indices_zero',
-  'counted_expected_vs_tree_size',
-  'counted_election_manifest_consistent',
-  'counted_close_statement_consistent',
-  'stark_receipt_verify',
-];
 
 const SUMMARY_MAIN_MESSAGE_KEYS: Record<VerificationSummaryStatus, string> = {
   fully_verified: 'pages.verify.resultSummary.fullyVerifiedMain',
@@ -163,26 +146,24 @@ export default function VerifyPage(): React.ReactElement {
     if (!session) {
       throw new Error(resolveSessionErrorMessage());
     }
+    const finalization = resolveCanonicalFinalizationPayload(session.finalizeResult);
+    if (!finalization) {
+      throw new Error(resolveSessionErrorMessage());
+    }
 
-    const response = await apiFetch(resolveApiUrl('/api/verification/run'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...getSessionAuthHeaders(session),
-      },
-      body: JSON.stringify({}),
-    });
-
-    const rawBody = await readResponseJsonSafely(response);
-
-    if (!response.ok) {
+    try {
+      await runVerification(session, finalization.finalizationId);
+    } catch (error) {
+      if (!(error instanceof ApiClientError)) {
+        throw error;
+      }
       const resolvedError = resolveVerificationClientApiError({
-        rawBody,
-        responseStatus: response.status,
-        responseStatusText: response.statusText,
+        rawBody: error.responseBody,
+        responseStatus: error.status,
+        responseStatusText: error.statusText,
         sessionIdentity: expectedSessionIdentityRef.current,
         resolveSessionErrorMessage,
-        fallbackMessage: `Verification run request failed: ${response.status}`,
+        fallbackMessage: `Verification run request failed: ${error.status}`,
       });
       handleFatalVerificationInvalidation(resolvedError);
       throw resolvedError;
@@ -357,12 +338,10 @@ export default function VerifyPage(): React.ReactElement {
     };
   }, [data, getExpectedSession]);
 
-  const bundleCandidates = useMemo(() => buildBundleCandidates(data, expectedSessionId), [data, expectedSessionId]);
-  const reportCandidates = useMemo(() => buildReportCandidates(data, expectedSessionId), [data, expectedSessionId]);
+  const bundleCandidate = useMemo(() => resolveBundleCandidate(data, expectedSessionId), [data, expectedSessionId]);
+  const reportCandidate = useMemo(() => resolveReportCandidate(data, expectedSessionId), [data, expectedSessionId]);
   const handleDownload = useCallback(async () => {
-    const candidate = bundleCandidates.at(0);
-    const reportCandidate = reportCandidates.at(0);
-    if (!candidate) {
+    if (!bundleCandidate) {
       setDownloadError(t('pages.verify.download.missingBundle'));
       setDownloadState('error');
       return;
@@ -376,14 +355,14 @@ export default function VerifyPage(): React.ReactElement {
       if (!session) {
         throw new Error(resolveSessionErrorMessage());
       }
-      await downloadBundle(candidate, {
-        authHeaders: getSessionAuthHeaders(session),
+      await downloadBundle(bundleCandidate, {
+        identity: session,
         sessionIdentity: expectedSessionIdentityRef.current,
         resolveSessionErrorMessage,
       });
       if (reportCandidate) {
         await fetchVerificationReport(reportCandidate, {
-          authHeaders: getSessionAuthHeaders(session),
+          identity: session,
           sessionIdentity: expectedSessionIdentityRef.current,
           resolveSessionErrorMessage,
         });
@@ -397,53 +376,17 @@ export default function VerifyPage(): React.ReactElement {
       setDownloadError(message);
     }
   }, [
-    bundleCandidates,
+    bundleCandidate,
     getExpectedSession,
     handleFatalVerificationInvalidation,
-    reportCandidates,
+    reportCandidate,
     resolveSessionErrorMessage,
     t,
   ]);
 
   const sthSourcesConfigured = useMemo(() => resolveConfiguredSthSources(readBrowserPublicEnv).length > 0, []);
-  const { verificationChecksById, hasCheckPending, hasStarkReceiptCheck } = useMemo(() => {
-    const checks = data?.verificationChecks;
-    if (!checks || checks.length === 0) {
-      return {
-        verificationChecksById: null,
-        hasCheckPending: false,
-        hasStarkReceiptCheck: false,
-      };
-    }
-    const map = new Map<VerificationCheckId, string>();
-    let pending = false;
-    let hasStarkReceipt = false;
-    for (const check of checks) {
-      if (!map.has(check.id)) {
-        map.set(check.id, check.status);
-      }
-      if (check.id === 'stark_receipt_verify') {
-        hasStarkReceipt = true;
-      }
-      if (check.status === 'pending' || check.status === 'running') {
-        pending = true;
-      }
-    }
-    return {
-      verificationChecksById: map,
-      hasCheckPending: pending,
-      hasStarkReceiptCheck: hasStarkReceipt,
-    };
-  }, [data?.verificationChecks]);
-  const hasVerificationChecks = Boolean(verificationChecksById && verificationChecksById.size > 0);
-  const sthThirdPartyStatus = verificationChecksById?.get('recorded_sth_third_party');
-  const starkImageIdStatus = verificationChecksById?.get('stark_image_id_match');
-  const starkReceiptStatus = verificationChecksById?.get('stark_receipt_verify');
-  const starkReportStatus = data?.verificationReport?.status;
-  const devModeEvidence =
-    data?.verificationStatus === 'dev_mode' ||
-    data?.verificationReport?.status === 'dev_mode' ||
-    data?.verificationReport?.dev_mode_receipt === true;
+  const hasCheckPending =
+    data?.verificationChecks?.some((check) => check.status === 'pending' || check.status === 'running') ?? false;
 
   useVerificationObservation({
     data,
@@ -468,166 +411,115 @@ export default function VerifyPage(): React.ReactElement {
     }
     return message;
   }, [stepStatusMap.stark_verification.error, stepStatusMap.stark_verification.status]);
-  const explicitProofSuccessSignal = useMemo(
+  const presentationPolicy = useMemo(
     () =>
-      starkReportStatus === 'success' ||
-      starkReportStatus === 'dev_mode' ||
-      (starkReceiptStatus === 'success' && (starkImageIdStatus === undefined || starkImageIdStatus === 'success')),
-    [starkImageIdStatus, starkReceiptStatus, starkReportStatus],
-  );
-  const explicitProofFailureDetected = useMemo(
-    () =>
-      starkReportStatus === 'failed' ||
-      starkImageIdStatus === 'failed' ||
-      starkReceiptStatus === 'failed' ||
-      (actualStarkStatus === 'failed' && !explicitProofSuccessSignal),
-    [actualStarkStatus, explicitProofSuccessSignal, starkImageIdStatus, starkReceiptStatus, starkReportStatus],
-  );
-  const explicitProofSuccessDetected = useMemo(() => {
-    if (explicitProofFailureDetected) {
-      return false;
-    }
-    if (explicitProofSuccessSignal) {
-      return true;
-    }
-    if (!hasStarkReceiptCheck && (actualStarkStatus === 'success' || actualStarkStatus === 'dev_mode')) {
-      return true;
-    }
-    return false;
-  }, [actualStarkStatus, explicitProofFailureDetected, explicitProofSuccessSignal, hasStarkReceiptCheck]);
-  const starkGateStatus = useMemo<'success' | 'failed' | 'pending'>(() => {
-    if (starkTimeoutDetected) {
-      return 'failed';
-    }
-    if (starkSequenceFailureMessage) {
-      return 'failed';
-    }
-    if (explicitProofFailureDetected) {
-      return 'failed';
-    }
-    if (explicitProofSuccessDetected) {
-      return 'success';
-    }
-    return 'pending';
-  }, [explicitProofFailureDetected, explicitProofSuccessDetected, starkSequenceFailureMessage, starkTimeoutDetected]);
-  const starkReceiptFailed = hasStarkReceiptCheck ? starkReceiptStatus === 'failed' : actualStarkStatus === 'failed';
-  const hardFailureDetected =
-    hasVerificationChecks &&
-    (HARD_FAILURE_CHECKS.some((checkId) => {
-      if (checkId === 'stark_receipt_verify') {
-        return starkReceiptFailed;
-      }
-      return verificationChecksById?.get(checkId) === 'failed';
-    }) ||
-      (sthSourcesConfigured && sthThirdPartyStatus === 'failed'));
-
-  const summaryContext = useMemo<VerificationSummaryContext>(
-    () => ({
-      ...omitUndefinedProperties({
-        missingSlots: data?.missingSlots,
-        invalidPresentedSlots: data?.invalidPresentedSlots,
-        rejectedRecords: data?.rejectedRecords,
-        excludedSlots: data?.excludedSlots,
-        devModeEvidence,
+      deriveVerificationPresentationPolicy({
+        availability: data ? 'available' : 'unavailable',
+        ...(data ? { checks: data.verificationChecks } : {}),
+        context: {
+          ...omitUndefinedProperties({
+            missingSlots: data?.missingSlots,
+            invalidPresentedSlots: data?.invalidPresentedSlots,
+            rejectedRecords: data?.rejectedRecords,
+            excludedSlots: data?.excludedSlots,
+            devModeEvidence:
+              data?.verificationReport?.dev_mode_receipt === true ||
+              data?.verificationStatus === 'dev_mode' ||
+              data?.verificationReport?.status === 'dev_mode',
+          }),
+          sthSourcesConfigured,
+        },
+        ...omitUndefinedProperties({
+          verificationStatus: data?.verificationStatus,
+          verificationReportStatus: data?.verificationReport?.status,
+        }),
+        explicitServerFailureStatus: starkTimeoutDetected || starkSequenceFailureMessage ? 'failed' : null,
+        verificationStarted,
+        sequenceComplete,
       }),
-      sthSourcesConfigured,
-    }),
     [
-      data?.excludedSlots,
-      data?.invalidPresentedSlots,
-      data?.missingSlots,
-      data?.rejectedRecords,
-      devModeEvidence,
+      data,
+      sequenceComplete,
+      starkSequenceFailureMessage,
+      starkTimeoutDetected,
       sthSourcesConfigured,
+      verificationStarted,
     ],
   );
+  const starkGateStatus = useMemo<'success' | 'failed' | 'pending'>(() => {
+    if (starkTimeoutDetected || starkSequenceFailureMessage) {
+      return 'failed';
+    }
+    const status = presentationPolicy.stageStatuses.stark_verification;
+    if (status === 'success' || status === 'failed') {
+      return status;
+    }
+    return 'pending';
+  }, [presentationPolicy.stageStatuses.stark_verification, starkSequenceFailureMessage, starkTimeoutDetected]);
 
   const summaryOverride = useMemo<OverallStatusOverride | null>(() => {
-    const checks = data?.verificationChecks;
-    if (!checks || checks.length === 0) {
-      return null;
-    }
-    const summary = deriveVerificationSummary(checks, summaryContext);
-    if (!summary) {
+    const summary = presentationPolicy.summary;
+    const displayStatus = presentationPolicy.display.status;
+    if (!summary || !displayStatus) {
       return null;
     }
     const mainKey = SUMMARY_MAIN_MESSAGE_KEYS[summary.status];
     const subKey = summary.messageKey ?? SUMMARY_SUB_MESSAGE_KEYS[summary.status];
     return {
-      status: resolveVerifyPageStatusForSummaryTone(summary.tone),
+      status: displayStatus,
       message: t(mainKey),
       ...omitUndefinedProperties({ subMessage: subKey ? t(subKey) : undefined }),
     };
-  }, [data?.verificationChecks, summaryContext, t]);
-
-  const explicitServerFailureOverride = useMemo<OverallStatusOverride | null>(() => {
-    if (!data) {
-      return null;
-    }
-    if (starkTimeoutDetected) {
-      return {
-        status: 'failed',
-        message: t('pages.verify.status.timeout'),
-      };
-    }
-    if (starkSequenceFailureMessage) {
-      return {
-        status: 'failed',
-        message: t('pages.verify.failed'),
-        ...omitUndefinedProperties({ subMessage: starkSequenceFailureMessage }),
-      };
-    }
-    if (explicitProofFailureDetected) {
-      return {
-        status: 'failed',
-        message: t('pages.verify.resultSummary.proofVerificationFailedMain'),
-        ...omitUndefinedProperties({ subMessage: t('pages.verify.resultSummary.proofVerificationFailedSub') }),
-      };
-    }
-    return null;
-  }, [data, explicitProofFailureDetected, starkSequenceFailureMessage, starkTimeoutDetected, t]);
+  }, [presentationPolicy.display.status, presentationPolicy.summary, t]);
 
   const overallStatusOverride = useMemo<OverallStatusOverride | null>(() => {
-    const decision = resolveVerifyPageOverallStatusOverride({
-      explicitServerFailureStatus: explicitServerFailureOverride?.status ?? null,
-      summaryStatus: summaryOverride?.status ?? null,
-      hasVerificationChecks,
-      hardFailureDetected,
-      hasCheckPending,
-    });
-    if (!decision) {
+    const status = presentationPolicy.display.status;
+    const source = presentationPolicy.display.source;
+    if (!status || !source) {
       return null;
     }
-
-    const overrides: Record<VerifyPageOverallStatusOverrideSource, () => OverallStatusOverride | null> = {
-      explicit_server_failure: () => explicitServerFailureOverride,
-      summary: () => summaryOverride,
-      hard_failure: () => ({
-        status: 'failed',
-        message: t('pages.verify.failed'),
-      }),
-      pending: () => ({
-        status: 'warning',
+    if (source === 'summary' && summaryOverride) {
+      return summaryOverride;
+    }
+    if (source === 'explicit_server_failure') {
+      if (starkTimeoutDetected) {
+        return { status, message: t('pages.verify.status.timeout') };
+      }
+      if (starkSequenceFailureMessage) {
+        return {
+          status,
+          message: t('pages.verify.failed'),
+          subMessage: starkSequenceFailureMessage,
+        };
+      }
+      return {
+        status,
+        message: t('pages.verify.resultSummary.proofVerificationFailedMain'),
+        subMessage: t('pages.verify.resultSummary.proofVerificationFailedSub'),
+      };
+    }
+    if (source === 'pending') {
+      return {
+        status,
         message: t('pages.verify.status.partial'),
-      }),
-    };
-
-    const override = overrides[decision.source]();
-    if (!override) {
-      return null;
+      };
     }
-    return override.status === decision.status ? override : { ...override, status: decision.status };
-  }, [explicitServerFailureOverride, hasCheckPending, hasVerificationChecks, hardFailureDetected, summaryOverride, t]);
+    return {
+      status,
+      message:
+        source === 'unavailable' || source === 'corrupt' ? t('pages.verify.status.partial') : t('pages.verify.failed'),
+    };
+  }, [
+    presentationPolicy.display.source,
+    presentationPolicy.display.status,
+    starkSequenceFailureMessage,
+    starkTimeoutDetected,
+    summaryOverride,
+    t,
+  ]);
 
-  const showResults = verificationStarted && sequenceComplete && !hasCheckPending;
-  const renderedOverallStatus = resolveVerifyPageRenderedOverallStatus(
-    resolveVerifyPageRenderReadiness({
-      verificationStarted,
-      sequenceComplete,
-      hasCheckPending,
-      overrideStatus: overallStatusOverride?.status ?? null,
-    }),
-  );
+  const showResults = presentationPolicy.display.readiness === 'ready';
+  const renderedOverallStatus = resolveEligibleRenderedVerificationStatus(presentationPolicy);
   const showBotTab = data?.scenarioId === 'S3' || data?.scenarioId === 'S4';
   const botTabTooltip = t('verification.tabs.botDisabledTooltip');
   const verificationContent = (
@@ -648,7 +540,7 @@ export default function VerifyPage(): React.ReactElement {
         sequenceComplete={sequenceComplete}
         stepStatusMap={stepStatusMap}
         download={{
-          available: bundleCandidates.length > 0,
+          available: bundleCandidate !== null,
           status: downloadState,
           error: downloadError,
           onDownload: () => {

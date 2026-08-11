@@ -2,6 +2,11 @@
   "name": "@stark-ballot/test-support",
   "private": true,
   "type": "module",
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec eslint packages/test-support",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/test-support",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./testing/*": "./src/testing/*"
@@ -13,11 +18,11 @@
     "@stark-ballot/validation": "workspace:*",
     "@stark-ballot/verification": "workspace:*",
     "@stark-ballot/zkvm-contract": "workspace:*",
-    "undici": "8.8.0"
+    "undici": "8.10.0"
   },
   "devDependencies": {
     "@types/yazl": "3.3.1",
-    "vitest": "4.1.10",
+    "vitest": "catalog:testing",
     "yazl": "3.3.1"
   }
 }

@@ -8,6 +8,7 @@ import {
   FINALIZATION_AUTH_RESULTS,
   FINALIZATION_FROM_STATES,
   FINALIZATION_REASONS,
+  FINALIZATION_SLI_EXPECTED_DOMAIN_REASONS,
   FINALIZATION_SOURCES,
   FINALIZATION_STATES,
   FINALIZATION_UPDATE_OUTCOMES,
@@ -22,16 +23,20 @@ import {
 } from '../canonicalEvents';
 
 const SESSION_ID_HASH = 'sid_0123456789ab';
-const EXECUTION_ID = 'exec-canonical-event';
+const FINALIZATION_ID = 'exec-canonical-event';
 
 const canonicalEventSamples = [
+  {
+    event: 'finalization_admitted',
+    finalization_id: FINALIZATION_ID,
+  },
   {
     event: 'finalize_transition_attempted',
     to: 'pending',
     source: 'finalize',
     reason: 'FINALIZE_REQUESTED',
     session_id_hash: SESSION_ID_HASH,
-    execution_id: EXECUTION_ID,
+    finalization_id: FINALIZATION_ID,
   },
   {
     event: 'finalize_state_update_rejected',
@@ -39,7 +44,7 @@ const canonicalEventSamples = [
     source: 'writer_update',
     reason: 'EXECUTION_MISMATCH',
     session_id_hash: SESSION_ID_HASH,
-    execution_id: EXECUTION_ID,
+    finalization_id: FINALIZATION_ID,
   },
   {
     event: 'finalize_state_transition',
@@ -49,13 +54,13 @@ const canonicalEventSamples = [
     reason: 'RUNTIME_UPDATE_RECEIVED',
     changed: true,
     session_id_hash: SESSION_ID_HASH,
-    execution_id: EXECUTION_ID,
+    finalization_id: FINALIZATION_ID,
   },
   {
     event: 'dispatch_dropped',
     reason: 'not_pending',
     session_id_hash: SESSION_ID_HASH,
-    execution_id: EXECUTION_ID,
+    finalization_id: FINALIZATION_ID,
   },
   {
     event: 'finalization_update_received',
@@ -63,7 +68,7 @@ const canonicalEventSamples = [
     auth_result: 'not_applicable',
     outcome_code: 'applied',
     session_id_hash: SESSION_ID_HASH,
-    execution_id: EXECUTION_ID,
+    finalization_id: FINALIZATION_ID,
   },
   {
     event: 'queue_publish',
@@ -71,7 +76,7 @@ const canonicalEventSamples = [
     result: 'succeeded',
     sqs_message_id: '35f6c6bc-0189-49df-9d7b-8a60f6f15dc5',
     session_id_hash: SESSION_ID_HASH,
-    execution_id: EXECUTION_ID,
+    finalization_id: FINALIZATION_ID,
   },
   {
     event: 'verification_run_summary',
@@ -81,7 +86,7 @@ const canonicalEventSamples = [
     failed_required_count: 0,
     dev_mode_receipt: false,
     session_id_hash: SESSION_ID_HASH,
-    execution_id: EXECUTION_ID,
+    finalization_id: FINALIZATION_ID,
   },
   {
     event: 'bundle_download_failed',
@@ -90,7 +95,7 @@ const canonicalEventSamples = [
     s3_error_code: 'no_such_key',
     key_prefix: 'key_0123456789ab',
     session_id_hash: SESSION_ID_HASH,
-    execution_id: EXECUTION_ID,
+    finalization_id: FINALIZATION_ID,
   },
 ] as const satisfies readonly CanonicalEvent[];
 
@@ -98,7 +103,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('canonical P2 event contracts', () => {
+describe('canonical operational event contracts', () => {
   it('snapshots every event-specific runtime field allowlist', () => {
     expect(CANONICAL_EVENT_ALLOWED_FIELDS).toMatchInlineSnapshot(`
       {
@@ -109,13 +114,17 @@ describe('canonical P2 event contracts', () => {
           "s3_error_code",
           "key_prefix",
           "session_id_hash",
-          "execution_id",
+          "finalization_id",
         ],
         "dispatch_dropped": [
           "event",
           "reason",
           "session_id_hash",
-          "execution_id",
+          "finalization_id",
+        ],
+        "finalization_admitted": [
+          "event",
+          "finalization_id",
         ],
         "finalization_update_received": [
           "event",
@@ -123,7 +132,7 @@ describe('canonical P2 event contracts', () => {
           "auth_result",
           "outcome_code",
           "session_id_hash",
-          "execution_id",
+          "finalization_id",
         ],
         "finalize_state_transition": [
           "event",
@@ -133,7 +142,7 @@ describe('canonical P2 event contracts', () => {
           "reason",
           "changed",
           "session_id_hash",
-          "execution_id",
+          "finalization_id",
         ],
         "finalize_state_update_rejected": [
           "event",
@@ -141,7 +150,7 @@ describe('canonical P2 event contracts', () => {
           "source",
           "reason",
           "session_id_hash",
-          "execution_id",
+          "finalization_id",
         ],
         "finalize_transition_attempted": [
           "event",
@@ -149,7 +158,7 @@ describe('canonical P2 event contracts', () => {
           "source",
           "reason",
           "session_id_hash",
-          "execution_id",
+          "finalization_id",
         ],
         "queue_publish": [
           "event",
@@ -157,7 +166,7 @@ describe('canonical P2 event contracts', () => {
           "result",
           "sqs_message_id",
           "session_id_hash",
-          "execution_id",
+          "finalization_id",
         ],
         "verification_run_summary": [
           "event",
@@ -167,13 +176,13 @@ describe('canonical P2 event contracts', () => {
           "failed_required_count",
           "dev_mode_receipt",
           "session_id_hash",
-          "execution_id",
+          "finalization_id",
         ],
       }
     `);
   });
 
-  it('snapshots every closed P2 registry', () => {
+  it('snapshots every closed operational event registry', () => {
     expect({
       BUNDLE_DOWNLOAD_ENDPOINTS,
       BUNDLE_DOWNLOAD_S3_ERROR_CODES,
@@ -191,6 +200,14 @@ describe('canonical P2 event contracts', () => {
       VERIFICATION_FAILURE_CATEGORIES,
       VERIFICATION_OUTCOMES,
     }).toMatchSnapshot();
+  });
+
+  it('keeps the expected-domain finalization SLI reasons closed and reviewable', () => {
+    expect(FINALIZATION_SLI_EXPECTED_DOMAIN_REASONS).toEqual([
+      'FINALIZATION_RESULT_INVALID',
+      'USER_CANCELLED',
+      'INVALID_FINALIZATION_ARTIFACT',
+    ]);
   });
 
   it('emits each declared event with only its allowlisted fields', () => {
@@ -228,6 +245,6 @@ describe('canonical P2 event contracts', () => {
       throw new Error('console unavailable');
     });
 
-    expect(() => emitCanonicalEvent(canonicalEventSamples[7])).not.toThrow();
+    expect(() => emitCanonicalEvent(canonicalEventSamples[8])).not.toThrow();
   });
 });

@@ -15,6 +15,7 @@ import {
   getLeafChunk,
 } from '../bitmap-merkle-tree';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
+import { computeIncludedBitmapRootHex } from '@stark-ballot/zkvm-contract/zkvm/bitmap-core';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -42,6 +43,12 @@ function verifyProof(input: {
 }
 
 describe('Bitmap Merkle Tree Proof Generation', () => {
+  it('computes the canonical bitmap root with the browser-safe proof owner', () => {
+    const bitmap = Array.from({ length: 513 }, (_, index) => index === 0 || index === 300 || index === 512);
+
+    expect(computeIncludedBitmapRootHex(bitmap)).toBe(computeIncludedBitmapRoot(bitmap));
+  });
+
   describe('calculateLeafIndex', () => {
     it('should calculate correct leaf index for bit positions', () => {
       // Each leaf contains 256 bits (32 bytes)

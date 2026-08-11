@@ -4709,8 +4709,8 @@
     },
     {
       "name": "bytemuck_derive",
-      "version": "1.11.0",
-      "id": "registry+https://github.com/rust-lang/crates.io-index#bytemuck_derive@1.11.0",
+      "version": "1.12.0",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#bytemuck_derive@1.12.0",
       "license": "Zlib OR Apache-2.0 OR MIT",
       "license_file": null,
       "description": "derive proc-macros for `bytemuck`",
@@ -4743,7 +4743,7 @@
         {
           "name": "syn",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "^2.0.1",
+          "req": "^3",
           "kind": null,
           "rename": null,
           "optional": false,
@@ -4758,7 +4758,7 @@
           "kind": ["proc-macro"],
           "crate_types": ["proc-macro"],
           "name": "bytemuck_derive",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/bytemuck_derive-1.11.0/src/lib.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/bytemuck_derive-1.12.0/src/lib.rs",
           "edition": "2018",
           "doc": true,
           "doctest": true,
@@ -4768,7 +4768,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "basic",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/bytemuck_derive-1.11.0/tests/basic.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/bytemuck_derive-1.12.0/tests/basic.rs",
           "edition": "2018",
           "doc": false,
           "doctest": false,
@@ -4778,7 +4778,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "transparent_wrapper_generic",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/bytemuck_derive-1.11.0/tests/transparent_wrapper_generic.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/bytemuck_derive-1.12.0/tests/transparent_wrapper_generic.rs",
           "edition": "2018",
           "doc": false,
           "doctest": false,
@@ -4786,7 +4786,7 @@
         }
       ],
       "features": {},
-      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/bytemuck_derive-1.11.0/Cargo.toml",
+      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/bytemuck_derive-1.12.0/Cargo.toml",
       "metadata": null,
       "publish": null,
       "authors": ["Lokathor <zefria@gmail.com>"],
@@ -4799,7 +4799,7 @@
       "edition": "2018",
       "links": null,
       "default_run": null,
-      "rust_version": "1.68"
+      "rust_version": "1.71"
     },
     {
       "name": "byteorder",
@@ -7793,8 +7793,8 @@
     },
     {
       "name": "either",
-      "version": "1.16.0",
-      "id": "registry+https://github.com/rust-lang/crates.io-index#either@1.16.0",
+      "version": "1.17.0",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#either@1.17.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "description": "The enum `Either` with variants `Left` and `Right` is a general purpose sum type with two cases.\n",
@@ -7830,7 +7830,7 @@
           "kind": ["lib"],
           "crate_types": ["lib"],
           "name": "either",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.16.0/src/lib.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/lib.rs",
           "edition": "2021",
           "doc": true,
           "doctest": true,
@@ -7843,7 +7843,7 @@
         "std": [],
         "use_std": ["std"]
       },
-      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.16.0/Cargo.toml",
+      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/Cargo.toml",
       "metadata": {
         "release": {
           "allow-branch": ["main"],
@@ -8078,8 +8078,8 @@
     },
     {
       "name": "enum-ordinalize",
-      "version": "4.4.1",
-      "id": "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize@4.4.1",
+      "version": "4.4.2",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize@4.4.2",
       "license": "MIT",
       "license_file": null,
       "description": "This library enables enums to not only obtain the ordinal values of their variants but also allows for the construction of enums from an ordinal value.",
@@ -8103,7 +8103,7 @@
           "kind": ["lib"],
           "crate_types": ["lib"],
           "name": "enum_ordinalize",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/enum-ordinalize-4.4.1/src/lib.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/enum-ordinalize-4.4.2/src/lib.rs",
           "edition": "2024",
           "doc": true,
           "doctest": true,
@@ -8115,7 +8115,7 @@
         "derive": ["dep:enum-ordinalize-derive"],
         "traits": ["enum-ordinalize-derive?/traits"]
       },
-      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/enum-ordinalize-4.4.1/Cargo.toml",
+      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/enum-ordinalize-4.4.2/Cargo.toml",
       "metadata": {
         "docs": {
           "rs": {
@@ -8139,8 +8139,8 @@
     },
     {
       "name": "enum-ordinalize-derive",
-      "version": "4.4.1",
-      "id": "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize-derive@4.4.1",
+      "version": "4.4.2",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize-derive@4.4.2",
       "license": "MIT",
       "license_file": null,
       "description": "This crate provides a procedural macro that enables enums to not only obtain the ordinal values of their variants but also allows for the construction of enums from an ordinal value.",
@@ -8149,7 +8149,7 @@
         {
           "name": "proc-macro2",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "^1.0.52",
+          "req": "^1.0.91",
           "kind": null,
           "rename": null,
           "optional": false,
@@ -8161,7 +8161,7 @@
         {
           "name": "quote",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "^1.0.25",
+          "req": "^1.0.35",
           "kind": null,
           "rename": null,
           "optional": false,
@@ -8173,7 +8173,7 @@
         {
           "name": "syn",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "^2",
+          "req": "^3",
           "kind": null,
           "rename": null,
           "optional": false,
@@ -8188,7 +8188,7 @@
           "kind": ["proc-macro"],
           "crate_types": ["proc-macro"],
           "name": "enum_ordinalize_derive",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/enum-ordinalize-derive-4.4.1/src/lib.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/enum-ordinalize-derive-4.4.2/src/lib.rs",
           "edition": "2024",
           "doc": true,
           "doctest": true,
@@ -8199,7 +8199,7 @@
         "default": [],
         "traits": []
       },
-      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/enum-ordinalize-derive-4.4.1/Cargo.toml",
+      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/enum-ordinalize-derive-4.4.2/Cargo.toml",
       "metadata": null,
       "publish": null,
       "authors": [],
@@ -9085,8 +9085,8 @@
     },
     {
       "name": "foreign-types-macros",
-      "version": "0.2.3",
-      "id": "registry+https://github.com/rust-lang/crates.io-index#foreign-types-macros@0.2.3",
+      "version": "0.2.4",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#foreign-types-macros@0.2.4",
       "license": "MIT/Apache-2.0",
       "license_file": null,
       "description": "An internal crate used by foreign-types",
@@ -9119,7 +9119,7 @@
         {
           "name": "syn",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "^2.0",
+          "req": "^3.0",
           "kind": null,
           "rename": null,
           "optional": false,
@@ -9134,7 +9134,7 @@
           "kind": ["proc-macro"],
           "crate_types": ["proc-macro"],
           "name": "foreign_types_macros",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/foreign-types-macros-0.2.3/src/lib.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/foreign-types-macros-0.2.4/src/lib.rs",
           "edition": "2018",
           "doc": true,
           "doctest": true,
@@ -9144,7 +9144,7 @@
       "features": {
         "std": []
       },
-      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/foreign-types-macros-0.2.3/Cargo.toml",
+      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/foreign-types-macros-0.2.4/Cargo.toml",
       "metadata": null,
       "publish": null,
       "authors": ["Steven Fackler <sfackler@gmail.com>"],
@@ -20321,8 +20321,8 @@
     },
     {
       "name": "ruint",
-      "version": "1.19.0",
-      "id": "registry+https://github.com/rust-lang/crates.io-index#ruint@1.19.0",
+      "version": "1.20.0",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#ruint@1.20.0",
       "license": "MIT",
       "license_file": null,
       "description": "Unsigned integer type with const-generic bit length",
@@ -20833,18 +20833,6 @@
           "registry": null
         },
         {
-          "name": "arrayvec",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "^0.7",
-          "kind": "dev",
-          "rename": null,
-          "optional": false,
-          "uses_default_features": true,
-          "features": [],
-          "target": null,
-          "registry": null
-        },
-        {
           "name": "bincode",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "req": "^1.3",
@@ -20869,18 +20857,6 @@
           "registry": null
         },
         {
-          "name": "codspeed-criterion-compat",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "^4.3",
-          "kind": "dev",
-          "rename": "criterion",
-          "optional": false,
-          "uses_default_features": true,
-          "features": [],
-          "target": null,
-          "registry": null
-        },
-        {
           "name": "hex",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "req": "^0.4",
@@ -20896,30 +20872,6 @@
           "name": "hex-literal",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
           "req": "^1.0",
-          "kind": "dev",
-          "rename": null,
-          "optional": false,
-          "uses_default_features": true,
-          "features": [],
-          "target": null,
-          "registry": null
-        },
-        {
-          "name": "postgres",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "^0.19",
-          "kind": "dev",
-          "rename": null,
-          "optional": false,
-          "uses_default_features": true,
-          "features": [],
-          "target": null,
-          "registry": null
-        },
-        {
-          "name": "proptest",
-          "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "^1",
           "kind": "dev",
           "rename": null,
           "optional": false,
@@ -20951,6 +20903,66 @@
           "features": [],
           "target": null,
           "registry": null
+        },
+        {
+          "name": "arrayvec",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "req": "^0.7",
+          "kind": "dev",
+          "rename": null,
+          "optional": false,
+          "uses_default_features": true,
+          "features": [],
+          "target": "cfg(not(target_family = \"wasm\"))",
+          "registry": null
+        },
+        {
+          "name": "codspeed-criterion-compat",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "req": "^4.3",
+          "kind": "dev",
+          "rename": "criterion",
+          "optional": false,
+          "uses_default_features": true,
+          "features": [],
+          "target": "cfg(not(target_family = \"wasm\"))",
+          "registry": null
+        },
+        {
+          "name": "postgres",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "req": "^0.19",
+          "kind": "dev",
+          "rename": null,
+          "optional": false,
+          "uses_default_features": true,
+          "features": [],
+          "target": "cfg(not(target_family = \"wasm\"))",
+          "registry": null
+        },
+        {
+          "name": "proptest",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "req": "^1",
+          "kind": "dev",
+          "rename": null,
+          "optional": false,
+          "uses_default_features": true,
+          "features": [],
+          "target": "cfg(not(target_family = \"wasm\"))",
+          "registry": null
+        },
+        {
+          "name": "proptest",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "req": "^1",
+          "kind": "dev",
+          "rename": null,
+          "optional": false,
+          "uses_default_features": false,
+          "features": ["std"],
+          "target": "cfg(target_family = \"wasm\")",
+          "registry": null
         }
       ],
       "targets": [
@@ -20958,7 +20970,7 @@
           "kind": ["lib"],
           "crate_types": ["lib"],
           "name": "ruint",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/ruint-1.19.0/src/lib.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/ruint-1.20.0/src/lib.rs",
           "edition": "2024",
           "doc": true,
           "doctest": true,
@@ -21037,7 +21049,7 @@
         "valuable": ["dep:valuable"],
         "zeroize": ["dep:zeroize"]
       },
-      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/ruint-1.19.0/Cargo.toml",
+      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/ruint-1.20.0/Cargo.toml",
       "metadata": {
         "docs": {
           "rs": {
@@ -24762,8 +24774,8 @@
     },
     {
       "name": "thiserror",
-      "version": "2.0.19",
-      "id": "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.19",
+      "version": "2.0.20",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "description": "derive(Error)",
@@ -24772,7 +24784,7 @@
         {
           "name": "thiserror-impl",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "=2.0.19",
+          "req": "=2.0.20",
           "kind": null,
           "rename": null,
           "optional": false,
@@ -24835,7 +24847,7 @@
           "kind": ["lib"],
           "crate_types": ["lib"],
           "name": "thiserror",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/lib.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/lib.rs",
           "edition": "2021",
           "doc": true,
           "doctest": true,
@@ -24845,7 +24857,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "compiletest",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/tests/compiletest.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/tests/compiletest.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -24855,7 +24867,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "test_backtrace",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/tests/test_backtrace.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/tests/test_backtrace.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -24865,7 +24877,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "test_display",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/tests/test_display.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/tests/test_display.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -24875,7 +24887,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "test_error",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/tests/test_error.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/tests/test_error.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -24885,7 +24897,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "test_expr",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/tests/test_expr.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/tests/test_expr.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -24895,7 +24907,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "test_from",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/tests/test_from.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/tests/test_from.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -24905,7 +24917,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "test_generics",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/tests/test_generics.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/tests/test_generics.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -24915,7 +24927,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "test_lints",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/tests/test_lints.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/tests/test_lints.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -24925,7 +24937,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "test_option",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/tests/test_option.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/tests/test_option.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -24935,7 +24947,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "test_path",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/tests/test_path.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/tests/test_path.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -24945,7 +24957,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "test_source",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/tests/test_source.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/tests/test_source.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -24955,7 +24967,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "test_transparent",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/tests/test_transparent.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/tests/test_transparent.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -24965,7 +24977,7 @@
           "kind": ["custom-build"],
           "crate_types": ["bin"],
           "name": "build-script-build",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/build.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/build.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -24976,7 +24988,7 @@
         "default": ["std"],
         "std": []
       },
-      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/Cargo.toml",
+      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/Cargo.toml",
       "metadata": {
         "docs": {
           "rs": {
@@ -25006,8 +25018,8 @@
     },
     {
       "name": "thiserror-impl",
-      "version": "2.0.19",
-      "id": "registry+https://github.com/rust-lang/crates.io-index#thiserror-impl@2.0.19",
+      "version": "2.0.20",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#thiserror-impl@2.0.20",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "description": "Implementation detail of the `thiserror` crate",
@@ -25055,7 +25067,7 @@
           "kind": ["proc-macro"],
           "crate_types": ["proc-macro"],
           "name": "thiserror_impl",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-impl-2.0.19/src/lib.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-impl-2.0.20/src/lib.rs",
           "edition": "2021",
           "doc": true,
           "doctest": true,
@@ -25063,7 +25075,7 @@
         }
       ],
       "features": {},
-      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-impl-2.0.19/Cargo.toml",
+      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-impl-2.0.20/Cargo.toml",
       "metadata": {
         "docs": {
           "rs": {
@@ -25094,8 +25106,8 @@
     },
     {
       "name": "time",
-      "version": "0.3.54",
-      "id": "registry+https://github.com/rust-lang/crates.io-index#time@0.3.54",
+      "version": "0.3.55",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#time@0.3.55",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "description": "Date and time library. Fully interoperable with the standard library. Mostly compatible with #![no_std].",
@@ -25407,7 +25419,7 @@
           "kind": ["lib"],
           "crate_types": ["lib"],
           "name": "time",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/time-0.3.54/src/lib.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/time-0.3.55/src/lib.rs",
           "edition": "2024",
           "doc": true,
           "doctest": true,
@@ -25417,7 +25429,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "tests",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/time-0.3.54/tests/integration/main.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/time-0.3.55/tests/integration/main.rs",
           "edition": "2024",
           "doc": false,
           "doctest": false,
@@ -25427,7 +25439,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "benchmarks",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/time-0.3.54/benchmarks/main.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/time-0.3.55/benchmarks/main.rs",
           "edition": "2024",
           "doc": false,
           "doctest": false,
@@ -25453,7 +25465,7 @@
         "std": ["alloc"],
         "wasm-bindgen": ["dep:js-sys"]
       },
-      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/time-0.3.54/Cargo.toml",
+      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/time-0.3.55/Cargo.toml",
       "metadata": {
         "docs": {
           "rs": {
@@ -26010,8 +26022,8 @@
     },
     {
       "name": "toml_parser",
-      "version": "1.1.2+spec-1.1.0",
-      "id": "registry+https://github.com/rust-lang/crates.io-index#toml_parser@1.1.2+spec-1.1.0",
+      "version": "1.1.3+spec-1.1.0",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#toml_parser@1.1.3+spec-1.1.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "description": "Yet another format-preserving TOML parser.",
@@ -26083,7 +26095,7 @@
           "kind": ["lib"],
           "crate_types": ["lib"],
           "name": "toml_parser",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/toml_parser-1.1.2+spec-1.1.0/src/lib.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/toml_parser-1.1.3+spec-1.1.0/src/lib.rs",
           "edition": "2024",
           "doc": true,
           "doctest": true,
@@ -26098,7 +26110,7 @@
         "std": ["alloc"],
         "unsafe": []
       },
-      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/toml_parser-1.1.2+spec-1.1.0/Cargo.toml",
+      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/toml_parser-1.1.3+spec-1.1.0/Cargo.toml",
       "metadata": {
         "docs": {
           "rs": {
@@ -29517,8 +29529,8 @@
     },
     {
       "name": "zerocopy",
-      "version": "0.8.55",
-      "id": "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.55",
+      "version": "0.8.56",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.56",
       "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
       "license_file": null,
       "description": "Zerocopy makes zero-cost memory manipulation effortless. We write \"unsafe\" so you don't have to.",
@@ -29527,7 +29539,7 @@
         {
           "name": "zerocopy-derive",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "=0.8.55",
+          "req": "=0.8.56",
           "kind": null,
           "rename": null,
           "optional": true,
@@ -29563,7 +29575,7 @@
         {
           "name": "rand",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "^0.8.5",
+          "req": "^0.8.7",
           "kind": "dev",
           "rename": null,
           "optional": false,
@@ -29611,7 +29623,7 @@
         {
           "name": "zerocopy-derive",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "=0.8.55",
+          "req": "=0.8.56",
           "kind": "dev",
           "rename": null,
           "optional": false,
@@ -29623,7 +29635,7 @@
         {
           "name": "zerocopy-derive",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "=0.8.55",
+          "req": "=0.8.56",
           "kind": null,
           "rename": null,
           "optional": false,
@@ -29638,7 +29650,7 @@
           "kind": ["lib"],
           "crate_types": ["lib"],
           "name": "zerocopy",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/src/lib.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/src/lib.rs",
           "edition": "2021",
           "doc": true,
           "doctest": true,
@@ -29648,7 +29660,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "codegen",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/tests/codegen.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/tests/codegen.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29658,7 +29670,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "include",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/tests/include.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/tests/include.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29668,7 +29680,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "ui",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/tests/ui.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/tests/ui.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29678,7 +29690,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "as_bytes_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/as_bytes_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/as_bytes_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29688,7 +29700,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "as_bytes_static_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/as_bytes_static_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/as_bytes_static_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29698,7 +29710,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "extend_vec_zeroed",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/extend_vec_zeroed.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/extend_vec_zeroed.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29708,7 +29720,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "insert_vec_zeroed",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/insert_vec_zeroed.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/insert_vec_zeroed.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29718,7 +29730,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "new_box_zeroed",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/new_box_zeroed.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/new_box_zeroed.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29728,7 +29740,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "new_box_zeroed_with_elems_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/new_box_zeroed_with_elems_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/new_box_zeroed_with_elems_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29738,7 +29750,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "new_box_zeroed_with_elems_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/new_box_zeroed_with_elems_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/new_box_zeroed_with_elems_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29748,7 +29760,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "new_vec_zeroed",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/new_vec_zeroed.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/new_vec_zeroed.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29758,7 +29770,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "new_zeroed",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/new_zeroed.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/new_zeroed.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29768,7 +29780,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "read_from_bytes",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/read_from_bytes.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/read_from_bytes.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29778,7 +29790,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "read_from_prefix",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/read_from_prefix.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/read_from_prefix.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29788,7 +29800,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "read_from_suffix",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/read_from_suffix.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/read_from_suffix.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29798,7 +29810,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_bytes_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_bytes_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_bytes_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29808,7 +29820,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_bytes_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_bytes_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_bytes_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29818,7 +29830,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_bytes_static_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_bytes_static_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_bytes_static_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29828,7 +29840,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_bytes_with_elems_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_bytes_with_elems_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_bytes_with_elems_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29838,7 +29850,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_bytes_with_elems_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_bytes_with_elems_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_bytes_with_elems_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29848,7 +29860,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_prefix_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_prefix_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_prefix_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29858,7 +29870,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_prefix_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_prefix_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_prefix_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29868,7 +29880,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_prefix_static_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_prefix_static_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_prefix_static_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29878,7 +29890,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_prefix_with_elems_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_prefix_with_elems_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_prefix_with_elems_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29888,7 +29900,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_prefix_with_elems_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_prefix_with_elems_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_prefix_with_elems_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29898,7 +29910,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_suffix_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_suffix_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_suffix_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29908,7 +29920,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_suffix_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_suffix_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_suffix_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29918,7 +29930,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_suffix_static_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_suffix_static_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_suffix_static_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29928,7 +29940,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_suffix_with_elems_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_suffix_with_elems_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_suffix_with_elems_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29938,7 +29950,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "ref_from_suffix_with_elems_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/ref_from_suffix_with_elems_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/ref_from_suffix_with_elems_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29948,7 +29960,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "split_at_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/split_at_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/split_at_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29958,7 +29970,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "split_at_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/split_at_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/split_at_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29968,7 +29980,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "split_at_unchecked_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/split_at_unchecked_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/split_at_unchecked_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29978,7 +29990,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "split_at_unchecked_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/split_at_unchecked_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/split_at_unchecked_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29988,7 +30000,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "split_via_immutable_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/split_via_immutable_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/split_via_immutable_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -29998,7 +30010,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "split_via_immutable_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/split_via_immutable_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/split_via_immutable_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30008,7 +30020,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "split_via_runtime_check_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/split_via_runtime_check_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/split_via_runtime_check_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30018,7 +30030,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "split_via_runtime_check_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/split_via_runtime_check_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/split_via_runtime_check_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30028,7 +30040,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "split_via_unchecked_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/split_via_unchecked_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/split_via_unchecked_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30038,7 +30050,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "split_via_unchecked_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/split_via_unchecked_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/split_via_unchecked_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30048,7 +30060,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "transmute",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/transmute.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/transmute.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30058,7 +30070,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "transmute_ref_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/transmute_ref_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/transmute_ref_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30068,7 +30080,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "transmute_ref_static_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/transmute_ref_static_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/transmute_ref_static_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30078,7 +30090,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_read_from_bytes",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_read_from_bytes.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_read_from_bytes.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30088,7 +30100,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_read_from_prefix",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_read_from_prefix.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_read_from_prefix.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30098,7 +30110,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_read_from_suffix",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_read_from_suffix.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_read_from_suffix.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30108,7 +30120,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_bytes_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_bytes_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_bytes_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30118,7 +30130,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_bytes_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_bytes_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_bytes_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30128,7 +30140,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_bytes_static_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_bytes_static_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_bytes_static_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30138,7 +30150,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_bytes_with_elems_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_bytes_with_elems_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_bytes_with_elems_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30148,7 +30160,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_bytes_with_elems_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_bytes_with_elems_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_bytes_with_elems_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30158,7 +30170,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_prefix_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_prefix_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_prefix_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30168,7 +30180,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_prefix_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_prefix_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_prefix_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30178,7 +30190,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_prefix_static_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_prefix_static_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_prefix_static_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30188,7 +30200,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_prefix_with_elems_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_prefix_with_elems_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_prefix_with_elems_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30198,7 +30210,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_prefix_with_elems_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_prefix_with_elems_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_prefix_with_elems_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30208,7 +30220,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_suffix_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_suffix_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_suffix_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30218,7 +30230,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_suffix_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_suffix_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_suffix_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30228,7 +30240,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_suffix_static_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_suffix_static_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_suffix_static_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30238,7 +30250,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_suffix_with_elems_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_suffix_with_elems_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_suffix_with_elems_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30248,7 +30260,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_ref_from_suffix_with_elems_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_ref_from_suffix_with_elems_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_ref_from_suffix_with_elems_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30258,7 +30270,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_transmute",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_transmute.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_transmute.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30268,7 +30280,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_transmute_ref_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_transmute_ref_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_transmute_ref_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30278,7 +30290,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "try_transmute_ref_static_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/try_transmute_ref_static_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/try_transmute_ref_static_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30288,7 +30300,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "write_to_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/write_to_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/write_to_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30298,7 +30310,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "write_to_prefix_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/write_to_prefix_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/write_to_prefix_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30308,7 +30320,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "write_to_prefix_static_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/write_to_prefix_static_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/write_to_prefix_static_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30318,7 +30330,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "write_to_static_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/write_to_static_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/write_to_static_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30328,7 +30340,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "write_to_suffix_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/write_to_suffix_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/write_to_suffix_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30338,7 +30350,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "write_to_suffix_static_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/write_to_suffix_static_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/write_to_suffix_static_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30348,7 +30360,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "zero_dynamic_padding",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/zero_dynamic_padding.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/zero_dynamic_padding.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30358,7 +30370,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "zero_dynamic_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/zero_dynamic_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/zero_dynamic_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30368,7 +30380,7 @@
           "kind": ["bench"],
           "crate_types": ["bin"],
           "name": "zero_static_size",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/benches/zero_static_size.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/benches/zero_static_size.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30378,7 +30390,7 @@
           "kind": ["custom-build"],
           "crate_types": ["bin"],
           "name": "build-script-build",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/build.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/build.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30395,7 +30407,7 @@
         "std": ["alloc"],
         "zerocopy-derive": ["dep:zerocopy-derive"]
       },
-      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.55/Cargo.toml",
+      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.56/Cargo.toml",
       "metadata": {
         "build-rs": {
           "no-zerocopy-simd-x86-avx12-1-89-0": "1.89.0",
@@ -30429,7 +30441,7 @@
         }
       },
       "publish": null,
-      "authors": ["Joshua Liebow-Feeser <joshlf@google.com>", "Jack Wrenn <jswrenn@amazon.com>"],
+      "authors": [],
       "categories": ["embedded", "encoding", "no-std::no-alloc", "parsing", "rust-patterns"],
       "keywords": ["cast", "convert", "transmute", "transmutation", "type-punning"],
       "readme": "README.md",
@@ -30443,8 +30455,8 @@
     },
     {
       "name": "zerocopy-derive",
-      "version": "0.8.55",
-      "id": "registry+https://github.com/rust-lang/crates.io-index#zerocopy-derive@0.8.55",
+      "version": "0.8.56",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#zerocopy-derive@0.8.56",
       "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
       "license_file": null,
       "description": "Custom derive for traits from the zerocopy crate",
@@ -30501,7 +30513,7 @@
         {
           "name": "prettyplease",
           "source": "registry+https://github.com/rust-lang/crates.io-index",
-          "req": "=0.2.17",
+          "req": "^0.2.17",
           "kind": "dev",
           "rename": null,
           "optional": false,
@@ -30552,7 +30564,7 @@
           "kind": ["proc-macro"],
           "crate_types": ["proc-macro"],
           "name": "zerocopy_derive",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/src/lib.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/src/lib.rs",
           "edition": "2021",
           "doc": true,
           "doctest": true,
@@ -30562,7 +30574,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "deprecated",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/deprecated.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/deprecated.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30572,7 +30584,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "enum_from_zeros",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/enum_from_zeros.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/enum_from_zeros.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30582,7 +30594,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "enum_known_layout",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/enum_known_layout.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/enum_known_layout.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30592,7 +30604,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "enum_no_cell",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/enum_no_cell.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/enum_no_cell.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30602,7 +30614,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "enum_to_bytes",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/enum_to_bytes.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/enum_to_bytes.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30612,7 +30624,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "enum_try_from_bytes",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/enum_try_from_bytes.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/enum_try_from_bytes.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30622,7 +30634,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "enum_unaligned",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/enum_unaligned.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/enum_unaligned.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30632,7 +30644,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "eq",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/eq.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/eq.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30642,7 +30654,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "hash",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/hash.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/hash.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30652,7 +30664,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "hygiene",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/hygiene.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/hygiene.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30662,7 +30674,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "include",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/include.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/include.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30672,7 +30684,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "issue_2117",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/issue_2117.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/issue_2117.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30682,7 +30694,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "issue_2835",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/issue_2835.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/issue_2835.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30692,7 +30704,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "issue_2880",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/issue_2880.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/issue_2880.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30702,7 +30714,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "issue_2915",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/issue_2915.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/issue_2915.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30712,7 +30724,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "on_error",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/on_error.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/on_error.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30722,7 +30734,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "paths_and_modules",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/paths_and_modules.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/paths_and_modules.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30732,7 +30744,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "priv_in_pub",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/priv_in_pub.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/priv_in_pub.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30742,7 +30754,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "struct_from_bytes",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/struct_from_bytes.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/struct_from_bytes.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30752,7 +30764,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "struct_from_zeros",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/struct_from_zeros.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/struct_from_zeros.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30762,7 +30774,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "struct_known_layout",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/struct_known_layout.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/struct_known_layout.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30772,7 +30784,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "struct_no_cell",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/struct_no_cell.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/struct_no_cell.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30782,7 +30794,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "struct_to_bytes",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/struct_to_bytes.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/struct_to_bytes.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30792,7 +30804,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "struct_try_from_bytes",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/struct_try_from_bytes.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/struct_try_from_bytes.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30802,7 +30814,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "struct_unaligned",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/struct_unaligned.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/struct_unaligned.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30812,7 +30824,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "ui",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/ui.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/ui.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30822,7 +30834,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "union_from_bytes",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/union_from_bytes.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/union_from_bytes.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30832,7 +30844,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "union_from_zeros",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/union_from_zeros.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/union_from_zeros.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30842,7 +30854,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "union_known_layout",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/union_known_layout.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/union_known_layout.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30852,7 +30864,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "union_no_cell",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/union_no_cell.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/union_no_cell.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30862,7 +30874,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "union_to_bytes",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/union_to_bytes.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/union_to_bytes.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30872,7 +30884,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "union_try_from_bytes",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/union_try_from_bytes.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/union_try_from_bytes.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30882,7 +30894,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "union_unaligned",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/union_unaligned.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/union_unaligned.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30892,7 +30904,7 @@
           "kind": ["test"],
           "crate_types": ["bin"],
           "name": "unsafe_cell",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/tests/unsafe_cell.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/tests/unsafe_cell.rs",
           "edition": "2021",
           "doc": false,
           "doctest": false,
@@ -30900,10 +30912,10 @@
         }
       ],
       "features": {},
-      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.55/Cargo.toml",
+      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.56/Cargo.toml",
       "metadata": null,
       "publish": null,
-      "authors": ["Joshua Liebow-Feeser <joshlf@google.com>", "Jack Wrenn <jswrenn@amazon.com>"],
+      "authors": [],
       "categories": [],
       "keywords": [],
       "readme": null,
@@ -31623,8 +31635,8 @@
     },
     {
       "name": "zlib-rs",
-      "version": "0.6.6",
-      "id": "registry+https://github.com/rust-lang/crates.io-index#zlib-rs@0.6.6",
+      "version": "0.6.7",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#zlib-rs@0.6.7",
       "license": "Zlib",
       "license_file": null,
       "description": "A memory-safe zlib implementation written in rust",
@@ -31696,7 +31708,7 @@
           "kind": ["lib"],
           "crate_types": ["lib"],
           "name": "zlib_rs",
-          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zlib-rs-0.6.6/src/lib.rs",
+          "src_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zlib-rs-0.6.7/src/lib.rs",
           "edition": "2021",
           "doc": true,
           "doctest": true,
@@ -31719,7 +31731,7 @@
         "std": ["rust-allocator"],
         "vpclmulqdq": []
       },
-      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zlib-rs-0.6.6/Cargo.toml",
+      "manifest_path": "<CARGO_HOME>/registry/src/index.crates.io-1949cf8c6b5b557f/zlib-rs-0.6.7/Cargo.toml",
       "metadata": null,
       "publish": null,
       "authors": [],
@@ -31948,7 +31960,7 @@
           "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.4",
           "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4",
           "registry+https://github.com/rust-lang/crates.io-index#version_check@0.9.5",
-          "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.55"
+          "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.56"
         ],
         "deps": [
           {
@@ -31983,7 +31995,7 @@
           },
           {
             "name": "zerocopy",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.55",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.56",
             "dep_kinds": [
               {
                 "kind": null,
@@ -33325,11 +33337,11 @@
       },
       {
         "id": "registry+https://github.com/rust-lang/crates.io-index#bytemuck@1.25.2",
-        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#bytemuck_derive@1.11.0"],
+        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#bytemuck_derive@1.12.0"],
         "deps": [
           {
             "name": "bytemuck_derive",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#bytemuck_derive@1.11.0",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#bytemuck_derive@1.12.0",
             "dep_kinds": [
               {
                 "kind": null,
@@ -33341,11 +33353,11 @@
         "features": ["bytemuck_derive", "derive", "extern_crate_alloc"]
       },
       {
-        "id": "registry+https://github.com/rust-lang/crates.io-index#bytemuck_derive@1.11.0",
+        "id": "registry+https://github.com/rust-lang/crates.io-index#bytemuck_derive@1.12.0",
         "dependencies": [
           "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107",
           "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.47",
-          "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.119"
+          "registry+https://github.com/rust-lang/crates.io-index#syn@3.0.3"
         ],
         "deps": [
           {
@@ -33370,7 +33382,7 @@
           },
           {
             "name": "syn",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.119",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#syn@3.0.3",
             "dep_kinds": [
               {
                 "kind": null,
@@ -33401,11 +33413,11 @@
       },
       {
         "id": "registry+https://github.com/rust-lang/crates.io-index#cobs@0.3.0",
-        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.19"],
+        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20"],
         "deps": [
           {
             "name": "thiserror",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.19",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
             "dep_kinds": [
               {
                 "kind": null,
@@ -33763,7 +33775,7 @@
       {
         "id": "registry+https://github.com/rust-lang/crates.io-index#educe@0.6.0",
         "dependencies": [
-          "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize@4.4.1",
+          "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize@4.4.2",
           "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107",
           "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.47",
           "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.119"
@@ -33771,7 +33783,7 @@
         "deps": [
           {
             "name": "enum_ordinalize",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize@4.4.1",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize@4.4.2",
             "dep_kinds": [
               {
                 "kind": null,
@@ -33827,7 +33839,7 @@
         ]
       },
       {
-        "id": "registry+https://github.com/rust-lang/crates.io-index#either@1.16.0",
+        "id": "registry+https://github.com/rust-lang/crates.io-index#either@1.17.0",
         "dependencies": [],
         "deps": [],
         "features": ["std", "use_std"]
@@ -33851,12 +33863,12 @@
         "features": ["alloc"]
       },
       {
-        "id": "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize@4.4.1",
-        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize-derive@4.4.1"],
+        "id": "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize@4.4.2",
+        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize-derive@4.4.2"],
         "deps": [
           {
             "name": "enum_ordinalize_derive",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize-derive@4.4.1",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize-derive@4.4.2",
             "dep_kinds": [
               {
                 "kind": null,
@@ -33868,11 +33880,11 @@
         "features": ["derive"]
       },
       {
-        "id": "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize-derive@4.4.1",
+        "id": "registry+https://github.com/rust-lang/crates.io-index#enum-ordinalize-derive@4.4.2",
         "dependencies": [
           "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107",
           "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.47",
-          "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.119"
+          "registry+https://github.com/rust-lang/crates.io-index#syn@3.0.3"
         ],
         "deps": [
           {
@@ -33897,7 +33909,7 @@
           },
           {
             "name": "syn",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.119",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#syn@3.0.3",
             "dep_kinds": [
               {
                 "kind": null,
@@ -33962,7 +33974,7 @@
         "id": "registry+https://github.com/rust-lang/crates.io-index#flate2@1.1.9",
         "dependencies": [
           "registry+https://github.com/rust-lang/crates.io-index#miniz_oxide@0.8.9",
-          "registry+https://github.com/rust-lang/crates.io-index#zlib-rs@0.6.6"
+          "registry+https://github.com/rust-lang/crates.io-index#zlib-rs@0.6.7"
         ],
         "deps": [
           {
@@ -33977,7 +33989,7 @@
           },
           {
             "name": "zlib_rs",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#zlib-rs@0.6.6",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#zlib-rs@0.6.7",
             "dep_kinds": [
               {
                 "kind": null,
@@ -33997,13 +34009,13 @@
       {
         "id": "registry+https://github.com/rust-lang/crates.io-index#foreign-types@0.5.0",
         "dependencies": [
-          "registry+https://github.com/rust-lang/crates.io-index#foreign-types-macros@0.2.3",
+          "registry+https://github.com/rust-lang/crates.io-index#foreign-types-macros@0.2.4",
           "registry+https://github.com/rust-lang/crates.io-index#foreign-types-shared@0.3.1"
         ],
         "deps": [
           {
             "name": "foreign_types_macros",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#foreign-types-macros@0.2.3",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#foreign-types-macros@0.2.4",
             "dep_kinds": [
               {
                 "kind": null,
@@ -34025,11 +34037,11 @@
         "features": ["default", "std"]
       },
       {
-        "id": "registry+https://github.com/rust-lang/crates.io-index#foreign-types-macros@0.2.3",
+        "id": "registry+https://github.com/rust-lang/crates.io-index#foreign-types-macros@0.2.4",
         "dependencies": [
           "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107",
           "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.47",
-          "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.119"
+          "registry+https://github.com/rust-lang/crates.io-index#syn@3.0.3"
         ],
         "deps": [
           {
@@ -34054,7 +34066,7 @@
           },
           {
             "name": "syn",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.119",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#syn@3.0.3",
             "dep_kinds": [
               {
                 "kind": null,
@@ -34364,11 +34376,11 @@
       },
       {
         "id": "registry+https://github.com/rust-lang/crates.io-index#itertools@0.13.0",
-        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#either@1.16.0"],
+        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#either@1.17.0"],
         "deps": [
           {
             "name": "either",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#either@1.16.0",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#either@1.17.0",
             "dep_kinds": [
               {
                 "kind": null,
@@ -34888,11 +34900,11 @@
       },
       {
         "id": "registry+https://github.com/rust-lang/crates.io-index#ppv-lite86@0.2.21",
-        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.55"],
+        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.56"],
         "deps": [
           {
             "name": "zerocopy",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.55",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.56",
             "dep_kinds": [
               {
                 "kind": null,
@@ -35189,7 +35201,7 @@
           "registry+https://github.com/rust-lang/crates.io-index#rand@0.9.5",
           "registry+https://github.com/rust-lang/crates.io-index#risc0-zkp@3.0.5",
           "registry+https://github.com/rust-lang/crates.io-index#risc0-zkvm-platform@2.2.3",
-          "registry+https://github.com/rust-lang/crates.io-index#ruint@1.19.0",
+          "registry+https://github.com/rust-lang/crates.io-index#ruint@1.20.0",
           "registry+https://github.com/rust-lang/crates.io-index#semver@1.0.28",
           "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
           "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44"
@@ -35297,7 +35309,7 @@
           },
           {
             "name": "ruint",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#ruint@1.19.0",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#ruint@1.20.0",
             "dep_kinds": [
               {
                 "kind": null,
@@ -36413,7 +36425,7 @@
         "features": []
       },
       {
-        "id": "registry+https://github.com/rust-lang/crates.io-index#ruint@1.19.0",
+        "id": "registry+https://github.com/rust-lang/crates.io-index#ruint@1.20.0",
         "dependencies": [
           "registry+https://github.com/rust-lang/crates.io-index#borsh@1.8.0",
           "registry+https://github.com/rust-lang/crates.io-index#proptest@1.11.0",
@@ -37029,7 +37041,7 @@
             ]
           }
         ],
-        "features": ["clone-impls", "default", "derive", "parsing", "printing", "proc-macro"]
+        "features": ["clone-impls", "default", "derive", "full", "parsing", "printing", "proc-macro"]
       },
       {
         "id": "registry+https://github.com/rust-lang/crates.io-index#tempfile@3.27.0",
@@ -37095,12 +37107,12 @@
         "features": ["default", "getrandom"]
       },
       {
-        "id": "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.19",
-        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#thiserror-impl@2.0.19"],
+        "id": "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
+        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#thiserror-impl@2.0.20"],
         "deps": [
           {
             "name": "thiserror_impl",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#thiserror-impl@2.0.19",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#thiserror-impl@2.0.20",
             "dep_kinds": [
               {
                 "kind": null,
@@ -37112,7 +37124,7 @@
         "features": ["default", "std"]
       },
       {
-        "id": "registry+https://github.com/rust-lang/crates.io-index#thiserror-impl@2.0.19",
+        "id": "registry+https://github.com/rust-lang/crates.io-index#thiserror-impl@2.0.20",
         "dependencies": [
           "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107",
           "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.47",
@@ -37153,7 +37165,7 @@
         "features": []
       },
       {
-        "id": "registry+https://github.com/rust-lang/crates.io-index#time@0.3.54",
+        "id": "registry+https://github.com/rust-lang/crates.io-index#time@0.3.55",
         "dependencies": [
           "registry+https://github.com/rust-lang/crates.io-index#deranged@0.5.8",
           "registry+https://github.com/rust-lang/crates.io-index#num-conv@0.2.2",
@@ -37284,7 +37296,7 @@
         "dependencies": [
           "registry+https://github.com/rust-lang/crates.io-index#indexmap@2.14.0",
           "registry+https://github.com/rust-lang/crates.io-index#toml_datetime@1.1.1+spec-1.1.0",
-          "registry+https://github.com/rust-lang/crates.io-index#toml_parser@1.1.2+spec-1.1.0",
+          "registry+https://github.com/rust-lang/crates.io-index#toml_parser@1.1.3+spec-1.1.0",
           "registry+https://github.com/rust-lang/crates.io-index#winnow@1.0.4"
         ],
         "deps": [
@@ -37310,7 +37322,7 @@
           },
           {
             "name": "toml_parser",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#toml_parser@1.1.2+spec-1.1.0",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#toml_parser@1.1.3+spec-1.1.0",
             "dep_kinds": [
               {
                 "kind": null,
@@ -37332,7 +37344,7 @@
         "features": ["parse"]
       },
       {
-        "id": "registry+https://github.com/rust-lang/crates.io-index#toml_parser@1.1.2+spec-1.1.0",
+        "id": "registry+https://github.com/rust-lang/crates.io-index#toml_parser@1.1.3+spec-1.1.0",
         "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#winnow@1.0.4"],
         "deps": [
           {
@@ -37533,8 +37545,8 @@
           "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
           "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
           "registry+https://github.com/rust-lang/crates.io-index#tempfile@3.27.0",
-          "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.19",
-          "registry+https://github.com/rust-lang/crates.io-index#time@0.3.54",
+          "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
+          "registry+https://github.com/rust-lang/crates.io-index#time@0.3.55",
           "registry+https://github.com/rust-lang/crates.io-index#zip@8.6.0"
         ],
         "deps": [
@@ -37600,7 +37612,7 @@
           },
           {
             "name": "thiserror",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.19",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
             "dep_kinds": [
               {
                 "kind": null,
@@ -37610,7 +37622,7 @@
           },
           {
             "name": "time",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#time@0.3.54",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#time@0.3.55",
             "dep_kinds": [
               {
                 "kind": null,
@@ -37718,12 +37730,12 @@
         "features": []
       },
       {
-        "id": "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.55",
-        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#zerocopy-derive@0.8.55"],
+        "id": "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.56",
+        "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#zerocopy-derive@0.8.56"],
         "deps": [
           {
             "name": "zerocopy_derive",
-            "pkg": "registry+https://github.com/rust-lang/crates.io-index#zerocopy-derive@0.8.55",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#zerocopy-derive@0.8.56",
             "dep_kinds": [
               {
                 "kind": null,
@@ -37735,7 +37747,7 @@
         "features": ["simd"]
       },
       {
-        "id": "registry+https://github.com/rust-lang/crates.io-index#zerocopy-derive@0.8.55",
+        "id": "registry+https://github.com/rust-lang/crates.io-index#zerocopy-derive@0.8.56",
         "dependencies": [
           "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107",
           "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.47",
@@ -37897,7 +37909,7 @@
         "features": ["_deflate-any", "deflate-flate2", "deflate-flate2-zlib-rs"]
       },
       {
-        "id": "registry+https://github.com/rust-lang/crates.io-index#zlib-rs@0.6.6",
+        "id": "registry+https://github.com/rust-lang/crates.io-index#zlib-rs@0.6.7",
         "dependencies": [],
         "deps": [],
         "features": ["rust-allocator", "std"]

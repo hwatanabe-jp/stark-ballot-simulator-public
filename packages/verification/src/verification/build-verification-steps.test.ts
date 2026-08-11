@@ -1,10 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { computeCommitment, CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
 import type { ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
-import type {
-  BulletinConsistencyProvider,
-  VerificationPublicInputAuthority,
-} from '@stark-ballot/verification/engine-types';
+import type { VerificationPublicInputAuthority } from '@stark-ballot/verification/engine-types';
+import type { BitmapProofResponse } from '@stark-ballot/verification/bitmap-proof-types';
 import { getVerificationStepInputs } from '@stark-ballot/verification/checks';
 import { buildCloseStatement, buildElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
 import { buildDefaultElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
@@ -71,10 +69,16 @@ const createJournal = (overrides: Partial<ZkVMJournal> = {}): ZkVMJournal => ({
   ...overrides,
 });
 
+const bitmapProof: BitmapProofResponse = {
+  leafChunk: '01' + '00'.repeat(31),
+  auditPath: [],
+};
+const verifierConfirmedImageId = '0x' + 'd'.repeat(64);
+
 describe('buildVerificationSteps', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(explainVoteInclusionStatus).mockResolvedValue({
+    vi.mocked(explainVoteInclusionStatus).mockReturnValue({
       valid: true,
       included: true,
       leafIndex: 0,
@@ -82,7 +86,7 @@ describe('buildVerificationSteps', () => {
       privacyNotice: 'notice',
       statusDetail: 'counted',
     });
-    vi.mocked(verifyMyVoteWasCounted).mockResolvedValue({
+    vi.mocked(verifyMyVoteWasCounted).mockReturnValue({
       valid: true,
       included: true,
       leafIndex: 0,
@@ -117,17 +121,6 @@ describe('buildVerificationSteps', () => {
       bulletinRootAtCast: journal.bulletinRoot,
       timestamp: 1700000000000,
     };
-    const bulletin: BulletinConsistencyProvider = {
-      getConsistencyProof: () => ({
-        oldSize: 1,
-        newSize: journal.treeSize,
-        proofNodes: [],
-      }),
-      getRootAtSize: () => journal.bulletinRoot,
-      getSize: () => journal.treeSize,
-      verifyConsistency: () => true,
-    };
-
     const steps = await buildVerificationSteps({
       castSource: 'server',
       electionId,
@@ -160,13 +153,30 @@ describe('buildVerificationSteps', () => {
         recomputedInputCommitment: journal.inputCommitment,
       }),
       bitmapProofSource: 'mock',
-      bulletin,
+      consistencyProof: {
+        kind: 'admitted',
+        value: {
+          fromTreeSize: 1,
+          toTreeSize: journal.treeSize,
+          rootAtFromTreeSize: journal.bulletinRoot,
+          rootAtToTreeSize: journal.bulletinRoot,
+          proofNodes: [],
+          generatedAtMs: Date.now(),
+        },
+      },
+      includedBitmapProof: { kind: 'admitted', value: bitmapProof },
       bulletinRoot: journal.bulletinRoot,
       treeSize: journal.treeSize,
       inputCommitment: journal.inputCommitment,
       includedBitmapRoot: journal.includedBitmapRoot,
       verificationStatus: 'success',
       verificationReportStatus: 'success',
+      verificationReport: {
+        status: 'success',
+        expected_image_id: verifierConfirmedImageId,
+        receipt_image_id: verifierConfirmedImageId,
+        dev_mode_receipt: false,
+      },
     });
 
     expect(steps.map((step) => step.id)).toEqual([
@@ -262,17 +272,6 @@ describe('buildVerificationSteps', () => {
       bulletinRootAtCast: '0x' + '5'.repeat(64),
       timestamp: 1700000000000,
     };
-    const bulletin: BulletinConsistencyProvider = {
-      getConsistencyProof: () => ({
-        oldSize: 1,
-        newSize: 2,
-        proofNodes: [],
-      }),
-      getRootAtSize: (size) => (size === 1 ? '0x' + '6'.repeat(64) : journal.bulletinRoot),
-      getSize: () => 2,
-      verifyConsistency: () => true,
-    };
-
     const steps = await buildVerificationSteps({
       castSource: 'server',
       electionId,
@@ -290,7 +289,17 @@ describe('buildVerificationSteps', () => {
         },
       },
       journal,
-      bulletin,
+      consistencyProof: {
+        kind: 'admitted',
+        value: {
+          fromTreeSize: 1,
+          toTreeSize: 2,
+          rootAtFromTreeSize: '0x' + '6'.repeat(64),
+          rootAtToTreeSize: journal.bulletinRoot,
+          proofNodes: [],
+          generatedAtMs: Date.now(),
+        },
+      },
       bulletinRoot: journal.bulletinRoot,
       treeSize: journal.treeSize,
       verificationStatus: 'success',
@@ -323,6 +332,12 @@ describe('buildVerificationSteps', () => {
   it('treats dev_mode as success when allowDevModeVerification is true', async () => {
     const steps = await buildVerificationSteps({
       verificationStatus: 'dev_mode',
+      verificationReport: {
+        status: 'dev_mode',
+        expected_image_id: verifierConfirmedImageId,
+        receipt_image_id: verifierConfirmedImageId,
+        dev_mode_receipt: true,
+      },
       allowDevModeVerification: true,
     });
 
@@ -349,6 +364,12 @@ describe('buildVerificationSteps', () => {
     const steps = await buildVerificationSteps({
       verificationStatus: 'dev_mode',
       verificationReportStatus: 'dev_mode',
+      verificationReport: {
+        status: 'dev_mode',
+        expected_image_id: verifierConfirmedImageId,
+        receipt_image_id: verifierConfirmedImageId,
+        dev_mode_receipt: true,
+      },
       allowDevModeVerification: true,
       missingSlots: 1,
       invalidPresentedSlots: 0,
@@ -408,7 +429,7 @@ describe('buildVerificationSteps', () => {
   it('reuses provided check results without re-running STH verification', async () => {
     const steps = await buildVerificationSteps({
       castSource: 'client',
-      sthSources: ['https://example.com/sth'],
+      sthSourcesConfigured: true,
       userVote: {
         proof: {
           treeSize: 1,

@@ -1,9 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { collectInvalidTargetObservabilityEnvNames, validateTargetObservabilityEnv } from './observability';
+import {
+  collectInvalidTargetObservabilityEnvNames as collectInvalidTargetObservabilityEnvNamesForProfile,
+  validateTargetObservabilityEnv as validateTargetObservabilityEnvForProfile,
+} from './observability';
+import { localRuntimeProfile, targetRuntimeProfile } from './__tests__/runtimeProfileFixtures';
+
+function collectInvalidTargetObservabilityEnvNames(
+  env: NodeJS.ProcessEnv,
+): ReturnType<typeof collectInvalidTargetObservabilityEnvNamesForProfile> {
+  return collectInvalidTargetObservabilityEnvNamesForProfile(targetRuntimeProfile(), env);
+}
+
+function validateTargetObservabilityEnv(env: NodeJS.ProcessEnv): void {
+  validateTargetObservabilityEnvForProfile(targetRuntimeProfile(), env);
+}
 
 function targetObservabilityEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
-    TARGET_AWS_RUNTIME: '1',
     LOG_FORMAT: 'json',
     LOG_IP_HASH_SALT_REF: '/stark-ballot-simulator/stark-dev/develop/app/secrets/log-ip-hash-salt',
     LOG_IP_HASH_SALT: 'resolved-target-log-hash-salt',
@@ -15,6 +28,21 @@ function targetObservabilityEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proce
 }
 
 describe('validateTargetObservabilityEnv', () => {
+  it('applies target requirements only to the injected target profile', () => {
+    expect(
+      collectInvalidTargetObservabilityEnvNamesForProfile(
+        targetRuntimeProfile(),
+        targetObservabilityEnv({ LOG_FORMAT: 'text' }),
+      ),
+    ).toContain('LOG_FORMAT');
+    expect(() =>
+      validateTargetObservabilityEnvForProfile(localRuntimeProfile(), {
+        ...targetObservabilityEnv(),
+        LOG_FORMAT: 'text',
+      }),
+    ).not.toThrow();
+  });
+
   it('collects exact invalid variable names without deriving them from exception messages', () => {
     const env = targetObservabilityEnv({
       LOG_FORMAT: 'text',
@@ -33,7 +61,7 @@ describe('validateTargetObservabilityEnv', () => {
       'APP_SOURCE_SHA',
       'DEPLOY_MODE',
     ]);
-    expect(collectInvalidTargetObservabilityEnvNames({ TARGET_AWS_RUNTIME: '0' })).toEqual([]);
+    expect(collectInvalidTargetObservabilityEnvNamesForProfile(localRuntimeProfile(), {})).toEqual([]);
   });
 
   it('accepts the complete target observability contract without unrelated app configuration', () => {
@@ -41,7 +69,7 @@ describe('validateTargetObservabilityEnv', () => {
   });
 
   it('does not impose the deployed contract on non-target runtimes', () => {
-    expect(() => validateTargetObservabilityEnv({ TARGET_AWS_RUNTIME: '0' })).not.toThrow();
+    expect(() => validateTargetObservabilityEnvForProfile(localRuntimeProfile(), {})).not.toThrow();
   });
 
   it.each([undefined, 'text', 'JSON', ' json', 'json '])('rejects target LOG_FORMAT value %s', (logFormat) => {
@@ -52,7 +80,9 @@ describe('validateTargetObservabilityEnv', () => {
       env['LOG_FORMAT'] = logFormat;
     }
 
-    expect(() => validateTargetObservabilityEnv(env)).toThrow('LOG_FORMAT=json is required when TARGET_AWS_RUNTIME=1.');
+    expect(() => validateTargetObservabilityEnv(env)).toThrow(
+      'LOG_FORMAT=json is required for the target AWS runtime profile.',
+    );
   });
 
   it('rejects the public local-development hash salt', () => {
@@ -62,7 +92,7 @@ describe('validateTargetObservabilityEnv', () => {
           LOG_IP_HASH_SALT: 'stark-ballot-log-salt',
         }),
       ),
-    ).toThrow('LOG_IP_HASH_SALT must not use the public local-development default when TARGET_AWS_RUNTIME=1.');
+    ).toThrow('LOG_IP_HASH_SALT must not use the public local-development default for the target AWS runtime profile.');
   });
 
   it('requires the salt reference and its resolved value', () => {
@@ -72,10 +102,10 @@ describe('validateTargetObservabilityEnv', () => {
     delete unresolved['LOG_IP_HASH_SALT'];
 
     expect(() => validateTargetObservabilityEnv(missingReference)).toThrow(
-      'LOG_IP_HASH_SALT_REF must be set when TARGET_AWS_RUNTIME=1.',
+      'LOG_IP_HASH_SALT_REF must be set for the target AWS runtime profile.',
     );
     expect(() => validateTargetObservabilityEnv(unresolved)).toThrow(
-      'LOG_IP_HASH_SALT must be resolved from LOG_IP_HASH_SALT_REF when TARGET_AWS_RUNTIME=1.',
+      'LOG_IP_HASH_SALT must be resolved from LOG_IP_HASH_SALT_REF for the target AWS runtime profile.',
     );
   });
 

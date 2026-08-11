@@ -5,7 +5,8 @@ import type { ComponentType, ReactElement, RefAttributes } from 'react';
 import { Turnstile } from '@marsidev/react-turnstile';
 import { useTranslation } from '@stark-ballot/web/hooks';
 import { useCspNonce } from '@stark-ballot/web/components/security/CspNonceProvider';
-import { readBrowserPublicEnv, readBrowserPublicFlag } from '@stark-ballot/runtime-config/env/browserPublic';
+import { readBrowserPublicEnv } from '@stark-ballot/runtime-config/env/browserPublic';
+import { resolveBrowserRuntimeProfile } from '@stark-ballot/runtime-config/env/public-runtime-config';
 
 type TurnstileHandle = {
   reset?: () => void;
@@ -31,15 +32,10 @@ type TurnstileWidgetProps = {
 };
 
 const TOKEN_TTL_MS = 5 * 60 * 1000; // 300 seconds
-const BUILD_TIME_BYPASS_ENABLED =
-  import.meta.env['VITE_TURNSTILE_BYPASS'] === '1' || import.meta.env['VITE_TURNSTILE_BYPASS'] === 'true';
 const BYPASS_TOKEN_PARTS = ['turnstile', 'bypass', 'token'] as const;
 
 function isTurnstileBypassEnabled(): boolean {
-  if (import.meta.env.MODE === 'test') {
-    return readBrowserPublicFlag('VITE_TURNSTILE_BYPASS');
-  }
-  return BUILD_TIME_BYPASS_ENABLED;
+  return resolveBrowserRuntimeProfile().turnstile.bypassEligible;
 }
 
 function buildTurnstileBypassToken(): string {

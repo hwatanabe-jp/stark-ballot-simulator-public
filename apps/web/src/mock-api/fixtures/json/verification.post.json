@@ -1,0 +1,11 @@
+{
+  "data": {
+    "verificationStatus": "running",
+    "finalizationId": "mock-verification-001",
+    "estimatedDurationMs": 4000,
+    "idempotent": true
+  },
+  "meta": {
+    "requestId": "fixture-request-id"
+  }
+}

@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
+import type { FinalizationResource } from '@stark-ballot/api-contract';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
-import { resolveCanonicalFinalizationPayload } from '@stark-ballot/web/finalize/client-finalization-result';
+import {
+  projectFinalizationResourceToClientSnapshot,
+  resolveCanonicalFinalizationPayload,
+} from '@stark-ballot/web/finalize/client-finalization-result';
+
+function resolveSnapshot(value: Record<string, unknown>) {
+  return resolveCanonicalFinalizationPayload({
+    finalizationId: 'finalization-1',
+    ...value,
+  });
+}
 
 describe('resolveCanonicalFinalizationPayload', () => {
   it('recomputes tamperDetected from rejectedRecords when excluded slots stay zero', () => {
@@ -8,8 +19,8 @@ describe('resolveCanonicalFinalizationPayload', () => {
       ...createTestJournal({
         totalExpected: 1,
         validVotes: 1,
-        missingIndices: 0,
-        invalidIndices: 0,
+        missingSlots: 0,
+        invalidPresentedSlots: 0,
         seenIndicesCount: 1,
       }),
       totalVotes: 2,
@@ -20,7 +31,7 @@ describe('resolveCanonicalFinalizationPayload', () => {
       excludedSlots: 0,
     };
 
-    const result = resolveCanonicalFinalizationPayload({
+    const result = resolveSnapshot({
       tamperDetected: false,
       tally: {
         counts: { A: 1, B: 1, C: 0, D: 0, E: 0 },
@@ -40,12 +51,12 @@ describe('resolveCanonicalFinalizationPayload', () => {
     const journal = createTestJournal({
       totalExpected: 1,
       validVotes: 1,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
       seenIndicesCount: 1,
     });
 
-    const result = resolveCanonicalFinalizationPayload({
+    const result = resolveSnapshot({
       tamperDetected: false,
       tally: {
         counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
@@ -69,8 +80,8 @@ describe('resolveCanonicalFinalizationPayload', () => {
     const journal = createTestJournal({
       totalExpected: 1,
       validVotes: 1,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
       seenIndicesCount: 1,
     });
 
@@ -78,7 +89,7 @@ describe('resolveCanonicalFinalizationPayload', () => {
       ...journal,
       seenBitmapRoot: undefined,
     };
-    const result = resolveCanonicalFinalizationPayload({
+    const result = resolveSnapshot({
       tamperDetected: false,
       tally: {
         counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
@@ -97,14 +108,14 @@ describe('resolveCanonicalFinalizationPayload', () => {
       ...createTestJournal({
         totalExpected: 1,
         validVotes: 1,
-        missingIndices: 0,
-        invalidIndices: 0,
+        missingSlots: 0,
+        invalidPresentedSlots: 0,
         seenIndicesCount: 1,
       }),
       imageId: '0x' + 'a'.repeat(64),
     };
 
-    const result = resolveCanonicalFinalizationPayload({
+    const result = resolveSnapshot({
       journal,
     });
 
@@ -115,12 +126,12 @@ describe('resolveCanonicalFinalizationPayload', () => {
     const journal = createTestJournal({
       totalExpected: 1,
       validVotes: 1,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
       seenIndicesCount: 1,
     });
 
-    const result = resolveCanonicalFinalizationPayload({
+    const result = resolveSnapshot({
       imageId: '0x' + 'e'.repeat(64),
       journal,
     });
@@ -132,12 +143,12 @@ describe('resolveCanonicalFinalizationPayload', () => {
     const journal = createTestJournal({
       totalExpected: 1,
       validVotes: 1,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
       seenIndicesCount: 1,
     });
 
-    const result = resolveCanonicalFinalizationPayload({
+    const result = resolveSnapshot({
       tally: {
         counts: { A: 1, B: 0, C: 0, D: 0 },
         totalVotes: 1,
@@ -155,14 +166,14 @@ describe('resolveCanonicalFinalizationPayload', () => {
       ...createTestJournal({
         totalExpected: 1,
         validVotes: 1,
-        missingIndices: 0,
-        invalidIndices: 0,
+        missingSlots: 0,
+        invalidPresentedSlots: 0,
         seenIndicesCount: 1,
       }),
       imageId: '0x' + 'a'.repeat(64),
     };
 
-    const result = resolveCanonicalFinalizationPayload({
+    const result = resolveSnapshot({
       imageId: 'not-hex',
       journal,
     });
@@ -175,14 +186,14 @@ describe('resolveCanonicalFinalizationPayload', () => {
       ...createTestJournal({
         totalExpected: 1,
         validVotes: 1,
-        missingIndices: 0,
-        invalidIndices: 0,
+        missingSlots: 0,
+        invalidPresentedSlots: 0,
         seenIndicesCount: 1,
       }),
       imageId: '0x' + 'a'.repeat(64),
     };
 
-    const result = resolveCanonicalFinalizationPayload({
+    const result = resolveSnapshot({
       imageId: '0x' + 'b'.repeat(64),
       journal,
     });
@@ -194,12 +205,12 @@ describe('resolveCanonicalFinalizationPayload', () => {
     const journal = createTestJournal({
       totalExpected: 1,
       validVotes: 1,
-      missingIndices: 0,
-      invalidIndices: 0,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
       seenIndicesCount: 1,
     });
 
-    const result = resolveCanonicalFinalizationPayload({
+    const result = resolveSnapshot({
       tally: {
         counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
         totalVotes: 1,
@@ -226,8 +237,8 @@ describe('resolveCanonicalFinalizationPayload', () => {
       ...createTestJournal({
         totalExpected: 64,
         validVotes: 61,
-        missingIndices: 1,
-        invalidIndices: 2,
+        missingSlots: 1,
+        invalidPresentedSlots: 2,
       }),
       missingIndices: 99,
       invalidIndices: 98,
@@ -235,7 +246,7 @@ describe('resolveCanonicalFinalizationPayload', () => {
       excludedCount: 97,
     };
 
-    const result = resolveCanonicalFinalizationPayload({
+    const result = resolveSnapshot({
       tally: {
         counts: { A: 61, B: 0, C: 0, D: 0, E: 0 },
         totalVotes: 61,
@@ -250,5 +261,129 @@ describe('resolveCanonicalFinalizationPayload', () => {
     });
 
     expect(result).toBeNull();
+  });
+
+  it('requires the unified finalization identity in browser-local snapshots', () => {
+    const journal = createTestJournal({
+      totalExpected: 1,
+      validVotes: 1,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
+      seenIndicesCount: 1,
+    });
+
+    expect(
+      resolveCanonicalFinalizationPayload({
+        tally: {
+          counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
+          totalVotes: 1,
+          tamperedCount: 0,
+        },
+        imageId: '0x' + 'e'.repeat(64),
+        journal,
+      }),
+    ).toBeNull();
+    expect(
+      resolveCanonicalFinalizationPayload({
+        finalizationId: '../finalization-1',
+        tally: {
+          counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
+          totalVotes: 1,
+          tamperedCount: 0,
+        },
+        imageId: '0x' + 'e'.repeat(64),
+        journal,
+      }),
+    ).toBeNull();
+  });
+
+  it('projects a succeeded resource without leaking verification-gated voter evidence', () => {
+    const journal = createTestJournal({
+      totalExpected: 1,
+      validVotes: 1,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
+      seenIndicesCount: 1,
+    });
+    const hash = '0x' + 'a'.repeat(64);
+    const resource: FinalizationResource = {
+      finalizationId: 'finalization-1',
+      queuedAtMs: 1,
+      status: 'succeeded',
+      startedAtMs: 2,
+      completedAtMs: 3,
+      runtimeDiagnostics: { asyncMode: 'disabled' },
+      result: {
+        authority: {
+          imageId: '0x' + 'e'.repeat(64),
+          journal,
+        },
+        presentation: {
+          tally: {
+            counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
+            totalVotes: 1,
+            tamperedCount: 0,
+          },
+          verifiedTally: [...journal.verifiedTally],
+          bulletinRoot: journal.bulletinRoot,
+          missingSlots: journal.missingSlots,
+          invalidPresentedSlots: journal.invalidPresentedSlots,
+          rejectedRecords: journal.rejectedRecords,
+          totalExpected: journal.totalExpected,
+          treeSize: journal.treeSize,
+          excludedSlots: journal.excludedSlots,
+          sthDigest: journal.sthDigest,
+          seenBitmapRoot: journal.seenBitmapRoot,
+          includedBitmapRoot: journal.includedBitmapRoot,
+          inputCommitment: journal.inputCommitment,
+          seenIndicesCount: journal.seenIndicesCount,
+          verificationStatus: 'not_run',
+        },
+        voterEvidence: {
+          state: 'available',
+          voteReceipt: {
+            voteId: 'vote-1',
+            commitment: hash,
+            bulletinIndex: 0,
+            bulletinRootAtCast: hash,
+            castAtMs: 1,
+          },
+          userVote: {
+            voteId: 'vote-1',
+            commitment: hash,
+            proof: {
+              leafIndex: 0,
+              treeSize: 1,
+              merklePath: [],
+              bulletinRootAtCast: hash,
+            },
+          },
+          receiptPublication: {
+            receiptHash: hash,
+            boardIndex: 0,
+          },
+        },
+        artifactAvailability: {
+          bundle: 'available',
+          report: 'available',
+          includedBitmap: 'available',
+          seenBitmap: 'available',
+        },
+      },
+    };
+
+    const snapshot = projectFinalizationResourceToClientSnapshot(resource);
+
+    expect(snapshot).toMatchObject({
+      finalizationId: 'finalization-1',
+      bulletinRoot: journal.bulletinRoot,
+      verificationStatus: 'not_run',
+      receiptPublication: {
+        receiptHash: hash,
+        boardIndex: 0,
+      },
+    });
+    expect(snapshot).not.toHaveProperty('voteReceipt');
+    expect(snapshot).not.toHaveProperty('userVote');
   });
 });

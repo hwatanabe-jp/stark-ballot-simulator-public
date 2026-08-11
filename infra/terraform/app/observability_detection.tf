@@ -12,6 +12,16 @@ locals {
     verification = aws_sqs_queue.verification_work.name
   }
 
+  actionable_dlq_queue_names = {
+    prover       = aws_sqs_queue.prover_work_dlq.name
+    verification = aws_sqs_queue.verification_work_dlq.name
+  }
+
+  actionable_work_queue_names = {
+    prover       = aws_sqs_queue.prover_work.name
+    verification = aws_sqs_queue.verification_work.name
+  }
+
   finalization_transition_log_group_keys = toset([
     "public_api",
     "finalization_writer",
@@ -19,8 +29,8 @@ locals {
   ])
 
   invariant_alarm_name           = "${local.name_prefix}-verification-invariant-contradiction"
-  invariant_email_parameter_path = "/${var.project_name}/${var.account_alias}/${var.deployment_environment}/observability/invariant-email"
-  invariant_email_parameter_name = "/${var.project_name}/${var.account_alias}/${var.deployment_environment}/observability/invariant-email/endpoint"
+  invariant_email_parameter_path = "/${local.deployment_target.stateNamespace}/observability/invariant-email"
+  invariant_email_parameter_name = "${local.invariant_email_parameter_path}/endpoint"
   invariant_email_matching_indexes = [
     for index, parameter_name in data.aws_ssm_parameters_by_path.invariant_email.names : index
     if parameter_name == local.invariant_email_parameter_name
@@ -38,10 +48,74 @@ locals {
     : null,
     null,
   )
+
+  ops_actionable_email_parameter_path = "/${local.deployment_target.stateNamespace}/observability/ops-actionable-email"
+  ops_actionable_email_parameter_name = "${local.ops_actionable_email_parameter_path}/endpoint"
+  ops_actionable_email_matching_indexes = [
+    for index, parameter_name in data.aws_ssm_parameters_by_path.ops_actionable_email.names : index
+    if parameter_name == local.ops_actionable_email_parameter_name
+  ]
+  ops_actionable_email_parameter_present = (
+    length(local.ops_actionable_email_matching_indexes) == 1
+    && try(
+      data.aws_ssm_parameters_by_path.ops_actionable_email.types[local.ops_actionable_email_matching_indexes[0]] == "SecureString",
+      false,
+    )
+  )
+  ops_actionable_email_endpoint = try(
+    local.ops_actionable_email_parameter_present
+    ? data.aws_ssm_parameters_by_path.ops_actionable_email.values[local.ops_actionable_email_matching_indexes[0]]
+    : null,
+    null,
+  )
+
+  ops_actionable_alarm_routes = {
+    prover_dlq = {
+      alarm_name  = aws_cloudwatch_metric_alarm.actionable_dlq_depth["prover"].alarm_name
+      resource    = aws_sqs_queue.prover_work_dlq.name
+      rule_suffix = "action-dlq-prover"
+      runbook_id  = "OPS-DLQ-01"
+    }
+    verification_dlq = {
+      alarm_name  = aws_cloudwatch_metric_alarm.actionable_dlq_depth["verification"].alarm_name
+      resource    = aws_sqs_queue.verification_work_dlq.name
+      rule_suffix = "action-dlq-verification"
+      runbook_id  = "OPS-DLQ-01"
+    }
+    prover_age = {
+      alarm_name  = aws_cloudwatch_metric_alarm.actionable_work_queue_age["prover"].alarm_name
+      resource    = aws_sqs_queue.prover_work.name
+      rule_suffix = "action-age-prover"
+      runbook_id  = "OPS-QUEUE-AGE-01"
+    }
+    verification_age = {
+      alarm_name  = aws_cloudwatch_metric_alarm.actionable_work_queue_age["verification"].alarm_name
+      resource    = aws_sqs_queue.verification_work.name
+      rule_suffix = "action-age-verification"
+      runbook_id  = "OPS-QUEUE-AGE-01"
+    }
+    api_5xx = {
+      alarm_name  = aws_cloudwatch_metric_alarm.actionable_api_5xx.alarm_name
+      resource    = local.api_name
+      rule_suffix = "action-api-5xx"
+      runbook_id  = "OPS-API-5XX-01"
+    }
+  }
+
+  ops_actionable_pipeline_failed_route = {
+    rule_suffix = "action-pipeline-failed"
+    runbook_id  = "OPS-PIPELINE-FAILED-01"
+  }
 }
 
 data "aws_ssm_parameters_by_path" "invariant_email" {
   path            = local.invariant_email_parameter_path
+  recursive       = false
+  with_decryption = true
+}
+
+data "aws_ssm_parameters_by_path" "ops_actionable_email" {
+  path            = local.ops_actionable_email_parameter_path
   recursive       = false
   with_decryption = true
 }
@@ -81,6 +155,45 @@ resource "terraform_data" "invariant_email_parameter_contract" {
         && can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", local.invariant_alarm_email_endpoint))
       )
       error_message = "The invariant email endpoint must be one trimmed, syntactically valid email address no longer than 254 characters."
+    }
+  }
+}
+
+resource "terraform_data" "ops_actionable_email_parameter_contract" {
+  input = {
+    parameter_name    = local.ops_actionable_email_parameter_name
+    parameter_present = local.ops_actionable_email_parameter_present
+  }
+
+  lifecycle {
+    precondition {
+      condition     = length(data.aws_ssm_parameters_by_path.ops_actionable_email.names) <= 1
+      error_message = "The actionable email parameter hierarchy may contain only the fixed endpoint parameter."
+    }
+
+    precondition {
+      condition = alltrue([
+        for parameter_name in data.aws_ssm_parameters_by_path.ops_actionable_email.names :
+        parameter_name == local.ops_actionable_email_parameter_name
+      ])
+      error_message = "The actionable email parameter hierarchy contains an unexpected parameter name."
+    }
+
+    precondition {
+      condition = alltrue([
+        for parameter_type in data.aws_ssm_parameters_by_path.ops_actionable_email.types :
+        parameter_type == "SecureString"
+      ])
+      error_message = "The actionable email endpoint must be stored as an SSM SecureString."
+    }
+
+    precondition {
+      condition = local.ops_actionable_email_endpoint == null ? true : (
+        trimspace(local.ops_actionable_email_endpoint) == local.ops_actionable_email_endpoint
+        && length(local.ops_actionable_email_endpoint) <= 254
+        && can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", local.ops_actionable_email_endpoint))
+      )
+      error_message = "The actionable email endpoint must be one trimmed, syntactically valid email address no longer than 254 characters."
     }
   }
 }
@@ -168,6 +281,103 @@ resource "aws_cloudwatch_metric_alarm" "work_queue_oldest_message_age" {
   tags = local.common_tags
 }
 
+resource "aws_cloudwatch_metric_alarm" "actionable_dlq_depth" {
+  for_each = local.actionable_dlq_queue_names
+
+  alarm_name          = "${local.name_prefix}-actionable-${each.key}-work-dlq-depth"
+  alarm_description   = "Actionable sustained visible-message detector for the ${each.key} DLQ. Preserve evidence and diagnose before any redrive or deletion."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 300
+  statistic           = "Maximum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    QueueName = each.value
+  }
+
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "actionable_work_queue_age" {
+  for_each = local.actionable_work_queue_names
+
+  alarm_name          = "${local.name_prefix}-actionable-${each.key}-work-oldest-message-age"
+  alarm_description   = "Actionable sustained stalled-work detector for the ${each.key} queue. Preserve queue and owner-state evidence before proposing remediation."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  namespace           = "AWS/SQS"
+  period              = 300
+  statistic           = "Maximum"
+  threshold           = 900
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    QueueName = each.value
+  }
+
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "actionable_api_5xx" {
+  alarm_name          = "${local.name_prefix}-actionable-api-gateway-5xx"
+  alarm_description   = "Actionable sustained target HTTP API 5xx detector requiring at least 20 requests, five 5xx responses, and a greater-than-five-percent rate in each evaluated period."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  threshold           = 0.05
+  treat_missing_data  = "notBreaching"
+
+  metric_query {
+    id          = "requests"
+    return_data = false
+
+    metric {
+      metric_name = "Count"
+      namespace   = "AWS/ApiGateway"
+      period      = 300
+      stat        = "Sum"
+
+      dimensions = {
+        ApiId = aws_apigatewayv2_api.target.id
+        Stage = aws_apigatewayv2_stage.default.name
+      }
+    }
+  }
+
+  metric_query {
+    id          = "errors"
+    return_data = false
+
+    metric {
+      metric_name = "5xx"
+      namespace   = "AWS/ApiGateway"
+      period      = 300
+      stat        = "Sum"
+
+      dimensions = {
+        ApiId = aws_apigatewayv2_api.target.id
+        Stage = aws_apigatewayv2_stage.default.name
+      }
+    }
+  }
+
+  metric_query {
+    id          = "signal"
+    expression  = "IF(requests >= 20, IF(errors >= 5, errors / requests, 0), 0)"
+    label       = "sustained API 5xx fraction"
+    return_data = true
+  }
+
+  tags = local.common_tags
+}
+
 resource "aws_cloudwatch_log_metric_filter" "dispatch_dropped" {
   name           = "${local.name_prefix}-dispatch-dropped"
   pattern        = "{ $.message.event = \"dispatch_dropped\" && $.message.reason = * }"
@@ -204,6 +414,19 @@ resource "aws_cloudwatch_log_metric_filter" "finalization_terminal_outcomes" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "finalization_admissions" {
+  name           = "${local.name_prefix}-finalization-admissions"
+  pattern        = "{ $.message.event = \"finalization_admitted\" && $.message.finalization_id = * }"
+  log_group_name = aws_cloudwatch_log_group.target_lambdas["public_api"].name
+
+  metric_transformation {
+    name      = "FinalizationAdmissions"
+    namespace = local.observability_metric_namespace
+    value     = "1"
+    unit      = "Count"
+  }
+}
+
 resource "aws_cloudwatch_log_metric_filter" "verification_failure_categories" {
   name           = "${local.name_prefix}-verification-failure-categories"
   pattern        = "{ $.message.event = \"verification_run_summary\" && $.message.failure_category = * }"
@@ -233,6 +456,214 @@ resource "aws_cloudwatch_log_metric_filter" "verification_invariant_contradictio
     default_value = 0
     unit          = "Count"
   }
+}
+
+resource "aws_cloudwatch_query_definition" "finalization_completion_cohort" {
+  name = "${local.name_prefix}/finalization/completion-cohort"
+  log_group_names = [
+    aws_cloudwatch_log_group.target_lambdas["public_api"].name,
+    aws_cloudwatch_log_group.target_lambdas["finalization_writer"].name,
+    aws_cloudwatch_log_group.target_lambdas["proof_dispatcher"].name,
+  ]
+
+  query_string = <<-QUERY
+    fields @timestamp,
+      coalesce(message.event, event) as normalized_event,
+      coalesce(message.finalization_id, finalization_id) as normalized_finalization_id,
+      coalesce(message.to, to) as normalized_to,
+      coalesce(message.reason, reason) as normalized_reason
+    | filter normalized_event in ["finalization_admitted", "finalize_state_transition"]
+    | fields toMillis(@timestamp) as event_ms,
+      if(normalized_event = "finalization_admitted", 1, 0) as admission_marker,
+      if(normalized_event = "finalize_state_transition" and normalized_reason != "IDEMPOTENT_RETRY" and normalized_to in ["succeeded", "failed", "timeout"], 1, 0) as terminal_marker
+    | fields if(terminal_marker = 1 and normalized_to = "succeeded", 1, 0) as succeeded_marker,
+      if(terminal_marker = 1 and normalized_to = "failed" and normalized_reason in ["FINALIZATION_RESULT_INVALID", "USER_CANCELLED", "INVALID_FINALIZATION_ARTIFACT"], 1, 0) as expected_domain_marker
+    | stats min(if(admission_marker = 1, event_ms, 9999999999999)) as admitted_at_ms,
+      min(if(terminal_marker = 1, event_ms, 9999999999999)) as terminal_at_ms,
+      sum(admission_marker) as admission_rows,
+      sum(terminal_marker) as terminal_rows,
+      sum(succeeded_marker) as succeeded_rows,
+      sum(expected_domain_marker) as expected_domain_rows
+      by normalized_finalization_id
+    | filter admission_rows > 0
+    | fields 4500000 as completion_window_ms, 300000 as delayed_event_grace_ms
+    | fields admitted_at_ms + completion_window_ms as deadline_at_ms
+    | fields if(now() * 1000 < deadline_at_ms + delayed_event_grace_ms, "inside_window", if(terminal_rows = 0 or terminal_at_ms < admitted_at_ms or terminal_at_ms > deadline_at_ms, "stalled", if(terminal_rows = succeeded_rows + expected_domain_rows, "good", "bad"))) as cohort
+    | stats count() as admitted,
+      sum(if(cohort != "inside_window", 1, 0)) as eligible,
+      sum(if(cohort = "good", 1, 0)) as good,
+      sum(if(cohort in ["bad", "stalled"], 1, 0)) as bad,
+      sum(if(cohort = "stalled", 1, 0)) as stalled,
+      sum(if(cohort = "good" and expected_domain_rows > 0, 1, 0)) as expected_domain,
+      sum(if(cohort = "inside_window", 1, 0)) as inside_window
+    | fields if(eligible > 0, 100 * good / eligible, "") as completion_percentage,
+      if(eligible > 0, "measured", "insufficient_evidence") as evidence_status
+  QUERY
+}
+
+resource "aws_cloudwatch_query_definition" "finalization_terminal_reasons" {
+  name = "${local.name_prefix}/finalization/terminal-reasons"
+  log_group_names = [
+    aws_cloudwatch_log_group.target_lambdas["public_api"].name,
+    aws_cloudwatch_log_group.target_lambdas["finalization_writer"].name,
+    aws_cloudwatch_log_group.target_lambdas["proof_dispatcher"].name,
+  ]
+
+  query_string = <<-QUERY
+    fields @timestamp,
+      coalesce(message.event, event) as normalized_event,
+      coalesce(message.finalization_id, finalization_id) as normalized_finalization_id,
+      coalesce(message.to, to) as normalized_to,
+      coalesce(message.reason, reason) as normalized_reason
+    | filter normalized_event = "finalize_state_transition" and normalized_reason != "IDEMPOTENT_RETRY" and normalized_to in ["failed", "timeout"]
+    | fields if(normalized_to = "failed" and normalized_reason in ["FINALIZATION_RESULT_INVALID", "USER_CANCELLED", "INVALID_FINALIZATION_ARTIFACT"], "expected_domain", "platform_failure") as classification
+    | stats earliest(@timestamp) as first_seen by normalized_finalization_id, normalized_reason, classification
+    | stats count() as terminal_outcomes by normalized_reason, classification
+    | sort terminal_outcomes desc
+  QUERY
+}
+
+resource "aws_sns_topic" "ops_actionable" {
+  name         = "${local.name_prefix}-ops-actionable"
+  display_name = "STARK ballot actionable"
+
+  tags = local.common_tags
+}
+
+data "aws_iam_policy_document" "ops_actionable_notifications" {
+  statement {
+    sid    = "AllowAccountTopicAdministration"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${var.aws_account_id}:root"]
+    }
+
+    actions = [
+      "SNS:AddPermission",
+      "SNS:DeleteTopic",
+      "SNS:GetTopicAttributes",
+      "SNS:ListSubscriptionsByTopic",
+      "SNS:RemovePermission",
+      "SNS:SetTopicAttributes",
+      "SNS:Subscribe",
+    ]
+    resources = [aws_sns_topic.ops_actionable.arn]
+  }
+
+  statement {
+    sid    = "AllowExactActionableEventRulesPublish"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+
+    actions   = ["SNS:Publish"]
+    resources = [aws_sns_topic.ops_actionable.arn]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values = concat(
+        [for rule in aws_cloudwatch_event_rule.ops_actionable_alarm : rule.arn],
+        [aws_cloudwatch_event_rule.ops_actionable_pipeline_failed.arn],
+      )
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.aws_account_id]
+    }
+  }
+}
+
+resource "aws_sns_topic_policy" "ops_actionable" {
+  arn    = aws_sns_topic.ops_actionable.arn
+  policy = data.aws_iam_policy_document.ops_actionable_notifications.json
+}
+
+resource "aws_sns_topic_subscription" "ops_actionable_email" {
+  count     = local.ops_actionable_email_parameter_present ? 1 : 0
+  topic_arn = aws_sns_topic.ops_actionable.arn
+  protocol  = "email"
+  endpoint  = local.ops_actionable_email_endpoint
+
+  depends_on = [terraform_data.ops_actionable_email_parameter_contract]
+}
+
+resource "aws_cloudwatch_event_rule" "ops_actionable_alarm" {
+  for_each = local.ops_actionable_alarm_routes
+
+  name        = "${local.name_prefix}-${each.value.rule_suffix}"
+  description = "Route the exact ${each.key} sustained actionable alarm state to the isolated operational topic."
+  event_pattern = jsonencode({
+    source        = ["aws.cloudwatch"]
+    "detail-type" = ["CloudWatch Alarm State Change"]
+    detail = {
+      alarmName = [each.value.alarm_name]
+      state = {
+        value = ["ALARM"]
+      }
+    }
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "ops_actionable_alarm" {
+  for_each = local.ops_actionable_alarm_routes
+
+  rule      = aws_cloudwatch_event_rule.ops_actionable_alarm[each.key].name
+  target_id = "ops-actionable"
+  arn       = aws_sns_topic.ops_actionable.arn
+
+  input_transformer {
+    input_paths = {
+      state     = "$.detail.state.value"
+      timestamp = "$.time"
+    }
+    input_template = "{\"dashboard\":\"${aws_cloudwatch_dashboard.observability.dashboard_name}\",\"environment\":\"${var.deployment_environment}\",\"resource\":\"${each.value.resource}\",\"runbook_id\":\"${each.value.runbook_id}\",\"state\":<state>,\"timestamp\":<timestamp>}"
+  }
+
+  depends_on = [aws_sns_topic_policy.ops_actionable]
+}
+
+resource "aws_cloudwatch_event_rule" "ops_actionable_pipeline_failed" {
+  name        = "${local.name_prefix}-${local.ops_actionable_pipeline_failed_route.rule_suffix}"
+  description = "Route exact owned-pipeline failed states to the isolated operational topic."
+  event_pattern = jsonencode({
+    source        = ["aws.codepipeline"]
+    "detail-type" = ["CodePipeline Pipeline Execution State Change"]
+    detail = {
+      pipeline       = local.ops_ledger_pipeline_names
+      "execution-id" = [{ exists = true }]
+      state          = ["FAILED"]
+    }
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "ops_actionable_pipeline_failed" {
+  rule      = aws_cloudwatch_event_rule.ops_actionable_pipeline_failed.name
+  target_id = "ops-actionable"
+  arn       = aws_sns_topic.ops_actionable.arn
+
+  input_transformer {
+    input_paths = {
+      resource_name         = "$.detail.pipeline"
+      pipeline_execution_id = "$.detail.execution-id"
+      state                 = "$.detail.state"
+      timestamp             = "$.time"
+    }
+    input_template = "{\"dashboard\":\"${aws_cloudwatch_dashboard.observability.dashboard_name}\",\"environment\":\"${var.deployment_environment}\",\"pipeline\":<resource_name>,\"pipeline_execution_id\":<pipeline_execution_id>,\"runbook_id\":\"${local.ops_actionable_pipeline_failed_route.runbook_id}\",\"state\":<state>,\"timestamp\":<timestamp>}"
+  }
+
+  depends_on = [aws_sns_topic_policy.ops_actionable]
 }
 
 resource "aws_sns_topic" "verification_invariant_alerts" {
@@ -427,6 +858,46 @@ resource "aws_cloudwatch_dashboard" "observability" {
           stacked = false
           metrics = [
             [local.observability_metric_namespace, "VerificationInvariantContradictions", { stat = "Sum" }],
+          ]
+        }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 18
+        width  = 12
+        height = 5
+        properties = {
+          title                = "28-day provisional API serving SLI (no traffic = insufficient evidence)"
+          region               = var.aws_region
+          view                 = "singleValue"
+          start                = "-P28D"
+          setPeriodToTimeRange = true
+          stacked              = false
+          metrics = [
+            ["AWS/ApiGateway", "Count", "ApiId", aws_apigatewayv2_api.target.id, "Stage", aws_apigatewayv2_stage.default.name, { id = "m_total", label = "sample size: total requests", stat = "Sum" }],
+            ["AWS/ApiGateway", "5xx", "ApiId", aws_apigatewayv2_api.target.id, "Stage", aws_apigatewayv2_stage.default.name, { id = "m_5xx", label = "5xx responses", stat = "Sum", visible = false }],
+            [{ expression = "m_total - m_5xx", id = "e_good", label = "good responses" }],
+            [{ expression = "IF(m_total > 0, 100 * (m_total - m_5xx) / m_total)", id = "e_success", label = "provisional serving success (%)" }],
+          ]
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 18
+        width  = 12
+        height = 5
+        properties = {
+          title                = "28-day finalization sample counts (cohort query is authoritative)"
+          region               = var.aws_region
+          view                 = "singleValue"
+          start                = "-P28D"
+          setPeriodToTimeRange = true
+          stacked              = false
+          metrics = [
+            [local.observability_metric_namespace, "FinalizationAdmissions", { id = "m_admitted", label = "admitted sample size", stat = "Sum" }],
+            [{ expression = "SUM(SEARCH('{${local.observability_metric_namespace},ReasonCode} MetricName=\"FinalizationTerminalOutcomes\"', 'Sum', 2419200))", id = "e_terminal_sample", label = "terminal outcome sample size" }],
           ]
         }
       },

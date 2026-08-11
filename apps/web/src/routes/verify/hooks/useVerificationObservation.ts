@@ -2,11 +2,15 @@
 
 import { useEffect, useRef } from 'react';
 import type { MutableRefObject } from 'react';
-import { apiFetch } from '@stark-ballot/web/api/apiFetch';
-import { resolveApiUrl } from '@stark-ballot/web/api/apiBaseUrl';
-import { getSessionAuthHeaders, getSessionDataForIdentity, type SessionIdentity } from '@stark-ballot/web/session';
+import { ApiClientError } from '@stark-ballot/web/api/client';
+import { recordVerificationObservation } from '@stark-ballot/web/api/verification';
+import { getSessionDataForIdentity, type SessionIdentity } from '@stark-ballot/web/session';
 import type { VerificationStatus } from '@stark-ballot/verification/shared/types';
-import { buildVerificationObservationPayload, type VerificationPayload } from '../lib/verification-data';
+import type { VerificationPayload } from '../lib/verification-data';
+import {
+  buildVerificationObservationSubmission,
+  type VerificationObservationSubmission,
+} from '../lib/verification-observation';
 
 interface UseVerificationObservationOptions {
   data: VerificationPayload | null;
@@ -21,14 +25,11 @@ function isTerminalVerificationStatus(status: VerificationStatus): boolean {
   return status === 'success' || status === 'failed' || status === 'dev_mode';
 }
 
-function observationFingerprint(
-  sessionId: string,
-  payload: NonNullable<ReturnType<typeof buildVerificationObservationPayload>>,
-): string {
-  const statuses = payload.castChecks;
+function observationFingerprint(sessionId: string, submission: VerificationObservationSubmission): string {
+  const statuses = submission.request.castChecks;
   return [
     sessionId,
-    payload.verificationExecutionId,
+    submission.finalizationId,
     statuses.cast_receipt_present,
     statuses.cast_choice_range,
     statuses.cast_random_format,
@@ -59,12 +60,12 @@ export function useVerificationObservation({
     }
 
     const session = getSessionDataForIdentity(sessionIdentityRef.current);
-    const payload = buildVerificationObservationPayload(data);
-    if (!session || !payload) {
+    const submission = buildVerificationObservationSubmission(data);
+    if (!session || !submission) {
       return;
     }
 
-    const fingerprint = observationFingerprint(session.sessionId, payload);
+    const fingerprint = observationFingerprint(session.sessionId, submission);
     if (submittedFingerprintsRef.current.has(fingerprint) || inFlightFingerprintsRef.current.has(fingerprint)) {
       return;
     }
@@ -72,24 +73,15 @@ export function useVerificationObservation({
 
     void (async () => {
       try {
-        const response = await apiFetch(resolveApiUrl('/api/verification/observation'), {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...getSessionAuthHeaders(session),
-          },
-          body: JSON.stringify(payload),
-        });
+        await recordVerificationObservation(session, submission.finalizationId, submission.request);
+        submittedFingerprintsRef.current.add(fingerprint);
+      } catch (error) {
+        const status = error instanceof ApiClientError ? error.status : 0;
         const isNonRetryableClientError =
-          response.status >= 400 &&
-          response.status < 500 &&
-          response.status !== 408 &&
-          response.status !== 425 &&
-          response.status !== 429;
-        if (response.ok || isNonRetryableClientError) {
+          status >= 400 && status < 500 && status !== 408 && status !== 425 && status !== 429;
+        if (isNonRetryableClientError) {
           submittedFingerprintsRef.current.add(fingerprint);
         }
-      } catch {
         // Final verification observation is best-effort and must not alter the verdict shown to the user.
       } finally {
         inFlightFingerprintsRef.current.delete(fingerprint);

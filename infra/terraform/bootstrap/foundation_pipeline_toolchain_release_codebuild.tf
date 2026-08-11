@@ -38,13 +38,13 @@ resource "aws_codebuild_project" "toolchain_release_candidate" {
 
     environment_variable {
       name  = "SOURCE_REPOSITORY"
-      value = "https://github.com/${var.github_full_repository_id}"
+      value = local.deployment_target.repositoryUrl
     }
   }
 
   logs_config {
     cloudwatch_logs {
-      group_name  = aws_cloudwatch_log_group.foundation_pipeline_codebuild[local.toolchain_release_candidate_project_name].name
+      group_name  = module.foundation_pipeline_codebuild_log_groups.log_groups[local.toolchain_release_candidate_project_name].name
       stream_name = "candidate"
     }
   }
@@ -114,7 +114,7 @@ resource "aws_codebuild_project" "toolchain_release_update_accepted_pointer" {
 
   logs_config {
     cloudwatch_logs {
-      group_name  = aws_cloudwatch_log_group.foundation_pipeline_codebuild[local.toolchain_release_update_accepted_pointer_project_name].name
+      group_name  = module.foundation_pipeline_codebuild_log_groups.log_groups[local.toolchain_release_update_accepted_pointer_project_name].name
       stream_name = "update-accepted-pointer"
     }
   }

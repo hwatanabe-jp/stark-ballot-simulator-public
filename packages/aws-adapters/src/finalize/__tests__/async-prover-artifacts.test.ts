@@ -16,7 +16,9 @@ import {
   validateAsyncProverBundleKey,
 } from '@stark-ballot/aws-adapters/finalize/async-prover-artifacts';
 import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
+import { targetRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
 
+const targetProfile = targetRuntimeProfile();
 vi.mock('@stark-ballot/aws-adapters/aws/s3-client', () => ({
   getS3Config: vi.fn(() => ({
     region: 'ap-northeast-1',
@@ -61,7 +63,7 @@ describe('async prover artifacts', () => {
   });
 
   it('builds deterministic S3 keys under the configured proof prefix', () => {
-    const keys = buildAsyncProverArtifactKeys('session-1', 'exec-1');
+    const keys = buildAsyncProverArtifactKeys(targetProfile, 'session-1', 'exec-1');
 
     expect(keys).toEqual({
       inputS3Key: 'sessions/session-1/exec-1/input.json',
@@ -71,7 +73,7 @@ describe('async prover artifacts', () => {
   });
 
   it('builds the private failure marker key under the canonical execution prefix', () => {
-    expect(buildAsyncProverFailureMarkerKey('session-1', 'exec-1')).toBe(
+    expect(buildAsyncProverFailureMarkerKey(targetProfile, 'session-1', 'exec-1')).toBe(
       'sessions/session-1/exec-1/failure-marker.json',
     );
   });
@@ -109,9 +111,9 @@ describe('async prover artifacts', () => {
     vi.mocked(headS3Object).mockResolvedValue({ contentLength: marker.byteLength });
     vi.mocked(downloadRangeFromS3).mockResolvedValue({ body: marker });
 
-    await expect(readAsyncProverFailureCategory('session-1', 'exec-1')).resolves.toBe('upload');
-    expect(headS3Object).toHaveBeenCalledWith('sessions/session-1/exec-1/failure-marker.json');
-    expect(downloadRangeFromS3).toHaveBeenCalledWith('sessions/session-1/exec-1/failure-marker.json', {
+    await expect(readAsyncProverFailureCategory(targetProfile, 'session-1', 'exec-1')).resolves.toBe('upload');
+    expect(headS3Object).toHaveBeenCalledWith(targetProfile, 'sessions/session-1/exec-1/failure-marker.json');
+    expect(downloadRangeFromS3).toHaveBeenCalledWith(targetProfile, 'sessions/session-1/exec-1/failure-marker.json', {
       start: 0,
       end: marker.byteLength - 1,
     });
@@ -121,7 +123,7 @@ describe('async prover artifacts', () => {
     const { headS3Object, downloadRangeFromS3 } = await import('@stark-ballot/aws-adapters/aws/s3-download');
     vi.mocked(headS3Object).mockResolvedValue({ contentLength: 10_000 });
 
-    await expect(readAsyncProverFailureCategory('session-1', 'exec-1')).resolves.toBeUndefined();
+    await expect(readAsyncProverFailureCategory(targetProfile, 'session-1', 'exec-1')).resolves.toBeUndefined();
     expect(downloadRangeFromS3).not.toHaveBeenCalled();
   });
 
@@ -134,7 +136,7 @@ describe('async prover artifacts', () => {
       }),
     );
 
-    await expect(readAsyncProverFailureCategory('session-1', 'exec-1')).resolves.toBeUndefined();
+    await expect(readAsyncProverFailureCategory(targetProfile, 'session-1', 'exec-1')).resolves.toBeUndefined();
     expect(downloadRangeFromS3).not.toHaveBeenCalled();
   });
 
@@ -147,7 +149,9 @@ describe('async prover artifacts', () => {
       }),
     );
 
-    await expect(readAsyncProverFailureCategory('session-1', 'exec-1')).rejects.toThrow('S3 temporarily unavailable');
+    await expect(readAsyncProverFailureCategory(targetProfile, 'session-1', 'exec-1')).rejects.toThrow(
+      'S3 temporarily unavailable',
+    );
     expect(downloadRangeFromS3).not.toHaveBeenCalled();
   });
 
@@ -160,22 +164,27 @@ describe('async prover artifacts', () => {
       }),
     );
 
-    await expect(readAsyncProverFailureCategory('session-1', 'exec-1')).rejects.toThrow('S3 read timed out');
+    await expect(readAsyncProverFailureCategory(targetProfile, 'session-1', 'exec-1')).rejects.toThrow(
+      'S3 read timed out',
+    );
   });
 
   it.each([
     ['sessionId', 'session/1', 'exec-1'],
-    ['executionId with slash', 'session-1', 'bad/segment-123'],
-    ['executionId with dot', 'session-1', 'bad.segment-123'],
-    ['executionId as URL', 'session-1', 'https://example.invalid/execution'],
-  ])('rejects unsafe %s before constructing target S3 keys', (_label, sessionId, executionId) => {
-    expect(() => buildAsyncProverArtifactKeys(sessionId, executionId)).toThrow(/safe single path segment/);
+    ['finalizationId with slash', 'session-1', 'bad/segment-123'],
+    ['finalizationId with dot', 'session-1', 'bad.segment-123'],
+    ['finalizationId as URL', 'session-1', 'https://example.invalid/execution'],
+  ])('rejects unsafe %s before constructing target S3 keys', (_label, sessionId, finalizationId) => {
+    expect(() => buildAsyncProverArtifactKeys(targetProfile, sessionId, finalizationId)).toThrow(
+      /safe single path segment/,
+    );
   });
 
   it('validates that supplied artifact keys match the canonical session and execution layout', () => {
     const keys = validateAsyncProverArtifactKeys({
+      profile: targetProfile,
       sessionId: 'session-1',
-      executionId: 'exec-1',
+      finalizationId: 'exec-1',
       inputS3Key: 'sessions/session-1/exec-1/input.json',
       outputS3Prefix: 'sessions/session-1/exec-1',
       bundleS3Key: 'sessions/session-1/exec-1/bundle.zip',
@@ -216,17 +225,18 @@ describe('async prover artifacts', () => {
   ])('rejects %s artifact keys', (_label, keys) => {
     expect(() =>
       validateAsyncProverArtifactKeys({
+        profile: targetProfile,
         sessionId: 'session-1',
-        executionId: 'exec-1',
+        finalizationId: 'exec-1',
         ...keys,
       }),
-    ).toThrow('Async prover artifact keys must match the canonical session/execution S3 layout');
+    ).toThrow('Async prover artifact keys must match the canonical session/finalization S3 layout');
   });
 
-  it('rejects a supplied bundle key outside the canonical session and execution layout', () => {
-    expect(() => validateAsyncProverBundleKey('session-1', 'exec-1', 'sessions/session-2/exec-1/bundle.zip')).toThrow(
-      'Async prover bundle key must match the canonical session/execution S3 layout',
-    );
+  it('rejects a supplied bundle key outside the canonical session and finalization layout', () => {
+    expect(() =>
+      validateAsyncProverBundleKey(targetProfile, 'session-1', 'exec-1', 'sessions/session-2/exec-1/bundle.zip'),
+    ).toThrow('Async prover bundle key must match the canonical session/finalization S3 layout');
   });
 
   it('persists the target prover input with public artifact fields required by the container', async () => {
@@ -235,9 +245,9 @@ describe('async prover artifacts', () => {
     vi.mocked(getS3Client).mockReturnValue({ send } as never);
 
     const keys = await persistAsyncProverInputToS3({
+      profile: targetProfile,
       sessionId: 'session-1',
-      executionId: 'exec-1',
-      contractGeneration: '2026-04-zkvm-current-v1',
+      finalizationId: 'exec-1',
       zkvmInput,
       electionConfig: {
         ...buildDefaultElectionConfig(),
@@ -255,7 +265,12 @@ describe('async prover artifacts', () => {
     expect(command.input.ExpectedBucketOwner).toBe('123456789012');
     expect(typeof command.input.Body).toBe('string');
     const payload = JSON.parse(command.input.Body as string) as Record<string, unknown>;
-    expect(payload['contract_generation']).toBe('2026-04-zkvm-current-v1');
+    expect(payload).not.toHaveProperty('contract_generation');
+    expect(payload).not.toHaveProperty('contractGeneration');
+    expect(command.input.Metadata).toEqual({
+      sessionId: 'session-1',
+      finalizationId: 'exec-1',
+    });
     expect(payload['election_config']).toMatchObject({ totalExpected: 1, botCount: 0 });
     expect(payload['votes']).toHaveLength(1);
   });
@@ -283,7 +298,7 @@ describe('async prover artifacts', () => {
       journal,
       publicInputArtifact: createTestPublicInputArtifact({
         source: 'bundle',
-        executionId: 'exec-1',
+        finalizationId: 'exec-1',
         bundleKey: 'sessions/session-1/exec-1/bundle.zip',
         typedAuthority: {
           electionId: journal.electionId,
@@ -303,20 +318,20 @@ describe('async prover artifacts', () => {
     });
 
     const result = await buildFinalizationResultFromS3Bundle({
+      profile: targetProfile,
       bundleS3Key: 'sessions/session-1/exec-1/bundle.zip',
-      verificationExecutionId: 'exec-1',
-      s3UploadedAt: '2026-01-01T00:00:00.000Z',
-      finalizedAt: 1730000005000,
+      finalizationId: 'exec-1',
+      finalizedAtMs: 1730000005000,
     });
 
     expect(result.journal).toEqual(journal);
-    expect(result.s3BundleKey).toBe('sessions/session-1/exec-1/bundle.zip');
-    expect(result.verificationExecutionId).toBe('exec-1');
-    expect(result.s3UploadedAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(result).not.toHaveProperty('s3BundleKey');
+    expect(result).not.toHaveProperty('finalizationId');
+    expect(result).not.toHaveProperty('s3UploadedAtMs');
     expect(result).not.toHaveProperty('receiptRaw');
     expect(result.publicInputArtifact?.provenance).toMatchObject({
       source: 'bundle',
-      executionId: 'exec-1',
+      finalizationId: 'exec-1',
       bundleKey: 'sessions/session-1/exec-1/bundle.zip',
     });
     expect(result.electionManifest).toEqual(electionManifest);

@@ -1,6 +1,7 @@
 import type { ApiError, ErrorCode, ErrorDetails } from '@stark-ballot/api-contract/errors/apiErrors';
-import { toApiErrorPayload } from '@stark-ballot/api-contract/errors/errorPayload';
+import { toApiErrorResult } from '@stark-ballot/api-contract/errors/errorPayload';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import { resolvePublicRequestId } from './publicRequestId';
 
 /**
  * Build a JSON response with consistent headers.
@@ -26,6 +27,9 @@ export function errorResponse(
   details?: ErrorDetails,
   init?: { headers?: HeadersInit },
 ): Response {
-  const payload = toApiErrorPayload(error, details);
-  return jsonResponse(payload, { status: payload.statusCode, ...omitUndefinedProperties({ headers: init?.headers }) });
+  const result = toApiErrorResult(error, resolvePublicRequestId(), details);
+  return jsonResponse(result.payload, {
+    status: result.status,
+    ...omitUndefinedProperties({ headers: init?.headers }),
+  });
 }

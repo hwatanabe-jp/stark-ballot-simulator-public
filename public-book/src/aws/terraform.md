@@ -3,19 +3,39 @@
 Target AWS runtime の Infrastructure as Code は、application runtime、前提リソース、deployment-control リソースを root 単位に分けて管理します。
 
 公開仕様としての対象は IaC ownership model です。
-移行作業記録や個別の承認証跡、環境切り替えの進捗は扱いません（[AWS アーキテクチャ > 本章で扱わないもの](index.md#本章で扱わないもの)）。
+移行作業記録や個別の承認証跡、環境切り替えの進捗は扱いません（[AWS アーキテクチャ > この部で扱わないもの](index.md#この部で扱わないもの)）。
+
+このページの節構成は次のとおりです。
+
+- [Root ownership](#root-ownership)
+- [State identity](#state-identity)
+- [App root](#app-root)
+- [Foundation root](#foundation-root)
+- [Bootstrap root](#bootstrap-root)（App saved-plan authority を含む）
+- [Accepted baselines and report-only controls](#accepted-baselines-and-report-only-controls)
+- [Runtime wiring](#runtime-wiring)
+- [Retention authority](#retention-authority)
+- [IAM and guards](#iam-and-guards)
+- [Version constraints](#version-constraints)
 
 ## Root ownership
 
-Terraform source は `infra/terraform/` 配下にあります。
+Active root の Terraform source は `infra/terraform/` 配下にあります。
+Bootstrap root だけは、`infra/framework/terraform/modules/codebuild-log-groups/`
+の bounded shared module を 4 つの明示的な composition call から利用します。
+この module は Bootstrap、Foundation、App、report-only project の CodeBuild log group
+を共通の形で宣言するためのもので、独立した root や state、deployment lane ではありません。
 Target 構成では root ごとに state scope を分け、ひとつの root が別 root の runtime resource を暗黙に作成しないようにします。
+root は resource の所有者だけでなく、変更 lifecycle、実行権限、saved-plan review、
+rollback 判断の単位にも合わせます。これにより、前提 resource や deployment control
+の変更が app runtime の plan に紛れ込まず、影響範囲を root ごとに確認できます。
 
-| パス                          | State scope  | 管理対象                                                                                                                                           |
-| ----------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `infra/terraform/app/`        | `app`        | static frontend、Hono/API、DynamoDB、Lambda、SQS、Step Functions、ECS prover task、semaphore、artifact S3、observability、develop operator gate    |
-| `infra/terraform/foundation/` | `foundation` | ECR、Prover の ECR managed signing authority、release authority storage、runtime reference containers、prover networking / public-hostname handoff |
-| `infra/terraform/bootstrap/`  | `bootstrap`  | remote state bucket、deployment-control roles、CodePipeline/CodeBuild lanes、deployment / verifier-preflight evidence storage、backend grant       |
-| `infra/terraform/legacy/`     | legacy       | retained legacy/root context（Target runtime authority ではありません）                                                                            |
+| パス                          | State scope  | 管理対象                                                                                                                                                                                                    |
+| ----------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `infra/terraform/app/`        | `app`        | static frontend、Hono/API、DynamoDB、Lambda、SQS、Step Functions、ECS prover task、semaphore、proof/report S3、observability / notification、develop operator gate                                          |
+| `infra/terraform/foundation/` | `foundation` | ECR、Prover の ECR managed signing authority、reference-aware ECR retention、release authority storage、runtime reference containers、prover networking / public-hostname handoff                           |
+| `infra/terraform/bootstrap/`  | `bootstrap`  | remote state と Terraform authority storage、deployment-control roles、CodePipeline/CodeBuild lanes、retained / execution artifact storage、accepted baseline、report-only drift / readiness、backend grant |
+| `infra/terraform/legacy/`     | legacy       | retained legacy/root context（Target runtime authority ではありません）                                                                                                                                     |
 
 `infra/lambdas/` と `infra/docker/` は Terraform root ではなく、Lambda handler と prover container の source です。
 Terraform root は、それらから作られた artifact や image reference を入力として扱います。
@@ -36,6 +56,14 @@ flowchart TB
 ```
 
 ## State identity
+
+`packages/deployment-authority/deployment-targets.json` は、許可された target と
+その lane、state、backend、policy、生成名を保持する単一の reviewed authority です。
+3 つの active root はこの JSON を直接 decode し、選択された target と root input が
+一致しなければ fail-closed します。`@stark-ballot/deployment-authority` package は、
+同じ target context、immutable reference、conditional publication、saved-plan、
+acceptance の admission rule を所有します。各 root や lane が名前を再導出したり、
+別 target へ fallback したりする構成は受理しません。
 
 Target state identity は `account_alias`、`deployment_environment`、`state_scope`、`state_backend_key` の組み合わせで表します。
 Tracked `backend.tf` は partial backend として `backend "s3" {}` だけを持ち、bucket、region、key、lockfile 設定は root ごとの backend config から与えます。
@@ -72,7 +100,7 @@ App root が管理するもの:
 - Step Functions terminal event と 30 分 sweep による semaphore janitor EventBridge trigger
 - protected proof/report artifact bucket と lifecycle
 - CloudWatch alarms、closed-field metric filter、dashboard、normalized operations ledger / query definition
-- verification invariant 専用 SNS topic と optional email subscription（構成条件は [可観測性設計](observability.md)）
+- verification invariant 専用 SNS topic、分離された `ops-actionable` SNS topic とその EventBridge route、それぞれの optional email subscription（routing 対象と構成条件は [可観測性設計 > 通知の境界](observability.md#通知の境界)）
 - runtime wiring に必要な non-secret SSM String、Lambda env、Terraform outputs
 
 App root が所有しないもの:
@@ -121,6 +149,7 @@ Foundation root は、app runtime の前に存在している必要がある aut
 
 - RISC Zero toolchain image と prover image の ECR repository
 - Prover repository だけを対象とする ECR managed signing の Signer profile と registry signing configuration
+- accepted / rollback / running / in-progress reference を保護する reference-aware ECR retention controller
 - encrypted / versioned release authority storage
 - Secrets Manager secret container と non-secret SSM config record
 - prover networking input
@@ -141,6 +170,9 @@ Release authority storage の規則は、immutable record と versioned mutable 
 Foundation saved-plan lane の smoke は、Terraform output をそのまま downstream authority にはしません。
 app lane は mutable tag や最新 object の暗黙の検索ではなく、accepted pointer または retained deployment record の versioned coordinates と checksum を release authority として使います。
 
+ECR retention は count / age ベースの native lifecycle expiry ではなく、Foundation-owned の
+reference-aware controller が担います（保護対象と動作は [Retention authority](#retention-authority)）。
+
 ## Bootstrap root
 
 `infra/terraform/bootstrap/` は target account の Terraform state と deployment-control resource を所有します。
@@ -150,8 +182,11 @@ Bootstrap root が管理するもの:
 
 - Terraform remote state bucket、state KMS key、bucket policy、lockfile access
 - app / foundation root 用の backend access grant
-- CodePipeline / CodeBuild project、deployment role、artifact bucket、log group
+- CodePipeline / CodeBuild project、deployment role、retained authority bucket と lane ごとの execution bucket、log group
 - reviewed saved plan、approval、apply、smoke、acceptance を結びつける deployment evidence
+- root ごとの accepted Terraform baseline と report を保護する Terraform authority bucket / KMS key
+- weekly drift coordinator、Bootstrap / Foundation / App の report-only runner、missed-run queue / schedule
+- on-demand の rollback readiness / DynamoDB recovery readiness project
 - GitHub trigger role など deployment-control に必要な IAM
 
 Bootstrap root が所有しないもの:
@@ -196,15 +231,51 @@ State refresh は中断された verifier publication、alias、provider state �
 
 - Apply は plan stage が作成した exact saved plan だけを消費します。
 - Develop の `normal` では、plan JSON が resource / output change、move、import のいずれもないことを machine-proven に確認できた場合だけ manual approval を skip できます。
-- Parse failure、未解決の判定、non-empty plan は approval へ fail closed します。
+- Parse failure、未解決の判定、non-empty plan は approval へ fail-closed します。
 - protected production の apply は無条件に approval-gated です。
 
 #### Acceptance evidence
 
 - Post-apply smoke が成功した後、app lane は pipeline execution と acceptance attempt に結びつく immutable evidence を保存します。
 - Evidence は approval または許可された empty-plan skip、verifier preflight、saved-plan / apply、release authority、recovery selection、retained deployable coordinates を結びます。
+- Current accepted pointer を進める前に、その execution / attempt に結びつく immutable accepted Terraform baseline も公開します。App 用の 2 つ目の mutable baseline pointer は作りません。
 - Immutable evidence は create-only とし、current accepted deployment pointer の `accepted-deployments/stark-dev/develop/app/current.json` だけを conditional first-create / compare-and-swap で更新します。
 - retired `index.json` は authority として読み取りも変換も行いません。
+
+## Accepted baselines and report-only controls
+
+Bootstrap、Foundation、App の successful smoke は、それぞれ 1 つの durable
+`accepted-terraform-baseline` を公開します。
+Baseline が immutable `{ key, versionId, sha256 }` reference に結ぶのは次の項目です。
+
+- exact target context と backend authority
+- non-secret input と secret reference
+- provider lock / runtime evidence
+- reviewed plan checksum、acceptance、root 固有 smoke evidence
+
+Terraform state、saved-plan binary、raw plan JSON、decrypted value、生成された sensitive value は保持しません。
+Bootstrap と Foundation は root ごとの `current-terraform-baseline` pointer を
+conditional first-create / compare-and-swap で更新します。App baseline は既存の current
+accepted pipeline execution と acceptance attempt から一意に選択し、並行する mutable
+pointer を追加しません。
+
+Bootstrap-owned weekly coordinator は exact accepted baseline を選択し、source override
+なしで 3 つの root-specific runner を起動します。Runner の動作は次の順序です。
+
+1. accepted historical source を private workspace に materialize する。
+2. target / backend / input / provider lock / runtime / source を再検証する。
+3. refresh-enabled `terraform plan -lock=false -detailed-exitcode` を実行する。
+4. `no-drift`、`drift-detected`、`check-failed` の bounded / redacted report だけを保持し、temporary state view、plan、full plan JSON は cleanup する。
+
+Rollback readiness と DynamoDB recovery readiness は、別々の source-pinned / on-demand
+CodeBuild project です。
+
+- 許可されるのは、current authority の exact read と、create-once encrypted readiness evidence の publication だけです。
+- schedule / alarm trigger、Apply、state / pointer write、restore / table mutation、redrive、task stop、fault injection、exercise authorization は持ちません。
+
+この節の仕組みはすべて報告と inspection のための境界です。
+Baseline は再構成と inspection の authority にとどまり、後続の saved plan や mutation を承認しません。
+Drift / readiness result も saved-plan input や remediation authority にはなりません。
 
 ## Runtime wiring
 
@@ -226,7 +297,7 @@ flowchart LR
 | Producer   | Consumer       | 情報例                                                                                                                                                           |
 | ---------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | foundation | app pipeline   | ECR repository identity、Prover signing authority publication、versioned release records / accepted pointers、secret/config references、exact networking handoff |
-| bootstrap  | managed lanes  | backend config、deployment-control roles、saved-plan / artifact / verifier-preflight / acceptance evidence storage                                               |
+| bootstrap  | managed lanes  | backend config、deployment-control roles、saved-plan、retained / execution artifact、verifier-preflight / acceptance / Terraform baseline / report storage       |
 | app lane   | target runtime | API URL、DynamoDB/S3/SQS/SFN/Lambda locator、frontend trust metadata、selected recovery phase                                                                    |
 
 Foundation release authority と bootstrap/app deployment evidence は同じものではありません。
@@ -238,42 +309,53 @@ Public docs では account-specific ID、ARN、bucket name、digest-pinned image
 
 ## Retention authority
 
-App と Bootstrap の retention はそれぞれの `storage_retention.tf` に固定し、pipeline input や operator の任意入力にはしません。
+App と Bootstrap の storage retention はそれぞれの `storage_retention.tf` に固定し、pipeline input や operator の任意入力にはしません。
 
 - App root：queue / DLQ message、proof/report object、static noncurrent version、runtime / Container Insights / operations-ledger log、全 5 DynamoDB table の point-in-time recovery を環境別 policy で管理します。
-- Bootstrap root：state の noncurrent version、lane の execution artifact、App build cache、CodeBuild log group の retention を管理します。lifecycle filter の例外として、accepted App authority、retained deployable、approval / recovery manifest、signature-preflight evidence は execution-artifact の lifecycle filter の外に置きます。
+- Bootstrap root：state の noncurrent version、lane の execution artifact、App build cache、CodeBuild log group、redacted report の retention を管理します。Full App と static-fast は互いにアクセスできない private / versioned / KMS-encrypted transient execution bucket を使い、既存の App bucket は retained authority、deployable、approval / verifier evidence、cache 専用に保ちます。旧 transient object は copy や compatibility reader を追加せず、既存 lifecycle で失効させます。
 - Foundation release storage：immutable record と accepted pointer は deletion を拒否し、retired `reissue/*` namespace は新しい write も拒否します。
-- ECR image：自動 lifecycle policy を設定しません。image の count や age だけでは accepted、rollback、running task、in-progress reference から外れたことを証明できないためです。
+- Accepted Terraform baseline：通常の execution-artifact expiry から分離して durable に保持します。Drift / readiness report は環境別の固定期間で失効します。
+- ECR image：native lifecycle policy を設定せず、Foundation-owned controller だけが reference-aware な削除を実行します。image の count や age だけでは accepted、rollback、running task、in-progress reference から外れたことを証明できないためです。
+
+ECR retention controller の動作は次のとおりです。
+
+1. 日次で current Toolchain / Prover acceptance、retained App acceptance / rollback reference、live Prover task definition と、各 protected subject の referrer を解決する。
+2. 関連 pipeline、candidate build、finalization、Prover task が active な間は mutation を行わない。
+3. 2 回の同一 snapshot を確認してから referrer、subject の順で削除し、結果を再検証する。
+
+Protected reference は環境ごとの retained target count より優先されます。
+通常の Foundation Apply は ECR delete authority を持ちません。
 
 ## IAM and guards
 
 Terraform root は最小権限を前提に分離されています。
 
-| 領域               | 境界                                                                          |
-| ------------------ | ----------------------------------------------------------------------------- |
-| State access       | root ごとの backend key と lockfile object に限定                             |
-| App runtime Lambda | `public-api`、writer、dispatcher、worker、image-signature verifier ごとに分離 |
-| Prover task        | proof artifact prefix、ECR pull、CloudWatch Logs に限定                       |
-| Step Functions     | 特定 ECS task definition、Lambda、logs、managed EventBridge rule に限定       |
-| Deployment control | root と command class ごとの role に分離                                      |
-| Operator gate      | Public key metadata のみ deployment から参照可能。signing authority は分離    |
+| 領域                | 境界                                                                                |
+| ------------------- | ----------------------------------------------------------------------------------- |
+| State access        | root ごとの backend key と lockfile object に限定                                   |
+| App runtime Lambda  | `public-api`、writer、dispatcher、worker、image-signature verifier ごとに分離       |
+| Prover task         | proof artifact prefix、ECR pull、CloudWatch Logs に限定                             |
+| Step Functions      | 特定 ECS task definition、Lambda、logs、managed EventBridge rule に限定             |
+| Deployment control  | root と command class ごとの role に分離                                            |
+| Report-only control | root-specific drift と 2 つの readiness role を Apply / mutation authority から分離 |
+| Operator gate       | Public key metadata のみ deployment から参照可能。signing authority は分離          |
 
 Guard は、source branch、account alias、deployment environment、state scope、caller role、backend key の取り違えを検出するためのものです。
 Public specs では guard の詳細な承認手順ではなく、責務分離と fail-closed 境界を説明します。
 
 ## Version constraints
 
-| ツール           | バージョン                                                                                              |
-| ---------------- | ------------------------------------------------------------------------------------------------------- |
-| Terraform        | >= 1.10.0                                                                                               |
-| AWS provider     | ~> 6.0                                                                                                  |
-| Archive provider | target app / foundation / bootstrap roots では未使用。retained legacy root のみ `archive_file` 用に解決 |
+| ツール           | バージョン                                                                                                         |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Terraform        | active app / foundation / bootstrap root は `= 1.15.8`。shared child module と retained legacy root は `>= 1.10.0` |
+| AWS provider     | active app / foundation / bootstrap root は `= 6.58.0`。shared child module と retained legacy root は `~> 6.0`    |
+| Archive provider | target app / foundation / bootstrap roots では未使用。retained legacy root のみ `archive_file` 用に解決            |
 
 ## 関連する章
 
 - [現行構成とサービス一覧](design-and-services.md)：root ごとの管理対象と runtime 構成
 - [可観測性設計](observability.md)：app root が所有するログ、metric filter、alarm、ledger、notification
 - [イメージ署名](image-signing.md)：release authority と digest 固定イメージの関係
-- [AWS runtime boundary](runtime-boundary.md)：公開仕様として扱う runtime 境界
+- [AWS runtime 境界](runtime-boundary.md)：公開仕様として扱う runtime 境界
 
-<!-- source: infra/terraform/app, infra/terraform/bootstrap, infra/terraform/foundation, docs/infrastructure/terraform.md -->
+<!-- source: infra/terraform/app, infra/terraform/bootstrap, infra/terraform/foundation, infra/framework/terraform/modules/codebuild-log-groups, packages/deployment-authority, docs/infrastructure/terraform.md -->

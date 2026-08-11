@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { jsonResponse, errorResponse } from './response';
-import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
+import { ErrorCode, getErrorMessage } from '@stark-ballot/api-contract/errors/apiErrors';
 import { readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
-import { getNumberProperty, getRecordProperty, getStringProperty } from '@stark-ballot/domain/utils/guards';
-import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/validation/apiSchemas';
+import { getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/schemas/errors';
+import { runWithLogContext } from '@stark-ballot/diagnostics/requestLogContext';
 
 describe('jsonResponse', () => {
   it('returns JSON with default status and content type', async () => {
@@ -29,34 +30,51 @@ describe('jsonResponse', () => {
 });
 
 describe('errorResponse', () => {
-  it('wraps ApiError payload with status code', async () => {
-    const response = errorResponse(ErrorCode.INVALID_REQUEST);
+  it('wraps an error in the canonical envelope with the trusted request ID', async () => {
+    const response = runWithLogContext({ requestId: 'trusted-response-request-id' }, () =>
+      errorResponse(ErrorCode.INVALID_REQUEST),
+    );
 
     expect(response.status).toBe(400);
 
     const payload = await readJsonRecord(response, 'error response');
-    expect(getStringProperty(payload, 'error')).toBe('INVALID_REQUEST');
-    expect(getNumberProperty(payload, 'statusCode')).toBe(400);
+    expect(StandardErrorResponseSchema.parse(payload)).toEqual({
+      error: {
+        code: 'INVALID_REQUEST',
+        message: getErrorMessage(ErrorCode.INVALID_REQUEST),
+      },
+      meta: {
+        requestId: 'trusted-response-request-id',
+      },
+    });
+    expect(payload).not.toHaveProperty('statusCode');
   });
 
-  it('includes error details when provided', async () => {
-    const response = errorResponse(ErrorCode.SESSION_EXPIRED, { reason: 'session_expired' });
+  it('drops retired artifact-state and generation details', async () => {
+    const response = runWithLogContext({ requestId: 'trusted-details-request-id' }, () =>
+      errorResponse(ErrorCode.INVALID_FINALIZATION_ARTIFACT, {
+        artifactState: 'corrupt_or_unreadable',
+        persistedContractGeneration: 'private-generation',
+      }),
+    );
 
     const payload = await readJsonRecord(response, 'error response');
-    expect(getStringProperty(payload, 'reason')).toBe('session_expired');
+    expect(getRecordProperty(getRecordProperty(payload, 'error'), 'details')).toBeUndefined();
+    expect(JSON.stringify(payload)).not.toContain('private-generation');
   });
 
   it('returns finalize ImageID mismatches as a standard error envelope', async () => {
-    const response = errorResponse(ErrorCode.INVALID_IMAGE_ID, {
-      details: 'Finalization receipt ImageID did not match the expected ImageID',
-    });
+    const response = runWithLogContext({ requestId: 'trusted-image-request-id' }, () =>
+      errorResponse(ErrorCode.INVALID_IMAGE_ID, {
+        details: 'Finalization receipt ImageID did not match the expected ImageID',
+      }),
+    );
 
     expect(response.status).toBe(400);
     const payload = await readJsonRecord(response, 'error response');
     expect(StandardErrorResponseSchema.safeParse(payload).success).toBe(true);
-    expect(getStringProperty(payload, 'error')).toBe('INVALID_IMAGE_ID');
-    expect(getStringProperty(payload, 'details')).toBe(
-      'Finalization receipt ImageID did not match the expected ImageID',
-    );
+    expect(getStringProperty(getRecordProperty(payload, 'error'), 'code')).toBe('INVALID_IMAGE_ID');
+    expect(getRecordProperty(payload, 'meta')).toEqual({ requestId: 'trusted-image-request-id' });
+    expect(JSON.stringify(payload)).not.toContain('Finalization receipt ImageID did not match');
   });
 });

@@ -1,62 +1,54 @@
 # STARK証明の構造と特性
 
-このドキュメントでは、RISC Zero zkVMが生成するSTARK証明（Receipt）の構造と特性を、現在の実装に合わせて整理します。
+このドキュメントでは、RISC Zero zkVM が生成する Receipt の構造、公開出力、検証境界を、
+現在の実装に合わせて整理します。
 
 ## 目次
 
 1. [概要](#概要)
 2. [証明の構造](#証明の構造)
 3. [実測・目安](#実測目安)
-4. [検証可能な保証](#検証可能な保証)
+4. [検証可能な保証と境界](#検証可能な保証と境界)
 
 ## 概要
 
-STARK（Scalable Transparent ARgument of Knowledge）証明は、計算の正当性を数学的に保証するゼロ知識証明の一種です。RISC Zero zkVMでは、RISC-V命令セットで記述されたプログラムの実行が正しく行われたことを証明します。
+RISC Zero zkVM は、指定された RISC-V guest program の実行と、その実行が commit した journal を
+Receipt に結び付けます。このリポジトリでは、mock、開発用 fake receipt、本番 feature で生成する
+実 STARK receipt を明確に区別します。
 
-### 開発モード vs 本番モード
+| 経路                  | 実行主体              | 証拠                                    |
+| --------------------- | --------------------- | --------------------------------------- |
+| mock                  | TypeScript mock       | mock のみ。RISC Zero Receipt ではない   |
+| RISC Zero development | dev-mode-capable host | Fake receipt。production proof ではない |
+| RISC Zero production  | production host       | 実 STARK receipt                        |
+
+Fake receipt を生成するには、dev mode を許可した host build が必要です。
 
 ```bash
-# 開発モード（Fake receipt）
-RISC0_DEV_MODE=1 ./zkvm/target/release/host input.json
-
-# 本番モード（実STARK証明）
-./zkvm/target/release/host input.json
+pnpm build:zkvm:dev-mode
+RISC0_DEV_MODE=1 \
+  ./zkvm/target/release/host zkvm/test-data/test-fixture-valid.json
 ```
 
-- **RISC0_DEV_MODE=1** は **Fake receiptのみ** を生成します（実証明ではない）。
-- Fake receipt は実STARK証明としては扱えず、現行 `verifier-service` では `dev_mode` として報告されます。
-- 本番証明は環境依存で数分かかります（現在の目安: 64票 ≈ ~370秒）。
+実 STARK receipt の生成には、dev mode を無効化した production feature build を使用します。
+
+```bash
+pnpm build:zkvm
+env -u RISC0_DEV_MODE \
+  ./zkvm/target/release/host zkvm/test-data/test-fixture-valid.json
+```
+
+両方の build は同じ `zkvm/target/release/host` を上書きします。production feature build は
+`risc0-zkvm/disable-dev-mode` を有効にするため、`RISC0_DEV_MODE=1` を受理しません。
+Fake receipt は `verifier-service` で通常 `dev_mode` として報告され、production STARK proof
+evidence としては受理されません。
 
 ## 証明の構造
 
-### Receipt構造（概略）
+### Receipt envelope
 
-RISC Zero zkVM内部の **raw Receipt** は、概念的には次のような構造です。
-
-```json
-{
-  "inner": {
-    "Composite": {
-      "segments": [
-        {
-          "seal": [...],
-          "index": 0,
-          "hashfn": "...",
-          "verifier_parameters": "...",
-          "claim": "..."
-        }
-      ]
-    }
-  },
-  "journal": {
-    "bytes": [...]
-  }
-}
-```
-
-ただし、現行実装でホストや verification bundle が扱う `receipt.json` は、
-この raw Receipt をそのまま配るのではなく、**top-level metadata を持つ envelope** として保存します。
-非 dev receipt の検証では、`verifier-service` は top-level `image_id` を要求します。
+host が保存し、verification bundle が `receipt.json` として配布する現在の artifact は、raw
+RISC Zero `Receipt` と compiled guest の ImageID metadata を持つ envelope です。
 
 ```json
 {
@@ -65,90 +57,38 @@ RISC Zero zkVM内部の **raw Receipt** は、概念的には次のような構�
       "Composite": {
         "segments": [
           {
-            "seal": [...]
+            "seal": []
           }
         ]
       }
     },
     "journal": {
-      "bytes": [...]
+      "bytes": []
     }
   },
   "image_id": "0x..."
 }
 ```
 
-- dev mode では `Composite` の代わりに `Fake` receipt が入ります。
-- app 側の bundle 生成では互換のため `image_id` に加えて `imageId` も注入されることがありますが、現行 verifier が参照するのは top-level `image_id` です。
+この `Composite` は checked-in の実 receipt fixture が現在使用している variant の例です。
+envelope の契約は特定の inner variant に固定されておらず、dev-mode-capable host が
+`RISC0_DEV_MODE=1` で生成した Receipt では `inner.Fake` が入ります。consumer は envelope 内の
+RISC Zero `Receipt` を generic に deserialize し、`Composite` を前提にしません。
 
-### 主要コンポーネント
+app の bundle 生成は、境界間の表記を維持するため `image_id` に加えて `imageId` を top-level
+および nested receipt に付与することがあります。`verifier-service` が receipt metadata として
+読み、expected ImageID と比較する authority は top-level `image_id` です。
 
-#### 1. Seal（証明データ）
+### Seal
 
-- **内容**: フィールド要素の配列（サイズはプログラムや証明条件に依存）
-- **役割**: 計算の正当性を証明する暗号学的データ
-- **特徴**:
-  - 改ざんすると検証が失敗する
-  - 受領するファイルサイズの大半を占める
-  - 現在の実装では **数百KB〜~2MB** が目安（環境・JSON表現に依存）
+Seal は計算の正当性を検証する暗号学的 proof data です。具体的な JSON shape は RISC Zero の
+inner receipt variant に依存します。現在の checked-in `Composite` receipt では segment ごとの
+配列として表現され、実 receipt JSON のファイルサイズの大半を占めます。seal または seal が
+結び付ける claim / journal を不整合に変更すると、`Receipt::verify(expectedImageId)` は失敗します。
 
-#### 2. Journal（公開出力）
+### Journal（公開出力）
 
-現在の field set は `VerificationOutput` として RISC Zero の journal に commit され、
-host はそれを `journal.decode::<VerificationOutput>()` で復元します。公開 bundle / app で確認する
-canonical な入口は decoded field を JSON projection した `journal.json` です。
-
-下の byte layout は、app の低レベル診断 helper `parseJournalBytes()` が受け付ける
-**packed diagnostic layout**（272 bytes 固定）です。RISC Zero receipt 内部の raw
-`journal.bytes` そのものは serde / receipt wrapper 由来の encoding を含むため、この 272-byte
-layout と同一とは限りません。
-
-```text
-[0:16]   electionId (UUID)
-[16:48]  electionConfigHash (32 bytes)
-[48:80]  bulletinRoot (32 bytes)
-[80:84]  treeSize (u32)
-[84:88]  totalExpected (u32)
-[88:120] sthDigest (32 bytes)
-[120:140] verifiedTally (5 x u32)
-[140:168] totalVotes, validVotes, invalidVotes, seenIndicesCount,
-          missingSlots, invalidPresentedSlots, rejectedRecords (u32 each)
-[168:200] seenBitmapRoot (32 bytes)
-[200:232] includedBitmapRoot (32 bytes)
-[232:236] excludedSlots (u32)
-[236:268] inputCommitment (32 bytes)
-[268:272] methodVersion (u32)
-```
-
-- `tamperDetected` は **Journalには含まれず**、クライアント/サーバが `excludedSlots` / `rejectedRecords` などの journal 統計値と、S2/S4 などの claimed tally tampering を表す `tamperSummary` 由来の scenario signal から導出します。
-- 272-byte diagnostic layout には `imageId` も含まれません。ただし、公開 `journal.json` などの JSON projection では comparison-only metadata として `imageId` が付与されることがあります。
-- `methodVersion` は **14（v1.4）**。
-- app 側の `parseJournalBytes()` はこの **272-byte / v14 diagnostic layout** のみを受け付け、legacy journal の後方互換は維持しません。public journal projection は decoded `VerificationOutput` / current journal fields を allowlist して `journal.json` を生成します。
-- `verifier-service` 自体は主に `Receipt::verify(expectedImageId)` と top-level `image_id` の整合を担当し、journal bytes の意味解釈は app 側の責務です。
-
-#### 3. Claim（主張）
-
-RISC Zero receipt の claim は、指定された guest image が正常終了し、その実行で journal が commit
-されたことを `Receipt::verify(expectedImageId)` で検証するための内部構造です。現行 app の入力 binding は、
-claim 内の「入力データのハッシュ」として扱うのではなく、journal / public contract の
-`inputCommitment` で確認します。
-
-- `verifier-service` は receipt を expected ImageID で検証し、top-level `image_id` との整合も確認します。
-- `inputCommitment` は `journal.json` / `public-input.json` 側で、特定の公開入力に対する実行であることを結びます。
-
-## 実測・目安
-
-**実測値は環境依存**のため、ここでは現在の目安を示します。
-
-| モード     | 証明タイプ        | サイズ目安   | 生成時間目安                    |
-| ---------- | ----------------- | ------------ | ------------------------------- |
-| 開発モード | Fake              | 数KB         | ~100ms                          |
-| 本番モード | Composite (STARK) | 数百KB〜~2MB | 数分（64票 ≈ ~370秒、環境依存） |
-
-- **検証時間**: 数秒程度（Receipt::verify）
-- checked-in の 64票 real receipt JSON は現在およそ **1.7MB** です。圧縮有無、RISC Zero のバージョン、証明条件により変動します。
-
-### Journal データの例（解析後）
+guest は次の current field set を `VerificationOutput` として commit します。
 
 ```json
 {
@@ -174,27 +114,68 @@ claim 内の「入力データのハッシュ」として扱うのではなく�
 }
 ```
 
-## 検証可能な保証
+current host は `receipt.journal.decode::<VerificationOutput>()` でこの値を復元し、camelCase の
+`*-output.json` として保存します。sync / async bundle 生成は decoded field を allowlist し、
+canonical な公開 artifact `journal.json` を生成します。この decoded `VerificationOutput` →
+`journal.json` が app と bundle における現在の journal path です。
 
-STARK証明は以下を数学的に保証します：
+- `methodVersion` は **14** です。current journal admission はこの version を要求し、legacy count
+  alias や旧 layout を current field へ変換しません。
+- `imageId` は guest が commit する `VerificationOutput` の field ではありません。host が付与する
+  comparison-only metadata で、`journal.json` に投影されることがあります。
+- `tamperDetected` も journal field ではありません。app は `excludedSlots`、`rejectedRecords`、
+  および S2/S4 の claimed-tally tampering を表す `tamperSummary` の scenario signal から導出します。
+- `seenBitmapRoot` と `includedBitmapRoot` は公開されますが、個々の bitmap artifact は private で、
+  public bundle には含めません。
 
-### 1. 計算の正確性
+`packages/verification/src/verification/journal-parser.ts` の `parseJournalBytes()` が扱う 272-byte
+packed layout は unit test 用の低レベル helper です。RISC Zero Receipt 内部の
+`receipt.journal.bytes` は serde encoding を含み、この layout の入力ではありません。raw bytes を
+直接解釈せず、`journal.json` を current public interface として使用します。
 
-- 指定されたRISC-Vプログラムが正確に実行された
-- 全ての命令が仕様通りに処理された
-- メモリアクセスが正しく行われた
+## 実測・目安
 
-### 2. 入出力の整合性
+実測値は環境、RISC Zero の version、proof 条件、JSON 表現、圧縮有無に依存し、protocol 上の
+保証値ではありません。
 
-- Journal（公開出力）が実際の計算結果である
-- 入力コミットメント（`inputCommitment`）により、**特定入力**での実行が保証される
+| モード                | Receipt / 証明タイプ              | サイズ目安   | 生成時間目安                    |
+| --------------------- | --------------------------------- | ------------ | ------------------------------- |
+| mock                  | mock artifact                     | 実装依存     | 高速                            |
+| RISC Zero development | Fake                              | 数十KB程度   | ~100ms                          |
+| RISC Zero production  | Composite（current fixture の例） | 数百KB〜~2MB | 数分（64票 ≈ ~370秒、環境依存） |
 
-### 3. 改ざん不可能性
+- `Receipt::verify` の検証時間は数秒程度が目安です。
+- checked-in の 64票 real receipt JSON は現在およそ **1.7MB** です。
 
-- 証明データの1ビットでも変更すると検証失敗
-- 別の計算結果に対する証明の再利用不可
-- 事後的な結果の変更不可
+## 検証可能な保証と境界
 
-## まとめ
+`verifier-service` は、外部から選択された expected ImageID を使って
+`Receipt::verify(expectedImageId)` を実行します。これにより、expected ImageID が識別する guest
+program が正常終了し、その実行が commit した journal と receipt の claim / seal が整合することを
+検証します。non-dev receipt では、envelope の top-level `image_id` が expected ImageID と一致する
+ことも必須です。
 
-STARK証明は強力な数学的保証を提供しますが、そのトレードオフとして計算コストとストレージの負担が大きいです。現行実装では、**開発時は Fake receipt を使用し、本番検証では実STARK証明のみを受理する**運用が前提です。
+`inputCommitment` は、次の **公開 subset** を domain-separated hash に結び付けます。
+
+- `electionId`
+- `bulletinRoot`
+- `treeSize`
+- `totalExpected`
+- vote record 数
+- canonical order に並べた各 vote の `index`、`commitment`、`merklePath`
+
+`inputCommitment` は private witness 全体や `public-input.json` 全 field の hash ではありません。
+`choice` と `random` は commitment の opening として guest 内で検証されますが、値そのものは
+`inputCommitment` preimage や journal に公開されません。また、次の field はそれぞれ独立した
+authority と consistency check で結び付けます。
+
+- `electionConfigHash`: journal、public input、election manifest の一致と manifest の再計算
+- `logId` / `timestamp`: `sthDigest` と close statement の再計算・一致
+- `methodVersion`: journal と public input contract の current-version admission
+- ImageID: verifier の expected ImageID、receipt verification report、envelope metadata の一致
+
+したがって、production の検証結果は seal だけで決まりません。実 STARK receipt、expected
+ImageID、canonical journal、public input、manifest、close statement、bitmap / bulletin evidence
+など、必要な check がすべて成功した場合にだけ全体を Verified と扱えます。mock は高速な UI / API
+test evidence、Fake receipt は RISC Zero integration 用の development evidence に限定され、どちらも
+production STARK proof correctness の証拠ではありません。

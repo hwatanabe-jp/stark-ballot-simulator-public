@@ -3,26 +3,13 @@ import {
   buildFinalizationArtifactS3Keys,
   TARGET_PROOF_ARTIFACT_PREFIX,
 } from '@stark-ballot/aws-adapters/finalize/artifact-key-layout';
-import type { AwsPersistedFinalizationResult } from '@stark-ballot/aws-adapters/finalize/finalizationPersistenceEnvelope';
-
-type ScopedFinalizationLocator = Pick<
-  AwsPersistedFinalizationResult,
-  'verificationExecutionId' | 's3BundleKey' | 'verificationResult'
->;
+import type { AwsVerificationDeliveryMetadataInput } from '@stark-ballot/aws-adapters/finalize/finalizationDeliveryMetadataStore';
 
 type ArtifactFileName = 'bundle.zip' | 'verification.json';
 
 export interface FinalizationArtifactKeyIdentity {
   sessionId: string;
-  executionId: string;
-}
-
-function getStringField(value: unknown, key: string): string | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return undefined;
-  }
-  const fieldValue = (value as Record<string, unknown>)[key];
-  return typeof fieldValue === 'string' ? fieldValue : undefined;
+  finalizationId: string;
 }
 
 function resolveArtifactKeyIdentity(
@@ -40,15 +27,15 @@ function resolveArtifactKeyIdentity(
   }
 
   const sessionId = segments[segments.length - 3];
-  const executionId = segments[segments.length - 2];
-  if (!sessionId || !executionId) {
+  const finalizationId = segments[segments.length - 2];
+  if (!sessionId || !finalizationId) {
     return null;
   }
-  if (!isSafeVerifierSegment(sessionId) || !isSafeVerifierSegment(executionId)) {
+  if (!isSafeVerifierSegment(sessionId) || !isSafeVerifierSegment(finalizationId)) {
     return null;
   }
 
-  return { sessionId, executionId };
+  return { sessionId, finalizationId };
 }
 
 export function resolveBundleKeyIdentity(key: string): FinalizationArtifactKeyIdentity | null {
@@ -62,68 +49,32 @@ export function resolveReportKeyIdentity(key: string): FinalizationArtifactKeyId
 function matchesCanonicalArtifactKey(
   key: string,
   sessionId: string,
-  executionId: string,
+  finalizationId: string,
   artifact: ArtifactFileName,
 ): boolean {
-  const expectedKeys = buildFinalizationArtifactS3Keys(sessionId, executionId);
+  const expectedKeys = buildFinalizationArtifactS3Keys(sessionId, finalizationId);
   return key === (artifact === 'bundle.zip' ? expectedKeys.bundleS3Key : expectedKeys.reportS3Key);
 }
 
 export function hasConsistentFinalizationLocatorAuthority(
   sessionId: string,
-  result: ScopedFinalizationLocator,
+  finalizationId: string,
+  deliveryMetadata?: AwsVerificationDeliveryMetadataInput,
 ): boolean {
-  if (!isSafeVerifierSegment(sessionId)) {
+  if (!isSafeVerifierSegment(sessionId) || !isSafeVerifierSegment(finalizationId)) {
     return false;
   }
 
-  const executionId = result.verificationExecutionId;
-  const nestedExecutionId = getStringField(result.verificationResult, 'executionId');
-  const topLevelBundleKey = result.s3BundleKey;
-  const nestedBundleKey = getStringField(result.verificationResult, 's3BundleKey');
-  const reportKey = getStringField(result.verificationResult, 's3ReportKey');
-  const requiresScopedExecutionId =
-    nestedExecutionId !== undefined ||
-    topLevelBundleKey !== undefined ||
-    nestedBundleKey !== undefined ||
-    reportKey !== undefined;
-  const scopedExecutionId =
-    typeof executionId === 'string' && isSafeVerifierSegment(executionId) ? executionId : undefined;
-
-  if (requiresScopedExecutionId) {
-    if (!scopedExecutionId) {
-      return false;
-    }
-  }
-
-  if (nestedExecutionId !== undefined) {
-    if (!scopedExecutionId || !isSafeVerifierSegment(nestedExecutionId) || scopedExecutionId !== nestedExecutionId) {
-      return false;
-    }
-  }
-
   if (
-    topLevelBundleKey !== undefined &&
-    (!scopedExecutionId || !matchesCanonicalArtifactKey(topLevelBundleKey, sessionId, scopedExecutionId, 'bundle.zip'))
+    deliveryMetadata?.s3BundleKey !== undefined &&
+    !matchesCanonicalArtifactKey(deliveryMetadata.s3BundleKey, sessionId, finalizationId, 'bundle.zip')
   ) {
     return false;
   }
 
-  if (nestedBundleKey !== undefined) {
-    if (topLevelBundleKey !== nestedBundleKey) {
-      return false;
-    }
-    if (
-      !scopedExecutionId ||
-      !matchesCanonicalArtifactKey(nestedBundleKey, sessionId, scopedExecutionId, 'bundle.zip')
-    ) {
-      return false;
-    }
-  }
-
   if (
-    reportKey !== undefined &&
-    (!scopedExecutionId || !matchesCanonicalArtifactKey(reportKey, sessionId, scopedExecutionId, 'verification.json'))
+    deliveryMetadata?.s3ReportKey !== undefined &&
+    !matchesCanonicalArtifactKey(deliveryMetadata.s3ReportKey, sessionId, finalizationId, 'verification.json')
   ) {
     return false;
   }

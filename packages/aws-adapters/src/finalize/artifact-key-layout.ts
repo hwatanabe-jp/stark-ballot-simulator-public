@@ -32,13 +32,13 @@ export function asS3Key(value: string): S3Key {
 
 export function buildFinalizationArtifactS3Keys(
   sessionId: string,
-  executionId: string,
+  finalizationId: string,
   prefix = TARGET_PROOF_ARTIFACT_PREFIX,
 ): FinalizationArtifactS3Keys {
   assertSafeVerifierSegment(sessionId, 'sessionId');
-  assertSafeVerifierSegment(executionId, 'executionId');
+  assertSafeVerifierSegment(finalizationId, 'finalizationId');
 
-  const baseKey = `${normalizePrefix(prefix)}${sessionId}/${executionId}`;
+  const baseKey = `${normalizePrefix(prefix)}${sessionId}/${finalizationId}`;
   return {
     inputS3Key: asS3Key(`${baseKey}/input.json`),
     outputS3Prefix: asS3Key(baseKey),

@@ -3,10 +3,10 @@ resource "aws_apigatewayv2_api" "target" {
   protocol_type = "HTTP"
 
   cors_configuration {
-    allow_headers  = ["Content-Type", "X-Session-ID", "X-Session-Capability", "Range"]
+    allow_headers  = ["Content-Type", "If-None-Match", "X-Session-Capability", "Range"]
     allow_methods  = ["GET", "POST", "OPTIONS"]
     allow_origins  = [local.target_public_origin]
-    expose_headers = ["Content-Range", "Accept-Ranges", "X-Stark-Bundle-Range-Chunk-Size", "x-request-id"]
+    expose_headers = ["Content-Range", "Accept-Ranges", "ETag", "X-Amz-Version-Id", "X-Stark-Bundle-Range-Chunk-Size", "x-request-id"]
     max_age        = 300
   }
 
@@ -22,23 +22,23 @@ resource "aws_apigatewayv2_integration" "public_api" {
 
 resource "aws_apigatewayv2_route" "canonical" {
   for_each = toset([
-    "GET /api/bitmap-proof",
-    "GET /api/bulletin",
-    "GET /api/bulletin/consistency-proof",
-    "GET /api/bulletin/{voteId}/proof",
-    "GET /api/progress",
-    "GET /api/sessions/{sessionId}/status",
-    "GET /api/sth",
-    "GET /api/verification/bundles/{sessionId}/{executionId}",
-    "GET /api/verification/bundles/{sessionId}/{executionId}/report",
-    "GET /api/verify",
-    "GET /api/zkvm-input-hash",
-    "POST /api/finalize",
-    "POST /api/finalize/cancel",
-    "POST /api/session",
-    "POST /api/verification/run",
-    "POST /api/verification/observation",
-    "POST /api/vote",
+    "GET /api/sessions/{sessionId}/bulletin",
+    "GET /api/sessions/{sessionId}/bulletin/consistency-proof",
+    "GET /api/sessions/{sessionId}/bulletin/sth",
+    "GET /api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}/{voteIndex}",
+    "GET /api/sessions/{sessionId}/finalizations/current/input-commitment",
+    "GET /api/sessions/{sessionId}/finalizations/current",
+    "GET /api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/bundle",
+    "GET /api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/report",
+    "GET /api/sessions/{sessionId}/finalizations/{finalizationId}/verification",
+    "GET /api/sessions/{sessionId}/progress",
+    "GET /api/sessions/{sessionId}/votes/{voteId}/inclusion-proof",
+    "POST /api/sessions",
+    "POST /api/sessions/{sessionId}/finalizations",
+    "POST /api/sessions/{sessionId}/finalizations/{finalizationId}/cancel",
+    "POST /api/sessions/{sessionId}/finalizations/{finalizationId}/verification",
+    "POST /api/sessions/{sessionId}/finalizations/{finalizationId}/verification/observations",
+    "POST /api/sessions/{sessionId}/votes",
   ])
 
   api_id    = aws_apigatewayv2_api.target.id

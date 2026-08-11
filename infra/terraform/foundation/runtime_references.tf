@@ -22,7 +22,7 @@ resource "aws_ssm_parameter" "runtime_config" {
     }
     VITE_TURNSTILE_SITE_KEY_REF = {
       name  = local.runtime_reference_names.VITE_TURNSTILE_SITE_KEY_REF
-      value = "unset-before-plan-03"
+      value = "unset-before-release-candidate"
     }
   }
 

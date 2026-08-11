@@ -1,53 +1,65 @@
-import type { SessionData, VoteData } from '@stark-ballot/domain/types/server';
+import type { FinalizationBitmapData } from '@stark-ballot/application/finalize/finalization-store';
+import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
+import type { VerificationResultRecord } from '@stark-ballot/application/finalize/finalization-result-store';
+import type { AwsVerificationDeliveryMetadataInput } from '@stark-ballot/aws-adapters/finalize/finalizationDeliveryMetadataStore';
+import type { AwsFinalizationRuntimeMetadata } from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
 import type {
-  FinalizationResultAuthority,
-  FinalizationState,
-} from '@stark-ballot/application/finalize/finalization-types';
-import type { ElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
+  RootSnapshot,
+  SessionIdentityRecord,
+  UserParticipation,
+  StoredVoteRecord,
+} from '@stark-ballot/domain/types/sessionRecords';
+import type { VerificationObservation } from '@stark-ballot/domain/types/verificationObservation';
 
-/**
- * Serializable representation of SessionData for file persistence
- */
-export interface SerializableSessionData {
+export interface SerializableSessionVotingRecord {
   sessionId: string;
-  contractGeneration?: string;
-  finalizationContractGeneration?: string;
-  electionId?: string;
-  electionConfigHash?: string;
-  electionConfig?: ElectionConfig;
-  logId?: string;
-  votes: Array<[number, VoteData]>;
+  votes: Array<[number, StoredVoteRecord]>;
+  bulletinRootHistory: RootSnapshot[];
   botCount: number;
-  finalized: boolean;
-  createdAt: number;
-  lastActivity: number;
-  finalizationResult?: FinalizationResultAuthority;
-  finalizationState?: FinalizationState;
-  finalizationScenarioContext?: SessionData['finalizationScenarioContext'];
-  finalizationArtifactState?: SessionData['finalizationArtifactState'];
-  userVoteIndex?: number;
-  bulletinRootHistory?: SessionData['bulletinRootHistory'];
-  verificationObservation?: SessionData['verificationObservation'];
+  userParticipation: UserParticipation;
+  lastActivityMs: number;
 }
 
-export interface ReceiptEntry {
+export interface VerificationObservationRecord extends VerificationObservation {
+  sessionId: string;
+}
+
+export interface AwsRuntimeMetadataRecord extends AwsFinalizationRuntimeMetadata {
+  sessionId: string;
+  finalizationId: string;
+}
+
+export interface AwsDeliveryMetadataRecord extends AwsVerificationDeliveryMetadataInput {
+  sessionId: string;
+  finalizationId: string;
+}
+
+export interface ReceiptRecord {
+  sessionId: string;
+  finalizationId: string;
   receiptHash: string;
   boardIndex: number;
-  receipt: { receipt: string; timestamp: number };
+  receipt: {
+    receipt: string;
+    timestamp: number;
+  };
 }
 
-export interface BitmapData {
-  sessionId: string;
-  includedBitmap: boolean[];
-  includedBitmapRoot: string;
-  seenBitmap?: boolean[];
-  seenBitmapRoot?: string;
-  treeSize: number;
-  finalizedAt: number;
-}
-
-export interface FileMockDiagnostics {
-  sessionDiskReads: number;
-  cacheSize: number;
-  cacheEvictions: number;
+/**
+ * Exact semantic file layout. Each array represents one lifecycle-owned
+ * record family; no aggregate session row is serialized.
+ */
+export interface FileStoreSnapshot {
+  identities: SessionIdentityRecord[];
+  voting: SerializableSessionVotingRecord[];
+  finalizations: FinalizationRecord[];
+  currentFinalizationIds: Array<[string, string]>;
+  verificationResults: VerificationResultRecord[];
+  verificationObservations: VerificationObservationRecord[];
+  bitmaps: FinalizationBitmapData[];
+  voteIdIndex: Array<[string, { sessionId: string; index: number }]>;
+  runtimeMetadata: AwsRuntimeMetadataRecord[];
+  deliveryMetadata: AwsDeliveryMetadataRecord[];
+  receipts: ReceiptRecord[];
+  receiptCounter: number;
 }

@@ -2,51 +2,52 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { uploadFileToS3 } from '@stark-ballot/aws-adapters/aws/s3-upload';
 import { createVerificationBundleArchive } from '@stark-ballot/node-adapters/verification-bundle';
-import { PUBLIC_BUNDLE_ALLOWLIST, REQUIRED_PUBLIC_BUNDLE_ARTIFACTS } from '@stark-ballot/verification/bundle';
+import { resolvePublicBundlePolicy } from '@stark-ballot/verification/public-bundle-manifest';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashKeyPrefixForLogging } from '@stark-ballot/diagnostics/logging';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
+
+const ASYNC_PUBLIC_BUNDLE_POLICY = resolvePublicBundlePolicy('async');
 
 export interface BundlePublicationResult {
   bundleArchivePath: string;
   s3BundleKey?: string;
   s3ReportKey?: string;
-  s3UploadedAt?: string;
+  s3UploadedAtMs?: number;
 }
 
 /**
  * Uploads a completed verification bundle directory to S3 for authenticated API delivery.
  */
 export async function publishVerificationBundleArtifacts(input: {
+  profile: ResolvedRuntimeProfile;
   bundlePath: string;
   sessionId: string;
-  executionId: string;
+  finalizationId: string;
   upload: boolean;
 }): Promise<BundlePublicationResult> {
-  const { bundlePath, sessionId, executionId, upload } = input;
-  const useS3 = process.env['USE_S3'] === 'true';
-  const targetAwsRuntime = process.env['TARGET_AWS_RUNTIME'] === '1';
-  if (upload && targetAwsRuntime && !useS3) {
-    throw new Error('USE_S3=true is required for target AWS runtime bundle persistence');
-  }
+  const { profile, bundlePath, sessionId, finalizationId, upload } = input;
+  const useS3 = profile.artifacts.kind === 's3';
+  const targetAwsRuntime = profile.target.kind === 'aws';
 
   const bundleArchivePath = await createVerificationBundleArchive(bundlePath, {
-    publicBundleAllowlist: PUBLIC_BUNDLE_ALLOWLIST,
-    requiredPublicBundleArtifacts: REQUIRED_PUBLIC_BUNDLE_ARTIFACTS,
+    policy: ASYNC_PUBLIC_BUNDLE_POLICY,
   });
   if (!upload) {
     return { bundleArchivePath };
   }
 
   if (!useS3) {
-    logger.info('[Bundle] S3 upload disabled (USE_S3=false)');
+    logger.info('[Bundle] Local artifact profile selected; S3 upload skipped');
     return { bundleArchivePath };
   }
 
   try {
     const uploadResult = await uploadFileToS3({
+      profile,
       sessionId,
-      executionId,
+      finalizationId,
       filePath: bundleArchivePath,
       contentType: 'application/zip',
     });
@@ -59,9 +60,16 @@ export async function publishVerificationBundleArtifacts(input: {
       return { bundleArchivePath };
     }
 
-    const s3ReportKey = await uploadOptionalReport(bundlePath, sessionId, executionId, targetAwsRuntime);
-    await uploadPrivateSidecar(bundlePath, sessionId, executionId, 'included-bitmap.json', 'Included bitmap');
-    await uploadPrivateSidecar(bundlePath, sessionId, executionId, 'seen-bitmap.json', 'Seen bitmap');
+    const s3ReportKey = await uploadOptionalReport(profile, bundlePath, sessionId, finalizationId, targetAwsRuntime);
+    await uploadPrivateSidecar(
+      profile,
+      bundlePath,
+      sessionId,
+      finalizationId,
+      'included-bitmap.json',
+      'Included bitmap',
+    );
+    await uploadPrivateSidecar(profile, bundlePath, sessionId, finalizationId, 'seen-bitmap.json', 'Seen bitmap');
 
     logger.info('[Bundle] S3 upload successful', {
       s3: {
@@ -74,7 +82,7 @@ export async function publishVerificationBundleArtifacts(input: {
       bundleArchivePath,
       s3BundleKey: uploadResult.key,
       ...omitUndefinedProperties({ s3ReportKey: s3ReportKey }),
-      s3UploadedAt: uploadResult.uploadedAt,
+      s3UploadedAtMs: uploadResult.uploadedAtMs,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -87,25 +95,28 @@ export async function publishVerificationBundleArtifacts(input: {
 }
 
 export async function uploadVerificationBundleToS3(
+  profile: ResolvedRuntimeProfile,
   bundlePath: string,
   sessionId: string,
-  executionId: string,
+  finalizationId: string,
 ): Promise<BundlePublicationResult> {
-  return publishVerificationBundleArtifacts({ bundlePath, sessionId, executionId, upload: true });
+  return publishVerificationBundleArtifacts({ profile, bundlePath, sessionId, finalizationId, upload: true });
 }
 
 async function uploadOptionalReport(
+  profile: ResolvedRuntimeProfile,
   bundlePath: string,
   sessionId: string,
-  executionId: string,
+  finalizationId: string,
   targetAwsRuntime: boolean,
 ): Promise<string | undefined> {
   const reportPath = path.join(bundlePath, 'verification.json');
   try {
     await fs.access(reportPath);
     const reportUploadResult = await uploadFileToS3({
+      profile,
       sessionId,
-      executionId,
+      finalizationId,
       filePath: reportPath,
       contentType: 'application/json',
     });
@@ -130,13 +141,14 @@ async function uploadOptionalReport(
 }
 
 async function uploadPrivateSidecar(
+  profile: ResolvedRuntimeProfile,
   bundlePath: string,
   sessionId: string,
-  executionId: string,
+  finalizationId: string,
   fileName: string,
   label: string,
 ): Promise<void> {
-  const targetAwsRuntime = process.env['TARGET_AWS_RUNTIME'] === '1';
+  const targetAwsRuntime = profile.target.kind === 'aws';
   const filePath = path.join(bundlePath, fileName);
   try {
     await fs.access(filePath);
@@ -154,8 +166,9 @@ async function uploadPrivateSidecar(
 
   try {
     const sidecarUploadResult = await uploadFileToS3({
+      profile,
       sessionId,
-      executionId,
+      finalizationId,
       filePath,
       contentType: 'application/json',
     });

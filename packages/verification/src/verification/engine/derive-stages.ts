@@ -1,9 +1,22 @@
 import type { VerificationStepId, VerificationStepStatus } from '../step-types';
 import type { VerificationCheckId } from '@stark-ballot/verification/checks';
-import type { CheckResult, VerificationContext } from './types';
+
+interface StageCheckResult {
+  status: VerificationStepStatus;
+  error?: string;
+}
+
+interface StageDerivationContext {
+  journal?: unknown;
+  userVote?: {
+    proof?: {
+      treeSize?: number;
+    };
+  };
+}
 
 export function deriveStageStatusFromChecks(
-  checks: Map<VerificationCheckId, CheckResult>,
+  checks: Map<VerificationCheckId, StageCheckResult>,
   checkIds: VerificationCheckId[],
 ): VerificationStepStatus {
   const statuses = checkIds.map((id) => checks.get(id)?.status ?? 'not_run');
@@ -24,7 +37,7 @@ export function deriveStageStatusFromChecks(
 }
 
 export function pickStageError(
-  checks: Map<VerificationCheckId, CheckResult>,
+  checks: Map<VerificationCheckId, StageCheckResult>,
   checkIds: VerificationCheckId[],
 ): string | undefined {
   for (const id of checkIds) {
@@ -39,8 +52,8 @@ export function pickStageError(
 export function deriveStepStatusFromChecks(
   stepId: VerificationStepId,
   checkIds: VerificationCheckId[],
-  checks: Map<VerificationCheckId, CheckResult>,
-  ctx?: VerificationContext,
+  checks: Map<VerificationCheckId, StageCheckResult>,
+  ctx?: StageDerivationContext,
 ): { status: VerificationStepStatus; error?: string } {
   const status = deriveStageStatusFromChecks(checks, checkIds);
   const error = status === 'failed' ? pickStageError(checks, checkIds) : undefined;
@@ -54,7 +67,7 @@ export function deriveStepStatusFromChecks(
 function applyStepGuards(
   stepId: VerificationStepId,
   status: VerificationStepStatus,
-  ctx?: VerificationContext,
+  ctx?: StageDerivationContext,
 ): VerificationStepStatus {
   if (!ctx) {
     return status;

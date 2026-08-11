@@ -142,7 +142,7 @@ resource "aws_cloudfront_cache_policy" "api_disabled" {
 
 resource "aws_cloudfront_origin_request_policy" "api" {
   name    = "${local.name_prefix}-api-origin-request"
-  comment = "Forward API headers required for capability and range-bound bundle/report requests"
+  comment = "Forward API headers required for capability, range, and conditional-read requests"
 
   cookies_config {
     cookie_behavior = "none"
@@ -151,7 +151,7 @@ resource "aws_cloudfront_origin_request_policy" "api" {
   headers_config {
     header_behavior = "whitelist"
     headers {
-      items = ["Content-Type", "Origin", "Range", "X-Session-Capability", "X-Session-ID"]
+      items = ["Content-Type", "If-None-Match", "Origin", "Range", "X-Session-Capability"]
     }
   }
 
@@ -361,7 +361,7 @@ resource "aws_cloudfront_distribution" "frontend" {
         !local.cloudfront_custom_hostname_enabled
         || var.cloudfront_acm_certificate_arn != null
       )
-      error_message = "cloudfront_acm_certificate_arn must be set from the Plan 02 DNS/ACM handoff when public_hostname_disposition selects a custom hostname."
+      error_message = "cloudfront_acm_certificate_arn must be set from the DNS/ACM handoff when public_hostname_disposition selects a custom hostname."
     }
 
     precondition {

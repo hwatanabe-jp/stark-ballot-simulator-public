@@ -1,10 +1,7 @@
+import { getSharedDynamoDocumentClient } from '@stark-ballot/aws-adapters/aws/dynamodbConfig';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { DynamoRateLimitStore, type RateLimitStore } from './dynamoRateLimitStore';
-import {
-  getRateLimitAttemptMultiplier,
-  getVoteRateLimitConfig,
-  getZkVmRateLimitConfig,
-  requireRateLimitTableNames,
-} from './rateLimitConfig';
+import { getRateLimitAttemptMultiplier, getVoteRateLimitConfig, getZkVmRateLimitConfig } from './rateLimitConfig';
 
 interface VoteRateLimitResult {
   allowed: boolean;
@@ -97,11 +94,14 @@ function computeGlobalCounterExpiry(windowStart: number, durationMs: number): nu
   return windowStart + durationMs + GLOBAL_COUNTER_TTL_BUFFER_MS;
 }
 
-export function createDynamoRateLimitStore(): DynamoRateLimitStore {
-  const { eventsTable, countersTable } = requireRateLimitTableNames();
+export function createDynamoRateLimitStore(profile: ResolvedRuntimeProfile): DynamoRateLimitStore {
+  if (profile.rateLimit.store !== 'dynamo' || profile.external.kind !== 'aws') {
+    throw new Error('DynamoDB rate limiting requires a target AWS runtime profile.');
+  }
   return new DynamoRateLimitStore({
-    eventsTableName: eventsTable,
-    countersTableName: countersTable,
+    eventsTableName: profile.external.dynamo.rateLimitEventsTable,
+    countersTableName: profile.external.dynamo.rateLimitCountersTable,
+    documentClient: getSharedDynamoDocumentClient(profile),
   });
 }
 
@@ -287,29 +287,29 @@ export class DynamoServerRateLimiter {
   }
 }
 
-export function createDynamoVoteRateLimiter(): DynamoVoteRateLimiter {
-  return new DynamoVoteRateLimiter(createDynamoRateLimitStore(), getVoteRateLimitConfig());
+export function createDynamoVoteRateLimiter(profile: ResolvedRuntimeProfile): DynamoVoteRateLimiter {
+  return new DynamoVoteRateLimiter(createDynamoRateLimitStore(profile), getVoteRateLimitConfig());
 }
 
-export function createDynamoServerRateLimiter(): DynamoServerRateLimiter {
-  return new DynamoServerRateLimiter(createDynamoRateLimitStore(), getZkVmRateLimitConfig());
+export function createDynamoServerRateLimiter(profile: ResolvedRuntimeProfile): DynamoServerRateLimiter {
+  return new DynamoServerRateLimiter(createDynamoRateLimitStore(profile), getZkVmRateLimitConfig());
 }
 
-export function createDynamoVoteAttemptLimiter(): DynamoVoteRateLimiter {
+export function createDynamoVoteAttemptLimiter(profile: ResolvedRuntimeProfile): DynamoVoteRateLimiter {
   const config = getVoteRateLimitConfig();
   const multiplier = getRateLimitAttemptMultiplier();
   return new DynamoVoteRateLimiter(
-    createDynamoRateLimitStore(),
+    createDynamoRateLimitStore(profile),
     { ...config, limit: config.limit * multiplier },
     VOTE_ATTEMPT_SCOPE_PREFIX,
   );
 }
 
-export function createDynamoServerAttemptLimiter(): DynamoServerRateLimiter {
+export function createDynamoServerAttemptLimiter(profile: ResolvedRuntimeProfile): DynamoServerRateLimiter {
   const config = getZkVmRateLimitConfig();
   const multiplier = getRateLimitAttemptMultiplier();
   return new DynamoServerRateLimiter(
-    createDynamoRateLimitStore(),
+    createDynamoRateLimitStore(profile),
     { ...config, maxExecutions: config.maxExecutions * multiplier },
     ZKVM_ATTEMPT_SCOPE_PREFIX,
   );

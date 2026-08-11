@@ -28,9 +28,7 @@ export const FINALIZATION_REASONS = [
   'IDEMPOTENT_RETRY',
   'EXECUTION_MISMATCH',
   'TERMINAL_STATE_STICKY',
-  'CONTRACT_GENERATION_MISMATCH',
-  'UNSUPPORTED_CURRENT_ARTIFACT',
-  'CORRUPT_OR_UNREADABLE_FINALIZED_STATE',
+  'INVALID_FINALIZATION_ARTIFACT',
   'CONDITIONAL_WRITE_CONFLICT',
   'FINALIZATION_FAILED',
   'FINALIZATION_BUNDLE_KEY_MISSING',
@@ -42,6 +40,12 @@ export const FINALIZATION_REASONS = [
   'PROVER_EXECUTION_FAILED',
 ] as const;
 export type FinalizationEventReason = (typeof FINALIZATION_REASONS)[number];
+
+export const FINALIZATION_SLI_EXPECTED_DOMAIN_REASONS = [
+  'FINALIZATION_RESULT_INVALID',
+  'USER_CANCELLED',
+  'INVALID_FINALIZATION_ARTIFACT',
+] as const satisfies readonly FinalizationEventReason[];
 
 export interface FinalizationTransitionMetadata {
   source: FinalizationEventSource;
@@ -135,7 +139,12 @@ export type BundleDownloadS3ErrorCode = (typeof BUNDLE_DOWNLOAD_S3_ERROR_CODES)[
 
 interface FinalizationCorrelationFields {
   session_id_hash?: string;
-  execution_id?: string;
+  finalization_id?: string;
+}
+
+export interface FinalizationAdmittedEvent {
+  event: 'finalization_admitted';
+  finalization_id: string;
 }
 
 export interface FinalizeTransitionAttemptedEvent extends FinalizationCorrelationFields {
@@ -206,6 +215,7 @@ export interface BundleDownloadFailedEvent extends FinalizationCorrelationFields
 }
 
 export type CanonicalEvent =
+  | FinalizationAdmittedEvent
   | FinalizeTransitionAttemptedEvent
   | FinalizeStateUpdateRejectedEvent
   | FinalizeStateTransitionEvent
@@ -225,21 +235,31 @@ export const CANONICAL_EVENT_ALLOWED_FIELDS = {
     's3_error_code',
     'key_prefix',
     'session_id_hash',
-    'execution_id',
+    'finalization_id',
   ],
-  dispatch_dropped: ['event', 'reason', 'session_id_hash', 'execution_id'],
+  dispatch_dropped: ['event', 'reason', 'session_id_hash', 'finalization_id'],
+  finalization_admitted: ['event', 'finalization_id'],
   finalization_update_received: [
     'event',
     'transport',
     'auth_result',
     'outcome_code',
     'session_id_hash',
-    'execution_id',
+    'finalization_id',
   ],
-  finalize_state_transition: ['event', 'from', 'to', 'source', 'reason', 'changed', 'session_id_hash', 'execution_id'],
-  finalize_state_update_rejected: ['event', 'to', 'source', 'reason', 'session_id_hash', 'execution_id'],
-  finalize_transition_attempted: ['event', 'to', 'source', 'reason', 'session_id_hash', 'execution_id'],
-  queue_publish: ['event', 'queue', 'result', 'sqs_message_id', 'session_id_hash', 'execution_id'],
+  finalize_state_transition: [
+    'event',
+    'from',
+    'to',
+    'source',
+    'reason',
+    'changed',
+    'session_id_hash',
+    'finalization_id',
+  ],
+  finalize_state_update_rejected: ['event', 'to', 'source', 'reason', 'session_id_hash', 'finalization_id'],
+  finalize_transition_attempted: ['event', 'to', 'source', 'reason', 'session_id_hash', 'finalization_id'],
+  queue_publish: ['event', 'queue', 'result', 'sqs_message_id', 'session_id_hash', 'finalization_id'],
   verification_run_summary: [
     'event',
     'outcome',
@@ -248,7 +268,7 @@ export const CANONICAL_EVENT_ALLOWED_FIELDS = {
     'failed_required_count',
     'dev_mode_receipt',
     'session_id_hash',
-    'execution_id',
+    'finalization_id',
   ],
 } as const satisfies Readonly<Record<CanonicalEventName, readonly string[]>>;
 
@@ -269,7 +289,7 @@ const BUNDLE_DOWNLOAD_ENDPOINT_SET = new Set<string>(BUNDLE_DOWNLOAD_ENDPOINTS);
 const BUNDLE_DOWNLOAD_S3_ERROR_CODE_SET = new Set<string>(BUNDLE_DOWNLOAD_S3_ERROR_CODES);
 const SESSION_ID_HASH_PATTERN = /^sid_(?:[0-9a-f]{12}|unknown)$/;
 const KEY_PREFIX_PATTERN = /^key_(?:[0-9a-f]{12}|unknown)$/;
-const EXECUTION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const FINALIZATION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const SQS_MESSAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 export function isFinalizationEventReason(value: unknown): value is FinalizationEventReason {
@@ -289,17 +309,18 @@ function readRegisteredString(record: CanonicalEventRecord, key: string, registr
 
 function readOptionalCorrelations(record: CanonicalEventRecord): FinalizationCorrelationFields | null {
   const sessionIdHash = record['session_id_hash'];
-  const executionId = record['execution_id'];
+  const finalizationId = record['finalization_id'];
   if (
     (sessionIdHash !== undefined &&
       (typeof sessionIdHash !== 'string' || !SESSION_ID_HASH_PATTERN.test(sessionIdHash))) ||
-    (executionId !== undefined && (typeof executionId !== 'string' || !EXECUTION_ID_PATTERN.test(executionId)))
+    (finalizationId !== undefined &&
+      (typeof finalizationId !== 'string' || !FINALIZATION_ID_PATTERN.test(finalizationId)))
   ) {
     return null;
   }
   return {
     ...(typeof sessionIdHash === 'string' ? { session_id_hash: sessionIdHash } : {}),
-    ...(typeof executionId === 'string' ? { execution_id: executionId } : {}),
+    ...(typeof finalizationId === 'string' ? { finalization_id: finalizationId } : {}),
   };
 }
 
@@ -334,6 +355,10 @@ function projectCanonicalEvent(value: unknown): CanonicalEvent | undefined {
   }
 
   switch (record['event']) {
+    case 'finalization_admitted':
+      return correlations.finalization_id
+        ? { event: 'finalization_admitted', finalization_id: correlations.finalization_id }
+        : undefined;
     case 'finalize_transition_attempted':
       return projectFinalizeDecisionEvent(record, 'finalize_transition_attempted');
     case 'finalize_state_update_rejected':

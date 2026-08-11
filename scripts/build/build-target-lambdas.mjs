@@ -8,7 +8,7 @@ import { buildImageSignatureVerifierLambda } from './build-image-signature-verif
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const outRoot = path.join(repoRoot, '.tmp/target-lambdas');
-const tsconfigPath = path.join(repoRoot, 'tsconfig.json');
+const tsconfigPath = path.join(repoRoot, 'tooling/tsconfig/paths.json');
 
 /** @type {Array<[string, string]>} */
 const targets = [
@@ -66,11 +66,11 @@ const aliasEntries = Object.entries(tsconfig.compilerOptions?.paths ?? {})
 function resolveAliasPath(importPath) {
   for (const entry of aliasEntries) {
     if (!entry.wildcard && importPath === entry.pattern) {
-      return path.resolve(repoRoot, entry.replacement);
+      return path.resolve(path.dirname(tsconfigPath), entry.replacement);
     }
     if (entry.wildcard && importPath.startsWith(entry.prefix) && importPath.endsWith(entry.suffix)) {
       const wildcardValue = importPath.slice(entry.prefix.length, importPath.length - entry.suffix.length);
-      return path.resolve(repoRoot, entry.replacement.replace('*', wildcardValue));
+      return path.resolve(path.dirname(tsconfigPath), entry.replacement.replace('*', wildcardValue));
     }
   }
   return undefined;

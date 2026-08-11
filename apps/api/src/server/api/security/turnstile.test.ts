@@ -1,10 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ApiError, ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
-import { getRequestIp, validateTurnstileToken } from './turnstile';
+import { extractTurnstileToken, getRequestIp, validateTurnstileToken } from './turnstile';
 import {
   clearRuntimeConfigReferenceResolver,
   installStaticRuntimeConfigReferenceResolver,
 } from '@stark-ballot/runtime-config/env/runtimeConfigReferences';
+import {
+  localRuntimeProfile,
+  targetRuntimeProfile,
+  targetRuntimeProfileEnv,
+} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { resolveRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -13,9 +19,17 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   return value;
 }
 
-const originalEnv = { ...process.env };
 const UNRESOLVED_RUNTIME_SECRET_PLACEHOLDER = '<value will be resolved during runtime>';
 const TURNSTILE_SECRET_REF = '/stark-ballot-simulator/stark-dev/develop/app/secrets/turnstile-secret-key';
+const MAIN_TURNSTILE_SECRET_REF = '/stark-ballot-simulator/stark-prod/main/app/secrets/turnstile-secret-key';
+const DEVELOP_REFERENCE_AUTHORITY = { expectedDeploymentEnvironment: 'develop' } as const;
+const MAIN_REFERENCE_AUTHORITY = { expectedDeploymentEnvironment: 'main' } as const;
+const LOCAL_RUNTIME_PROFILE = localRuntimeProfile();
+const STATIC_MOCK_RUNTIME_PROFILE = localRuntimeProfile('static-mock-e2e');
+const LOCAL_PROOF_DEVELOPMENT_RUNTIME_PROFILE = localRuntimeProfile('local-proof-development');
+const LOCAL_PROOF_PRODUCTION_RUNTIME_PROFILE = localRuntimeProfile('local-proof-production');
+const TARGET_RUNTIME_PROFILE = targetRuntimeProfile();
+const TARGET_MAIN_RUNTIME_PROFILE = targetRuntimeProfile('main');
 
 describe('validateTurnstileToken', () => {
   const fetchMock = vi.fn<typeof fetch>();
@@ -24,13 +38,15 @@ describe('validateTurnstileToken', () => {
     vi.resetModules();
     vi.unstubAllEnvs();
     vi.clearAllMocks();
-    Object.assign(process.env, originalEnv);
-    process.env['TURNSTILE_BYPASS'] = '0';
-    process.env['TURNSTILE_SECRET_KEY'] = '';
-    process.env['TURNSTILE_ALLOWED_HOSTNAMES'] = '';
-    delete process.env['TURNSTILE_SECRET_KEY_REF'];
-    delete process.env['TRUSTED_PROXY'];
+    vi.stubEnv('TURNSTILE_SECRET_KEY', undefined);
+    vi.stubEnv('TURNSTILE_ALLOWED_HOSTNAMES', undefined);
+    vi.stubEnv('TURNSTILE_SECRET_KEY_REF', undefined);
+    vi.stubEnv('TRUSTED_PROXY', undefined);
     clearRuntimeConfigReferenceResolver();
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[TURNSTILE_SECRET_REF, 'resolved-turnstile-secret']]),
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
     vi.stubGlobal('fetch', fetchMock);
   });
 
@@ -41,130 +57,94 @@ describe('validateTurnstileToken', () => {
     vi.unstubAllEnvs();
   });
 
-  it('skips verification when bypass flag is enabled', async () => {
-    vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', 'develop');
-    process.env['TURNSTILE_BYPASS'] = '1';
-
-    await expect(validateTurnstileToken({ token: null })).resolves.toBeUndefined();
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('does not bypass when runtime classification is unknown', async () => {
-    vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', '');
-    vi.stubEnv('ENV_NAME', '');
-    vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', '');
-    vi.stubEnv('AWS_LAMBDA_FUNCTION_NAME', '');
-    vi.stubEnv('ENV_NAME', '');
-    process.env['TURNSTILE_BYPASS'] = '1';
-    delete process.env['TURNSTILE_SECRET_KEY'];
-
-    await expect(validateTurnstileToken({ token: 'cf-turnstile-token' })).rejects.toMatchObject({
-      code: ErrorCode.INTERNAL_ERROR,
-    });
+  it.each([
+    ['local-demo', LOCAL_RUNTIME_PROFILE, null],
+    ['static-mock-e2e', STATIC_MOCK_RUNTIME_PROFILE, undefined],
+    ['local-proof-development', LOCAL_PROOF_DEVELOPMENT_RUNTIME_PROFILE, ''],
+    ['local-proof-production', LOCAL_PROOF_PRODUCTION_RUNTIME_PROFILE, {}],
+  ])('skips verification for the injected %s profile', async (_profileName, profile, token) => {
+    await expect(validateTurnstileToken(profile, { token })).resolves.toBeUndefined();
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('does not bypass for legacy Lambda names that contain development tokens', async () => {
-    vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', '');
-    vi.stubEnv('ENV_NAME', '');
-    vi.stubEnv('AWS_LAMBDA_FUNCTION_NAME', 'amplify-starkballotsimulator-dev-honoapi-lambda');
-    process.env['TURNSTILE_BYPASS'] = '1';
-    delete process.env['TURNSTILE_SECRET_KEY'];
-
-    await expect(validateTurnstileToken({ token: 'cf-turnstile-token' })).rejects.toMatchObject({
-      code: ErrorCode.INTERNAL_ERROR,
-    });
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('does not bypass when ENV_NAME=develop is paired with an untrusted Lambda name', async () => {
-    vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', '');
-    vi.stubEnv('ENV_NAME', 'develop');
-    vi.stubEnv('AWS_LAMBDA_FUNCTION_NAME', 'amplify-starkballotsimulator-dev-honoapi-lambda');
-    process.env['TURNSTILE_BYPASS'] = '1';
-    delete process.env['TURNSTILE_SECRET_KEY'];
-
-    await expect(validateTurnstileToken({ token: 'cf-turnstile-token' })).rejects.toMatchObject({
-      code: ErrorCode.INTERNAL_ERROR,
-    });
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('allows ENV_NAME fallback for local bypass when only AWS_REGION is present', async () => {
-    vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', '');
-    vi.stubEnv('AWS_EXECUTION_ENV', '');
-    vi.stubEnv('AWS_LAMBDA_FUNCTION_NAME', '');
-    vi.stubEnv('AWS_REGION', 'ap-northeast-1');
-    vi.stubEnv('ENV_NAME', 'develop');
-    process.env['TURNSTILE_BYPASS'] = '1';
-
-    await expect(validateTurnstileToken({ token: undefined })).resolves.toBeUndefined();
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('allows bypass for target develop Lambda names when stronger markers are missing', async () => {
-    vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', '');
-    vi.stubEnv('ENV_NAME', '');
-    vi.stubEnv('AWS_LAMBDA_FUNCTION_NAME', 'stark-ballot-simulator-stark-dev-develop-public-api');
-    process.env['TURNSTILE_BYPASS'] = '1';
-
-    await expect(validateTurnstileToken({ token: undefined })).resolves.toBeUndefined();
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('does not allow bypass in production runtime', async () => {
-    vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', 'main');
-    process.env['TURNSTILE_BYPASS'] = '1';
-    process.env['TURNSTILE_SECRET_KEY'] = 'live-secret';
-
-    await expect(validateTurnstileToken({ token: undefined })).rejects.toMatchObject({
+  it('requires a token for the injected target develop profile', async () => {
+    await expect(validateTurnstileToken(TARGET_RUNTIME_PROFILE, { token: undefined })).rejects.toMatchObject({
       code: ErrorCode.CAPTCHA_FAILED,
     });
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('fails closed when secret is missing and bypass is disabled', async () => {
-    vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', 'main');
-    process.env['TURNSTILE_BYPASS'] = '0';
-    delete process.env['TURNSTILE_SECRET_KEY'];
+  it('requires a token for the injected target main profile', async () => {
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[MAIN_TURNSTILE_SECRET_REF, 'resolved-turnstile-secret']]),
+      MAIN_REFERENCE_AUTHORITY,
+    );
 
-    await expect(validateTurnstileToken({ token: 'cf-turnstile-token' })).rejects.toMatchObject({
+    await expect(validateTurnstileToken(TARGET_MAIN_RUNTIME_PROFILE, { token: undefined })).rejects.toMatchObject({
+      code: ErrorCode.CAPTCHA_FAILED,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a blank token under target enforcement', async () => {
+    await expect(validateTurnstileToken(TARGET_RUNTIME_PROFILE, { token: '   ' })).rejects.toMatchObject({
+      code: ErrorCode.CAPTCHA_FAILED,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects direct Turnstile secret material for the injected target profile', async () => {
+    vi.stubEnv('TURNSTILE_SECRET_KEY', 'direct-turnstile-secret');
+
+    await expect(
+      validateTurnstileToken(TARGET_MAIN_RUNTIME_PROFILE, { token: 'cf-turnstile-token' }),
+    ).rejects.toMatchObject({
       code: ErrorCode.INTERNAL_ERROR,
     });
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('fails closed when secret is unresolved runtime secret placeholder', async () => {
-    vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', 'main');
-    process.env['TURNSTILE_BYPASS'] = '0';
-    process.env['TURNSTILE_SECRET_KEY'] = UNRESOLVED_RUNTIME_SECRET_PLACEHOLDER;
+  it('fails closed when the target secret reference cannot be resolved', async () => {
+    clearRuntimeConfigReferenceResolver();
 
-    await expect(validateTurnstileToken({ token: 'cf-turnstile-token' })).rejects.toMatchObject({
+    await expect(
+      validateTurnstileToken(TARGET_MAIN_RUNTIME_PROFILE, { token: 'cf-turnstile-token' }),
+    ).rejects.toMatchObject({
       code: ErrorCode.INTERNAL_ERROR,
     });
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('allows bypass on develop runtime', async () => {
-    vi.stubEnv('NODE_ENV', 'production');
-    vi.stubEnv('RUNTIME_DEPLOYMENT_ENV', 'develop');
-    process.env['TURNSTILE_BYPASS'] = '1';
+  it('fails closed when direct target secret material is an unresolved runtime placeholder', async () => {
+    vi.stubEnv('TURNSTILE_SECRET_KEY', UNRESOLVED_RUNTIME_SECRET_PLACEHOLDER);
 
-    await expect(validateTurnstileToken({ token: undefined })).resolves.toBeUndefined();
+    await expect(validateTurnstileToken(TARGET_RUNTIME_PROFILE, { token: 'cf-turnstile-token' })).rejects.toMatchObject(
+      {
+        code: ErrorCode.INTERNAL_ERROR,
+      },
+    );
+
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('throws an error when token is missing under enforcement', async () => {
-    process.env['TURNSTILE_SECRET_KEY'] = 'test-secret';
+  it('uses the injected local profile even with production-like non-selector environment values', async () => {
+    const env = {
+      NODE_ENV: 'production',
+      TURNSTILE_SECRET_KEY: '',
+    };
 
-    await expect(validateTurnstileToken({ token: undefined })).rejects.toMatchObject({
+    await expect(validateTurnstileToken(LOCAL_RUNTIME_PROFILE, { token: undefined }, env)).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-string token under target enforcement', async () => {
+    await expect(validateTurnstileToken(TARGET_RUNTIME_PROFILE, { token: {} })).rejects.toMatchObject({
       code: ErrorCode.CAPTCHA_FAILED,
     });
 
@@ -172,17 +152,18 @@ describe('validateTurnstileToken', () => {
   });
 
   it('sends verification request to Cloudflare when configured', async () => {
-    process.env['TURNSTILE_SECRET_KEY'] = 'live-secret';
-
     fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ success: true }), {
+      new Response(JSON.stringify({ success: true, hostname: 'develop.stark-ballot-sim.hwatanabe.dev' }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
     );
 
     await expect(
-      validateTurnstileToken({ token: 'cf-turnstile-token', remoteIp: '203.0.113.5' }),
+      validateTurnstileToken(TARGET_RUNTIME_PROFILE, {
+        token: 'cf-turnstile-token',
+        remoteIp: '203.0.113.5',
+      }),
     ).resolves.toBeUndefined();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -191,25 +172,28 @@ describe('validateTurnstileToken', () => {
     const body = init?.body;
     expect(body).toBeInstanceOf(URLSearchParams);
     if (body instanceof URLSearchParams) {
-      expect(body.get('secret')).toBe('live-secret');
+      expect(body.get('secret')).toBe('resolved-turnstile-secret');
       expect(body.get('response')).toBe('cf-turnstile-token');
       expect(body.get('remoteip')).toBe('203.0.113.5');
     }
   });
 
   it('resolves the Turnstile secret from an approved target runtime reference', async () => {
-    delete process.env['TURNSTILE_SECRET_KEY'];
-    process.env['TURNSTILE_SECRET_KEY_REF'] = TURNSTILE_SECRET_REF;
-    installStaticRuntimeConfigReferenceResolver(new Map([[TURNSTILE_SECRET_REF, 'resolved-turnstile-secret']]));
+    installStaticRuntimeConfigReferenceResolver(
+      new Map([[TURNSTILE_SECRET_REF, 'resolved-turnstile-secret']]),
+      DEVELOP_REFERENCE_AUTHORITY,
+    );
 
     fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ success: true }), {
+      new Response(JSON.stringify({ success: true, hostname: 'develop.stark-ballot-sim.hwatanabe.dev' }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
     );
 
-    await expect(validateTurnstileToken({ token: 'cf-turnstile-token' })).resolves.toBeUndefined();
+    await expect(
+      validateTurnstileToken(TARGET_RUNTIME_PROFILE, { token: 'cf-turnstile-token' }),
+    ).resolves.toBeUndefined();
 
     const body = fetchMock.mock.calls[0]?.[1]?.body;
     expect(body).toBeInstanceOf(URLSearchParams);
@@ -219,8 +203,6 @@ describe('validateTurnstileToken', () => {
   });
 
   it('throws ApiError when Cloudflare responds with failure', async () => {
-    process.env['TURNSTILE_SECRET_KEY'] = 'live-secret';
-
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ success: false, 'error-codes': ['timeout-or-duplicate'] }), {
         status: 200,
@@ -228,12 +210,12 @@ describe('validateTurnstileToken', () => {
       }),
     );
 
-    await expect(validateTurnstileToken({ token: 'invalid-token' })).rejects.toBeInstanceOf(ApiError);
+    await expect(validateTurnstileToken(TARGET_RUNTIME_PROFILE, { token: 'invalid-token' })).rejects.toBeInstanceOf(
+      ApiError,
+    );
   });
 
   it('fails closed when Cloudflare returns non-JSON', async () => {
-    process.env['TURNSTILE_SECRET_KEY'] = 'live-secret';
-
     fetchMock.mockResolvedValue(
       new Response('not json', {
         status: 200,
@@ -241,15 +223,15 @@ describe('validateTurnstileToken', () => {
       }),
     );
 
-    await expect(validateTurnstileToken({ token: 'cf-turnstile-token' })).rejects.toMatchObject({
-      code: ErrorCode.CAPTCHA_FAILED,
-      message: 'Turnstile verification returned malformed response',
-    });
+    await expect(validateTurnstileToken(TARGET_RUNTIME_PROFILE, { token: 'cf-turnstile-token' })).rejects.toMatchObject(
+      {
+        code: ErrorCode.CAPTCHA_FAILED,
+        message: 'Turnstile verification returned malformed response',
+      },
+    );
   });
 
   it('fails closed when Cloudflare returns a malformed JSON object', async () => {
-    process.env['TURNSTILE_SECRET_KEY'] = 'live-secret';
-
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
@@ -257,15 +239,15 @@ describe('validateTurnstileToken', () => {
       }),
     );
 
-    await expect(validateTurnstileToken({ token: 'cf-turnstile-token' })).rejects.toMatchObject({
-      code: ErrorCode.CAPTCHA_FAILED,
-      message: 'Turnstile verification returned malformed response',
-    });
+    await expect(validateTurnstileToken(TARGET_RUNTIME_PROFILE, { token: 'cf-turnstile-token' })).rejects.toMatchObject(
+      {
+        code: ErrorCode.CAPTCHA_FAILED,
+        message: 'Turnstile verification returned malformed response',
+      },
+    );
   });
 
   it('rejects when action does not match expected action', async () => {
-    process.env['TURNSTILE_SECRET_KEY'] = 'live-secret';
-
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ success: true, action: 'vote', hostname: 'ballot.example.com' }), {
         status: 200,
@@ -274,16 +256,16 @@ describe('validateTurnstileToken', () => {
     );
 
     await expect(
-      validateTurnstileToken({ token: 'cf-turnstile-token', expectedAction: 'finalize' }),
+      validateTurnstileToken(TARGET_RUNTIME_PROFILE, {
+        token: 'cf-turnstile-token',
+        expectedAction: 'finalize',
+      }),
     ).rejects.toMatchObject({
       code: ErrorCode.CAPTCHA_FAILED,
     });
   });
 
   it('rejects when hostname is not in the allowlist', async () => {
-    process.env['TURNSTILE_SECRET_KEY'] = 'live-secret';
-    process.env['TURNSTILE_ALLOWED_HOSTNAMES'] = 'ballot.example.com';
-
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ success: true, hostname: 'evil.example' }), {
         status: 200,
@@ -291,23 +273,30 @@ describe('validateTurnstileToken', () => {
       }),
     );
 
-    await expect(validateTurnstileToken({ token: 'cf-turnstile-token' })).rejects.toMatchObject({
-      code: ErrorCode.CAPTCHA_FAILED,
-    });
+    await expect(validateTurnstileToken(TARGET_RUNTIME_PROFILE, { token: 'cf-turnstile-token' })).rejects.toMatchObject(
+      {
+        code: ErrorCode.CAPTCHA_FAILED,
+      },
+    );
   });
 
-  it('accepts hostname values with protocol in allowlist', async () => {
-    process.env['TURNSTILE_SECRET_KEY'] = 'live-secret';
-    process.env['TURNSTILE_ALLOWED_HOSTNAMES'] = 'https://ballot.example.com/';
-
-    fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ success: true, hostname: 'ballot.example.com' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
+  it('rejects URL-shaped target hostname configuration before Turnstile verification', () => {
+    expect(() =>
+      resolveRuntimeProfile({
+        ...targetRuntimeProfileEnv(),
+        TURNSTILE_ALLOWED_HOSTNAMES: 'https://ballot.example.com/',
       }),
-    );
+    ).toThrow('TURNSTILE_ALLOWED_HOSTNAMES');
 
-    await expect(validateTurnstileToken({ token: 'cf-turnstile-token' })).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('extractTurnstileToken', () => {
+  it('reads only the canonical turnstileToken field', () => {
+    expect(extractTurnstileToken({ turnstileToken: 'canonical-token' })).toBe('canonical-token');
+    expect(extractTurnstileToken({ 'cf-turnstile-response': 'vendor-token' })).toBeUndefined();
+    expect(extractTurnstileToken({ cfTurnstileResponse: 'legacy-token' })).toBeUndefined();
   });
 });
 
@@ -322,7 +311,7 @@ describe('getRequestIp', () => {
     });
 
     // When
-    const ip = getRequestIp(headers, '198.51.100.1');
+    const ip = getRequestIp(LOCAL_RUNTIME_PROFILE, headers, '198.51.100.1');
 
     // Then
     expect(ip).toBe('203.0.113.10');
@@ -337,7 +326,7 @@ describe('getRequestIp', () => {
     });
 
     // When
-    const ip = getRequestIp(headers, '198.51.100.2');
+    const ip = getRequestIp(LOCAL_RUNTIME_PROFILE, headers, '198.51.100.2');
 
     // Then
     expect(ip).toBe('198.51.100.2');
@@ -349,7 +338,7 @@ describe('getRequestIp', () => {
     const headers = new Headers();
 
     // When
-    const ip = getRequestIp(headers);
+    const ip = getRequestIp(LOCAL_RUNTIME_PROFILE, headers);
 
     // Then
     expect(ip).toBeUndefined();
@@ -365,7 +354,7 @@ describe('getRequestIp', () => {
     });
 
     // When
-    const ip = getRequestIp(headers, '198.51.100.1');
+    const ip = getRequestIp(LOCAL_RUNTIME_PROFILE, headers, '198.51.100.1');
 
     // Then
     expect(ip).toBe('198.51.100.1');

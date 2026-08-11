@@ -8,6 +8,22 @@ import {
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 
 describe('parseFinalizationResultAuthority', () => {
+  it('rejects a verification result that belongs in its separate lifecycle record', () => {
+    const authority = buildFinalizationResultFromJournal({
+      journal: createTestJournal(),
+      imageId: '0x' + '1'.repeat(64),
+    });
+
+    expect(
+      parseFinalizationResultAuthority({
+        ...authority,
+        verificationResult: {
+          status: 'not_run',
+        },
+      }),
+    ).toBeUndefined();
+  });
+
   it('rejects delivery envelope and local locator fields at the pure authority boundary', () => {
     const authority = buildFinalizationResultFromJournal({
       journal: createTestJournal(),
@@ -16,18 +32,18 @@ describe('parseFinalizationResultAuthority', () => {
 
     const parsed = parseFinalizationResultAuthority({
       ...authority,
-      s3BundleKey: 'sessions/session-123/exec-1/bundle.zip',
+      s3BundleKey: 'sessions/session-123/finalization-1/bundle.zip',
       verificationResult: {
         status: 'success',
         bundlePath: '/tmp/bundle',
         reportPath: '/tmp/bundle/verification.json',
         bundleArchivePath: '/tmp/bundle/bundle.zip',
-        bundleUrl: 'https://app.example.com/api/verification/bundles/session-123/exec-1',
-        reportUrl: 'https://app.example.com/api/verification/bundles/session-123/exec-1/report',
-        s3BundleKey: 'sessions/session-123/exec-1/bundle.zip',
-        s3ReportKey: 'sessions/session-123/exec-1/verification.json',
-        s3UploadedAt: '2026-01-01T00:00:00.000Z',
-        executionId: 'exec-1',
+        bundleUrl: 'https://app.example.com/api/sessions/session-123/finalizations/finalization-1/artifacts/bundle',
+        reportUrl: 'https://app.example.com/api/sessions/session-123/finalizations/finalization-1/artifacts/report',
+        s3BundleKey: 'sessions/session-123/finalization-1/bundle.zip',
+        s3ReportKey: 'sessions/session-123/finalization-1/verification.json',
+        s3UploadedAtMs: '2026-01-01T00:00:00.000Z',
+        finalizationId: 'finalization-1',
       },
     });
 
@@ -39,8 +55,8 @@ describe('parseFinalizationResultAuthority', () => {
       journal: createTestJournal({
         totalExpected: 64,
         validVotes: 61,
-        missingIndices: 1,
-        invalidIndices: 2,
+        missingSlots: 1,
+        invalidPresentedSlots: 2,
       }),
       imageId: '0x' + '1'.repeat(64),
     });
@@ -57,6 +73,97 @@ describe('parseFinalizationResultAuthority', () => {
     });
 
     expect(parsed).toBeUndefined();
+  });
+
+  it('rejects unknown keys in nested persisted result records instead of normalizing them away', () => {
+    const authority = buildFinalizationResultFromJournal({
+      journal: createTestJournal(),
+      imageId: '0x' + '1'.repeat(64),
+    });
+    const marker = { compatibilityMarker: 'retired-shape' };
+
+    const nestedShapeCases = [
+      {
+        ...authority,
+        journal: {
+          ...authority.journal,
+          ...marker,
+        },
+      },
+      {
+        ...authority,
+        receipt: {
+          seal: 'receipt-seal',
+          journal: 'receipt-journal',
+          ...marker,
+        },
+      },
+      {
+        ...authority,
+        receipt: {
+          seal: 'receipt-seal',
+          journal: {
+            bytes: [1, 2, 3],
+            ...marker,
+          },
+        },
+      },
+      {
+        ...authority,
+        receiptPublication: {
+          receiptHash: 'receipt-hash',
+          boardIndex: 0,
+          ...marker,
+        },
+      },
+      {
+        ...authority,
+        electionManifest: {
+          electionId: authority.journal.electionId,
+          totalExpected: authority.journal.totalExpected,
+          choices: ['A', 'B', 'C', 'D', 'E'],
+          version: '1',
+          botCount: authority.journal.totalExpected - 1,
+          merkleTreeDepth: 7,
+          electionConfigHash: authority.journal.electionConfigHash,
+          ...marker,
+        },
+      },
+      {
+        ...authority,
+        closeStatement: {
+          logId: `0x${'22'.repeat(32)}`,
+          treeSize: authority.journal.treeSize,
+          timestamp: 1,
+          bulletinRoot: authority.journal.bulletinRoot,
+          sthDigest: authority.journal.sthDigest,
+          ...marker,
+        },
+      },
+      {
+        ...authority,
+        bitmapData: {
+          includedBitmap: [true],
+          includedBitmapRoot: authority.journal.includedBitmapRoot,
+          treeSize: authority.journal.treeSize,
+          finalizedAtMs: 1,
+          ...marker,
+        },
+      },
+      {
+        ...authority,
+        tamperSummary: {
+          ignoredVotes: 0,
+          recountedVotes: 0,
+          userRecountedTo: null,
+          ...marker,
+        },
+      },
+    ];
+
+    for (const value of nestedShapeCases) {
+      expect(parseFinalizationResultAuthority(value)).toBeUndefined();
+    }
   });
 });
 
@@ -91,9 +198,9 @@ describe('parseFinalizationState', () => {
     expect(
       parseFinalizationState({
         status: 'running',
-        executionId: 'exec-1',
-        queuedAt: 1,
-        startedAt: 2,
+        finalizationId: 'exec-1',
+        queuedAtMs: 1,
+        startedAtMs: 2,
         s3BundleUrl: 'https://old.example.com/bundle.zip',
       }),
     ).toBeUndefined();
@@ -102,9 +209,9 @@ describe('parseFinalizationState', () => {
   it('round-trips a closed finalization failure category', () => {
     const state = {
       status: 'failed',
-      executionId: 'exec-1',
-      queuedAt: 1,
-      failedAt: 2,
+      finalizationId: 'exec-1',
+      queuedAtMs: 1,
+      failedAtMs: 2,
       error: {
         code: 'PROVER_TASK_FAILED',
         message: 'Target prover task failed',
@@ -119,9 +226,9 @@ describe('parseFinalizationState', () => {
     expect(
       parseFinalizationState({
         status: 'failed',
-        executionId: 'exec-1',
-        queuedAt: 1,
-        failedAt: 2,
+        finalizationId: 'exec-1',
+        queuedAtMs: 1,
+        failedAtMs: 2,
         error: {
           code: 'PROVER_TASK_FAILED',
           message: 'Target prover task failed',

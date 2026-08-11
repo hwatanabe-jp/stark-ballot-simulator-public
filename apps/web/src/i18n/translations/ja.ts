@@ -297,7 +297,7 @@ export const ja = {
         voteId: '投票ID',
         bulletinIndex: '掲示板番号',
         bulletinRootAtCast: '投票時ルート',
-        voteTimestamp: '投票日時',
+        castAtMs: '投票日時',
         voteReceipt: '投票レシート',
         merklePath: '包含証明',
       },

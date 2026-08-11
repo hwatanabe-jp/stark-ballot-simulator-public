@@ -1,8 +1,7 @@
 import crypto from 'crypto';
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { getSharedDynamoDocumentClient } from '@stark-ballot/aws-adapters/aws/dynamodbConfig';
-import { getNumberProperty } from '@stark-ballot/domain/utils/guards';
+import { getNumberProperty } from '@stark-ballot/validation/unknown-value-guards';
 
 export interface RateLimitStore {
   countEvents(scope: string, sinceTimestamp: number): Promise<number>;
@@ -25,7 +24,7 @@ export class RateLimitStoreError extends Error {
 interface DynamoRateLimitStoreConfig {
   eventsTableName: string;
   countersTableName: string;
-  documentClient?: DynamoDBDocumentClient;
+  documentClient: DynamoDBDocumentClient;
 }
 
 function formatEventTimestampPrefix(timestamp: number): string {
@@ -48,7 +47,7 @@ export class DynamoRateLimitStore implements RateLimitStore {
   constructor(config: DynamoRateLimitStoreConfig) {
     this.eventsTableName = config.eventsTableName;
     this.countersTableName = config.countersTableName;
-    this.client = config.documentClient ?? getSharedDynamoDocumentClient();
+    this.client = config.documentClient;
   }
 
   async countEvents(scope: string, sinceTimestamp: number): Promise<number> {

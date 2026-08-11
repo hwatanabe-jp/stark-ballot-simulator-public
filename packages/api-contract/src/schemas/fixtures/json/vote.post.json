@@ -1,0 +1,12 @@
+{
+  "data": {
+    "voteId": "00000000-0000-4000-8000-000000000001",
+    "commitment": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "bulletinIndex": 0,
+    "bulletinRootAtCast": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "castAtMs": 1730000000000
+  },
+  "meta": {
+    "requestId": "fixture-request-id"
+  }
+}

@@ -1,0 +1,3414 @@
+{
+  "capturedAt": "1970-01-01T00:00:00.000Z",
+  "comparatorType": "public-contract-baseline",
+  "contractHash": "5f84f2b028efc2e9d5ccd8407cee4eeddbfbff72739907d6210567b1693c06a7",
+  "dirtyStatus": "dirty",
+  "mountedBehavior": [
+    {
+      "body": {
+        "bytes": 13,
+        "sha256": "7d04f7431bbfa41a04bcc7e6b98b9de0d919756c4c671c5785c99fff45f16402"
+      },
+      "headers": {
+        "accept-ranges": null,
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": null,
+        "content-disposition": null,
+        "content-range": null,
+        "content-type": "text/plain; charset=UTF-8",
+        "etag": null,
+        "vary": null,
+        "x-request-id": "public-contract-baseline:full.finalization-callback.cors-preflight.not-public",
+        "x-stark-bundle-range-chunk-size": null
+      },
+      "method": "OPTIONS",
+      "mode": "full",
+      "path": "/api/internal/sessions/session-baseline-mounted/finalizations/finalization-baseline-mounted/callback",
+      "probeId": "full.finalization-callback.cors-preflight.not-public",
+      "status": 404
+    },
+    {
+      "body": {
+        "bytes": 37,
+        "jsonError": "Missing signature headers",
+        "jsonKeys": ["error"],
+        "sha256": "2a684668736cc14683b40d35e6e361944d159f1ff480df610ae5a0d47dcfaa41"
+      },
+      "headers": {
+        "accept-ranges": null,
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": null,
+        "content-disposition": null,
+        "content-range": null,
+        "content-type": "application/json",
+        "etag": null,
+        "vary": null,
+        "x-request-id": "public-contract-baseline:full.finalization-callback.invalid-request.error-envelope",
+        "x-stark-bundle-range-chunk-size": null
+      },
+      "method": "POST",
+      "mode": "full",
+      "path": "/api/internal/sessions/session-baseline-mounted/finalizations/finalization-baseline-mounted/callback",
+      "probeId": "full.finalization-callback.invalid-request.error-envelope",
+      "status": 401
+    },
+    {
+      "body": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "headers": {
+        "accept-ranges": null,
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": "private, max-age=86400, stale-while-revalidate=3600, immutable",
+        "content-disposition": null,
+        "content-range": null,
+        "content-type": "application/json",
+        "etag": "W/\"d61c894251639356\"",
+        "vary": "X-Session-Capability, Origin",
+        "x-request-id": "public-contract-baseline:lambda.bitmap.conditional.no-body",
+        "x-stark-bundle-range-chunk-size": null
+      },
+      "method": "GET",
+      "mode": "lambda",
+      "path": "/api/sessions/session-baseline-mounted/finalizations/current/bitmap-proofs/included/0",
+      "probeId": "lambda.bitmap.conditional.no-body",
+      "status": 304
+    },
+    {
+      "body": {
+        "bytes": 185,
+        "jsonKeys": ["data", "meta"],
+        "jsonRequestId": "public-contract-baseline:lambda.bitmap.etag.private-cache",
+        "sha256": "eb6b53afcc41a07e89e23748d069f4a7e967a41c34ad553ef5c1c56af7a36fc2"
+      },
+      "headers": {
+        "accept-ranges": null,
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": "private, max-age=86400, stale-while-revalidate=3600, immutable",
+        "content-disposition": null,
+        "content-range": null,
+        "content-type": "application/json",
+        "etag": "W/\"d61c894251639356\"",
+        "vary": "X-Session-Capability, Origin",
+        "x-request-id": "public-contract-baseline:lambda.bitmap.etag.private-cache",
+        "x-stark-bundle-range-chunk-size": null
+      },
+      "method": "GET",
+      "mode": "lambda",
+      "path": "/api/sessions/session-baseline-mounted/finalizations/current/bitmap-proofs/included/0",
+      "probeId": "lambda.bitmap.etag.private-cache",
+      "status": 200
+    },
+    {
+      "body": {
+        "bytes": 205,
+        "jsonError": "SESSION_CAPABILITY_REQUIRED",
+        "jsonKeys": ["error", "meta"],
+        "jsonRequestId": "public-contract-baseline:lambda.bitmap.missing-capability.error-envelope",
+        "sha256": "20368ecc504e1aafae13548f8d284f50d16fe199ca0f037e955b7cb17096ca6e"
+      },
+      "headers": {
+        "accept-ranges": null,
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": null,
+        "content-disposition": null,
+        "content-range": null,
+        "content-type": "application/json",
+        "etag": null,
+        "vary": "Origin",
+        "x-request-id": "public-contract-baseline:lambda.bitmap.missing-capability.error-envelope",
+        "x-stark-bundle-range-chunk-size": null
+      },
+      "method": "GET",
+      "mode": "lambda",
+      "path": "/api/sessions/session-baseline-mounted/finalizations/current/bitmap-proofs/included/0",
+      "probeId": "lambda.bitmap.missing-capability.error-envelope",
+      "status": 401
+    },
+    {
+      "body": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "headers": {
+        "accept-ranges": null,
+        "access-control-allow-headers": "Content-Type,X-Session-Capability,Range,If-None-Match",
+        "access-control-allow-methods": "GET,POST,OPTIONS",
+        "access-control-allow-origin": "http://localhost:3000",
+        "cache-control": null,
+        "content-disposition": null,
+        "content-range": null,
+        "content-type": null,
+        "etag": null,
+        "vary": "Origin, Access-Control-Request-Headers",
+        "x-request-id": "public-contract-baseline:lambda.bundle.cors-preflight.range-header",
+        "x-stark-bundle-range-chunk-size": null
+      },
+      "method": "OPTIONS",
+      "mode": "lambda",
+      "path": "/api/sessions/session-baseline-mounted/finalizations/finalization-baseline-mounted/artifacts/bundle",
+      "probeId": "lambda.bundle.cors-preflight.range-header",
+      "status": 204
+    },
+    {
+      "body": {
+        "bytes": 202,
+        "jsonError": "SESSION_CAPABILITY_INVALID",
+        "jsonKeys": ["error", "meta"],
+        "jsonRequestId": "public-contract-baseline:lambda.bundle.cross-session-capability-denied",
+        "sha256": "fe86b01d4efe152658265dac419a464bf1bd4565b8d6532e7716fd86b3577a1a"
+      },
+      "headers": {
+        "accept-ranges": null,
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": null,
+        "content-disposition": null,
+        "content-range": null,
+        "content-type": "application/json",
+        "etag": null,
+        "vary": "Origin",
+        "x-request-id": "public-contract-baseline:lambda.bundle.cross-session-capability-denied",
+        "x-stark-bundle-range-chunk-size": null
+      },
+      "method": "GET",
+      "mode": "lambda",
+      "path": "/api/sessions/other-session/finalizations/finalization-baseline-mounted/artifacts/bundle",
+      "probeId": "lambda.bundle.cross-session-capability-denied",
+      "status": 401
+    },
+    {
+      "body": {
+        "bytes": 1012,
+        "sha256": "25da8b3989473caaa09af1cc3f98af41d2991c397eb4685e9d25c23c91b69147"
+      },
+      "headers": {
+        "accept-ranges": "bytes",
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": "no-store",
+        "content-disposition": "attachment; filename=\"finalization-baseline-mounted.zip\"",
+        "content-range": null,
+        "content-type": "application/zip",
+        "etag": "\"25da8b3989473caaa09af1cc3f98af41d2991c397eb4685e9d25c23c91b69147\"",
+        "vary": "Origin",
+        "x-request-id": "public-contract-baseline:lambda.bundle.local-binary.no-store",
+        "x-stark-bundle-range-chunk-size": "4194304"
+      },
+      "method": "GET",
+      "mode": "lambda",
+      "path": "/api/sessions/session-baseline-mounted/finalizations/finalization-baseline-mounted/artifacts/bundle",
+      "probeId": "lambda.bundle.local-binary.no-store",
+      "status": 200
+    },
+    {
+      "body": {
+        "bytes": 205,
+        "jsonError": "SESSION_CAPABILITY_REQUIRED",
+        "jsonKeys": ["error", "meta"],
+        "jsonRequestId": "public-contract-baseline:lambda.bundle.missing-capability.error-envelope",
+        "sha256": "8e2c180fbd4a2345ca1810f0a39d0712f810b03a7690a4c96e0819d215fcd15e"
+      },
+      "headers": {
+        "accept-ranges": null,
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": null,
+        "content-disposition": null,
+        "content-range": null,
+        "content-type": "application/json",
+        "etag": null,
+        "vary": "Origin",
+        "x-request-id": "public-contract-baseline:lambda.bundle.missing-capability.error-envelope",
+        "x-stark-bundle-range-chunk-size": null
+      },
+      "method": "GET",
+      "mode": "lambda",
+      "path": "/api/sessions/session-baseline-mounted/finalizations/finalization-baseline-mounted/artifacts/bundle",
+      "probeId": "lambda.bundle.missing-capability.error-envelope",
+      "status": 401
+    },
+    {
+      "body": {
+        "bytes": 146,
+        "jsonError": "INVALID_RANGE",
+        "jsonKeys": ["error", "meta"],
+        "jsonRequestId": "public-contract-baseline:lambda.bundle.range-unsatisfiable.416",
+        "sha256": "adb6f9c966944f9609a025a2e6ee8e39bfcb27da67c5025d679f957a3324eac4"
+      },
+      "headers": {
+        "accept-ranges": "bytes",
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": "no-store",
+        "content-disposition": null,
+        "content-range": "bytes */1012",
+        "content-type": "application/json",
+        "etag": null,
+        "vary": "Origin",
+        "x-request-id": "public-contract-baseline:lambda.bundle.range-unsatisfiable.416",
+        "x-stark-bundle-range-chunk-size": "4194304"
+      },
+      "method": "GET",
+      "mode": "lambda",
+      "path": "/api/sessions/session-baseline-mounted/finalizations/finalization-baseline-mounted/artifacts/bundle",
+      "probeId": "lambda.bundle.range-unsatisfiable.416",
+      "status": 416
+    },
+    {
+      "body": {
+        "bytes": 2127,
+        "jsonKeys": ["data", "meta"],
+        "jsonRequestId": "public-contract-baseline:lambda.current-finalization.succeeded.no-store",
+        "sha256": "c7e253e922c4c73e98c457b230dab8d10c37581e21fd4bae0b63a26fbd85d274"
+      },
+      "headers": {
+        "accept-ranges": null,
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": "no-store",
+        "content-disposition": null,
+        "content-range": null,
+        "content-type": "application/json",
+        "etag": null,
+        "vary": "Origin",
+        "x-request-id": "public-contract-baseline:lambda.current-finalization.succeeded.no-store",
+        "x-stark-bundle-range-chunk-size": null
+      },
+      "method": "GET",
+      "mode": "lambda",
+      "path": "/api/sessions/session-baseline-mounted/finalizations/current",
+      "probeId": "lambda.current-finalization.succeeded.no-store",
+      "status": 200
+    },
+    {
+      "body": {
+        "bytes": 13,
+        "sha256": "7d04f7431bbfa41a04bcc7e6b98b9de0d919756c4c671c5785c99fff45f16402"
+      },
+      "headers": {
+        "accept-ranges": null,
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": null,
+        "content-disposition": null,
+        "content-range": null,
+        "content-type": "text/plain; charset=UTF-8",
+        "etag": null,
+        "vary": null,
+        "x-request-id": "public-contract-baseline:lambda.finalization-callback.not-mounted",
+        "x-stark-bundle-range-chunk-size": null
+      },
+      "method": "POST",
+      "mode": "lambda",
+      "path": "/api/internal/sessions/session-baseline-mounted/finalizations/finalization-baseline-mounted/callback",
+      "probeId": "lambda.finalization-callback.not-mounted",
+      "status": 404
+    },
+    {
+      "body": {
+        "bytes": 12,
+        "jsonKeys": ["ok"],
+        "sha256": "e5f1eb4d806641698a35efe20e098efd20d7d57a9b90ee69079d5bb650920726"
+      },
+      "headers": {
+        "accept-ranges": null,
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": "no-store",
+        "content-disposition": "inline; filename=\"finalization-baseline-mounted-verification.json\"",
+        "content-range": null,
+        "content-type": "application/json",
+        "etag": "\"e5f1eb4d806641698a35efe20e098efd20d7d57a9b90ee69079d5bb650920726\"",
+        "vary": "Origin",
+        "x-request-id": "public-contract-baseline:lambda.report.local-json.no-store",
+        "x-stark-bundle-range-chunk-size": null
+      },
+      "method": "GET",
+      "mode": "lambda",
+      "path": "/api/sessions/session-baseline-mounted/finalizations/finalization-baseline-mounted/artifacts/report",
+      "probeId": "lambda.report.local-json.no-store",
+      "status": 200
+    },
+    {
+      "body": {
+        "bytes": 13,
+        "sha256": "7d04f7431bbfa41a04bcc7e6b98b9de0d919756c4c671c5785c99fff45f16402"
+      },
+      "headers": {
+        "accept-ranges": null,
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": null,
+        "content-disposition": null,
+        "content-range": null,
+        "content-type": "text/plain; charset=UTF-8",
+        "etag": null,
+        "vary": "Origin",
+        "x-request-id": "public-contract-baseline:readonly.sessions-post.not-mounted",
+        "x-stark-bundle-range-chunk-size": null
+      },
+      "method": "POST",
+      "mode": "readonly",
+      "path": "/api/sessions",
+      "probeId": "readonly.sessions-post.not-mounted",
+      "status": 404
+    }
+  ],
+  "mountedBehaviorCoverage": [
+    {
+      "caseId": "absent-report-fail-closed",
+      "exemption": "Absent-report behavior requires deterministic store and S3 fixtures and is covered by `apps/api/src/server/api/handlers/verificationBundles.test.ts`.",
+      "status": "exempt"
+    },
+    {
+      "caseId": "bitmap-proof-admission-projection-cache-conditional",
+      "probeIds": [
+        "lambda.bitmap.missing-capability.error-envelope",
+        "lambda.bitmap.etag.private-cache",
+        "lambda.bitmap.conditional.no-body"
+      ],
+      "status": "probed"
+    },
+    {
+      "caseId": "bundle-auth-capability-failure",
+      "probeIds": ["lambda.bundle.missing-capability.error-envelope"],
+      "status": "probed"
+    },
+    {
+      "caseId": "bundle-local-binary-headers-cache-privacy",
+      "probeIds": ["lambda.bundle.local-binary.no-store"],
+      "status": "probed"
+    },
+    {
+      "caseId": "bundle-range-unsatisfiable-416",
+      "probeIds": ["lambda.bundle.range-unsatisfiable.416"],
+      "status": "probed"
+    },
+    {
+      "caseId": "cors-preflight-exposed-range-headers",
+      "probeIds": ["lambda.bundle.cors-preflight.range-header"],
+      "status": "probed"
+    },
+    {
+      "caseId": "cross-session-cross-capability-denial",
+      "probeIds": ["lambda.bundle.cross-session-capability-denied"],
+      "status": "probed"
+    },
+    {
+      "caseId": "current-finalization-succeeded-flow",
+      "probeIds": ["lambda.current-finalization.succeeded.no-store"],
+      "status": "probed"
+    },
+    {
+      "caseId": "finalization-callback-mounted-mode-and-error-envelope",
+      "probeIds": [
+        "lambda.finalization-callback.not-mounted",
+        "full.finalization-callback.invalid-request.error-envelope"
+      ],
+      "status": "probed"
+    },
+    {
+      "caseId": "finalization-create-success-flow",
+      "exemption": "Successful POST /api/sessions/:sessionId/finalizations requires finalization orchestration, zkVM mode selection, Turnstile/rate-limit state, and bundle persistence; focused coverage is in `apps/api/src/server/api/handlers/finalize.test.ts` and `packages/application/src/finalize/usecases/finalize-session.test.ts`. The broader characterization command `pnpm test:cli -- --user-choice A --all-scenarios` covers every scenario separately; the required `test:cli:mock` gate in `package.json` is intentionally the narrower S0-only run.",
+      "status": "exempt"
+    },
+    {
+      "caseId": "include-journal-query",
+      "exemption": "The include=journal representation selector is covered by mounted verification-resource success/fail-closed cases in `apps/api/src/server/api/routes/hono.public-contract.test.ts`, malformed-query admission in `apps/api/src/server/api/routes/hono.test.ts`, and CLI response handling in `packages/test-support/src/testing/__tests__/cli-test-helpers.finalize.test.ts`.",
+      "status": "exempt"
+    },
+    {
+      "caseId": "internal-finalization-callback-no-public-cors",
+      "probeIds": ["full.finalization-callback.cors-preflight.not-public"],
+      "status": "probed"
+    },
+    {
+      "caseId": "private-artifact-boundary",
+      "exemption": "Mounted probes record only response shape and hashes; public/private archive membership is covered by `packages/verification/src/verification/__tests__/verification-bundle.test.ts`, `scripts/tests/entrypoint-bundle.test.sh`, and `scripts/security/scan-public-safety.sh`.",
+      "status": "exempt"
+    },
+    {
+      "caseId": "progress-read-flow",
+      "exemption": "GET /api/sessions/:sessionId/progress requires bot-progress mutation state that the mounted comparator does not create; projection, browser consumption, and CLI handling are covered by `apps/api/src/server/api/routes/hono.test.ts`, `apps/web/src/components/vote/BotVotingProgress.test.tsx`, and `packages/test-support/src/testing/__tests__/cli-test-helpers.progress.test.ts`.",
+      "status": "exempt"
+    },
+    {
+      "caseId": "report-authenticated-delivery-cache-privacy",
+      "probeIds": ["lambda.report.local-json.no-store"],
+      "status": "probed"
+    },
+    {
+      "caseId": "report-size-failure-413",
+      "exemption": "Report-size rejection depends on S3 HEAD-size fixtures rather than the local mounted harness; the 413 response and pre-download rejection are covered by `apps/api/src/server/api/handlers/verificationBundles.test.ts`.",
+      "status": "exempt"
+    },
+    {
+      "caseId": "route-registration-modes-full-lambda-readonly",
+      "probeIds": ["readonly.sessions-post.not-mounted", "lambda.finalization-callback.not-mounted"],
+      "status": "probed"
+    },
+    {
+      "caseId": "session-creation-success-flow",
+      "exemption": "Successful POST /api/sessions depends on Turnstile/rate-limit mutable state and session issuance side effects; the mounted success and target-admission cases are covered by `apps/api/src/server/api/routes/hono.test.ts`, and the direct browser and CLI callers are frozen by `scripts/api-contract/public-contract-baseline.test.ts`.",
+      "status": "exempt"
+    },
+    {
+      "caseId": "turnstile-rate-limit-source-ip-target-admission",
+      "exemption": "The mounted baseline avoids mutable Turnstile and rate-limit state; exact admission behavior is covered by `apps/api/src/server/api/security/turnstile.test.ts`, `apps/api/src/server/api/middleware/rateLimit.test.ts`, and target/source-IP cases in `apps/api/src/server/api/routes/hono.test.ts`.",
+      "status": "exempt"
+    },
+    {
+      "caseId": "verification-observation-flow",
+      "exemption": "POST /api/sessions/:sessionId/finalizations/:finalizationId/verification/observations rebuilds server verification authority and performs a durable exact-finalization CAS; strict handler and integration behavior is covered by `apps/api/src/server/api/handlers/verificationObservation.test.ts` and `apps/api/src/server/api/routes/hono.public-contract.test.ts`, while browser and mock admission are covered by `apps/web/src/routes/verify/hooks/useVerificationObservation.test.tsx` and `apps/web/src/mock-api/__tests__/fetcher.test.ts`.",
+      "status": "exempt"
+    },
+    {
+      "caseId": "verification-resource-flow",
+      "exemption": "GET /api/sessions/:sessionId/finalizations/:finalizationId/verification success and fail-closed projections require full finalized artifacts that the mounted comparator avoids duplicating; both projections are exercised by `apps/api/src/server/api/routes/hono.public-contract.test.ts`, with CLI response admission covered by `packages/test-support/src/testing/__tests__/cli-test-helpers.finalize.test.ts` and browser polling by `apps/web/src/verification/stark-verification-polling.test.ts`.",
+      "status": "exempt"
+    },
+    {
+      "caseId": "verification-run-flow",
+      "exemption": "POST /api/sessions/:sessionId/finalizations/:finalizationId/verification invokes verifier-service orchestration and verifier-result persistence; idempotent, queued, completed, rollback, and fail-closed cases are covered by `apps/api/src/server/api/handlers/verificationRun.test.ts`, the gated CLI contract by `scripts/__tests__/develop-gated-smoke.test.ts`, and both direct browser POST callers by `scripts/api-contract/public-contract-baseline.test.ts`.",
+      "status": "exempt"
+    },
+    {
+      "caseId": "vote-success-flow",
+      "exemption": "Successful POST /api/sessions/:sessionId/votes depends on issued session state, Turnstile/rate-limit mutable state, and vote-store mutation; success and admission are covered by `apps/api/src/server/api/handlers/vote.test.ts`, `apps/web/src/components/vote/VoteForm.test.tsx`, and `scripts/api-contract/public-contract-baseline.test.ts`.",
+      "status": "exempt"
+    }
+  ],
+  "mountedRoutes": [
+    {
+      "mode": "full",
+      "routeIds": [
+        "sessions.bulletin.get",
+        "sessions.bulletin.consistencyProof.get",
+        "sessions.bulletin.sth.get",
+        "sessions.finalizations.artifacts.bundle.get",
+        "sessions.finalizations.artifacts.report.get",
+        "sessions.finalizations.verification.get",
+        "sessions.finalizations.current.get",
+        "sessions.finalizations.current.bitmapProof.get",
+        "sessions.finalizations.current.inputCommitment.get",
+        "progress.get",
+        "sessions.votes.inclusionProof.get",
+        "session.post",
+        "sessions.finalizations.post",
+        "sessions.finalizations.cancel.post",
+        "sessions.finalizations.verification.post",
+        "sessions.finalizations.verification.observations.post",
+        "vote.post"
+      ],
+      "routes": [
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/bulletin",
+          "routeId": "sessions.bulletin.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/bulletin/consistency-proof",
+          "routeId": "sessions.bulletin.consistencyProof.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/bulletin/sth",
+          "routeId": "sessions.bulletin.sth.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/artifacts/bundle",
+          "routeId": "sessions.finalizations.artifacts.bundle.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-private-report",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/artifacts/report",
+          "routeId": "sessions.finalizations.artifacts.report.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/verification",
+          "routeId": "sessions.finalizations.verification.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/current",
+          "routeId": "sessions.finalizations.current.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex",
+          "routeId": "sessions.finalizations.current.bitmapProof.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/current/input-commitment",
+          "routeId": "sessions.finalizations.current.inputCommitment.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/progress",
+          "routeId": "progress.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/votes/:voteId/inclusion-proof",
+          "routeId": "sessions.votes.inclusionProof.get"
+        },
+        {
+          "authScope": "public-mutation",
+          "capabilityScope": "none",
+          "dataClassification": "public-session-issued",
+          "kind": "mutation",
+          "lifecycle": "active",
+          "method": "POST",
+          "path": "/sessions",
+          "routeId": "session.post"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "mutation",
+          "lifecycle": "active",
+          "method": "POST",
+          "path": "/sessions/:sessionId/finalizations",
+          "routeId": "sessions.finalizations.post"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "mutation",
+          "lifecycle": "active",
+          "method": "POST",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/cancel",
+          "routeId": "sessions.finalizations.cancel.post"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "mutation",
+          "lifecycle": "active",
+          "method": "POST",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/verification",
+          "routeId": "sessions.finalizations.verification.post"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "mutation",
+          "lifecycle": "active",
+          "method": "POST",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/verification/observations",
+          "routeId": "sessions.finalizations.verification.observations.post"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "mutation",
+          "lifecycle": "active",
+          "method": "POST",
+          "path": "/sessions/:sessionId/votes",
+          "routeId": "vote.post"
+        }
+      ]
+    },
+    {
+      "mode": "lambda",
+      "routeIds": [
+        "sessions.bulletin.get",
+        "sessions.bulletin.consistencyProof.get",
+        "sessions.bulletin.sth.get",
+        "sessions.finalizations.artifacts.bundle.get",
+        "sessions.finalizations.artifacts.report.get",
+        "sessions.finalizations.verification.get",
+        "sessions.finalizations.current.get",
+        "sessions.finalizations.current.bitmapProof.get",
+        "sessions.finalizations.current.inputCommitment.get",
+        "progress.get",
+        "sessions.votes.inclusionProof.get",
+        "session.post",
+        "sessions.finalizations.post",
+        "sessions.finalizations.cancel.post",
+        "sessions.finalizations.verification.post",
+        "sessions.finalizations.verification.observations.post",
+        "vote.post"
+      ],
+      "routes": [
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/bulletin",
+          "routeId": "sessions.bulletin.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/bulletin/consistency-proof",
+          "routeId": "sessions.bulletin.consistencyProof.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/bulletin/sth",
+          "routeId": "sessions.bulletin.sth.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/artifacts/bundle",
+          "routeId": "sessions.finalizations.artifacts.bundle.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-private-report",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/artifacts/report",
+          "routeId": "sessions.finalizations.artifacts.report.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/verification",
+          "routeId": "sessions.finalizations.verification.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/current",
+          "routeId": "sessions.finalizations.current.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex",
+          "routeId": "sessions.finalizations.current.bitmapProof.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/current/input-commitment",
+          "routeId": "sessions.finalizations.current.inputCommitment.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/progress",
+          "routeId": "progress.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/votes/:voteId/inclusion-proof",
+          "routeId": "sessions.votes.inclusionProof.get"
+        },
+        {
+          "authScope": "public-mutation",
+          "capabilityScope": "none",
+          "dataClassification": "public-session-issued",
+          "kind": "mutation",
+          "lifecycle": "active",
+          "method": "POST",
+          "path": "/sessions",
+          "routeId": "session.post"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "mutation",
+          "lifecycle": "active",
+          "method": "POST",
+          "path": "/sessions/:sessionId/finalizations",
+          "routeId": "sessions.finalizations.post"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "mutation",
+          "lifecycle": "active",
+          "method": "POST",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/cancel",
+          "routeId": "sessions.finalizations.cancel.post"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "mutation",
+          "lifecycle": "active",
+          "method": "POST",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/verification",
+          "routeId": "sessions.finalizations.verification.post"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "mutation",
+          "lifecycle": "active",
+          "method": "POST",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/verification/observations",
+          "routeId": "sessions.finalizations.verification.observations.post"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "mutation",
+          "lifecycle": "active",
+          "method": "POST",
+          "path": "/sessions/:sessionId/votes",
+          "routeId": "vote.post"
+        }
+      ]
+    },
+    {
+      "mode": "readonly",
+      "routeIds": [
+        "sessions.bulletin.get",
+        "sessions.bulletin.consistencyProof.get",
+        "sessions.bulletin.sth.get",
+        "sessions.finalizations.artifacts.bundle.get",
+        "sessions.finalizations.artifacts.report.get",
+        "sessions.finalizations.verification.get",
+        "sessions.finalizations.current.get",
+        "sessions.finalizations.current.bitmapProof.get",
+        "sessions.finalizations.current.inputCommitment.get",
+        "progress.get",
+        "sessions.votes.inclusionProof.get"
+      ],
+      "routes": [
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/bulletin",
+          "routeId": "sessions.bulletin.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/bulletin/consistency-proof",
+          "routeId": "sessions.bulletin.consistencyProof.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/bulletin/sth",
+          "routeId": "sessions.bulletin.sth.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/artifacts/bundle",
+          "routeId": "sessions.finalizations.artifacts.bundle.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-private-report",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/artifacts/report",
+          "routeId": "sessions.finalizations.artifacts.report.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/:finalizationId/verification",
+          "routeId": "sessions.finalizations.verification.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/current",
+          "routeId": "sessions.finalizations.current.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex",
+          "routeId": "sessions.finalizations.current.bitmapProof.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/finalizations/current/input-commitment",
+          "routeId": "sessions.finalizations.current.inputCommitment.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/progress",
+          "routeId": "progress.get"
+        },
+        {
+          "authScope": "path-session-capability",
+          "capabilityScope": "path",
+          "dataClassification": "owner-scoped-public-projection",
+          "kind": "readonly",
+          "lifecycle": "active",
+          "method": "GET",
+          "path": "/sessions/:sessionId/votes/:voteId/inclusion-proof",
+          "routeId": "sessions.votes.inclusionProof.get"
+        }
+      ]
+    }
+  ],
+  "routeContracts": [
+    {
+      "admissionControls": ["path-session-capability", "owner-inspection"],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": false
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "readonly",
+      "lifecycle": "active",
+      "method": "GET",
+      "path": "/sessions/:sessionId/bulletin",
+      "productionBypass": "not-applicable",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "SESSION_NOT_FOUND",
+          "INVALID_OFFSET"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "INVALID_OFFSET",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          }
+        ]
+      },
+      "request": {
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb"
+        },
+        "query": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "0550ea64c617578e7f6828bc76f7523be7b0d32f6f7d4217de9a23d816d3a70d"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "7af86e25978fd8981fc3b87d8ca257d7d5b1caac69ba19fa99d97b6f19a17982"
+          },
+          "status": 200
+        }
+      ],
+      "routeId": "sessions.bulletin.get",
+      "sourceIp": {
+        "dependency": "not-required",
+        "runtimeEnforcementHandoff": "none"
+      }
+    },
+    {
+      "admissionControls": ["path-session-capability", "range-validation", "root-history"],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": false
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "readonly",
+      "lifecycle": "active",
+      "method": "GET",
+      "path": "/sessions/:sessionId/bulletin/consistency-proof",
+      "productionBypass": "not-applicable",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "SESSION_NOT_FOUND",
+          "INVALID_SIZE"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "INVALID_SIZE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          }
+        ]
+      },
+      "request": {
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb"
+        },
+        "query": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "d06196c469b4b9dab3b599c7be035c06a3cc2fe5851152731b0f0a42cc3b54ad"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "76560716791dc7c9527a4d2375fe912ed89297a4d2ea77af8e35ce215879db3a"
+          },
+          "status": 200
+        }
+      ],
+      "routeId": "sessions.bulletin.consistencyProof.get",
+      "sourceIp": {
+        "dependency": "not-required",
+        "runtimeEnforcementHandoff": "none"
+      }
+    },
+    {
+      "admissionControls": ["path-session-capability", "same-origin", "finalized-session", "finalization-authority"],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": false
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "readonly",
+      "lifecycle": "active",
+      "method": "GET",
+      "path": "/sessions/:sessionId/bulletin/sth",
+      "productionBypass": "not-applicable",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "SESSION_NOT_FOUND",
+          "SESSION_NOT_FINALIZED"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "SESSION_NOT_FINALIZED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          }
+        ]
+      },
+      "request": {
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "fc7c87c09066bc9bebfd6c5b3e5878aa7d948e1034ea57da0f827413b4acfc96"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb"
+        },
+        "query": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "002eae4a2cfee68e8626fec7b00f2ac5619f44fccf2ff1d663e01317ba211a0f"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "323315a86b2db82220dbb73d7d062d221a7bdc125d86432ef0cf12a08e0d92d6"
+          },
+          "status": 200
+        }
+      ],
+      "routeId": "sessions.bulletin.sth.get",
+      "sourceIp": {
+        "dependency": "not-required",
+        "runtimeEnforcementHandoff": "none"
+      }
+    },
+    {
+      "admissionControls": ["path-session-capability", "finalization-id", "range-supported", "public-bundle-allowlist"],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": false
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "readonly",
+      "lifecycle": "active",
+      "method": "GET",
+      "path": "/sessions/:sessionId/finalizations/:finalizationId/artifacts/bundle",
+      "productionBypass": "not-applicable",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "INVALID_BUNDLE_REFERENCE",
+          "BUNDLE_NOT_FOUND",
+          "BUNDLE_DOWNLOAD_FAILED",
+          "BUNDLE_REQUIRES_RANGE_DOWNLOAD",
+          "INVALID_RANGE"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "INVALID_BUNDLE_REFERENCE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "BUNDLE_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "BUNDLE_DOWNLOAD_FAILED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "BUNDLE_REQUIRES_RANGE_DOWNLOAD",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 413
+          },
+          {
+            "code": "INVALID_RANGE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 416
+          }
+        ]
+      },
+      "request": {
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "3e17f73e9d84b155e115b2a07c8ddb4131ba56935381fe9c8b8bb1dd4214a2b7"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e"
+        }
+      },
+      "responses": [
+        {
+          "content": "binary",
+          "exemptReason": "binary-public-bundle-download",
+          "status": 200
+        },
+        {
+          "content": "binary",
+          "exemptReason": "binary-public-bundle-range-download",
+          "status": 206
+        }
+      ],
+      "routeId": "sessions.finalizations.artifacts.bundle.get",
+      "sourceIp": {
+        "dependency": "not-required",
+        "runtimeEnforcementHandoff": "none"
+      }
+    },
+    {
+      "admissionControls": ["path-session-capability", "finalization-id", "inline-report-size-limit"],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": false
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-private-report",
+      "kind": "readonly",
+      "lifecycle": "active",
+      "method": "GET",
+      "path": "/sessions/:sessionId/finalizations/:finalizationId/artifacts/report",
+      "productionBypass": "not-applicable",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "INVALID_BUNDLE_REFERENCE",
+          "REPORT_NOT_FOUND",
+          "REPORT_DOWNLOAD_FAILED",
+          "REPORT_DOWNLOAD_TOO_LARGE"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "INVALID_BUNDLE_REFERENCE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "REPORT_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "REPORT_DOWNLOAD_FAILED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "REPORT_DOWNLOAD_TOO_LARGE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 413
+          }
+        ]
+      },
+      "request": {
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "exemptReason": "protected-report-artifact-download",
+          "status": 200
+        }
+      ],
+      "routeId": "sessions.finalizations.artifacts.report.get",
+      "sourceIp": {
+        "dependency": "not-required",
+        "runtimeEnforcementHandoff": "none"
+      }
+    },
+    {
+      "admissionControls": [
+        "path-session-capability",
+        "finalization-id",
+        "finalized-session",
+        "finalization-authority"
+      ],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": false
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "readonly",
+      "lifecycle": "active",
+      "method": "GET",
+      "path": "/sessions/:sessionId/finalizations/:finalizationId/verification",
+      "productionBypass": "not-applicable",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "SESSION_NOT_FOUND",
+          "SESSION_NOT_FINALIZED",
+          "USER_NOT_VOTED"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "SESSION_NOT_FINALIZED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "USER_NOT_VOTED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          }
+        ]
+      },
+      "request": {
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e"
+        },
+        "query": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "e0db6efa48f4ec4758710478f13aa52834b72d4d7ce0c5a2f6712f91200021a5"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "966918ea8e62a8c3fcc33a0baf2a4b041f76d16c0813f055882efa7523b70cb9"
+          },
+          "status": 200
+        }
+      ],
+      "routeId": "sessions.finalizations.verification.get",
+      "sourceIp": {
+        "dependency": "not-required",
+        "runtimeEnforcementHandoff": "none"
+      },
+      "variants": [
+        {
+          "admissionControls": [
+            "path-session-capability",
+            "finalization-id",
+            "finalized-session",
+            "finalization-authority"
+          ],
+          "dataClassification": "owner-scoped-public-projection",
+          "lifecycle": "active",
+          "selector": "include=journal"
+        }
+      ]
+    },
+    {
+      "admissionControls": ["path-session-capability", "finalization-authority", "finalization-resource"],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": false
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "readonly",
+      "lifecycle": "active",
+      "method": "GET",
+      "path": "/sessions/:sessionId/finalizations/current",
+      "productionBypass": "not-applicable",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "SESSION_NOT_FOUND"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          }
+        ]
+      },
+      "request": {
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "c39251cfa514c5d94888dc4f7df5598bf96ded4bcd7dd80a7b57ec51f654840d"
+          },
+          "status": 200
+        }
+      ],
+      "routeId": "sessions.finalizations.current.get",
+      "sourceIp": {
+        "dependency": "not-required",
+        "runtimeEnforcementHandoff": "none"
+      }
+    },
+    {
+      "admissionControls": [
+        "path-session-capability",
+        "finalized-session",
+        "finalization-authority",
+        "private-cache-vary"
+      ],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": false
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "readonly",
+      "lifecycle": "active",
+      "method": "GET",
+      "path": "/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex",
+      "productionBypass": "not-applicable",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "SESSION_NOT_FOUND",
+          "INVALID_BITMAP_PROOF_REQUEST",
+          "USER_NOT_VOTED"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "INVALID_BITMAP_PROOF_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "USER_NOT_VOTED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          }
+        ]
+      },
+      "request": {
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "5462e8d2361f99ad0ddf657f010a2f6b9f037cb668a6e7218acfea6a8422f0cc"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "85c3baf66a9f38bb81b8bca168ee12554a608774ccec6ebcbf4834619643ee57"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "9c4c52d5e29b4197c56082ad66d6f4ac4d8ecec8723a68aecc7c43fb4c478de7"
+          },
+          "status": 200
+        },
+        {
+          "content": "json",
+          "exemptReason": "conditional-request-not-modified",
+          "status": 304
+        }
+      ],
+      "routeId": "sessions.finalizations.current.bitmapProof.get",
+      "sourceIp": {
+        "dependency": "not-required",
+        "runtimeEnforcementHandoff": "none"
+      }
+    },
+    {
+      "admissionControls": ["path-session-capability", "finalized-session", "finalization-authority", "hash-only"],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": false
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "readonly",
+      "lifecycle": "active",
+      "method": "GET",
+      "path": "/sessions/:sessionId/finalizations/current/input-commitment",
+      "productionBypass": "not-applicable",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "SESSION_NOT_FOUND",
+          "SESSION_NOT_FINALIZED",
+          "CT_PROOF_UNAVAILABLE"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "SESSION_NOT_FINALIZED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "CT_PROOF_UNAVAILABLE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "input-commitment-validation-or-handler-failure",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          }
+        ]
+      },
+      "request": {
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "ca87e702865a8f6c353e11d584548894b0f6ace462e5ef7d7beeb7f52c13fdaf"
+          },
+          "status": 200
+        }
+      ],
+      "routeId": "sessions.finalizations.current.inputCommitment.get",
+      "sourceIp": {
+        "dependency": "not-required",
+        "runtimeEnforcementHandoff": "none"
+      }
+    },
+    {
+      "admissionControls": ["path-session-capability", "current-contract-session"],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": false
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "readonly",
+      "lifecycle": "active",
+      "method": "GET",
+      "path": "/sessions/:sessionId/progress",
+      "productionBypass": "not-applicable",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "SESSION_NOT_FOUND"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          }
+        ]
+      },
+      "request": {
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "32e16cbf21bf3c8fa287a48c508c8581d1b847a50d4687bd346c6c2338ca3fd0"
+          },
+          "status": 200
+        }
+      ],
+      "routeId": "progress.get",
+      "sourceIp": {
+        "dependency": "not-required",
+        "runtimeEnforcementHandoff": "none"
+      }
+    },
+    {
+      "admissionControls": [
+        "path-session-capability",
+        "vote-proof-ownership",
+        "ct-proof-material",
+        "finalized-session",
+        "finalization-authority"
+      ],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": false
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "readonly",
+      "lifecycle": "active",
+      "method": "GET",
+      "path": "/sessions/:sessionId/votes/:voteId/inclusion-proof",
+      "productionBypass": "not-applicable",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "SESSION_NOT_FOUND",
+          "INVALID_VOTE_ID",
+          "VOTE_NOT_FOUND",
+          "VERIFICATION_FAILED",
+          "SESSION_NOT_FINALIZED"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "INVALID_VOTE_ID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "VOTE_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "case": "ct-proof-unavailable",
+            "code": "VERIFICATION_FAILED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "SESSION_NOT_FINALIZED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          }
+        ]
+      },
+      "request": {
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "bc52e01caf41c949caea6154638bc06226fbe0e8f33304560d319522b4aca168"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "6cec480bcdb4ed09e1e1f4b182c26624b9d7a6411ce2c27b4fec63b3edad62aa"
+          },
+          "status": 200
+        }
+      ],
+      "routeId": "sessions.votes.inclusionProof.get",
+      "sourceIp": {
+        "dependency": "not-required",
+        "runtimeEnforcementHandoff": "none"
+      }
+    },
+    {
+      "admissionControls": [
+        "body-size",
+        "malformed-json",
+        "turnstile-session-action",
+        "rate-limit",
+        "capability-issuance",
+        "operator-gated-develop-session-create",
+        "non-operator-develop-gate",
+        "ungated-public-server-turnstile-required"
+      ],
+      "authScope": "public-mutation",
+      "bodySize": {
+        "applies": true,
+        "limitPath": "API_REQUEST_BODY_LIMIT_BYTES"
+      },
+      "capabilityScope": "none",
+      "dataClassification": "public-session-issued",
+      "kind": "mutation",
+      "lifecycle": "active",
+      "method": "POST",
+      "path": "/sessions",
+      "productionBypass": "operator-gated-develop-only",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "PAYLOAD_TOO_LARGE",
+          "CAPTCHA_FAILED",
+          "GLOBAL_LIMIT_EXCEEDED",
+          "SESSION_LIMIT_EXCEEDED"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "PAYLOAD_TOO_LARGE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 413
+          },
+          {
+            "code": "CAPTCHA_FAILED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "turnstile-upstream-rejection",
+            "code": "CAPTCHA_FAILED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": "upstream-response-status"
+          },
+          {
+            "code": "GLOBAL_LIMIT_EXCEEDED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 503
+          },
+          {
+            "code": "SESSION_LIMIT_EXCEEDED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 503
+          }
+        ]
+      },
+      "rateLimit": {
+        "required": true,
+        "scope": "client-ip",
+        "sourceIpDependency": "trusted-proxy-required-for-target-runtime"
+      },
+      "request": {
+        "body": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "d0b040d06774086ae712bf2077c8e94ae0f4dad345a78291f417b844eedb5426"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "bf517c1bbf8de86d64a00e6fef5118aff5da493d72e40c0107d24d7fe2874e87"
+          },
+          "status": 200
+        }
+      ],
+      "routeId": "session.post",
+      "sourceIp": {
+        "dependency": "trusted-proxy-required-for-target-runtime",
+        "runtimeEnforcementHandoff": "plans-07-and-11"
+      },
+      "targetAdmission": {
+        "nonOperatorDevelop": "blocked-by-outer-operator-gate",
+        "operatorGatedDevelop": "enabled-for-production-equivalent-smoke",
+        "runtimeEnforcementHandoff": "plans-07-and-11",
+        "ungatedPublic": "requires-explicit-public-enable-and-server-turnstile"
+      },
+      "turnstile": {
+        "action": "session",
+        "hostnameValidation": "required",
+        "productionBypass": "deny-outside-approved-non-production",
+        "required": true,
+        "tokenLocations": ["body.turnstileToken"]
+      }
+    },
+    {
+      "admissionControls": [
+        "path-session-capability",
+        "turnstile-finalize-action",
+        "rate-limit",
+        "body-size",
+        "malformed-json",
+        "finalized-session",
+        "finalization-transition-policy"
+      ],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": true,
+        "limitPath": "API_REQUEST_BODY_LIMIT_BYTES"
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "mutation",
+      "lifecycle": "active",
+      "method": "POST",
+      "path": "/sessions/:sessionId/finalizations",
+      "productionBypass": "deny-outside-approved-non-production",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "PAYLOAD_TOO_LARGE",
+          "CAPTCHA_FAILED",
+          "GLOBAL_LIMIT_EXCEEDED",
+          "ZKVM_RATE_LIMIT_EXCEEDED",
+          "INVALID_IMAGE_ID",
+          "SESSION_ALREADY_FINALIZED",
+          "USER_NOT_VOTED",
+          "VOTING_NOT_COMPLETE",
+          "INVALID_FINALIZATION_ARTIFACT",
+          "VERIFICATION_FAILED"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "PAYLOAD_TOO_LARGE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 413
+          },
+          {
+            "code": "CAPTCHA_FAILED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "turnstile-upstream-rejection",
+            "code": "CAPTCHA_FAILED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": "upstream-response-status"
+          },
+          {
+            "code": "GLOBAL_LIMIT_EXCEEDED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 503
+          },
+          {
+            "code": "ZKVM_RATE_LIMIT_EXCEEDED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 429
+          },
+          {
+            "code": "INVALID_IMAGE_ID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "SESSION_ALREADY_FINALIZED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "USER_NOT_VOTED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "VOTING_NOT_COMPLETE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "INVALID_FINALIZATION_ARTIFACT",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "VERIFICATION_FAILED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          }
+        ]
+      },
+      "rateLimit": {
+        "required": true,
+        "scope": "session-and-client-ip",
+        "sourceIpDependency": "trusted-proxy-required-for-target-runtime"
+      },
+      "request": {
+        "body": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "6fdf9db4ebd2eac6eae2785b5624c93da1f95d10aa7652600e63fd210eb0b705"
+        },
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "27a429b2cad3c7cd74a1481d80cf800a1dfcd7df851d1935f1dc97d4bbfd1db9"
+          },
+          "status": 200
+        },
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "27a429b2cad3c7cd74a1481d80cf800a1dfcd7df851d1935f1dc97d4bbfd1db9"
+          },
+          "status": 202
+        }
+      ],
+      "routeId": "sessions.finalizations.post",
+      "sourceIp": {
+        "dependency": "trusted-proxy-required-for-target-runtime",
+        "runtimeEnforcementHandoff": "plans-07-and-11"
+      },
+      "turnstile": {
+        "action": "finalize",
+        "hostnameValidation": "required",
+        "productionBypass": "deny-outside-approved-non-production",
+        "required": true,
+        "tokenLocations": ["body.turnstileToken"]
+      }
+    },
+    {
+      "admissionControls": ["path-session-capability", "rate-limit", "body-size", "malformed-json", "finalization-id"],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": true,
+        "limitPath": "API_REQUEST_BODY_LIMIT_BYTES"
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "mutation",
+      "lifecycle": "active",
+      "method": "POST",
+      "path": "/sessions/:sessionId/finalizations/:finalizationId/cancel",
+      "productionBypass": "deny-outside-approved-non-production",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "PAYLOAD_TOO_LARGE",
+          "GLOBAL_LIMIT_EXCEEDED",
+          "ASYNC_FINALIZATION_DISABLED",
+          "CANCELLATION_UNSUPPORTED",
+          "FINALIZATION_NOT_CANCELLABLE"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "PAYLOAD_TOO_LARGE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 413
+          },
+          {
+            "code": "GLOBAL_LIMIT_EXCEEDED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 503
+          },
+          {
+            "code": "ASYNC_FINALIZATION_DISABLED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "CANCELLATION_UNSUPPORTED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 501
+          },
+          {
+            "code": "FINALIZATION_NOT_CANCELLABLE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 409
+          }
+        ]
+      },
+      "rateLimit": {
+        "required": true,
+        "scope": "session-and-client-ip",
+        "sourceIpDependency": "trusted-proxy-required-for-target-runtime"
+      },
+      "request": {
+        "body": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "db1d6093683e846264c00a6fc3d7b6cc5c244ff51d15e0aec88542d384f57b0b"
+        },
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "27a429b2cad3c7cd74a1481d80cf800a1dfcd7df851d1935f1dc97d4bbfd1db9"
+          },
+          "status": 200
+        }
+      ],
+      "routeId": "sessions.finalizations.cancel.post",
+      "sourceIp": {
+        "dependency": "trusted-proxy-required-for-target-runtime",
+        "runtimeEnforcementHandoff": "plans-07-and-11"
+      },
+      "turnstile": {
+        "productionBypass": "not-applicable",
+        "required": false
+      }
+    },
+    {
+      "admissionControls": [
+        "path-session-capability",
+        "rate-limit",
+        "body-size",
+        "malformed-json",
+        "finalization-id",
+        "finalized-session",
+        "finalization-authority",
+        "expected-image-id"
+      ],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": true,
+        "limitPath": "API_REQUEST_BODY_LIMIT_BYTES"
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "mutation",
+      "lifecycle": "active",
+      "method": "POST",
+      "path": "/sessions/:sessionId/finalizations/:finalizationId/verification",
+      "productionBypass": "deny-outside-approved-non-production",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "PAYLOAD_TOO_LARGE",
+          "SESSION_NOT_FOUND",
+          "SESSION_NOT_FINALIZED",
+          "GLOBAL_LIMIT_EXCEEDED",
+          "ZKVM_RATE_LIMIT_EXCEEDED"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "PAYLOAD_TOO_LARGE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 413
+          },
+          {
+            "code": "SESSION_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "SESSION_NOT_FINALIZED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "GLOBAL_LIMIT_EXCEEDED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 503
+          },
+          {
+            "code": "ZKVM_RATE_LIMIT_EXCEEDED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 429
+          }
+        ]
+      },
+      "rateLimit": {
+        "required": true,
+        "scope": "session-and-client-ip",
+        "sourceIpDependency": "trusted-proxy-required-for-target-runtime"
+      },
+      "request": {
+        "body": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "a938defadb96a2bc30689c232ce4a323a401d5cace6e119f636275bf4f863759"
+        },
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "e00b1786887e117c0415ed00ad84300243774a850db933aaa8425b1508b67fb2"
+          },
+          "status": 200
+        }
+      ],
+      "routeId": "sessions.finalizations.verification.post",
+      "sourceIp": {
+        "dependency": "trusted-proxy-required-for-target-runtime",
+        "runtimeEnforcementHandoff": "plans-07-and-11"
+      },
+      "turnstile": {
+        "productionBypass": "not-applicable",
+        "required": false
+      }
+    },
+    {
+      "admissionControls": [
+        "path-session-capability",
+        "api-gateway-default-throttle",
+        "body-size",
+        "malformed-json",
+        "finalized-session",
+        "finalization-authority",
+        "finalization-id",
+        "durable-observation-cas"
+      ],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": true,
+        "limitPath": "API_REQUEST_BODY_LIMIT_BYTES"
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "mutation",
+      "lifecycle": "active",
+      "method": "POST",
+      "path": "/sessions/:sessionId/finalizations/:finalizationId/verification/observations",
+      "productionBypass": "deny-outside-approved-non-production",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "PAYLOAD_TOO_LARGE",
+          "SESSION_NOT_FOUND",
+          "SESSION_NOT_FINALIZED",
+          "USER_NOT_VOTED",
+          "VERIFICATION_OBSERVATION_CONFLICT"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "PAYLOAD_TOO_LARGE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 413
+          },
+          {
+            "code": "SESSION_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "SESSION_NOT_FINALIZED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "USER_NOT_VOTED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "VERIFICATION_OBSERVATION_CONFLICT",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 409
+          }
+        ]
+      },
+      "rateLimit": {
+        "required": false,
+        "scope": "none",
+        "sourceIpDependency": "not-required"
+      },
+      "request": {
+        "body": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "5f7d2001cd787b194570c329e1d6b98d09fb71a51e67d57a7fcec488e345281d"
+        },
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "7bc03784f5d859185422653eec36c3445ff99b364b431b44c90ab69c2015ee9f"
+          },
+          "status": 200
+        }
+      ],
+      "routeId": "sessions.finalizations.verification.observations.post",
+      "sourceIp": {
+        "dependency": "not-required",
+        "runtimeEnforcementHandoff": "none"
+      },
+      "turnstile": {
+        "productionBypass": "not-applicable",
+        "required": false
+      }
+    },
+    {
+      "admissionControls": [
+        "path-session-capability",
+        "turnstile-vote-action",
+        "rate-limit",
+        "body-size",
+        "malformed-json",
+        "duplicate-vote",
+        "finalized-session-rejects"
+      ],
+      "authScope": "path-session-capability",
+      "bodySize": {
+        "applies": true,
+        "limitPath": "API_REQUEST_BODY_LIMIT_BYTES"
+      },
+      "capabilityScope": "path",
+      "dataClassification": "owner-scoped-public-projection",
+      "kind": "mutation",
+      "lifecycle": "active",
+      "method": "POST",
+      "path": "/sessions/:sessionId/votes",
+      "productionBypass": "deny-outside-approved-non-production",
+      "publicErrorShape": "standard-error-envelope",
+      "publicErrors": {
+        "codes": [
+          "INVALID_REQUEST",
+          "SAME_ORIGIN_REQUIRED",
+          "INTERNAL_ERROR",
+          "SESSION_CAPABILITY_REQUIRED",
+          "SESSION_CAPABILITY_INVALID",
+          "SESSION_CAPABILITY_EXPIRED",
+          "SESSION_NOT_FOUND",
+          "PAYLOAD_TOO_LARGE",
+          "CAPTCHA_FAILED",
+          "GLOBAL_LIMIT_EXCEEDED",
+          "ALREADY_VOTED",
+          "SESSION_FINALIZED",
+          "INVALID_COMMITMENT",
+          "DUPLICATE_VOTE"
+        ],
+        "envelope": "standard-error-envelope",
+        "responses": [
+          {
+            "case": "contract-request-validation",
+            "code": "INVALID_REQUEST",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "case": "target-origin-verification",
+            "code": "SAME_ORIGIN_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "unhandled-route-error",
+            "code": "INTERNAL_ERROR",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 500
+          },
+          {
+            "code": "SESSION_CAPABILITY_REQUIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_INVALID",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_CAPABILITY_EXPIRED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 401
+          },
+          {
+            "code": "SESSION_NOT_FOUND",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 404
+          },
+          {
+            "code": "PAYLOAD_TOO_LARGE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 413
+          },
+          {
+            "code": "CAPTCHA_FAILED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 403
+          },
+          {
+            "case": "turnstile-upstream-rejection",
+            "code": "CAPTCHA_FAILED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": "upstream-response-status"
+          },
+          {
+            "code": "GLOBAL_LIMIT_EXCEEDED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 503
+          },
+          {
+            "code": "ALREADY_VOTED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "SESSION_FINALIZED",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "INVALID_COMMITMENT",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 400
+          },
+          {
+            "code": "DUPLICATE_VOTE",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 409
+          }
+        ]
+      },
+      "rateLimit": {
+        "required": true,
+        "scope": "session-and-client-ip",
+        "sourceIpDependency": "trusted-proxy-required-for-target-runtime"
+      },
+      "request": {
+        "body": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "5114a3e91c7d2642aa127fa9ee8c981e06ed7d3eab0992526fc7f7205a6d8973"
+        },
+        "headers": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905"
+        },
+        "params": {
+          "algorithm": "json-wire-admission",
+          "fingerprint": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb"
+        }
+      },
+      "responses": [
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "554f1af6f5043105a4932601e5a2d6316f1a99ea57d6205bef4c059223d42f4b"
+          },
+          "status": 200
+        }
+      ],
+      "routeId": "vote.post",
+      "sourceIp": {
+        "dependency": "trusted-proxy-required-for-target-runtime",
+        "runtimeEnforcementHandoff": "plans-07-and-11"
+      },
+      "turnstile": {
+        "action": "vote",
+        "hostnameValidation": "required",
+        "productionBypass": "deny-outside-approved-non-production",
+        "required": true,
+        "tokenLocations": ["body.turnstileToken"]
+      }
+    }
+  ],
+  "schemaAuthorityFingerprints": {
+    "packages/api-contract/src/schemas/artifacts.ts": "8d7a80e18e7ee0fe11d54f1ec62fa78a4190e95b741146e350f8015551a0afb6",
+    "packages/api-contract/src/schemas/bulletin.ts": "aa6aa89801954c14df9b04f5c6b30d667f64fd74c95b7fd6b6b31b179c4dd2ba",
+    "packages/api-contract/src/schemas/errors.ts": "9d5ddc792757bc46611c8b9cdaea860fe8832d4a4cc3ce72324d40dda307e81c",
+    "packages/api-contract/src/schemas/finalizations.ts": "c4f46835ba647758217107f15c9a965d954c70f83ef2c061102f5c7e294f2c78",
+    "packages/api-contract/src/schemas/index.ts": "2f657f8833eb661006e944aa86e84c3750af2eda67ff42200560a58762e39f09",
+    "packages/api-contract/src/schemas/primitives.ts": "2338b0bf13baafd954593d289cb7712df98b3153415e4508d2957d8c0cdd1abb",
+    "packages/api-contract/src/schemas/progress.ts": "24e51b84f7253ec688e174c867dde32fbf8b5a70e95acc850990bc3c6ab3c619",
+    "packages/api-contract/src/schemas/sessions.ts": "d9f99879d0459e1a0886d4a1ce54689ac2e1a74bb4c5a716e5b64250eec68adb",
+    "packages/api-contract/src/schemas/verification.ts": "7c4d8664cc99a8a94311f41c35c4eda1f7df72791dfb484ee4e53426c3b8587f",
+    "packages/api-contract/src/schemas/votes.ts": "120d5e7f78e060aedea9f39a227ca1d7b5aa52ad99bbcbddfa68ce9422ccb5ab",
+    "packages/validation/src/definedProperties.ts": "f77755491daa420490ad06270bd55f86c2ff176082e18a09da2f33d552e0ccae",
+    "packages/validation/src/safe-verifier-segment.ts": "9484a08bad254c0e0907f1b6d3fca3b25c2c62361d468271ae4a1d8b4fe3f91d",
+    "packages/validation/src/schema.ts": "6b607de04abec29fedbc9994cd8f2f68892ed59fbbe4591c1c85b69ca387362d",
+    "packages/verification/src/shared/types.ts": "283de9ae9a18bb726908d931a1e1486ef407067e50a81d7d061fd3bea56f5ea7",
+    "packages/verification/src/verification/engine/derive-stages.ts": "892dd945e34a84705b32632d82c9bdb6e8007e9a35ff2a5587e1c875698219b0",
+    "packages/verification/src/verification/public-verification-result.ts": "f25481aff209412bf4fbe045ea9f372747d2b88ff42e62bcbb766e347c71c843",
+    "packages/verification/src/verification/step-types.ts": "a4fb32a09301c42791c132ca8b05a6521f3cbf98b625fa46b206204d3a534382",
+    "packages/verification/src/verification/verification-checks.ts": "3abd7d3e313df8f2461a3757e7f30ff1f304b7c4f364a8b7c110b8ecd65e28a1",
+    "packages/verification/src/verification/verification-presentation-policy.ts": "f86369f80316e44618f9b58f58c6bf4a386e1330aa5a1447fbab1ed38e8d2638",
+    "packages/verification/src/verification/verification-summary.ts": "8707e018d63499ca831688c5bcd6d5b2975866e3f5c081083981be307c729c2c",
+    "packages/zkvm-contract/src/zkvm/hex.ts": "736d2ff002d2b29e46261bed142a90a98f8a07982046a527342a0c2f4d7fa261",
+    "packages/zkvm-contract/src/zkvm/identifiers.ts": "6d15a401bea5b05868c0d1dead32a4fb3e336ee441dbedfa14d2b18b1ea5e3f7",
+    "packages/zkvm-contract/src/zkvm/types.ts": "2e39ff157608bee18393415df2b678dbef7a469904db20688353f9ee3b4440b5"
+  },
+  "schemaExports": [
+    "BitmapProofResponseSchema",
+    "BulletinProofResponseSchema",
+    "BulletinQuerySchema",
+    "BulletinResponseSchema",
+    "ConsistencyProofQuerySchema",
+    "ConsistencyProofResponseSchema",
+    "CurrentFinalizationBitmapProofParamsSchema",
+    "CurrentFinalizationInputCommitmentParamsSchema",
+    "CurrentFinalizationParamsSchema",
+    "CurrentFinalizationResponseSchema",
+    "FinalizationArtifactParamsSchema",
+    "FinalizationCancelParamsSchema",
+    "FinalizationCancelRequestSchema",
+    "FinalizationCreateParamsSchema",
+    "FinalizationCreateRequestSchema",
+    "FinalizationResourceSchema",
+    "FinalizationResponseSchema",
+    "InputCommitmentResponseSchema",
+    "PathSessionCapabilityHeadersSchema",
+    "ProgressResponseSchema",
+    "SessionBulletinParamsSchema",
+    "SessionCreateRequestSchema",
+    "SessionParamsSchema",
+    "SessionResponseSchema",
+    "SessionVoteInclusionProofParamsSchema",
+    "StandardErrorResponseSchema",
+    "SthQuerySchema",
+    "SthResponseSchema",
+    "VerificationObservationRequestSchema",
+    "VerificationObservationResponseSchema",
+    "VerificationResourceParamsSchema",
+    "VerificationResourceQuerySchema",
+    "VerificationResourceResponseSchema",
+    "VerificationRunRequestSchema",
+    "VerificationRunResponseSchema",
+    "VoteRequestSchema",
+    "VoteResponseSchema"
+  ],
+  "schemaFingerprints": {
+    "BitmapProofResponseSchema": "81c7249e57f9ee2883a6ff8fb50c4ba838596a4999d653b48387d7fdce9e816b",
+    "BulletinProofResponseSchema": "94c9f65a4125a60051fffdf37777a223e3f5281b06ffa040a88ca380ff54bd03",
+    "BulletinQuerySchema": "caa367f0cd671f7d095315d63f341a97757e7ed213bb53a8a5fa35056569afd5",
+    "BulletinResponseSchema": "4d0e49b3d9e341e25666ecf85fdfa3129c905600575199cfbe7f5f600b21b967",
+    "ConsistencyProofQuerySchema": "ba58e618f995098935c5e2bb9c7aca255fb37173bc15f494da915bc1c1afccf9",
+    "ConsistencyProofResponseSchema": "c8fc621fac623efd71fb3e56b60f2545a2ad90a66a4a2bf95b8b4c3405b854c7",
+    "CurrentFinalizationBitmapProofParamsSchema": "afbfd1cfd7b9692bae337a863f1fbb13f5e6dd5d94effa3ebae4ed994c379f37",
+    "CurrentFinalizationInputCommitmentParamsSchema": "83ec260eaf0016b9508896696d2544c4e755f9120b03817b0f21fa65a33b09e9",
+    "CurrentFinalizationParamsSchema": "c468ae2faa0345092c31a7bfb75b2a6c66e1c745e2af4e2175100cffe317be4b",
+    "CurrentFinalizationResponseSchema": "3124ac58845adff4f5d7357a07e43d7482825c39a12f45b8c4f83e41afe23333",
+    "FinalizationArtifactParamsSchema": "fac1c76d5c5c1fa7ba783246a2227f031d8d7d62880d02f3c18d1e89120247fc",
+    "FinalizationCancelParamsSchema": "dd2de291441c18ea243fb574fd62d9d31469da665bd6214e6fd08aa7edd5e8b2",
+    "FinalizationCancelRequestSchema": "50cb3eddcd044e6949c76d959504965558c1f2e460b97f29d16fed83d0ba6498",
+    "FinalizationCreateParamsSchema": "d9170b2ce9b04fb7a1ed8deea667f163780bae051672af65292ec72ac8990d60",
+    "FinalizationCreateRequestSchema": "17e59fe8f73d77a9f89935b1430e74a1821a420b4c78f20118774e508f9d9ea4",
+    "FinalizationResourceSchema": "9fa7681c18d93b55c4d2dc15859fe2a388093a91c558c61f8ff91a4e3587ce27",
+    "FinalizationResponseSchema": "d2711b1d2bb59410fabe5cbd4ca87dd591f2f4091b41453f663743e37b546920",
+    "InputCommitmentResponseSchema": "3b401a66777da47619284511139043522867ba721e0af4d89affb9301c0f908f",
+    "PathSessionCapabilityHeadersSchema": "c071c6d081bb4f896ee235b1240a5a87d1055707fbf5a85863d082943bd58cd2",
+    "ProgressResponseSchema": "542734f6ff7ca6a0eae54789064b040afe8c7bdefb76bc0e12a8de47d3212f83",
+    "SessionBulletinParamsSchema": "b867bf2aa7b788a045556f9e592f831725d7f048d4a94beb54c2391cd49f4a81",
+    "SessionCreateRequestSchema": "9f8a7e6c127e1498893f0de2e81f6aa27f78d6091bef30396a710b3eeef1b9c5",
+    "SessionParamsSchema": "e464e3bcd4cebc69a7adf34edd645a7afc6f0c1dc8bcadb4a9b725ae82f5cc0c",
+    "SessionResponseSchema": "ca0b201df379ed90a7588a5ab0b93ee245787abbfb98f6805c814a5532d62f2f",
+    "SessionVoteInclusionProofParamsSchema": "9ccd46f7ed3c44145903c9061bcceae7e1821e5bd3fed0fc607eaa4d68265b97",
+    "StandardErrorResponseSchema": "fb2313f99d9704fe127e486769ad4c8b8ec0e16dda2488370268e42623ab6755",
+    "SthQuerySchema": "a0e5833ad45f2993d6be8a0acea5d45183d90947f0197356b9034b7dc9706f55",
+    "SthResponseSchema": "837bbbb5cd9d12493cf0aab07f5b11137608d5bfe85da7aa3e431310cb78d956",
+    "VerificationObservationRequestSchema": "955708cd9d2ba3f10d92e3ebdfaace35e9acfd60e6e11864565509c87c3371db",
+    "VerificationObservationResponseSchema": "de4117d9216f3d0d556544cf968551da44e16dd47d4aded34d3b88e457c95c45",
+    "VerificationResourceParamsSchema": "ebb8fe064c9376fe065738d337de2af0caa48506626f501e7433cab29b5c3cb8",
+    "VerificationResourceQuerySchema": "9544f52c95e393022a560a73c084d80772d41d922a3ea1bf5f974b9bfe89c684",
+    "VerificationResourceResponseSchema": "86bd186f220340335cdb597c5b471f9dc23c4ee07082c5aafbfda9c2d3fe51ce",
+    "VerificationRunRequestSchema": "8dbc2fd54f9a3c25376928252d3db06761a523d1fea4c4c1175c6dbdd2e4e012",
+    "VerificationRunResponseSchema": "5cfca4e1236cdc7db75ae06b64ee72a88e8992513e578ea32cd4dcd6d7eab802",
+    "VoteRequestSchema": "4a1b6c1f5860858601fa7dbed0a871f6872ab6228ac80913244d309c32cdc076",
+    "VoteResponseSchema": "6d97bde9459a4e6ea1a655184b3449e0198113c94d8584f0af8d8b16ce9755d8"
+  },
+  "schemaSemantics": {
+    "algorithm": "json-wire-admission",
+    "fingerprints": {
+      "BitmapProofResponseSchema": "9c4c52d5e29b4197c56082ad66d6f4ac4d8ecec8723a68aecc7c43fb4c478de7",
+      "BulletinProofResponseSchema": "6cec480bcdb4ed09e1e1f4b182c26624b9d7a6411ce2c27b4fec63b3edad62aa",
+      "BulletinQuerySchema": "0550ea64c617578e7f6828bc76f7523be7b0d32f6f7d4217de9a23d816d3a70d",
+      "BulletinResponseSchema": "7af86e25978fd8981fc3b87d8ca257d7d5b1caac69ba19fa99d97b6f19a17982",
+      "ConsistencyProofQuerySchema": "d06196c469b4b9dab3b599c7be035c06a3cc2fe5851152731b0f0a42cc3b54ad",
+      "ConsistencyProofResponseSchema": "76560716791dc7c9527a4d2375fe912ed89297a4d2ea77af8e35ce215879db3a",
+      "CurrentFinalizationBitmapProofParamsSchema": "85c3baf66a9f38bb81b8bca168ee12554a608774ccec6ebcbf4834619643ee57",
+      "CurrentFinalizationInputCommitmentParamsSchema": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb",
+      "CurrentFinalizationParamsSchema": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb",
+      "CurrentFinalizationResponseSchema": "c39251cfa514c5d94888dc4f7df5598bf96ded4bcd7dd80a7b57ec51f654840d",
+      "FinalizationArtifactParamsSchema": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e",
+      "FinalizationCancelParamsSchema": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e",
+      "FinalizationCancelRequestSchema": "db1d6093683e846264c00a6fc3d7b6cc5c244ff51d15e0aec88542d384f57b0b",
+      "FinalizationCreateParamsSchema": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb",
+      "FinalizationCreateRequestSchema": "6fdf9db4ebd2eac6eae2785b5624c93da1f95d10aa7652600e63fd210eb0b705",
+      "FinalizationResourceSchema": "32a30bb11e79dbb409f9c166a6f10d644a864f2627071d3e40b84f40cac37723",
+      "FinalizationResponseSchema": "27a429b2cad3c7cd74a1481d80cf800a1dfcd7df851d1935f1dc97d4bbfd1db9",
+      "InputCommitmentResponseSchema": "ca87e702865a8f6c353e11d584548894b0f6ace462e5ef7d7beeb7f52c13fdaf",
+      "PathSessionCapabilityHeadersSchema": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905",
+      "ProgressResponseSchema": "32e16cbf21bf3c8fa287a48c508c8581d1b847a50d4687bd346c6c2338ca3fd0",
+      "SessionBulletinParamsSchema": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb",
+      "SessionCreateRequestSchema": "d0b040d06774086ae712bf2077c8e94ae0f4dad345a78291f417b844eedb5426",
+      "SessionParamsSchema": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb",
+      "SessionResponseSchema": "bf517c1bbf8de86d64a00e6fef5118aff5da493d72e40c0107d24d7fe2874e87",
+      "SessionVoteInclusionProofParamsSchema": "bc52e01caf41c949caea6154638bc06226fbe0e8f33304560d319522b4aca168",
+      "StandardErrorResponseSchema": "7beb5763f7c8c7f33d620b19011616da63ad2235eae09857c5339a843416a822",
+      "SthQuerySchema": "002eae4a2cfee68e8626fec7b00f2ac5619f44fccf2ff1d663e01317ba211a0f",
+      "SthResponseSchema": "323315a86b2db82220dbb73d7d062d221a7bdc125d86432ef0cf12a08e0d92d6",
+      "VerificationObservationRequestSchema": "5f7d2001cd787b194570c329e1d6b98d09fb71a51e67d57a7fcec488e345281d",
+      "VerificationObservationResponseSchema": "7bc03784f5d859185422653eec36c3445ff99b364b431b44c90ab69c2015ee9f",
+      "VerificationResourceParamsSchema": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e",
+      "VerificationResourceQuerySchema": "e0db6efa48f4ec4758710478f13aa52834b72d4d7ce0c5a2f6712f91200021a5",
+      "VerificationResourceResponseSchema": "966918ea8e62a8c3fcc33a0baf2a4b041f76d16c0813f055882efa7523b70cb9",
+      "VerificationRunRequestSchema": "a938defadb96a2bc30689c232ce4a323a401d5cace6e119f636275bf4f863759",
+      "VerificationRunResponseSchema": "e00b1786887e117c0415ed00ad84300243774a850db933aaa8425b1508b67fb2",
+      "VoteRequestSchema": "5114a3e91c7d2642aa127fa9ee8c981e06ed7d3eab0992526fc7f7205a6d8973",
+      "VoteResponseSchema": "554f1af6f5043105a4932601e5a2d6316f1a99ea57d6205bef4c059223d42f4b"
+    }
+  },
+  "sourceRef": "HEAD",
+  "sourceSha": "ecaf7bcebe4d"
+}

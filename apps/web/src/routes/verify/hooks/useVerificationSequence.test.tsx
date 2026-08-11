@@ -18,6 +18,17 @@ const mockGetSessionData = vi.mocked(sessionModule.getSessionData);
 const mockGetSessionDataForIdentity = vi.mocked(sessionModule.getSessionDataForIdentity);
 const mockIsSessionReplacedForIdentity = vi.mocked(sessionModule.isSessionReplacedForIdentity);
 
+const ACTIVE_SESSION = {
+  sessionId: 'test-session',
+  capabilityToken: 'test-capability-token',
+  electionId: '550e8400-e29b-41d4-a716-446655440000',
+  electionConfigHash: `0x${'a'.repeat(64)}`,
+  logId: `0x${'b'.repeat(64)}`,
+  lastActivity: 1,
+  expiresAt: 60_001,
+  phase: 'voting' as const,
+};
+
 const buildSteps = (status: VerificationStepStatus): NonNullable<VerificationPayload['verificationSteps']> => [
   { id: 'cast_as_intended', status },
   { id: 'recorded_as_cast', status },
@@ -65,16 +76,8 @@ describe('useVerificationSequence', () => {
   beforeEach(() => {
     vi.stubEnv('NODE_ENV', 'test');
     vi.useFakeTimers();
-    mockGetSessionData.mockReturnValue({
-      sessionId: 'test-session',
-      capabilityToken: 'test-capability-token',
-      lastActivity: Date.now(),
-    });
-    mockGetSessionDataForIdentity.mockReturnValue({
-      sessionId: 'test-session',
-      capabilityToken: 'test-capability-token',
-      lastActivity: Date.now(),
-    });
+    mockGetSessionData.mockReturnValue(ACTIVE_SESSION);
+    mockGetSessionDataForIdentity.mockReturnValue(ACTIVE_SESSION);
     mockIsSessionReplacedForIdentity.mockReturnValue(false);
   });
 

@@ -18,14 +18,14 @@ resource "aws_codepipeline" "development_foundation" {
   variable {
     name          = "FoundationEvidenceIntent"
     default_value = "foundation-saved-plan-evidence"
-    description   = "Stable label for the Plan 02 foundation saved-plan evidence package."
+    description   = "Stable label for the foundation saved-plan evidence package."
   }
 
   stage {
-    name = "Source"
+    name = local.deployment_target.sourceAction
 
     action {
-      name             = "Source"
+      name             = local.deployment_target.sourceAction
       category         = "Source"
       owner            = "AWS"
       provider         = "CodeStarSourceConnection"
@@ -34,10 +34,10 @@ resource "aws_codepipeline" "development_foundation" {
       output_artifacts = ["SourceOutput"]
 
       configuration = {
-        BranchName           = var.source_branch
+        BranchName           = local.deployment_target.sourceBranch
         ConnectionArn        = aws_codeconnections_connection.source[0].arn
         DetectChanges        = "false"
-        FullRepositoryId     = var.github_full_repository_id
+        FullRepositoryId     = local.deployment_target.repository
         OutputArtifactFormat = "CODE_ZIP"
       }
     }
@@ -56,8 +56,11 @@ resource "aws_codepipeline" "development_foundation" {
       output_artifacts = ["ValidateOutput"]
 
       configuration = {
-        EnvironmentVariables = jsonencode([{ name = "FOUNDATION_PIPELINE_EXECUTION_ID", value = "#{codepipeline.PipelineExecutionId}", type = "PLAINTEXT" }])
-        ProjectName          = aws_codebuild_project.foundation_validate[0].name
+        EnvironmentVariables = jsonencode([
+          { name = "FOUNDATION_PIPELINE_EXECUTION_ID", value = "#{codepipeline.PipelineExecutionId}", type = "PLAINTEXT" },
+          { name = "PIPELINE_SOURCE_SHA", value = "#{FoundationSource.CommitId}", type = "PLAINTEXT" },
+        ])
+        ProjectName = aws_codebuild_project.foundation_validate[0].name
       }
     }
   }
@@ -75,9 +78,12 @@ resource "aws_codepipeline" "development_foundation" {
       output_artifacts = ["PlanOutput"]
 
       configuration = {
-        EnvironmentVariables = jsonencode([{ name = "FOUNDATION_PIPELINE_EXECUTION_ID", value = "#{codepipeline.PipelineExecutionId}", type = "PLAINTEXT" }])
-        PrimarySource        = "SourceOutput"
-        ProjectName          = aws_codebuild_project.foundation_terraform_plan[0].name
+        EnvironmentVariables = jsonencode([
+          { name = "FOUNDATION_PIPELINE_EXECUTION_ID", value = "#{codepipeline.PipelineExecutionId}", type = "PLAINTEXT" },
+          { name = "PIPELINE_SOURCE_SHA", value = "#{FoundationSource.CommitId}", type = "PLAINTEXT" },
+        ])
+        PrimarySource = "SourceOutput"
+        ProjectName   = aws_codebuild_project.foundation_terraform_plan[0].name
       }
     }
   }
@@ -93,7 +99,7 @@ resource "aws_codepipeline" "development_foundation" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/foundation/tfplan.txt and tfplan.sha256 for stark-dev/develop/foundation. Approval must confirm the foundation plan manages no app runtime resources; separately deployed app state/runtime may exist."
+        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/foundation/tfplan.txt and tfplan.sha256 for ${local.foundation_lane_authority.stateIdentity}. Approval must confirm the foundation plan manages no app runtime resources; separately deployed app state/runtime may exist. Approval summary must be exact JSON: {\"sourceSha\":\"#{FoundationSource.CommitId}\",\"accountId\":\"${local.deployment_target.accountId}\",\"deploymentEnvironment\":\"${local.deployment_target.environmentId}\",\"reviewedPlanChecksum\":\"<tfplan sha256>\"}."
       }
     }
   }
@@ -111,9 +117,12 @@ resource "aws_codepipeline" "development_foundation" {
       output_artifacts = ["ApplyOutput"]
 
       configuration = {
-        EnvironmentVariables = jsonencode([{ name = "FOUNDATION_PIPELINE_EXECUTION_ID", value = "#{codepipeline.PipelineExecutionId}", type = "PLAINTEXT" }])
-        PrimarySource        = "SourceOutput"
-        ProjectName          = aws_codebuild_project.foundation_terraform_apply[0].name
+        EnvironmentVariables = jsonencode([
+          { name = "FOUNDATION_PIPELINE_EXECUTION_ID", value = "#{codepipeline.PipelineExecutionId}", type = "PLAINTEXT" },
+          { name = "PIPELINE_SOURCE_SHA", value = "#{FoundationSource.CommitId}", type = "PLAINTEXT" },
+        ])
+        PrimarySource = "SourceOutput"
+        ProjectName   = aws_codebuild_project.foundation_terraform_apply[0].name
       }
     }
   }
@@ -127,13 +136,17 @@ resource "aws_codepipeline" "development_foundation" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "ApplyOutput"]
+      input_artifacts  = ["SourceOutput", "PlanOutput", "ApplyOutput"]
       output_artifacts = ["FoundationSmokeOutput"]
 
       configuration = {
-        EnvironmentVariables = jsonencode([{ name = "FOUNDATION_PIPELINE_EXECUTION_ID", value = "#{codepipeline.PipelineExecutionId}", type = "PLAINTEXT" }])
-        PrimarySource        = "SourceOutput"
-        ProjectName          = aws_codebuild_project.foundation_smoke[0].name
+        EnvironmentVariables = jsonencode([
+          { name = "FOUNDATION_PIPELINE_EXECUTION_ID", value = "#{codepipeline.PipelineExecutionId}", type = "PLAINTEXT" },
+          { name = "TERRAFORM_BASELINE_PIPELINE_EXECUTION_ID", value = "#{codepipeline.PipelineExecutionId}", type = "PLAINTEXT" },
+          { name = "PIPELINE_SOURCE_SHA", value = "#{FoundationSource.CommitId}", type = "PLAINTEXT" },
+        ])
+        PrimarySource = "SourceOutput"
+        ProjectName   = aws_codebuild_project.foundation_smoke[0].name
       }
     }
   }

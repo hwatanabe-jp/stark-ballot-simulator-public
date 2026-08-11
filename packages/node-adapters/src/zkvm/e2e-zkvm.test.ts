@@ -1,11 +1,19 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { executeZkVM } from '@stark-ballot/node-adapters/zkvm/executor';
+import { executeZkVM as executeRisc0ZkVM } from '@stark-ballot/node-adapters/zkvm/executor';
 import type { ZkVMInput, VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import path from 'path';
 
 const BOT_COUNT = 63;
+const DEVELOPMENT_PROOF_PROFILE = {
+  executor: 'risc0',
+  evidence: 'development',
+} as const;
+
+function executeZkVM(input: ZkVMInput) {
+  return executeRisc0ZkVM(input, DEVELOPMENT_PROOF_PROFILE);
+}
 
 describe('zkVM End-to-End Tests', () => {
   const zkVMPath = path.join(process.cwd(), 'zkvm/target/release/host');
@@ -15,9 +23,6 @@ describe('zkVM End-to-End Tests', () => {
     if (!existsSync(zkVMPath)) {
       throw new Error('zkVM binary not found. Please run: cd zkvm && cargo build --release');
     }
-
-    // Set development mode for faster execution in tests
-    process.env['RISC0_DEV_MODE'] = '1';
   });
 
   describe('Basic Voting Flow', () => {

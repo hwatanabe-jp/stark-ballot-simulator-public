@@ -1,6 +1,6 @@
 output "foundation_state_identity" {
   description = "Foundation Terraform state identity."
-  value       = "${var.account_alias}/${var.deployment_environment}/${var.state_scope}"
+  value       = local.foundation_lane_authority.stateIdentity
 }
 
 output "foundation_state_backend_key" {
@@ -26,7 +26,7 @@ output "target_image_authority" {
         filterType = "WILDCARD_MATCH"
       }
     ]
-    retention_policy = "no-automatic-image-expiry"
+    retention_policy = "reference-aware-controller-target-10"
   }
 }
 
@@ -59,7 +59,7 @@ output "prover_networking" {
 }
 
 output "public_hostname_disposition" {
-  description = "Plan 02 public-hostname disposition carried into Plan 03."
+  description = "Public-hostname disposition carried into the release-candidate handoff."
   value = {
     disposition = var.public_hostname_disposition
   }

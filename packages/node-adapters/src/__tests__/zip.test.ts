@@ -1,6 +1,3 @@
-/**
- * @vitest-environment node
- */
 import { describe, it, expect, afterEach } from 'vitest';
 import { tmpdir } from 'node:os';
 import path from 'node:path';

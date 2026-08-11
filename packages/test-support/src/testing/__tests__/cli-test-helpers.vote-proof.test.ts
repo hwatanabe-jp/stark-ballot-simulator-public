@@ -27,7 +27,7 @@ describe('CLITestHelpers.submitVote', () => {
     vi.resetAllMocks();
   });
 
-  it('includes session auth headers when fetching vote proof', async () => {
+  it('includes the session capability when fetching vote proof', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url =
         typeof input === 'string'
@@ -40,24 +40,24 @@ describe('CLITestHelpers.submitVote', () => {
                   throw new Error('Unexpected fetch input type');
                 })();
 
-      if (url === `${baseUrl}/api/vote`) {
+      if (url === `${baseUrl}/api/sessions/${sessionId}/votes`) {
         const headers = init?.headers;
-        const sessionIdHeader =
-          headers instanceof Headers
-            ? headers.get('X-Session-ID')
-            : (headers as Record<string, string> | undefined)?.['X-Session-ID'];
         const capabilityHeader =
           headers instanceof Headers
             ? headers.get('X-Session-Capability')
             : (headers as Record<string, string> | undefined)?.['X-Session-Capability'];
 
-        expect(sessionIdHeader).toBe(sessionId);
         expect(capabilityHeader).toBe('v1.test.session-capability');
 
-        return Promise.resolve(buildJsonResponse({ data: { voteId } }));
+        return Promise.resolve(
+          buildJsonResponse({
+            data: { voteId },
+            meta: { requestId: 'request-vote' },
+          }),
+        );
       }
 
-      if (url === `${baseUrl}/api/session`) {
+      if (url === `${baseUrl}/api/sessions`) {
         return Promise.resolve(
           buildJsonResponse({
             data: {
@@ -65,30 +65,29 @@ describe('CLITestHelpers.submitVote', () => {
               electionId,
               capabilityToken: 'v1.test.session-capability',
             },
+            meta: { requestId: 'request-session' },
           }),
         );
       }
 
-      if (url === `${baseUrl}/api/bulletin/${voteId}/proof`) {
+      if (url === `${baseUrl}/api/sessions/${sessionId}/votes/${voteId}/inclusion-proof`) {
         const headers = init?.headers;
-        const sessionIdHeader =
-          headers instanceof Headers
-            ? headers.get('X-Session-ID')
-            : (headers as Record<string, string> | undefined)?.['X-Session-ID'];
         const capabilityHeader =
           headers instanceof Headers
             ? headers.get('X-Session-Capability')
             : (headers as Record<string, string> | undefined)?.['X-Session-Capability'];
 
-        expect(sessionIdHeader).toBe(sessionId);
         expect(capabilityHeader).toBe('v1.test.session-capability');
 
         return Promise.resolve(
           buildJsonResponse({
-            proof: {
-              leafIndex: 0,
-              merklePath: ['0x01'],
+            data: {
+              proof: {
+                leafIndex: 0,
+                merklePath: ['0x01'],
+              },
             },
+            meta: { requestId: 'request-proof' },
           }),
         );
       }

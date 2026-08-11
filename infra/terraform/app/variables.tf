@@ -1,7 +1,6 @@
 variable "aws_region" {
   description = "AWS Region for app resources."
   type        = string
-  default     = "ap-northeast-1"
 
   validation {
     condition     = can(regex("^[a-z]{2}-[a-z]+-[0-9]{1}$", var.aws_region))
@@ -80,7 +79,6 @@ variable "deploy_mode" {
 variable "state_scope" {
   description = "Terraform state scope. This app root supports app only."
   type        = string
-  default     = "app"
 
   validation {
     condition     = var.state_scope == "app"
@@ -91,7 +89,6 @@ variable "state_scope" {
 variable "project_name" {
   description = "Project name used for identity checks and tags."
   type        = string
-  default     = "stark-ballot-simulator"
 }
 
 variable "image_signature_verifier_permissions_boundary_arn" {
@@ -109,11 +106,6 @@ variable "image_signature_verifier_permissions_boundary_arn" {
 variable "state_backend_key" {
   description = "Expected S3 backend key for this app state."
   type        = string
-
-  validation {
-    condition     = var.state_backend_key == "stark-ballot-simulator/${var.account_alias}/${var.deployment_environment}/app/terraform.tfstate"
-    error_message = "state_backend_key must match stark-ballot-simulator/<account_alias>/<deployment_environment>/app/terraform.tfstate."
-  }
 }
 
 variable "enable_dynamodb_deletion_protection" {
@@ -424,7 +416,7 @@ variable "verifier_public_base_url" {
 }
 
 variable "public_hostname_disposition" {
-  description = "Plan 02 public hostname disposition consumed by the app root."
+  description = "Public hostname disposition consumed by the app root."
   type        = string
   default     = "external-dns-acm"
 

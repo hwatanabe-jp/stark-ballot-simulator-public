@@ -1,0 +1,43 @@
+{
+  "name": "@stark-ballot/repository-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "pnpm --dir .. exec eslint scripts",
+    "test": "pnpm --dir .. exec vitest run --config vitest.config.ts --project @stark-ballot/repository-tools",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
+  "exports": {},
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "catalog:aws-sdk",
+    "@aws-sdk/client-s3": "catalog:aws-sdk",
+    "@aws-sdk/client-sfn": "catalog:aws-sdk",
+    "@aws-sdk/credential-providers": "3.1106.0",
+    "@stark-ballot/api": "workspace:*",
+    "@stark-ballot/api-contract": "workspace:*",
+    "@stark-ballot/crypto-primitives": "workspace:*",
+    "@stark-ballot/deployment-authority": "workspace:*",
+    "@stark-ballot/diagnostics": "workspace:*",
+    "@stark-ballot/domain": "workspace:*",
+    "@stark-ballot/merkle": "workspace:*",
+    "@stark-ballot/node-adapters": "workspace:*",
+    "@stark-ballot/runtime-config": "workspace:*",
+    "@stark-ballot/test-support": "workspace:*",
+    "@stark-ballot/validation": "workspace:*",
+    "@stark-ballot/verification": "workspace:*",
+    "@stark-ballot/zkvm-contract": "workspace:*",
+    "dotenv": "17.4.2",
+    "esbuild": "0.28.2",
+    "hono": "4.13.1",
+    "prettier": "3.9.6",
+    "typescript": "catalog:testing",
+    "yazl": "3.3.1"
+  },
+  "devDependencies": {
+    "@stark-ballot/application": "workspace:*",
+    "@types/node": "24.13.3",
+    "@types/yazl": "3.3.1",
+    "eslint": "9.39.2",
+    "vitest": "catalog:testing"
+  }
+}

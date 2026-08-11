@@ -16,7 +16,6 @@ resource "aws_iam_policy" "app_apply_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   depends_on = [
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_artifacts_management,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_pipeline_management,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management,

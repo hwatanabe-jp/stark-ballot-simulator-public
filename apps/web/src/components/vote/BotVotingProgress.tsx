@@ -6,23 +6,15 @@ import { InlineAlert } from '@stark-ballot/web/components/ui/InlineAlert';
 import { useTranslation } from '@stark-ballot/web/hooks';
 import {
   captureSessionIdentity,
-  getSessionAuthHeaders,
   getSessionData,
   getSessionDataForIdentity,
   isSessionReplacedForIdentity,
   SESSION_STORAGE_KEY,
 } from '@stark-ballot/web/session';
 import { saveKnowledgeData } from '@stark-ballot/web/knowledge';
-import { resolveApiUrl } from '@stark-ballot/web/api/apiBaseUrl';
-import { apiFetch } from '@stark-ballot/web/api/apiFetch';
-import { ProgressResponseSchema } from '@stark-ballot/api-contract/validation/apiSchemas';
-import {
-  admitApiResponse,
-  readApiJson,
-  readStandardApiError,
-  readStandardApiErrorCode,
-} from '@stark-ballot/web/api/responseAdmission';
-import { isSessionUnavailableErrorCode } from '@stark-ballot/web/api/apiErrors';
+import { getProgress } from '@stark-ballot/web/api/progress';
+import { resolveApiClientErrorCode } from '@stark-ballot/web/api/client';
+import { isSessionUnavailableErrorCode } from '@stark-ballot/api-contract/errors/apiErrorGuards';
 import type { VoteChoice } from '@stark-ballot/web/session/types';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
@@ -207,13 +199,11 @@ export function BotVotingProgress({ onComplete, autoNavigate = true }: BotVoting
           return;
         }
 
-        const response = await apiFetch(resolveApiUrl('/api/progress'), {
-          headers: getSessionAuthHeaders(sessionData),
-        });
-
-        if (!response.ok) {
-          const errorPayload = await readStandardApiError(response);
-          const errorCode = readStandardApiErrorCode(errorPayload);
+        let data;
+        try {
+          data = await getProgress(sessionData);
+        } catch (requestError) {
+          const errorCode = resolveApiClientErrorCode(requestError);
           if (isSessionUnavailableErrorCode(errorCode)) {
             if (intervalRef.current) {
               clearInterval(intervalRef.current);
@@ -223,13 +213,6 @@ export function BotVotingProgress({ onComplete, autoNavigate = true }: BotVoting
           }
           return;
         }
-
-        const resultPayload = admitApiResponse(
-          ProgressResponseSchema,
-          await readApiJson(response),
-          'progress response',
-        );
-        const data = resultPayload.data;
 
         const seed = data.animationSeed;
         if (seed && !hasSeedFromApi.current) {

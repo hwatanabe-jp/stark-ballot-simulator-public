@@ -2,6 +2,61 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   statement {
+    sid    = "AppAcceptedBaselinePublisherGuardrail"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+      "s3:PutObject",
+    ]
+    resources = [
+      "arn:aws:s3:::${local.terraform_authority_bucket_name}/${local.terraform_baseline_prefix}/${local.app_lane_authority.stateIdentity}/executions/*",
+    ]
+  }
+
+  statement {
+    sid    = "AppAcceptedBaselineKmsGuardrail"
+    effect = "Allow"
+    actions = [
+      "kms:Decrypt",
+      "kms:DescribeKey",
+      "kms:Encrypt",
+      "kms:GenerateDataKey",
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/AuthorityType"
+      values   = ["terraform-baseline"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [var.project_name]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/AccountAlias"
+      values   = [var.account_alias]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = [var.deployment_environment]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/StateScope"
+      values   = [var.state_scope]
+    }
+  }
+
+  statement {
     effect = "Allow"
 
     actions = [
@@ -11,8 +66,12 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
       "s3:PutObject",
     ]
     resources = [
-      "arn:aws:s3:::${local.app_pipeline_artifact_bucket_name}",
-      "arn:aws:s3:::${local.app_pipeline_artifact_bucket_name}/*",
+      local.app_retained_artifact_bucket_arn,
+      "${local.app_retained_artifact_bucket_arn}/*",
+      local.app_pipeline_execution_artifact_bucket_arn,
+      "${local.app_pipeline_execution_artifact_bucket_arn}/*",
+      local.app_static_fast_execution_artifact_bucket_arn,
+      "${local.app_static_fast_execution_artifact_bucket_arn}/*",
     ]
   }
 
@@ -265,7 +324,6 @@ resource "aws_iam_policy" "app_smoke_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   depends_on = [
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_artifacts_management,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_pipeline_management,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management,

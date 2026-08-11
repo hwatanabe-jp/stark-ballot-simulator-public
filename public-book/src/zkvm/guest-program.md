@@ -57,7 +57,7 @@ flowchart TD
     I2 -->|No| FAIL[不正入力]
     I3 -->|Yes| I4{タイムスタンプ<br/>が正の値?}
     I3 -->|No| FAIL
-    I4 -->|Yes| I5{Phase 4 境界と<br/>Merkle パス長が有効?}
+    I4 -->|Yes| I5{guest 境界と<br/>Merkle パス長が有効?}
     I4 -->|No| FAIL
     I5 -->|Yes| NEXT[フェーズ 2 へ]
     I5 -->|No| FAIL

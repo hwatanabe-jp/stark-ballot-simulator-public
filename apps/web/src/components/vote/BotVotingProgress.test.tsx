@@ -2,6 +2,8 @@ import { act, render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { BotVotingProgress } from './BotVotingProgress';
 import { t as translate } from '@stark-ballot/web/i18n';
+import { getProgress } from '@stark-ballot/web/api/progress';
+import { ApiClientError } from '@stark-ballot/web/api/client';
 
 const { mockPush, mockGetSessionData, mockGetSessionDataForIdentity, mockIsSessionReplacedForIdentity } = vi.hoisted(
   () => ({
@@ -34,10 +36,6 @@ vi.mock('@stark-ballot/web/session', () => ({
   ),
   getSessionData: mockGetSessionData,
   getSessionDataForIdentity: mockGetSessionDataForIdentity,
-  getSessionAuthHeaders: vi.fn(() => ({
-    'X-Session-ID': 'test-session-id',
-    'X-Session-Capability': 'test-capability-token',
-  })),
   isSessionReplacedForIdentity: mockIsSessionReplacedForIdentity,
   SESSION_STORAGE_KEY: 'starkBallotSession',
 }));
@@ -46,17 +44,8 @@ vi.mock('@stark-ballot/web/knowledge', () => ({
   saveKnowledgeData: vi.fn(),
 }));
 
-const mockApiFetch = vi.fn<
-  (input?: unknown, init?: unknown) => Promise<{ ok: boolean; status?: number; json: () => Promise<unknown> }>
->(() =>
-  Promise.resolve({
-    ok: true,
-    json: () => Promise.resolve({ data: { count: 0, total: 63 } }),
-  }),
-);
-
-vi.mock('@stark-ballot/web/api/apiFetch', () => ({
-  apiFetch: (...args: Parameters<typeof mockApiFetch>) => mockApiFetch(...args),
+vi.mock('@stark-ballot/web/api/progress', () => ({
+  getProgress: vi.fn(),
 }));
 
 describe('BotVotingProgress', () => {
@@ -70,12 +59,13 @@ describe('BotVotingProgress', () => {
       capabilityToken: 'test-capability-token',
     });
     mockIsSessionReplacedForIdentity.mockReturnValue(false);
-    mockApiFetch.mockImplementation(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ data: { count: 0, total: 63 } }),
-      }),
-    );
+    vi.mocked(getProgress).mockResolvedValue({
+      count: 0,
+      total: 63,
+      completed: false,
+      userVoted: true,
+      finalized: false,
+    });
   });
 
   afterEach(() => {
@@ -149,11 +139,13 @@ describe('BotVotingProgress', () => {
   });
 
   it('stops polling and shows a session error when progress reports session loss', async () => {
-    mockApiFetch.mockImplementation(() =>
-      Promise.resolve({
-        ok: false,
-        status: 404,
-        json: () => Promise.resolve({ error: 'SESSION_NOT_FOUND' }),
+    vi.mocked(getProgress).mockRejectedValue(
+      new ApiClientError('missing', 404, {
+        error: {
+          code: 'SESSION_NOT_FOUND',
+          message: 'Session not found',
+        },
+        meta: { requestId: 'request-id' },
       }),
     );
 
@@ -164,13 +156,13 @@ describe('BotVotingProgress', () => {
 
     expect(screen.getByText('Session not found')).toBeInTheDocument();
 
-    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    expect(getProgress).toHaveBeenCalledTimes(1);
 
     act(() => {
       vi.advanceTimersByTime(2000);
     });
 
-    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    expect(getProgress).toHaveBeenCalledTimes(1);
     expect(mockPush).not.toHaveBeenCalled();
   });
 });
