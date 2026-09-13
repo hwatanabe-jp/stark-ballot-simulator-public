@@ -1,67 +1,52 @@
 # エンドポイント一覧
 
-この章は、ブラウザと CLI から利用する外部向け API の現行 contract を記載します。
-パス、request/response schema、公開エラー、認証境界の authority は
-`packages/api-contract/src/routes/inventory.ts` と `packages/api-contract/src/schemas/` です。
-内部 callback と過去の flat route は public API に含めません。
-
-## API runtime 構成
-
-同じ route inventory と handler を、ローカルの static Hono server と AWS Lambda runtime から利用します。
-
-| ランタイム         | 用途                | 主な入口                              |
-| ------------------ | ------------------- | ------------------------------------- |
-| Static Hono server | ローカルと test API | `scripts/dev/static-hono-server.ts`   |
-| Hono on Lambda     | AWS Lambda API      | `infra/lambdas/public-api/handler.ts` |
-
-以下のパスはすべて `/api` を base path とします。
+セッション作成から証拠の取得まで、ブラウザと CLI が呼び出す API の要求・応答をまとめます。すべてのパスは `/api` で始まります。
 
 <a id="active-browser-と-cli-api-一覧"></a>
 
-## Active API 一覧
+## API 一覧
 
-| メソッド | パス                                                                                                                                                                | 主用途                        |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| `POST`   | [`/api/sessions`](#post-apisessions)                                                                                                                                | セッション作成                |
-| `POST`   | [`/api/sessions/:sessionId/votes`](#post-apisessionssessionidvotes)                                                                                                 | 投票送信                      |
-| `GET`    | [`/api/sessions/:sessionId/progress`](#get-apisessionssessionidprogress)                                                                                            | ボット投票進捗                |
-| `POST`   | [`/api/sessions/:sessionId/finalizations`](#post-apisessionssessionidfinalizations)                                                                                 | 集計/証明生成                 |
-| `GET`    | [`/api/sessions/:sessionId/finalizations/current`](#get-apisessionssessionidfinalizationscurrent)                                                                   | current finalization 取得     |
-| `POST`   | [`/api/sessions/:sessionId/finalizations/:finalizationId/cancel`](#post-apisessionssessionidfinalizationsfinalizationidcancel)                                      | 非同期集計キャンセル          |
-| `GET`    | [`/api/sessions/:sessionId/finalizations/:finalizationId/verification`](#get-apisessionssessionidfinalizationsfinalizationidverification)                           | 検証 resource 取得            |
-| `POST`   | [`/api/sessions/:sessionId/finalizations/:finalizationId/verification`](#post-apisessionssessionidfinalizationsfinalizationidverification)                          | STARK 検証実行                |
-| `POST`   | [`/api/sessions/:sessionId/finalizations/:finalizationId/verification/observations`](#post-apisessionssessionidfinalizationsfinalizationidverificationobservations) | browser-local cast 観測の記録 |
-| `GET`    | [`/api/sessions/:sessionId/finalizations/:finalizationId/artifacts/bundle`](#get-apisessionssessionidfinalizationsfinalizationidartifactsbundle)                    | バンドル ZIP 取得             |
-| `GET`    | [`/api/sessions/:sessionId/finalizations/:finalizationId/artifacts/report`](#get-apisessionssessionidfinalizationsfinalizationidartifactsreport)                    | 検証レポート取得              |
-| `GET`    | [`/api/sessions/:sessionId/bulletin`](#get-apisessionssessionidbulletin)                                                                                            | bulletin inspection           |
-| `GET`    | [`/api/sessions/:sessionId/bulletin/consistency-proof`](#get-apisessionssessionidbulletinconsistency-proof)                                                         | RFC 6962 整合性証明           |
-| `GET`    | [`/api/sessions/:sessionId/votes/:voteId/inclusion-proof`](#get-apisessionssessionidvotesvoteidinclusion-proof)                                                     | 投票包含証明                  |
-| `GET`    | [`/api/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex`](#get-apisessionssessionidfinalizationscurrentbitmap-proofskindvoteindex)          | bitmap 証明材料               |
-| `GET`    | [`/api/sessions/:sessionId/bulletin/sth`](#get-apisessionssessionidbulletinsth)                                                                                     | STH スナップショット          |
-| `GET`    | [`/api/sessions/:sessionId/finalizations/current/input-commitment`](#get-apisessionssessionidfinalizationscurrentinput-commitment)                                  | zkVM input commitment         |
+| メソッド | パス                                                                                                                                                                | 主用途                     |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `POST`   | [`/api/sessions`](#post-apisessions)                                                                                                                                | セッション作成             |
+| `POST`   | [`/api/sessions/:sessionId/votes`](#post-apisessionssessionidvotes)                                                                                                 | 投票送信                   |
+| `GET`    | [`/api/sessions/:sessionId/progress`](#get-apisessionssessionidprogress)                                                                                            | ボット投票進捗             |
+| `POST`   | [`/api/sessions/:sessionId/finalizations`](#post-apisessionssessionidfinalizations)                                                                                 | 集計/証明生成              |
+| `GET`    | [`/api/sessions/:sessionId/finalizations/current`](#get-apisessionssessionidfinalizationscurrent)                                                                   | 現在の集計を取得           |
+| `POST`   | [`/api/sessions/:sessionId/finalizations/:finalizationId/cancel`](#post-apisessionssessionidfinalizationsfinalizationidcancel)                                      | 非同期集計キャンセル       |
+| `GET`    | [`/api/sessions/:sessionId/finalizations/:finalizationId/verification`](#get-apisessionssessionidfinalizationsfinalizationidverification)                           | 検証データ取得             |
+| `POST`   | [`/api/sessions/:sessionId/finalizations/:finalizationId/verification`](#post-apisessionssessionidfinalizationsfinalizationidverification)                          | STARK 検証実行             |
+| `POST`   | [`/api/sessions/:sessionId/finalizations/:finalizationId/verification/observations`](#post-apisessionssessionidfinalizationsfinalizationidverificationobservations) | ブラウザの Cast 観測を記録 |
+| `GET`    | [`/api/sessions/:sessionId/finalizations/:finalizationId/artifacts/bundle`](#get-apisessionssessionidfinalizationsfinalizationidartifactsbundle)                    | バンドル ZIP 取得          |
+| `GET`    | [`/api/sessions/:sessionId/finalizations/:finalizationId/artifacts/report`](#get-apisessionssessionidfinalizationsfinalizationidartifactsreport)                    | 検証レポート取得           |
+| `GET`    | [`/api/sessions/:sessionId/bulletin`](#get-apisessionssessionidbulletin)                                                                                            | 掲示板の確認               |
+| `GET`    | [`/api/sessions/:sessionId/bulletin/consistency-proof`](#get-apisessionssessionidbulletinconsistency-proof)                                                         | RFC 6962 整合性証明        |
+| `GET`    | [`/api/sessions/:sessionId/votes/:voteId/inclusion-proof`](#get-apisessionssessionidvotesvoteidinclusion-proof)                                                     | 投票包含証明               |
+| `GET`    | [`/api/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex`](#get-apisessionssessionidfinalizationscurrentbitmap-proofskindvoteindex)          | ビットマップの証明材料     |
+| `GET`    | [`/api/sessions/:sessionId/bulletin/sth`](#get-apisessionssessionidbulletinsth)                                                                                     | STH スナップショット       |
+| `GET`    | [`/api/sessions/:sessionId/finalizations/current/input-commitment`](#get-apisessionssessionidfinalizationscurrentinput-commitment)                                  | 入力コミットメント         |
 
-## 共通 contract
+## 共通仕様
 
 ### セッション capability
 
-`POST /api/sessions` 以外の active route は、次の組み合わせで session owner を特定します。
+`POST /api/sessions` 以外の API は、次の組み合わせでセッションの所有者を特定します。
 
-- `sessionId`: URL path parameter
-- `X-Session-Capability`: 必須 request header
+- `sessionId`: URL のパスパラメーター
+- `X-Session-Capability`: 必須ヘッダー
 
-`X-Session-ID` header は現行 contract に含まれません。`finalizationId` を含む route は、path の
-`finalizationId` も current finalization authority と照合します。
+集計 ID を含む URL では、`finalizationId` も現在の集計と照合します。
 
-共通の capability エラーは次のとおりです。
+セッション認証の共通エラーは次のとおりです。
 
 - `SESSION_CAPABILITY_REQUIRED` (`401`)
 - `SESSION_CAPABILITY_INVALID` (`401`)
 - `SESSION_CAPABILITY_EXPIRED` (`401`)
-- `SESSION_NOT_FOUND` (`404`; session を読む route)
+- `SESSION_NOT_FOUND` (`404`; セッションを読み取る API)
 
-### JSON success envelope
+### JSON の成功応答
 
-artifact 本文を返す route を除く public JSON success は、strict な envelope を使います。
+JSON の成功応答は、結果を `data`、要求 ID を `meta` に入れます。ファイル取得 API は、そのファイルの本文を直接返します。
 
 ```json
 {
@@ -72,12 +57,12 @@ artifact 本文を返す route を除く public JSON success は、strict な en
 }
 ```
 
-schema にない追加フィールドは受理しません。bulletin の pagination 情報だけは、page request 時に
+スキーマにない追加フィールドは受理しません。掲示板のページ情報だけは、ページを指定した要求時に
 `meta.page` として追加されます。
 
-### JSON error envelope
+### JSON のエラー応答
 
-public route の標準エラーは HTTP status を本文に重複させず、次の形を使います。
+公開 API の標準エラーは HTTP ステータス を本文に重複させず、次の形を使います。
 
 ```json
 {
@@ -98,26 +83,33 @@ public route の標準エラーは HTTP status を本文に重複させず、次
 }
 ```
 
-`details` は任意で、公開 schema が許可する tagged detail だけを返します。全 route に共通し得る
-エラーは `INVALID_REQUEST` (`400`)、target origin 検証の `SAME_ORIGIN_REQUIRED` (`403`)、
-予期しない handler failure の `INTERNAL_ERROR` (`500`) です。
+`details` は任意で、公開スキーマが許可する種類の詳細情報だけを返します。すべての API に共通し得る
+エラーは `INVALID_REQUEST` (`400`)、AWS 上のオリジン検証の `SAME_ORIGIN_REQUIRED` (`403`)、
+ハンドラー内の予期しない失敗に対する `INTERNAL_ERROR` (`500`) です。
+
+### 数値のクエリー・パスパラメーター
+
+掲示板の `offset`、整合性証明の `fromTreeSize` / `toTreeSize`、ビットマップ証明の
+`voteIndex` は、`0..Number.MAX_SAFE_INTEGER`（9,007,199,254,740,991）の10進整数文字列を
+受理します。`0` 自体を除く先頭ゼロ、符号、指数表記、小数、範囲超過は拒否し、丸めません。
+掲示板の `limit` は先頭ゼロのない10進整数文字列で `1..1000` に限定します。
 
 ### ボディサイズ、Turnstile、レート制限
 
-JSON body を持つ active route は `API_REQUEST_BODY_LIMIT_BYTES`（既定 16 KiB）の対象で、超過時は
+JSON 本文 を持つ API は `API_REQUEST_BODY_LIMIT_BYTES`（既定 16 KiB）の対象で、超過時は
 `PAYLOAD_TOO_LARGE` (`413`) を返します。
 
-| route                                | Turnstile         | application rate limit                           |
-| ------------------------------------ | ----------------- | ------------------------------------------------ |
-| `POST /api/sessions`                 | `session` action  | client IP 単位                                   |
-| `POST .../votes`                     | `vote` action     | session と client IP 単位                        |
-| `POST .../finalizations`             | `finalize` action | session と client IP 単位                        |
-| `POST .../cancel`                    | なし              | session と client IP 単位                        |
-| `POST .../verification`              | なし              | session と client IP 単位                        |
-| `POST .../verification/observations` | なし              | 専用制限なし。API Gateway の既定 throttle を使用 |
+| API                                  | Turnstile         | アプリ内のレート制限                                  |
+| ------------------------------------ | ----------------- | ----------------------------------------------------- |
+| `POST /api/sessions`                 | `session` action  | クライアント IP 単位                                  |
+| `POST .../votes`                     | `vote` action     | session と クライアント IP 単位                       |
+| `POST .../finalizations`             | `finalize` action | session と クライアント IP 単位                       |
+| `POST .../cancel`                    | なし              | session と クライアント IP 単位                       |
+| `POST .../verification`              | なし              | session と クライアント IP 単位                       |
+| `POST .../verification/observations` | なし              | 専用制限なし。API Gateway の既定の呼び出し制限 を使用 |
 
-Turnstile token は body の `turnstileToken` に置きます。production の bypass は認めず、session 作成の
-develop 例外も operator-gated runtime に限定されます。
+Turnstile のトークンは本文の `turnstileToken` に置きます。AWS の main では、表で action を示した三つの API で検査を必須とします。AWS の develop では、運用者用の入口制限を通った要求に限り省略します。
+[ローカルの四つのプロファイル](../aws/runtime-boundary.md#semantic-runtime-profiles)では Turnstile を省略します。
 
 ## セッションと投票
 
@@ -125,12 +117,12 @@ develop 例外も operator-gated runtime に限定されます。
 
 新規セッションと capability token を発行します。
 
-request body:
+要求本文:
 
 - `turnstileToken`（環境により必須）
-- body 省略時は空 object として扱います
+- 本文省略時は空オブジェクトとして扱います
 
-response (`200`) の `data`:
+応答 (`200`) の `data`:
 
 - `sessionId`
 - `electionId`
@@ -146,16 +138,23 @@ response (`200`) の `data`:
 
 ### `POST /api/sessions/:sessionId/votes`
 
-ユーザー投票を保存し、ボット投票を開始します。
+ユーザー投票を保存し、ボット63票の保存完了を待って投票レシートを返します。
+同一セッションで同じ選択・乱数・コミットメントを再送すると、未完了のボット処理を再開し、
+保存済みの票 ID・投票時刻・投票時ルートを返します。別の投票内容への変更は `ALREADY_VOTED` で拒否します。
+集計開始後の同一投票の再送はレシートの取得だけを行い、票を追加しません。
 
-request body:
+通信切断や `INTERNAL_ERROR` (`500`) は、投票が未保存であることを意味しません。
+同じ投票内容を保持して再試行してください。認証・レート制限・環境ごとの Turnstile 検証は再送にも適用されます。
+この復旧は再試行を契機に行い、利用者の離脱後にバックグラウンドで完了させる保証ではありません。
 
-- `commitment`: 32-byte hex
+要求本文:
+
+- `commitment`: 32 バイトの16進文字列
 - `vote`: `A` / `B` / `C` / `D` / `E`
-- `rand`: 32-byte hex
+- `rand`: 32 バイトの16進文字列
 - `turnstileToken`（環境により必須）
 
-response (`200`) の `data`:
+応答 (`200`) の `data`:
 
 - `voteId`
 - `commitment`
@@ -176,14 +175,14 @@ response (`200`) の `data`:
 
 投票進捗を返します。
 
-response (`200`) の `data`:
+応答 (`200`) の `data`:
 
 - `count`
 - `total`
 - `completed`
 - `userVoted`
 - `finalized`
-- `distribution`（任意。`A`-`E` の simulated count）
+- `distribution`（任意。`A`-`E` のシミュレーション上の票数）
 - `distributionKind`（任意。存在する場合は `simulated`）
 - `updatedAtMs`（任意）
 - `animationSeed`（任意）
@@ -192,7 +191,7 @@ response (`200`) の `data`:
 
 ### Finalization resource
 
-作成、current 取得、キャンセルは同じ finalization resource schema を返します。共通フィールドは次のとおりです。
+集計の作成・現在状態の取得・キャンセルは、同じ集計リソース形式で返します。共通フィールドは次のとおりです。
 
 - `finalizationId`
 - `status`: `pending` / `running` / `succeeded` / `failed` / `timeout`
@@ -200,10 +199,10 @@ response (`200`) の `data`:
 - `runtimeDiagnostics`
   - `asyncMode`: `enabled` / `disabled`
   - `queue`（任意または `null`）
-  - `progress`（任意。running phase の派生進捗）
+  - `progress`（任意。実行中の段階から導出した進捗）
   - `orchestrator`（任意または `null`）
 
-status ごとの追加フィールド:
+`status` ごとの追加フィールド:
 
 | status      | 追加フィールド                                                     |
 | ----------- | ------------------------------------------------------------------ |
@@ -213,30 +212,31 @@ status ごとの追加フィールド:
 | `failed`    | `startedAtMs`（任意）, `failedAtMs`, `error.code`, `error.message` |
 | `timeout`   | `startedAtMs`（任意）, `timeoutAtMs`                               |
 
-`succeeded` の `result` は、authority と presentation を混在させず次の group に分けます。
+`succeeded` の `result` は、証明に結び付く値、画面表示、投票者の証拠、ファイル取得の可否に分かれます。
 
 - `authority`: `imageId`, `journal` と、任意の `receipt`, `electionManifest`, `closeStatement`
-- `presentation`: tally、bitmap root、input commitment、verification status などの公開表示 projection
+- `presentation`: 得票数、ビットマップルート、入力コミットメント、検証状態などの表示用データ
 - `voterEvidence`: `state=available` または `state=verification-gated`
 - `artifactAvailability`: `bundle`, `report`, `includedBitmap`, `seenBitmap` ごとの
-  `available` / `unavailable`。bitmap の `available` は current finalization に durable に admit された sidecar があることを示す
+  `available` / `unavailable`。ビットマップの `available` は、現在の集計に結び付く別ファイルが検査済みで保存されていることを示す
+
+スキーマは、ジャーナルと表示用データに重複する値、Image ID、公開監査ファイル、レポートと状態、投票者の証拠、シナリオ、ファイル取得可否の整合性を検査します。表示の得票数と証明の得票数が違う場合は、改ざんシナリオの証拠として保持できます。ただし、シナリオや検証結果の説明もその差と一致している必要があります。
 
 ### `POST /api/sessions/:sessionId/finalizations`
 
 集計と証明生成を開始します。
 
-request body:
+要求本文:
 
 - `scenarioId`: `S0`-`S5`
 - `turnstileToken`（環境により必須）
 
-response:
+応答:
 
-- `200`: 同期処理後の finalization resource
-- `202`: 受理された非同期 finalization resource
+- `200`: 同期処理後の集計リソース
+- `202`: 受け付けた非同期集計のリソース
 
-どちらも `{ data: FinalizationResource, meta }` です。返さない旧フィールドは
-[現行 response で返さない legacy フィールド](#現行-response-で返さない-legacy-フィールド)にまとめています。
+どちらも `{ data: FinalizationResource, meta }` の形で返します。
 
 主な固有エラー:
 
@@ -252,75 +252,61 @@ response:
 
 ### `GET /api/sessions/:sessionId/finalizations/current`
 
-current finalization を返します。まだ finalization がない場合も成功で、`data` は `null` です。
-存在する場合は上記の finalization resource を返します。
+現在の集計を返します。まだ集計がない場合も成功応答となり、`data` は `null` です。存在する場合は上記の集計リソースを返します。
 
 ### `POST /api/sessions/:sessionId/finalizations/:finalizationId/cancel`
 
-path で指定した進行中 finalization をキャンセルします。
+URL のパスで指定した実行中の集計 をキャンセルします。
 
-request body:
+要求本文:
 
 - `reason`（任意、最大 256 文字）
-- body に `executionId` や `finalizationId` は置きません
+- 本文に `executionId` や `finalizationId` は置きません
 
-response (`200`) はキャンセル後の finalization resource です。
+応答 (`200`) はキャンセル後の集計リソース です。
 
 主な固有エラー:
 
 - `ASYNC_FINALIZATION_DISABLED` (`404`)
 - `FINALIZATION_NOT_CANCELLABLE` (`409`)
-- `CANCELLATION_UNSUPPORTED` (`501`)
 - `GLOBAL_LIMIT_EXCEEDED` (`503`)
 
 ## 検証 API
 
 ### `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification`
 
-指定 finalization の検証 resource を返します。
+指定した集計の検証データ を返します。
 
-query:
+クエリー:
 
 - `include=journal`（任意）
 
-response (`200`) の `data` は `availability` による strict union です。
-
-`availability=available`:
+応答 (`200`) の `data` は `availability=available` です。
 
 - `finalizationId`
-- `proofAuthority`: election identity、bulletin root、Image ID、verified tally、bitmap root、input commitment など
-- `presentation`: tally、scenario、tamper 情報と fail-closed presentation policy
+- `proofAuthority`: 選挙の識別情報、掲示板ルート、Image ID、証明内の集計、ビットマップルート、入力コミットメントなど
+- `presentation`: 表示集計、シナリオ、改ざん情報、表示可否の判定
 - `verifierResult`: `status` と任意の公開 `report`
 - `verification`: `checks` と `steps`
 - `voterEvidence`: `availability=available` または `availability=unavailable`
 - `journal`: `representation=included` の `value`、または `representation=omitted`
 
-`availability=unavailable`:
+`available` の応答は、チェックと段階の構成、証明に結び付く値、レポートと状態、投票者の証拠、付属ジャーナル、シナリオ、表示判定の相互整合性も検査します。表示の得票数と証明の得票数の差は検証対象として保持できますが、その差を無視したチェック成功や Verified 表示を許すデータは受理しません。
 
-- `finalizationId`
-- `reason`: `finalization_not_current` / `user_vote_unavailable`
-- `message`
-
-`availability=corrupt`:
-
-- `finalizationId`
-- `reason`: `invalid_artifact` / `incomplete_session_authority` / `session_identity_mismatch` /
-  `voter_evidence_mismatch`
-- `message`
-
-unavailable/corrupt response に available 用の authority や検証フィールドは混在しません。
+検証データ全体の読み取り準備で `unavailable` / `corrupt` と判定された場合、現在の API は `INTERNAL_ERROR` (`500`) を返します。これは、取得できた応答の中で投票者の証拠だけが `voterEvidence.availability=unavailable` になる場合とは異なります。
 
 主な固有エラー:
 
 - `SESSION_NOT_FINALIZED` (`400`)
 - `USER_NOT_VOTED` (`400`)
+- `INTERNAL_ERROR` (`500`、検証データの読み取り準備に失敗した場合を含む)
 
 ### `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification`
 
-サーバー側の STARK receipt 検証を実行します。
+サーバー側の STARK レシート検証を実行します。
 
-- request body: strict な空 object `{}`
-- response (`200`) の `data`:
+- 要求本文: 追加フィールドを許さない空オブジェクト `{}`
+- 応答 (`200`) の `data`:
   - `verificationStatus`
   - `finalizationId`
   - `estimatedDurationMs`
@@ -336,10 +322,9 @@ unavailable/corrupt response に available 用の authority や検証フィー�
 
 ### `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification/observations`
 
-browser-local の cast check 結果だけを durable observation として記録します。client が overall verdict や
-server-side check を指定する API ではありません。
+ブラウザで確認した Cast チェックの結果を観測記録として保存します。最終判定やサーバー側チェックの結果は、クライアントから指定できません。
 
-request body の `castChecks` は、次の 4 キーをすべて含む strict object です。各値は
+要求本文の `castChecks` は次の 4 キーをすべて含み、他のキーを許しません。各値は
 `success` / `failed` / `not_run` のいずれかです。
 
 - `cast_receipt_present`
@@ -347,9 +332,9 @@ request body の `castChecks` は、次の 4 キーをすべて含む strict obj
 - `cast_random_format`
 - `cast_commitment_match`
 
-finalization identity は path で指定するため、body に execution/finalization ID は含めません。
+集計 ID は URL のパスで指定するため、本文には含めません。
 
-response (`200`) の `data.status`:
+応答 (`200`) の `data.status`:
 
 - `recorded`: 初回記録
 - `idempotent`: 同一内容の再送
@@ -362,16 +347,15 @@ response (`200`) の `data.status`:
 
 ## Artifact 取得 API
 
-両 route とも `X-Session-Capability` を要求し、session と finalization identity を検証してから artifact を
-返します。通常 contract として raw S3 URL や presigned URL は公開しません。
+二つの API とも `X-Session-Capability` を要求し、セッションと集計 ID を確認してからファイルを返します。S3 の保存先 URL や署名付き URL を返してそちらから取得させる方式ではありません。
 
 ### `GET /api/sessions/:sessionId/finalizations/:finalizationId/artifacts/bundle`
 
 秘密データを含まない配布対象 `bundle.zip` を返します。
 
-- `200`: ZIP binary
-- `206`: `Range` に対する partial content
-- 大きい S3-backed bundle は range download が必須
+- `200`: ZIP のバイト列
+- `206`: `Range` で要求した部分のバイト列
+- S3 に保存した大きい ZIP は範囲を指定した取得が必須
 
 主な固有エラー:
 
@@ -385,7 +369,7 @@ response (`200`) の `data.status`:
 
 ### `GET /api/sessions/:sessionId/finalizations/:finalizationId/artifacts/report`
 
-protected report artifact `verification.json` を JSON 本文として返します。これは配布対象 `bundle.zip` には
+認証付きで取得するレポート `verification.json` を JSON 本文として返します。これは配布対象 `bundle.zip` には
 含まれません。
 
 主な固有エラー:
@@ -395,42 +379,42 @@ protected report artifact `verification.json` を JSON 本文として返しま�
 - `REPORT_DOWNLOAD_FAILED` (`500`)
 - `REPORT_DOWNLOAD_TOO_LARGE` (`413`)
 
-## Bulletin と証明 API
+## 掲示板と証明 API
 
 ### `GET /api/sessions/:sessionId/bulletin`
 
-owner-scoped bulletin inspection を返します。
+セッション所有者に、その掲示板の内容を返します。
 
-query:
+クエリー:
 
-- `offset`（任意、0 以上の整数）
+- `offset`（任意、[数値のクエリー・パスパラメーター](#数値のクエリーパスパラメーター) の非負整数）
 - `limit`（任意、1-1000）
 
-response (`200`):
+応答 (`200`):
 
 - `data.commitments`
 - `data.bulletinRoot`
 - `data.treeSize`
 - `data.generatedAtMs`
 - `data.rootHistory`（任意）
-- `meta.page.nextOffset`, `meta.page.hasMore`（pagination request 時）
+- `meta.page.nextOffset`, `meta.page.hasMore`（ページを指定した要求時）
 
 主な固有エラー:
 
 - `INVALID_OFFSET` (`400`)
 
-そのほかの不正な query は `INVALID_REQUEST` (`400`) です。
+そのほかの不正なクエリー は `INVALID_REQUEST` (`400`) です。
 
 ### `GET /api/sessions/:sessionId/bulletin/consistency-proof`
 
-RFC 6962 consistency proof を返します。
+RFC 6962 の整合性証明 を返します。
 
-query:
+クエリー:
 
-- `fromTreeSize`（必須、0 以上の整数）
-- `toTreeSize`（必須、0 以上の整数）
+- `fromTreeSize`（必須、[数値のクエリー・パスパラメーター](#数値のクエリーパスパラメーター) の非負整数）
+- `toTreeSize`（必須、同じ数値契約の非負整数）
 
-response (`200`) の `data`:
+応答 (`200`) の `data`:
 
 - `fromTreeSize`
 - `toTreeSize`
@@ -446,10 +430,9 @@ response (`200`) の `data`:
 
 ### `GET /api/sessions/:sessionId/votes/:voteId/inclusion-proof`
 
-指定した投票の最小包含証明を返します。session は finalized である必要があり、proof ownership と
-finalization authority を検証します。
+指定した投票の包含証明を返します。セッションの集計が完了している必要があり、証明の所有者と現在の集計との対応を検査します。
 
-response (`200`) の `data`:
+応答 (`200`) の `data`:
 
 - `voteId`
 - `proof.leafIndex`
@@ -461,19 +444,19 @@ response (`200`) の `data`:
 
 - `INVALID_VOTE_ID` (`400`)
 - `VOTE_NOT_FOUND` (`404`)
-- `VERIFICATION_FAILED` (`400`; CT proof unavailable)
+- `VERIFICATION_FAILED` (`400`; 掲示板の証明を取得できない)
 - `SESSION_NOT_FINALIZED` (`400`)
 
 ### `GET /api/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex`
 
-succeeded current finalization に admit された bitmap evidence から proof 材料を返します。
+成功した現在の集計に結び付くビットマップから、証明を作る材料を返します。
 
-path parameter:
+パスパラメーター:
 
 - `kind`: `included` / `seen`
-- `voteIndex`: 0 以上の整数
+- `voteIndex`: [数値のクエリー・パスパラメーター](#数値のクエリーパスパラメーター) の非負整数。セッションの利用者自身の投票位置に限定し、他の位置 は `INVALID_BITMAP_PROOF_REQUEST` (`400`) で拒否する
 
-response (`200`) の `data`:
+応答 (`200`) の `data`:
 
 - `leafChunk`
 - `auditPath[]`: `hash`, `position` (`left` / `right`)
@@ -487,16 +470,15 @@ response (`200`) の `data`:
 
 ### `GET /api/sessions/:sessionId/bulletin/sth`
 
-finalized session の STH snapshot を返します。
+集計済みセッションの STH を返します。
 
-query:
+クエリー:
 
 - `auditorId`（任意、1-64 文字の英数字、`.`、`_`、`-`）
 
-browser request は same-origin である必要があります。CLI/server-to-server request でも session capability は
-必須です。
+ブラウザからの要求は同一オリジンである必要があります。CLI やサーバー間の要求でもセッション capability は必須です。
 
-response (`200`) の `data.sth`:
+応答 (`200`) の `data.sth`:
 
 - `sthDigest`
 - `bulletinRoot`
@@ -507,14 +489,13 @@ response (`200`) の `data.sth`:
 主な固有エラー:
 
 - `SESSION_NOT_FINALIZED` (`404`)
-- `SAME_ORIGIN_REQUIRED` (`403`; 同一 origin 検証失敗)
+- `SAME_ORIGIN_REQUIRED` (`403`; 同一オリジン 検証失敗)
 
 ### `GET /api/sessions/:sessionId/finalizations/current/input-commitment`
 
-current finalization の zkVM input commitment だけを返します。private input data、raw witness、vote opening は
-返しません。
+現在の集計の入力コミットメントだけを返します。投票先や乱数などの秘密入力は含みません。
 
-response (`200`) の `data`:
+応答 (`200`) の `data`:
 
 - `inputCommitment`
 
@@ -522,34 +503,6 @@ response (`200`) の `data`:
 
 - `SESSION_NOT_FINALIZED` (`400`)
 - `CT_PROOF_UNAVAILABLE` (`400`)
-- `INTERNAL_ERROR` (`500`; commitment validation または handler failure)
-
-## Retired route と internal surface
-
-過去の flat route（`/api/session`、`/api/vote`、`/api/finalize`、`/api/verify`、
-`/api/verification/bundles/...`、`/api/bulletin`、`/api/sth`、`/api/bitmap-proof`、
-`/api/zkvm-input-hash` など）は route inventory に登録されず、compatibility alias もありません。
-
-finalization worker callback は internal/operator-only surface であり、public route inventory、browser CORS、
-この章の request/response contract の対象外です。debug route と private inspection route も active external API
-として扱いません。
-
-## 現行 response で返さない legacy フィールド
-
-現行 finalization、verification、artifact response は次の旧フィールドを返しません。
-
-- artifact URL: `verificationBundleUrl`, `verificationReportUrl`
-- S3 metadata: `s3BundleUrl`, `s3BundleKey`, `s3UploadedAt`, `s3BundleExpiresAt`
-- count alias: `missingIndices`, `invalidIndices`, `countedIndices`, `excludedCount`
-- 旧 finalization locator/state: `executionId`, `statusUrl`, `state`, `finalizationState`
-
-bundle と report は finalization-scoped artifact route から capability 保護付きで取得します。
-
-## 関連する章
-
-- [セッションライフサイクル](./session-lifecycle.md): セッション、capability、finalization の状態遷移
-- [チェック一覧](../verification/checks-catalog.md): verification checks の意味
-- [公開境界](../verification/public-boundary.md): public artifact と owner-scoped access の区別
-- [用語集](../appendix/glossary.md): receipt、bundle、STH、capability など
+- `INTERNAL_ERROR` (`500`; コミットメントの検査やハンドラー処理の失敗)
 
 <!-- source: packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/*, packages/api-contract/src/routes/inventory.test.ts, packages/api-contract/src/schemas/*.test.ts, apps/api/src/server/api/routes/hono.ts, apps/web/src/api/* -->

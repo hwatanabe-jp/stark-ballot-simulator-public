@@ -28,15 +28,22 @@ export default defineConfig({
     alias: resolverAliases,
   },
   test: {
+    globals: true,
+    exclude: [...defaultExcludes],
+    // Inline projects inherit these Vite options and share their transform cache.
+    sharedViteServer: true,
+    // Reuse content/configuration-keyed transforms between separate local runs.
+    fsModuleCache: true,
     projects: projectRecords.map((project) => ({
-      resolve: {
-        alias: resolverAliases,
-      },
       test: {
         name: project.name,
-        root: repositoryRoot,
+        // Keep process/filesystem-heavy repository checks in child processes.
+        // Both pools share Vitest's worker budget; every file stays isolated.
+        pool:
+          project.name === '@stark-ballot/repository-tools' || project.source === 'repository-tool'
+            ? 'forks'
+            : 'threads',
         environment: project.environment,
-        globals: true,
         env: {
           STARK_BALLOT_VITEST_PROJECT: project.name,
         },
@@ -44,7 +51,6 @@ export default defineConfig({
           project.environment === 'jsdom' ? './tooling/vitest/setup-web.ts' : './tooling/vitest/setup-node.ts',
         ],
         include: project.roots.map((root) => `${root}/**/*.test.{ts,tsx}`),
-        exclude: [...defaultExcludes],
       },
     })),
   },

@@ -1,12 +1,12 @@
 locals {
-  ops_ledger_pipeline_names = [
+  ops_ledger_pipeline_names = compact([
     local.bootstrap_lane_authority.names.pipeline,
     local.foundation_lane_authority.names.pipeline,
     local.app_lane_authority.names.pipeline,
-    local.static_fast_lane_authority.names.pipeline,
+    local.static_fast_lane_authority != null ? local.static_fast_lane_authority.names.pipeline : null,
     local.toolchain_lane_authority.names.pipeline,
     local.prover_lane_authority.names.pipeline,
-  ]
+  ])
 
   # CloudWatch Logs targets require an epoch-millisecond timestamp that an
   # EventBridge input transformer cannot derive from the ISO event time. The

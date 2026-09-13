@@ -1,46 +1,28 @@
-# AWS アーキテクチャ
+# AWS で証明生成を動かす
 
-この部は、STARK Ballot Simulator を AWS 上で動かす場合の runtime 境界とサービス責務を説明します。
-まず [AWS runtime 境界](runtime-boundary.md) を読み、公開仕様として扱う範囲を確認してください。
+「集計する」を押してから STARK 証明ができるまで、ブラウザをサーバーにつなぎ続ける必要はありません。API は集計要求を保存して受付結果を返し、別の計算ジョブが証明を作ります。ブラウザは途中経過を取得し、できあがった証拠を使って検証へ進みます。
 
-AWS runtime は、Terraform 管理の静的フロントエンド、Hono/API ランタイム、DynamoDB ストア、非同期プローバー、検証 worker、private proof artifact storage で構成されます。
-この部はそれぞれの責務分担を説明します。
+この時間の差が、AWS 構成を分ける出発点です。ページ配信と投票受付には短い応答が必要です。一方、証明生成には多くの CPU とメモリが必要で、同時に起動できる数も制限します。両方を同じ処理にすると、証明の待ち時間や再試行が利用者への応答を巻き込みます。
 
-ここでいう `public` は「秘密を含まず第三者検証に使える」という機密性の分類です（無認証公開ではありません。定義は [公開境界](../verification/public-boundary.md)）。
-bundle / report の通常取得経路は capability 保護 API です（[公開境界 > bundle と report の取得経路](../verification/public-boundary.md#bundle-と-report-の取得経路)）。
+```mermaid
+flowchart TB
+  B["ブラウザ"] -->|集計要求| A["API：受付を保存"]
+  A -->|作業を登録| Q["キュー"]
+  Q --> P["別ジョブで証明生成"]
+  P --> R["結果と証拠を保存"]
+  B -->|進捗を取得| R
+```
 
-<a id="この部に含まれる章"></a>
+処理を分けると、今度は「同じ作業が届いた」「待っている間に取り消された」「証明はできたが結果の保存に失敗した」という問題が生まれます。非同期プローバーは、作業の識別子と保存済みの状態を照合し、古い作業が現在の結果を書き換えないようにします。
 
-## この部の章
+さらに、実行するコンテナと変更手順にも根拠が必要です。承認したイメージを内容のダイジェストで固定し、起動前に署名を確かめます。インフラの変更は保存した Terraform 計画を承認して適用し、適用後の確認結果を受入記録に結び付けます。ログと監視は、これらの処理のどこで止まったかを調べるために使います。
 
-- [AWS runtime 境界](runtime-boundary.md)：公開仕様として扱う runtime 境界、artifact 境界、扱わない情報
-- [現行構成とサービス一覧](design-and-services.md)：runtime 管理境界、環境分離、主要サービスの責務
-- [トポロジー](topology.md)：レイヤ別のサービス構成と通信フロー
-- [非同期プローバー](async-prover.md)：SQS → Step Functions → ECS による証明パイプライン
-- [可観測性設計](observability.md)：verdict authority と分離した構造化ログ、検出、相関、通知境界
-- [イメージ署名](image-signing.md)：AWS Signer managed signing と deployment preflight / ECS 実行前の暗号学的検証
-- [Terraform](terraform.md)：IaC による root ownership、recovery selection、deployment / release authority、runtime wiring
+本番環境の `stark-prod/main` は、Cloudflare と CloudFront を経由して公開デモを提供します。開発環境の `stark-dev/develop` は、運用者向けの署名付き Cookie で入口を制限します。[ブラウザから AWS へ入る](runtime-boundary.md)では、この入口とセッションの操作権限を説明します。
 
-## 想定読者と前提
+次の構成図は、通常稼働時の入口、証明生成、検証と保存先をまとめたものです。本番と開発は別々の資源を持ち、図の入口部分に環境ごとの違いを示しています。図を選ぶと拡大して確認できます。
 
-- 想定読者: 公開仕様として AWS runtime の責務分担を把握したい読者
-- 前提: AWS の基本サービス（S3 / SQS / Step Functions / ECS）、CloudFront / KMS / CodePipeline などの配信・デプロイ系サービス、Terraform の概念を把握していること
+[![AWS実行構成図。本番はCloudflare、開発は署名付きCookieで制限したCloudFrontを入口とし、APIから証明生成と検証の非同期経路へ進む。](images/aws-architecture-overview.png)](images/aws-architecture-overview.png)
 
-<a id="本章で扱わないもの"></a>
+AWS で証明生成が完了しただけでは「Verified」にはなりません。表示には、投票・掲示板・集計結果を含む[すべての必須確認](../verification/gating-logic.md)が必要です。
 
-## この部で扱わないもの
-
-- 退役済み Amplify / AppSync 構成の詳細
-- Terraform 文法・モジュール設計の一般論
-- 個別 account の alarm tuning、24 時間 on-call、詳細なコスト最適化
-- 個別アカウント、秘密値、アカウント固有の承認手順や詳細な証跡
-- 移行作業記録と、環境切り替え、本番環境の初期構築、独自ドメインの本番 DNS 切り替え、旧 AWS アカウント削除の進捗・完了状態
-
-## 関連する章
-
-- [zkVM 設計](../zkvm/index.md)：ECS 上で実行されるホストとレシート生成
-- [バンドル構造](../verification/bundle-structure.md)：`bundle.zip` と protected report artifact の境界
-- [第三者検証ガイド](../reproducibility/index.md)：capability 保護 API から取得した `bundle.zip` を使うローカル監査
-- [用語集](../appendix/glossary.md)：インフラ用語の定義
-
-<!-- source: infra/terraform/, infra/lambdas/, infra/docker/, public-book/src/aws/runtime-boundary.md -->
+<!-- source: packages/runtime-config/src/env/runtimeProfile.ts, packages/deployment-authority/deployment-targets.json, packages/application/src/finalize/usecases/finalize-async.ts, infra/terraform/app/step_functions.tf -->

@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { VERIFICATION_CHECK_DEFINITIONS, type VerificationCheck } from '@stark-ballot/verification/checks';
 import { UnifiedVerificationCard } from './UnifiedVerificationCard';
@@ -9,10 +9,19 @@ vi.mock('@stark-ballot/web/hooks', () => ({
   }),
 }));
 
-vi.mock('@stark-ballot/web/components/knowledge', () => ({
-  useKnowledgeHighlight: () => ({
-    setHighlightedKeys: vi.fn(),
-  }),
+vi.mock('@stark-ballot/web/hooks/useTranslation', () => ({
+  useTranslation: () => ({ t: (key: string) => key, language: 'ja' }),
+}));
+
+const { knowledgeItems, selectKeys } = vi.hoisted(() => ({
+  selectKeys: vi.fn(),
+  knowledgeItems: [] as Array<{ key: 'user.commitment' | 'sessionId'; value: string; isNew: boolean; addedAt: number }>,
+}));
+
+vi.mock('@stark-ballot/web/components/knowledge', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@stark-ballot/web/components/knowledge')>()),
+  useKnowledgeItems: () => knowledgeItems,
+  useKnowledgeHighlight: () => ({ highlightedKeys: [], setHighlightedKeys: selectKeys }),
 }));
 
 const baseStepStatusMap = {
@@ -31,6 +40,46 @@ const baseDownload = {
 };
 
 describe('UnifiedVerificationCard', () => {
+  it('shows only present, route-permitted evidence and keeps the selection until toggled', () => {
+    knowledgeItems.push(
+      { key: 'user.commitment', value: 'a'.repeat(64), isNew: false, addedAt: 1 },
+      { key: 'sessionId', value: 'not-for-display', isNew: false, addedAt: 1 },
+    );
+    try {
+      const props = {
+        summary: null,
+        visibleStepCount: 1,
+        sequenceComplete: true,
+        stepStatusMap: baseStepStatusMap,
+        download: baseDownload,
+        knowledgeFilterKeys: ['user.commitment', 'sessionId'] as const,
+        verificationChecks: [
+          {
+            id: 'cast_receipt_present' as const,
+            status: 'success' as const,
+            evidence: 'local' as const,
+            inputs: ['user.commitment', 'sessionId', 'user.random'],
+          },
+        ],
+      };
+      const { rerender } = render(<UnifiedVerificationCard {...props} />);
+      const check = screen.getByTestId('check-cast_receipt_present');
+      fireEvent.click(check);
+      expect(check).toHaveAttribute('aria-expanded', 'true');
+      expect(selectKeys).toHaveBeenLastCalledWith(['user.commitment']);
+      expect(screen.getByText(`0x${'a'.repeat(64)}`)).toBeInTheDocument();
+      expect(screen.queryByText('not-for-display')).not.toBeInTheDocument();
+      rerender(<UnifiedVerificationCard {...props} download={{ ...baseDownload, status: 'loading' }} />);
+      expect(check).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.click(check);
+      expect(screen.queryByText(`0x${'a'.repeat(64)}`)).not.toBeInTheDocument();
+      rerender(<UnifiedVerificationCard {...props} knowledgeFilterKeys={[]} />);
+      expect(check).toHaveAttribute('aria-disabled', 'true');
+    } finally {
+      knowledgeItems.length = 0;
+    }
+  });
+
   it('exposes step header status test ids and normalizes not_run to pending in the UI', () => {
     render(
       <UnifiedVerificationCard
@@ -192,7 +241,7 @@ describe('UnifiedVerificationCard', () => {
       id: definition.id,
       status: 'success',
       evidence: definition.evidence,
-      inputs: definition.inputs,
+      inputs: [...definition.inputs],
     }));
 
     render(

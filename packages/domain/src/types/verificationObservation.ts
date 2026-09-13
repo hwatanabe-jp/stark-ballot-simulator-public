@@ -67,14 +67,6 @@ export function parseVerificationObservation(value: unknown): VerificationObserv
   return { finalizationId, fingerprint, observedAt };
 }
 
-export function requireVerificationObservation(value: unknown): VerificationObservation {
-  const observation = parseVerificationObservation(value);
-  if (!observation) {
-    throw new Error('Invalid verification observation');
-  }
-  return observation;
-}
-
 export function resolveVerificationObservationRecord(
   currentFinalizationId: string | undefined,
   existing: VerificationObservation | undefined,

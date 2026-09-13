@@ -1,189 +1,92 @@
-# 入力コミットメント
+<a id="入力コミットメント"></a>
 
-この章では、zkVM 入力のうち公開検証に使うフィールドを正準エンコーディングで束縛し、ジャーナルから再計算できる入力コミットメントを定義します。
+# 証明と公開入力を結び付ける
 
-入力コミットメントは、「証明されたデータセット」と「主張されたデータセット」の一致を検証可能にします。
-バイトレベルの正準化は、TypeScript と Rust が同じ入力から決定的に同じ値を計算するための前提です。
+サーバーが自分の B 票を外し、63 票で集計の証明を作ったとします。そのうえで、公開ファイルだけを元の 64 票に戻したらどうなるでしょうか。証明そのものは 63 票の計算について有効でも、公開された投票列はその計算を表していません。
 
-## 概要
-
-入力コミットメントは、公開可能な検証フィールドにドメインタグとバージョンを加えて正準連結し、SHA-256 で集約したハッシュ値です。
-
-このハッシュ値は zkVM のジャーナル（公開出力）にコミットされます。
-第三者は、ジャーナルに記録された入力コミットメントと、`public-input.json` などの公開可能な検証データから再計算した値を照合できます。
-この照合により、zkVM が実際にどのデータセットを処理したかを独立に検証できます。
-
-```mermaid
-flowchart TB
-  IN["入力データ<br/>electionId / bulletinRoot / treeSize<br/>/ totalExpected / votes (index 昇順)"]
-  SPEC["固定値<br/>domainTag: stark-ballot:input|v1.0<br/>version: 10"]
-
-  IN --> ENC[正準エンコーディング]
-  SPEC --> ENC
-  ENC --> H[SHA-256]
-  H --> IC[入力コミットメント<br/>32 バイト]
-  IC --> CMP["第三者照合<br/>再計算値 = journal.inputCommitment"]
-```
+この差し替えを見つけるため、ゲストは処理した入力の公開部分をハッシュにまとめ、ジャーナルの `inputCommitment` に記録します。検証者も `public-input.json` から同じハッシュを計算し、**検証済みレシートに結びついたジャーナル**と比較します。63 件を処理した実行に 64 件の公開入力を組み合わせれば、この値が一致しません。
 
 ## 入力コミットメントが解決する問題
 
-zkVM の STARK 証明は、「ゲストプログラムが正しく実行された」ことを証明します。
-一方で、「どの入力に対して実行されたか」は STARK 証明単体のスコープ外です。
-入力コミットメントがなければ、悪意あるサーバーは次の攻撃が可能です。
+これは「公開された投票列が、証明済み実行のものか」を確かめる仕組みです。公開ファイルも 63 票のままならハッシュは一致し得ます。その場合でも、掲示板は 64 スロットなのでゲストの `missingSlots` が 1 になり、完全性のチェックで失敗します。入力の同一性と、全票が提示されたことは別々に確認する必要があります。
 
-1. 投票を除外した入力で zkVM を実行し、有効な STARK 証明を取得する
-2. 公開用の入力データには除外されていない投票を含めて提示する
-3. 第三者は STARK 証明が有効であることを確認できるが、実際に処理された入力は異なる
-
-入力コミットメントをジャーナルに含めることで、第三者は「公開データから再計算した入力コミットメント」と「ジャーナルに記録された入力コミットメント」を照合できます。
-不一致があれば、公開データと証明された入力の食い違いを検出できます。
+選択肢と乱数はこのハッシュの入力に含めません。投票コミットメントを使ってその公開部分を結びつけ、opening の正しさはゲストが投票ごとに検査します。また、公開ファイルの全フィールドがこの一つのハッシュに入るわけでもありません。
 
 ## 正準エンコーディング
 
-入力コミットメントの計算では、すべてのフィールドを決定的な順序とエンコーディングで連結します。
+公開入力は JSON ですが、JSON の文字列をそのままハッシュしません。空白やキーの順で値が変わらないよう、対象フィールドを決まったバイト列へ変換します。
 
 ### バイトレイアウト
 
 ```text
 input_commitment = SHA-256(
-    domain_tag       ← "stark-ballot:input|v1.0" (23 バイト, UTF-8)
-    || version       ← u32 リトルエンディアン (4 バイト) = 10
-    || election_id   ← UUID v4 バイナリ (16 バイト)
-    || bulletin_root ← 32 バイト
-    || tree_size     ← u32 リトルエンディアン (4 バイト)
-    || total_expected← u32 リトルエンディアン (4 バイト)
-    || votes_count   ← u32 リトルエンディアン (4 バイト)
-    || [投票データ]  ← インデックス昇順でソートされた各投票
+    UTF-8("stark-ballot:input|v1.0") // 23 バイト
+    || version                      // u32 LE、固定値 10
+    || election_id                  // UUID の 16 バイト
+    || bulletin_root                // 32 バイト
+    || tree_size                    // u32 LE
+    || total_expected               // u32 LE
+    || votes_count                  // u32 LE
+    || vote_entry ...               // 下記の順序で正準化
 )
 ```
 
-### 各投票のエンコーディング
+ここでの `version=10` はハッシュ入力の形式を示す固定値です。`public-input.json` の `version` フィールドを取り込むものではなく、ゲストの `methodVersion` とも別です。
 
-投票配列の各要素は次の形式でエンコードされます。
+### 各投票のエンコーディング
 
 ```text
 vote_entry =
-    index            ← u32 リトルエンディアン (4 バイト)
-    || commitment_len← u16 リトルエンディアン (2 バイト) = 32 (固定)
-    || commitment    ← 32 バイト
-    || path_len      ← u16 リトルエンディアン (2 バイト)
-    || path_nodes    ← path_len × 32 バイト
+    index             // u32 LE、4 バイト
+    || commitment_len // u16 LE、2 バイト、固定値 32
+    || commitment     // 32 バイト
+    || path_len       // u16 LE、2 バイト
+    || path_nodes     // path_len 個の 32 バイト値
 ```
+
+`votes_count` は提示されたレコード数です。各レコードの `index` は掲示板上の位置であり、配列の何番目かに置き換えません。包含証明のパスノードも含むため、同じコミットメントでも別のパスを提示すればハッシュ入力は変わります。
 
 ### フィールド一覧
 
-| フィールド         | サイズ       | エンコーディング | 説明                         |
-| ------------------ | ------------ | ---------------- | ---------------------------- |
-| ドメインタグ       | 23 バイト    | UTF-8 固定文字列 | `"stark-ballot:input\|v1.0"` |
-| バージョン         | 4 バイト     | u32 LE           | v1.0 = `10`                  |
-| 選挙 ID            | 16 バイト    | UUID バイナリ    | 選挙スコープの識別子         |
-| 掲示板ルート       | 32 バイト    | ハッシュ値       | 最終的な Merkle ルート       |
-| ツリーサイズ       | 4 バイト     | u32 LE           | 掲示板のリーフ数             |
-| 期待投票数         | 4 バイト     | u32 LE           | 想定される総投票数           |
-| 投票数             | 4 バイト     | u32 LE           | 実際に含まれる投票数         |
-| 各投票インデックス | 4 バイト     | u32 LE           | 掲示板上の位置               |
-| コミットメント長   | 2 バイト     | u16 LE           | 固定値 32                    |
-| コミットメント     | 32 バイト    | ハッシュ値       | 投票コミットメント           |
-| パス長             | 2 バイト     | u16 LE           | Merkle パスのノード数        |
-| パスノード         | 各 32 バイト | ハッシュ値       | 包含証明の兄弟ハッシュ       |
+| 直接束縛するもの | 内容                                                      |
+| ---------------- | --------------------------------------------------------- |
+| 選挙と掲示板     | `electionId`、`bulletinRoot`、`treeSize`、`totalExpected` |
+| 投票列           | 件数と各票の `index`、コミットメント、Merkle パス         |
+| 形式の識別       | 固定ドメインタグと固定形式バージョン                      |
 
 ### `public-input.json` と公開監査アーティファクトとの関係
 
-**要点**: `public-input.json` の全フィールドが入力コミットメントに束縛されるわけではありません。
-残りのフィールドは、別のチェックで補完的に検証されます。
+入力コミットメントの対象外のフィールドも、公開ファイルを受け取る境界や別のチェックで検証します。
 
-`public-input.json` は、zkVM 検証に使う秘密データを含まない検証用レコードです。
-現行実装では `schema`、`version`、`electionId`、`electionConfigHash`、`bulletinRoot`、`treeSize`、`totalExpected`、`logId`、`timestamp`、`methodVersion` を含みます。
-各投票については、`index`、コミットメント値、Merkle パスを含みます。
+| フィールド            | 別に行う確認                                                                               |
+| --------------------- | ------------------------------------------------------------------------------------------ |
+| `schema` / `version`  | 公開入力ファイルの現在の形式に合うことを検査                                               |
+| `methodVersion`       | ジャーナルと照合。期待 Image ID の解決には検査済みジャーナルの値を使用                     |
+| `electionConfigHash`  | `election-manifest.json`、ジャーナル等を `counted_election_manifest_consistent` で照合     |
+| `logId` / `timestamp` | `close-statement.json` と STH ダイジェスト等を `counted_close_statement_consistent` で照合 |
 
-入力コミットメントが直接束縛するのは、[フィールド一覧](#フィールド一覧)に示した対象のみです。
-`schema`、`version`、`electionConfigHash`、`logId`、`timestamp`、`methodVersion` は対象外です。
-対象外のフィールドは、proof bundle 内の `election-manifest.json` や `close-statement.json` を組み合わせて、次のように照合されます。
-
-- `electionConfigHash` → `counted_election_manifest_consistent`（manifest と journal 等を照合）
-- `logId` と `timestamp` → `counted_close_statement_consistent`（close statement と journal 等を照合）
-- `schema`、`version` → `public-input.json` の管理対象 artifact format として artifact 採用時に検証
-- `methodVersion` → `public-input.json` 採用時に journal と照合
-  Image ID 解決では正規化済み journal 値を使用
+これらのファイルは、[公開バンドル](../verification/bundle-structure.md)に同梱されます。一つのハッシュが一致しただけで全項目の確認を済ませず、それぞれが何と結びつくかをたどります。
 
 ## 正準化規則
 
-エンコーディングの決定性を保つために、次の規則を使います。
-
 ### ソート規則
 
-投票はエンコーディング前にインデックスの昇順にソートします。
-各投票の `index` は一意であることが前提です。
-この規則により、同じ投票集合から常に同一のバイト列が生成されます。
-この規則に違反すると、TypeScript と Rust で異なるハッシュ値が計算され、検証が失敗します。
+投票レコードは `index` の昇順に並べます。正常入力のインデックスは一意です。重複があった場合も同じバイト列を作れるよう、次にコミットメントのバイト列、さらに Merkle パスのバイト列を辞書順に比較します。パスの共通部分が同じなら短い方を先にします。重複をこの順序で並べられることと、重複票を有効として集計できることは別です。
 
-> **異常系の補助**: 重複インデックスはプロトコル違反です。
-> TS/Rust 双方は決定性のために `commitment` / `merklePath` で tie-break しますが、正常系仕様は `index` 昇順のままです。
+この正準化はハッシュを計算するための順序です。ゲストが入力レコードを検査するときの先着処理を並べ替えるものではありません。
 
 ### エンディアン規則
 
-すべての整数フィールドはリトルエンディアンでエンコードされます。
-
-| 型  | バイト数 | エンコーディング   |
-| --- | -------- | ------------------ |
-| u16 | 2        | リトルエンディアン |
-| u32 | 4        | リトルエンディアン |
+整数はすべてリトルエンディアンです。`u16` は 2 バイト、`u32` は 4 バイトを使い、表現できない件数やパス長は拒否します。
 
 ### 16 進数正規化
 
-コミットメント値やパスノードなどの 16 進数表現は、`0x` プレフィックスを除去した上でバイト列にデコードされます。
-16 進数文字列のまま連結するのではなく、常にバイナリ表現を使用します。
+UUID はハイフンを除いた 16 進数から 16 バイトへ変換します。コミットメント、ルート、パスノードは、`0x` があれば除去して 32 バイトへデコードします。文字列の大文字・小文字はデコード後の同じバイトを意味します。
 
 ## TypeScript と Rust の同期
 
-入力コミットメントは TypeScript（サーバー側）と Rust（zkVM ゲスト内）の双方で独立に計算されます。
-両者の結果は一致する必要があります。
+サーバーの TypeScript とゲストの Rust は、この同じ並びを独立に計算します。入力順序を入れ替えてもハッシュが変わらない性質や、長さ・整数の境界は、[生成入力を使うテスト](../quality/property-based-testing.md)と [Lean が出力する入力コミットメントのベクトル](../quality/lean-formalization.md)で確認します。
 
-```mermaid
-flowchart LR
-  subgraph TypeScript
-    TS_IN[public-input.json から抽出した<br/>入力コミットメント対象フィールド] --> TS_CALC[正準エンコーディング<br/>+ SHA-256]
-    TS_CALC --> TS_IC[入力コミットメント A]
-  end
-
-  subgraph "Rust (zkVM ゲスト)"
-    RS_IN[ゲスト入力] --> RS_CALC[正準エンコーディング<br/>+ SHA-256]
-    RS_CALC --> RS_IC[入力コミットメント B]
-  end
-
-  TS_IC --> CMP{A = B ?}
-  RS_IC --> CMP
-  CMP -->|一致| OK[検証成功]
-  CMP -->|不一致| NG[検証失敗:<br/>入力データが異なる]
-```
-
-同期が破壊される典型的な原因は次のとおりです。
-
-- ソート順序の不一致
-- エンディアンの不一致
-- ドメインタグの文字列差異
-- バージョン番号の不一致
-- 16 進数正規化規則の差異（大文字/小文字、`0x` プレフィックスの有無）
-
-## 検証パイプラインにおける役割
-
-入力コミットメントは、Counted-as-Recorded 段階の検証チェック `counted_input_commitment_match` で使用されます。
-
-| チェック ID                      | 検証内容                                                                         |
-| -------------------------------- | -------------------------------------------------------------------------------- |
-| `counted_input_commitment_match` | 公開可能な検証データから再計算した入力コミットメントがジャーナルの値と一致するか |
-
-このチェックが失敗すると、zkVM が処理した入力データと、公開可能な検証データから再構成される対象フィールドが食い違うことを意味します。
-その場合、結果の信頼性は根本的に損なわれます。
-対象外フィールドの補完検証は[上記](#public-inputjson-と公開監査アーティファクトとの関係)のとおりです。
-
-各チェックの判定ロジックは [チェック一覧 > Counted-as-Recorded](../verification/checks-catalog.md#counted-as-recorded10-チェック) を参照してください。
-
-## 注意事項
-
-入力コミットメントには、投票者の秘密データ（選択肢や乱数）は含まれません。
-したがって、入力コミットメントの公開は投票の秘密性を損ないません。
-
-入力順序に依存しない正準エンコーディングは、[Property-based Testing](../quality/property-based-testing.md) の permutation invariance と、[Lean による形式化](../quality/lean-formalization.md) の input-commitment vectors で検査します。
+アプリの `counted_input_commitment_match` はサーバー側での照合結果です。公開入力とレシートを入手した第三者は、[ローカル検証](../reproducibility/audit-bundle.md)で同じ対象フィールドの一致を再確認できます。これに成功しても、非公開の opening を公開したり、自票のブラウザ内データを再現したりすることにはなりません。
 
 <!-- source: packages/zkvm-contract/src/zkvm/types.ts:computeInputCommitmentFromPublicInput, packages/verification/src/verification/public-input-contract.ts, zkvm/contract-core/src/encoding.rs, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/verification-bundle.ts -->

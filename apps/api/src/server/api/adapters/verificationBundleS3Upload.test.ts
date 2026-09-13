@@ -6,7 +6,7 @@ import { uploadVerificationBundleToS3 } from './verificationBundleS3Upload';
 import {
   localRuntimeProfile,
   targetRuntimeProfile,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 
 const targetProfile = targetRuntimeProfile();
 

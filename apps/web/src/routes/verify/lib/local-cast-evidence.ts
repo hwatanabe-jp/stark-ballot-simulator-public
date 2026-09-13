@@ -40,14 +40,18 @@ export function evaluateBrowserLocalCastEvidence(
     ...(session?.myRand ? { random: session.myRand } : {}),
     ...(voteReceipt ? { voteReceipt } : {}),
   });
-  const serverChecks: VerificationCheck[] = resource.verification.checks.map((check) => ({
-    id: check.id,
-    status: check.status,
-    evidence: check.evidence,
-    inputs: [...check.inputs],
-    ...(check.noteKey ? { noteKey: check.noteKey } : {}),
-    ...(check.derivedFrom ? { derivedFrom: check.derivedFrom } : {}),
-  }));
+  const serverChecks: VerificationCheck[] = resource.verification.checks.map((check) => {
+    const baseCheck = {
+      id: check.id,
+      evidence: check.evidence,
+      inputs: [...check.inputs],
+      ...(check.derivedFrom ? { derivedFrom: check.derivedFrom } : {}),
+    };
+    if ('noteKey' in check) {
+      return { ...baseCheck, status: check.status, noteKey: check.noteKey };
+    }
+    return { ...baseCheck, status: check.status };
+  });
   const checks = overlayLocalCastChecks(serverChecks, results);
   if (!checks) {
     return null;

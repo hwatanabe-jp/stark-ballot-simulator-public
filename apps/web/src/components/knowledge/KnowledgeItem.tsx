@@ -1,17 +1,12 @@
 'use client';
 
-import { HASH_FIELDS, type KnowledgeData } from '@stark-ballot/web/knowledge';
+import { HASH_FIELDS, type KnowledgeData, type KnowledgeItem as KnowledgeItemType } from '@stark-ballot/web/knowledge';
 import { KnowledgeHash } from './KnowledgeHash';
 
 interface KnowledgeItemProps {
-  /** The knowledge key */
-  keyName: keyof KnowledgeData;
+  item: KnowledgeItemType;
   /** Display label for the item */
   label: string;
-  /** The value to display */
-  value: unknown;
-  /** Whether this item was recently added (triggers animation) */
-  isNew?: boolean;
   /** Additional CSS classes */
   className?: string;
   /** Language for i18n (defaults to 'ja') */
@@ -25,9 +20,6 @@ interface KnowledgeItemProps {
  */
 const i18n = {
   ja: {
-    unset: '未設定',
-    yes: 'はい',
-    no: 'いいえ',
     verified: '検証済',
     pending: '処理中',
     notDownloaded: '未ダウンロード',
@@ -37,9 +29,6 @@ const i18n = {
     votes: '票',
   },
   en: {
-    unset: 'Not set',
-    yes: 'Yes',
-    no: 'No',
     verified: 'verified',
     pending: 'Pending',
     notDownloaded: 'Not downloaded',
@@ -50,7 +39,7 @@ const i18n = {
   },
 } as const;
 
-const scenarioLabels: Record<'ja' | 'en', Record<string, string>> = {
+const scenarioLabels: Record<'ja' | 'en', Record<NonNullable<KnowledgeData['scenarioId']>, string>> = {
   ja: {
     S0: '改ざんしない',
     S1: 'あなたの投票を除外する',
@@ -79,17 +68,9 @@ function isHashField(key: keyof KnowledgeData): boolean {
 /**
  * Format a value for display
  */
-function formatValue(key: keyof KnowledgeData, value: unknown, lang: 'ja' | 'en' = 'ja'): React.ReactNode {
+function formatValue(item: KnowledgeItemType, lang: 'ja' | 'en' = 'ja'): React.ReactNode {
+  const { key, value } = item;
   const t = i18n[lang];
-
-  if (value === null || value === undefined) {
-    return <span className="text-text-muted italic">{t.unset}</span>;
-  }
-
-  // Handle boolean
-  if (typeof value === 'boolean') {
-    return value ? t.yes : t.no;
-  }
 
   // Handle number
   if (typeof value === 'number') {
@@ -98,7 +79,7 @@ function formatValue(key: keyof KnowledgeData, value: unknown, lang: 'ja' | 'en'
 
   // Handle proof bundle status
   if (key === 'proofBundleStatus') {
-    const status = value as string;
+    const status = value;
     if (status === 'not_downloaded') {
       return <span className="text-warning-600">{t.notDownloaded}</span>;
     }
@@ -109,21 +90,19 @@ function formatValue(key: keyof KnowledgeData, value: unknown, lang: 'ja' | 'en'
   }
 
   if (key === 'botVotesStatus') {
-    const resolved = typeof value === 'object' ? (value as { status?: string; total?: number }) : null;
-    const status = resolved?.status ?? (value as string);
+    const resolved = typeof value === 'object' ? value : null;
+    const status = typeof value === 'object' ? value.status : value;
     const total = resolved?.total;
-    const statusLabel =
-      status === 'pending' ? t.pending : status === 'completed' ? t.completed : status ? String(status) : '';
+    const statusLabel = status === 'pending' ? t.pending : t.completed;
     const totalLabel =
       typeof total === 'number' ? (lang === 'ja' ? `${total}${t.votes}` : `${total} ${t.votes}`) : null;
     const combined = totalLabel ? `${totalLabel} (${statusLabel})` : statusLabel;
-    const statusClass = status === 'pending' ? 'text-warning-600' : status === 'completed' ? 'text-verified-600' : '';
+    const statusClass = status === 'pending' ? 'text-warning-600' : 'text-verified-600';
     return <span className={statusClass}>{combined}</span>;
   }
 
   if (key === 'scenarioId') {
-    const scenario = typeof value === 'string' ? value : '';
-    return scenarioLabels[lang][scenario] ?? scenario;
+    return scenarioLabels[lang][value];
   }
 
   // Handle string
@@ -136,8 +115,8 @@ function formatValue(key: keyof KnowledgeData, value: unknown, lang: 'ja' | 'en'
   }
 
   // Handle tally counts object
-  if (key === 'tally.counts' && typeof value === 'object') {
-    const counts = value as Record<string, number>;
+  if (key === 'tally.counts') {
+    const counts = value;
     return (
       <span className="font-mono text-[0.8125rem]">
         {Object.entries(counts)
@@ -148,8 +127,8 @@ function formatValue(key: keyof KnowledgeData, value: unknown, lang: 'ja' | 'en'
   }
 
   // Handle verification steps array
-  if (key === 'verification.steps' && Array.isArray(value)) {
-    const steps = value as Array<{ id: string; status: string }>;
+  if (key === 'verification.steps') {
+    const steps = value;
     const passedCount = steps.filter((s) => s.status === 'success').length;
     return (
       <span className="font-mono text-[0.8125rem]">
@@ -159,17 +138,13 @@ function formatValue(key: keyof KnowledgeData, value: unknown, lang: 'ja' | 'en'
   }
 
   // Handle receipt publication
-  if (key === 'receiptPublication' && typeof value === 'object') {
-    const pub = value as { receiptHash?: string; boardIndex?: number };
-    if (pub.receiptHash) {
-      return <KnowledgeHash value={pub.receiptHash} />;
-    }
-    return `#${pub.boardIndex}`;
+  if (key === 'receiptPublication') {
+    return <KnowledgeHash value={value.receiptHash} />;
   }
 
   // Handle inclusion proof (merklePath)
-  if ((key === 'user.merklePath' || key === 'bot.merklePath') && typeof value === 'object') {
-    const proof = value as { leafIndex?: number; treeSize?: number };
+  if (key === 'user.merklePath' || key === 'bot.merklePath') {
+    const proof = value;
     return (
       <span className="font-mono text-[0.8125rem]">
         idx:{proof.leafIndex} / {proof.treeSize}
@@ -178,8 +153,8 @@ function formatValue(key: keyof KnowledgeData, value: unknown, lang: 'ja' | 'en'
   }
 
   // Handle vote receipt
-  if (key === 'user.voteReceipt' && typeof value === 'object') {
-    const receipt = value as { bulletinIndex?: number };
+  if (key === 'user.voteReceipt') {
+    const receipt = value;
     return <span className="font-mono text-[0.8125rem]">#{receipt.bulletinIndex}</span>;
   }
 
@@ -187,18 +162,10 @@ function formatValue(key: keyof KnowledgeData, value: unknown, lang: 'ja' | 'en'
   if (typeof value === 'object') {
     const keys = Object.keys(value);
     return (
-      <span className="text-text-muted text-[0.75rem]">
+      <span className="text-[0.75rem] text-text-muted">
         {keys.length} {t.fields}
       </span>
     );
-  }
-
-  if (typeof value === 'bigint' || typeof value === 'symbol') {
-    return value.toString();
-  }
-
-  if (typeof value === 'function') {
-    return value.name ? `[function ${value.name}]` : '[function]';
   }
 
   return null;
@@ -207,41 +174,23 @@ function formatValue(key: keyof KnowledgeData, value: unknown, lang: 'ja' | 'en'
 /**
  * A single knowledge item row with label and value
  *
- * Design spec:
- * - Dashed bottom border (#e8e0c8)
- * - Label: Secondary font, 0.8125rem, text-secondary
- * - Value: Mono font for hashes, aligned right
- * - ink-spread animation for new items
+ * The label/value pair is shared by the panel and inline check evidence.
  */
 export function KnowledgeItem({
-  keyName,
+  item,
   label,
-  value,
-  isNew = false,
   className = '',
   language = 'ja',
   highlighted = false,
 }: KnowledgeItemProps): React.ReactElement {
   return (
     <div
-      className={`
-        relative
-        flex justify-between items-baseline gap-2
-        py-2 px-3 pl-4
-        border-be border-dashed border-[var(--color-knowledge-border-light)]
-        last:border-be-0
-        ${isNew ? 'animate-ink-spread' : ''}
-        ${highlighted ? 'bg-[var(--color-knowledge-highlight)] animate-knowledge-highlight-pulse' : ''}
-        ${className}
-      `}
-      data-key={keyName}
+      className={`knowledge-entry ${className}`}
+      data-key={item.key}
       data-highlighted={highlighted ? 'true' : 'false'}
     >
-      {isNew && <span className="knowledge-item-new-dot" aria-hidden="true" />}
-      <span className="font-secondary text-[0.8125rem] text-text-secondary shrink-0">{label}</span>
-      <span className="font-mono font-features-none text-[0.8125rem] text-text-primary text-right truncate">
-        {formatValue(keyName, value, language)}
-      </span>
+      <dt className="knowledge-label">{label}</dt>
+      <dd className="knowledge-value">{formatValue(item, language)}</dd>
     </div>
   );
 }

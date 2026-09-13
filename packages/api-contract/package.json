@@ -2,11 +2,6 @@
   "name": "@stark-ballot/api-contract",
   "private": true,
   "type": "module",
-  "scripts": {
-    "lint": "pnpm --dir ../.. exec eslint packages/api-contract",
-    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/api-contract",
-    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
-  },
   "exports": {
     ".": "./src/index.ts",
     "./errors/*": "./src/errors/*",
@@ -15,6 +10,11 @@
     "./routes/*": "./src/routes/*",
     "./schemas": "./src/schemas/index.ts",
     "./schemas/*": "./src/schemas/*"
+  },
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec oxlint packages/api-contract",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/api-contract",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@stark-ballot/validation": "workspace:*",

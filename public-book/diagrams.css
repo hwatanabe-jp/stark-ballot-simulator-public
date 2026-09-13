@@ -1,0 +1,8 @@
+/* Keep diagram labels readable; wide sequences scroll within the page. */
+.mermaid {
+  overflow-x: auto;
+}
+
+.mermaid svg {
+  max-width: none;
+}

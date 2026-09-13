@@ -1,9 +1,8 @@
 {
   "extends": "./test.json",
-  "files": ["./browser-v8-error.d.ts"],
   "compilerOptions": {
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
-    "types": ["node", "vite/client", "vitest/globals", "react", "react-dom", "@testing-library/jest-dom"],
+    "types": ["node", "vite/client", "vitest/globals", "react", "react-dom", "@testing-library/jest-dom/vitest"],
     "jsx": "react-jsx"
   }
 }

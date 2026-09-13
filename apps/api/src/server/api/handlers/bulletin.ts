@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
-import type { ApiHandlerArguments, SessionAdmittedContext } from '../context';
-import { ErrorCode, type ApiError, type ErrorDetails } from '@stark-ballot/api-contract/errors/apiErrors';
-import { errorResponse } from '../../http/response';
+import type { ApiHandlerArguments, RouteBoundResponse, SessionAdmittedContext } from '../context';
+import { ErrorCode, type ErrorDetails } from '@stark-ballot/api-contract/errors/apiErrors';
 import type { BulletinResponse, ConsistencyProofResponse } from '@stark-ballot/api-contract/schemas/bulletin';
 import type { SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
 import {
@@ -9,7 +8,7 @@ import {
   sessionBulletinRoute,
   sessionVoteInclusionProofRoute,
 } from '@stark-ballot/api-contract/routes';
-import { respondWithRoute } from '../utils/responseSchema';
+import { respondWithRoute, respondWithRouteError } from '../utils/responseSchema';
 import {
   getCanonicalBulletinRootHistory,
   getLatestCanonicalBulletinSnapshot,
@@ -44,6 +43,7 @@ const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[
 
 const PRIVATE_NO_STORE_CACHE_CONTROL = 'private, no-store';
 const SESSION_AUTH_VARY = 'X-Session-Capability';
+type HeadersInput = NonNullable<ConstructorParameters<typeof Headers>[0]>;
 
 /**
  * Validate vote ID format with security checks.
@@ -63,19 +63,41 @@ export function isValidBulletinVoteId(voteId: string): boolean {
   return UUID_V4_REGEX.test(voteId);
 }
 
-function createPrivateNoStoreHeaders(headers?: HeadersInit): Headers {
+function createPrivateNoStoreHeaders(headers?: HeadersInput): Headers {
   const merged = new Headers(headers);
   merged.set('Cache-Control', PRIVATE_NO_STORE_CACHE_CONTROL);
   merged.set('Vary', SESSION_AUTH_VARY);
   return merged;
 }
 
-function voteProofErrorResponse(error: ApiError | ErrorCode, details?: ErrorDetails): Response {
-  return errorResponse(error, details, {
-    headers: createPrivateNoStoreHeaders({
-      'X-Content-Type-Options': 'nosniff',
-    }),
-  });
+type VoteProofErrorCode =
+  | typeof ErrorCode.INVALID_VOTE_ID
+  | typeof ErrorCode.SESSION_NOT_FINALIZED
+  | typeof ErrorCode.VOTE_NOT_FOUND
+  | typeof ErrorCode.VERIFICATION_FAILED
+  | typeof ErrorCode.INTERNAL_ERROR;
+
+function voteProofErrorResponse(
+  code: VoteProofErrorCode,
+  details?: ErrorDetails,
+): RouteBoundResponse<typeof sessionVoteInclusionProofRoute> {
+  const init = {
+    headers: createPrivateNoStoreHeaders({ 'X-Content-Type-Options': 'nosniff' }),
+  };
+  const withDetails = details === undefined ? {} : { details };
+  if (code === ErrorCode.VOTE_NOT_FOUND) {
+    return respondWithRouteError(sessionVoteInclusionProofRoute, { code, status: 404, ...withDetails }, init);
+  }
+  if (code === ErrorCode.INTERNAL_ERROR) {
+    return respondWithRouteError(sessionVoteInclusionProofRoute, { code, status: 500, ...withDetails }, init);
+  }
+  if (code === ErrorCode.INVALID_VOTE_ID) {
+    return respondWithRouteError(sessionVoteInclusionProofRoute, { code, status: 400, ...withDetails }, init);
+  }
+  if (code === ErrorCode.SESSION_NOT_FINALIZED) {
+    return respondWithRouteError(sessionVoteInclusionProofRoute, { code, status: 400, ...withDetails }, init);
+  }
+  return respondWithRouteError(sessionVoteInclusionProofRoute, { code, status: 400, ...withDetails }, init);
 }
 
 /**
@@ -84,7 +106,9 @@ function voteProofErrorResponse(error: ApiError | ErrorCode, details?: ErrorDeta
 export function getSessionBulletinHandler({
   input,
   context,
-}: ApiHandlerArguments<typeof sessionBulletinRoute, SessionAdmittedContext>): Response {
+}: ApiHandlerArguments<typeof sessionBulletinRoute, SessionAdmittedContext>): RouteBoundResponse<
+  typeof sessionBulletinRoute
+> {
   const { session } = context;
   const voting = session.voting;
 
@@ -99,8 +123,10 @@ export function getSessionBulletinHandler({
 
   const bulletinRoot = resolveBulletinRoot(voting);
   if (!bulletinRoot) {
-    return errorResponse(ErrorCode.INVALID_REQUEST, {
-      details: 'BULLETIN_STATE_UNAVAILABLE',
+    return respondWithRouteError(sessionBulletinRoute, {
+      code: ErrorCode.INVALID_REQUEST,
+      status: 400,
+      details: { details: 'BULLETIN_STATE_UNAVAILABLE' },
     });
   }
   const treeSize = resolveBulletinTreeSize(voting);
@@ -142,7 +168,9 @@ export function getSessionBulletinHandler({
 export async function getSessionVoteInclusionProofHandler({
   input,
   context,
-}: ApiHandlerArguments<typeof sessionVoteInclusionProofRoute, SessionAdmittedContext>): Promise<Response> {
+}: ApiHandlerArguments<typeof sessionVoteInclusionProofRoute, SessionAdmittedContext>): Promise<
+  RouteBoundResponse<typeof sessionVoteInclusionProofRoute>
+> {
   const startTime = performance.now();
 
   try {
@@ -248,7 +276,8 @@ export interface ConsistencyProofDataInput {
 }
 
 export type ConsistencyProofDataResolution =
-  { ok: true; data: ConsistencyProofResponse['data'] } | { ok: false; message: string };
+  | { ok: true; data: ConsistencyProofResponse['data'] }
+  | { ok: false; message: string };
 
 export function resolveConsistencyProofData({
   session,
@@ -317,7 +346,9 @@ export function resolveConsistencyProofData({
 export function getSessionBulletinConsistencyProofHandler({
   input,
   context,
-}: ApiHandlerArguments<typeof sessionBulletinConsistencyProofRoute, SessionAdmittedContext>): Response {
+}: ApiHandlerArguments<typeof sessionBulletinConsistencyProofRoute, SessionAdmittedContext>): RouteBoundResponse<
+  typeof sessionBulletinConsistencyProofRoute
+> {
   try {
     const { session } = context;
 
@@ -327,7 +358,11 @@ export function getSessionBulletinConsistencyProofHandler({
       generatedAtMs: Date.now(),
     });
     if (!resolution.ok) {
-      return errorResponse(ErrorCode.INVALID_SIZE, { details: resolution.message });
+      return respondWithRouteError(sessionBulletinConsistencyProofRoute, {
+        code: ErrorCode.INVALID_SIZE,
+        status: 400,
+        details: { details: resolution.message },
+      });
     }
 
     return respondWithRoute(sessionBulletinConsistencyProofRoute, {
@@ -337,8 +372,12 @@ export function getSessionBulletinConsistencyProofHandler({
     });
   } catch (error) {
     logger.error('Error generating consistency proof:', error);
-    return errorResponse(ErrorCode.INTERNAL_ERROR, {
-      details: error instanceof Error ? error.message : 'Internal server error while generating consistency proof',
+    return respondWithRouteError(sessionBulletinConsistencyProofRoute, {
+      code: ErrorCode.INTERNAL_ERROR,
+      status: 500,
+      details: {
+        details: error instanceof Error ? error.message : 'Internal server error while generating consistency proof',
+      },
     });
   }
 }

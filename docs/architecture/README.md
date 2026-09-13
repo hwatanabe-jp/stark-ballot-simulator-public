@@ -6,26 +6,50 @@ election architecture or a speculative scale-out design.
 
 ## Documents
 
-| Document                                             | Purpose                                                                                                   | Language    |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------- |
-| [AWS architecture](./aws-architecture.md)            | CloudFront/S3 frontend, Hono API, DynamoDB state, asynchronous proof generation, and verification workers | 🇯🇵 Japanese |
-| [Repository context map](./context-map.md)           | Package ownership, runtime boundaries, and cross-cutting support surfaces                                 | 🇬🇧 English  |
-| [Draw.io source](./aws-architecture-overview.drawio) | Editable source for the AWS overview diagram                                                              | Diagram     |
+| Document                                             | Purpose                                                                                                   | Language |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | -------- |
+| [AWS architecture](./aws-architecture.md)            | CloudFront/S3 frontend, Hono API, DynamoDB state, asynchronous proof generation, and verification workers | Japanese |
+| [Repository context map](./context-map.md)           | Package ownership, runtime boundaries, and cross-cutting support surfaces                                 | English  |
+| [Draw.io source](./aws-architecture-overview.drawio) | Editable source for the AWS runtime and deployment diagrams                                               | Diagram  |
 
 ### Diagram export
 
 The draw.io source has two pages that are published as pre-rendered images in
 the Public Specs. Keep the source and both images synchronized:
 
-- page `Runtime Architecture` → `public-book/src/aws/images/aws-architecture-overview.png`
-- page `Deployment Control` → `public-book/src/aws/images/aws-deployment-control.png`
+- page 1, `Runtime Architecture` → `public-book/src/aws/images/aws-architecture-overview.png`
+- page 2, `Deployment Control` → `public-book/src/aws/images/aws-deployment-control.png`
 
 Export each page as PNG at 2x zoom with a white background and a 40px border
 around the diagram content (for example
 `drawio -x -f png -p <page> -s 2 -b 40 -o page.png <source>.drawio`), then
-reduce it to a 256-color palette PNG (for example
-`convert page.png -strip +dither -colors 256 png8:out.png`) so the committed
-images stay small without visible quality loss.
+trim excess whitespace, restore an even 40px border, and reduce it to a
+256-color palette PNG (for example
+`convert page.png -trim +repage -bordercolor white -border 40 -strip +dither -colors 256 png8:out.png`)
+so the committed images have balanced margins and stay small without visible
+quality loss.
+
+The `-p` page index is 1-based: use `-p 1` for Runtime Architecture and
+`-p 2` for Deployment Control. Both diagrams summarize separate main and
+develop resources; develop-only components are labeled explicitly.
+
+### Diagram conventions
+
+- Keep `Runtime Architecture` focused on request, proof-generation, and verification
+  flows; use `Deployment Control` for release lanes, approvals, and authority storage.
+  Check both against current implementation and IaC before updating the source and
+  both exported images.
+- Use AWS service icons to make resource types recognizable, with consistent icon,
+  label, line, and legend styles across the two pages.
+- Preserve the landscape topology, standalone service icons, AWS Cloud and VPC
+  boundaries, and connected resource groups when updating either page.
+- Leave clear space between text, icons, connectors, and group headings. Align
+  connection points so straight connectors stay straight; remove small unnecessary
+  steps and bends. Use line jumps only to distinguish crossings from connections.
+- Balance spacing inside groups and keep the 40px export border clear on all four
+  sides, including the corners.
+- Inspect the exported PNGs both at the Public Specs inline width and at full scale
+  for readable labels, correct connections, clipping, overlaps, and palette artifacts.
 
 ## Current System Shape
 

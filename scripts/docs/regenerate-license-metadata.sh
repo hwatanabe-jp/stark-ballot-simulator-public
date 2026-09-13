@@ -42,7 +42,16 @@ sanitize_json() {
     s/$repo/<REPO_ROOT>/g;
     s/$cargo/<CARGO_HOME>/g;
     s{(?<![A-Za-z0-9_])(?:file://)?/(?:home|Users)/[^/\s"`]+}{<HOME>}g;
-  ' "$input" | jq . > "$output"
+  ' "$input" | jq '
+    walk(
+      if type == "object" and (.description? | type) == "string" then
+        .description |= (
+          gsub("[\\p{Extended_Pictographic}\\p{Regional_Indicator}\\x{FE0F}\\x{200D}]"; "")
+          | sub("^ +"; "")
+        )
+      else . end
+    )
+  ' > "$output"
 }
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -83,7 +92,7 @@ jq -r '(["name","version","license"] | @csv), (.packages[] | [.name,.version,(.l
   "$license_dir/cargo-metadata-verifier.json" > "$license_dir/cargo-licenses-verifier.csv"
 
 echo "Formatting JSON metadata..."
-pnpm exec prettier --write "$license_dir"/*.json >/dev/null
+pnpm exec oxfmt --write "$license_dir"/*.json >/dev/null
 
 echo "Checking regenerated files for publishable-repo leaks..."
 pnpm public-safety:scan

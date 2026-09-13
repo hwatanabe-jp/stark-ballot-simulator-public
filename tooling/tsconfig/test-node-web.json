@@ -1,6 +1,0 @@
-{
-  "extends": "./test-node.json",
-  "compilerOptions": {
-    "lib": ["ES2024", "DOM", "DOM.Iterable"]
-  }
-}

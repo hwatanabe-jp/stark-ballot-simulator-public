@@ -4,7 +4,6 @@ export type VerificationIndex<Name extends string> = number & {
   readonly [verificationIndexBrand]: Name;
 };
 
-export type VoteIndex = VerificationIndex<'VoteIndex'>;
 export type BulletinIndex = VerificationIndex<'BulletinIndex'>;
 export type LeafIndex = VerificationIndex<'LeafIndex'>;
 
@@ -16,11 +15,6 @@ function assertNonNegativeSafeInteger(value: number, label: string): void {
 
 function brandIndex<Name extends string>(value: number): VerificationIndex<Name> {
   return value as VerificationIndex<Name>;
-}
-
-export function asVoteIndex(value: number): VoteIndex {
-  assertNonNegativeSafeInteger(value, 'voteIndex');
-  return brandIndex<'VoteIndex'>(value);
 }
 
 export function asBulletinIndex(value: number): BulletinIndex {

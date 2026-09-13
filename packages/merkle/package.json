@@ -2,16 +2,16 @@
   "name": "@stark-ballot/merkle",
   "private": true,
   "type": "module",
-  "scripts": {
-    "lint": "pnpm --dir ../.. exec eslint packages/merkle",
-    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/merkle",
-    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
-  },
   "exports": {
     ".": "./src/index.ts",
     "./consistency-proof": "./src/consistency-proof.ts",
     "./rfc6962-merkle-tree": "./src/rfc6962-merkle-tree.ts",
     "./rfc6962-proof": "./src/rfc6962-proof.ts"
+  },
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec oxlint packages/merkle",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/merkle",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@noble/hashes": "catalog:crypto-testing",

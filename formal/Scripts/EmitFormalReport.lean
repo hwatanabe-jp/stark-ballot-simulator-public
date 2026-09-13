@@ -57,6 +57,10 @@ structure TheoremReport where
   source : String
   claim : String
 
+structure GeneratedVectorArtifact where
+  path : String
+  kind : String
+
 def renderStringArray (values : List String) : String :=
   jsonArray (values.map (fun value => "    " ++ jsonString value))
 
@@ -65,6 +69,12 @@ def renderTheorem (theoremReport : TheoremReport) : String :=
     "      \"name\": " ++ jsonString theoremReport.name,
     "      \"source\": " ++ jsonString theoremReport.source,
     "      \"claim\": " ++ jsonString theoremReport.claim
+  ] ++ "\n    }"
+
+def renderGeneratedVectorArtifact (artifact : GeneratedVectorArtifact) : String :=
+  "    {\n" ++ jsonObjectBody [
+    "      \"path\": " ++ jsonString artifact.path,
+    "      \"kind\": " ++ jsonString artifact.kind
   ] ++ "\n    }"
 
 def theoremReports : List TheoremReport := [
@@ -186,20 +196,39 @@ def nonClaims : List String := [
   "Lean does not prove production-election security"
 ]
 
-def generatedVectorArtifacts : List String := [
-  "docs/formal/generated-vectors/verification-summary-cases.json",
-  "docs/formal/generated-vectors/verification-display-cases.json",
-  "docs/formal/generated-vectors/check-definitions.json",
-  "docs/formal/generated-vectors/input-commitment-cases.json",
-  "docs/formal/generated-vectors/bitmap-cases.json",
-  "docs/formal/generated-vectors/guest-model-cases.json"
+def generatedVectorArtifacts : List GeneratedVectorArtifact := [
+  {
+    path := "docs/formal/generated-vectors/verification-summary-cases.json"
+    kind := "verification-summary-cases"
+  },
+  {
+    path := "docs/formal/generated-vectors/verification-display-cases.json"
+    kind := "verification-display-cases"
+  },
+  {
+    path := "docs/formal/generated-vectors/check-definitions.json"
+    kind := "check-definitions"
+  },
+  {
+    path := "docs/formal/generated-vectors/input-commitment-cases.json"
+    kind := "input-commitment-cases"
+  },
+  {
+    path := "docs/formal/generated-vectors/bitmap-cases.json"
+    kind := "bitmap-cases"
+  },
+  {
+    path := "docs/formal/generated-vectors/guest-model-cases.json"
+    kind := "guest-model-cases"
+  }
 ]
 
 def formalReportJson : String :=
   "{\n" ++ jsonObjectBody [
     "  \"schema\": " ++ jsonString "stark-ballot:formal-report|v1",
-    "  \"leanToolchain\": " ++ jsonString "leanprover/lean4:v4.32.2",
+    "  \"leanToolchain\": " ++ jsonString "leanprover/lean4:v4.33.1",
     "  \"reportKind\": " ++ jsonString "stable",
+    "  \"generatedVectorEnvelopeType\": " ++ jsonString "stark-ballot.formal-vector.current",
     "  \"modelModules\": " ++ renderStringArray [
       "formal/StarkBallotFormal/JournalCounts.lean",
       "formal/StarkBallotFormal/VerificationSummary.lean",
@@ -208,7 +237,7 @@ def formalReportJson : String :=
       "formal/StarkBallotFormal/GuestModel.lean"
     ],
     "  \"theorems\": " ++ jsonArray (theoremReports.map renderTheorem),
-    "  \"generatedVectorArtifacts\": " ++ renderStringArray generatedVectorArtifacts,
+    "  \"generatedVectorArtifacts\": " ++ jsonArray (generatedVectorArtifacts.map renderGeneratedVectorArtifact),
     "  \"formalAuditArtifact\": " ++ jsonString "docs/formal/formal-audit.json",
     "  \"assumptions\": " ++ renderStringArray assumptions,
     "  \"nonClaims\": " ++ renderStringArray nonClaims

@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { FinalizationState } from '@stark-ballot/application/finalize/finalization-types';
 import { buildFinalizationQueueInfo } from './finalizationQueueInfo';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 
 const originalEnv = { ...process.env };
+const FINALIZATION_ID = asFinalizationId('exec');
 
 const restoreEnv = () => {
   for (const key of Object.keys(process.env)) {
@@ -27,7 +29,7 @@ describe('buildFinalizationQueueInfo', () => {
   it('returns null when queueUrl is missing', async () => {
     const state: FinalizationState = {
       status: 'pending',
-      finalizationId: 'exec',
+      finalizationId: FINALIZATION_ID,
       queuedAtMs: 1_730_000_000_000,
     };
 
@@ -39,7 +41,7 @@ describe('buildFinalizationQueueInfo', () => {
   it('returns the static queue estimate for pending state without reading SQS attributes', async () => {
     const state: FinalizationState = {
       status: 'pending',
-      finalizationId: 'exec',
+      finalizationId: FINALIZATION_ID,
       queuedAtMs: 1_730_000_000_000,
     };
 
@@ -56,7 +58,7 @@ describe('buildFinalizationQueueInfo', () => {
     const queuedAtMs = 1_730_000_000_000;
     const state: FinalizationState = {
       status: 'running',
-      finalizationId: 'exec',
+      finalizationId: FINALIZATION_ID,
       queuedAtMs,
       startedAtMs: queuedAtMs + 1500,
     };
@@ -79,7 +81,7 @@ describe('buildFinalizationQueueInfo', () => {
 
     const state: FinalizationState = {
       status: 'pending',
-      finalizationId: 'exec',
+      finalizationId: FINALIZATION_ID,
       queuedAtMs: 1_730_000_000_000,
     };
 
@@ -96,7 +98,7 @@ describe('buildFinalizationQueueInfo', () => {
 
     const state: FinalizationState = {
       status: 'pending',
-      finalizationId: 'exec',
+      finalizationId: FINALIZATION_ID,
       queuedAtMs: 1_730_000_000_000,
     };
 

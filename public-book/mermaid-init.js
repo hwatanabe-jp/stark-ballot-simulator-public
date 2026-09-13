@@ -17,15 +17,17 @@
   }
 
   const theme = lastThemeWasLight ? 'default' : 'dark';
-  mermaid.initialize({ startOnLoad: true, theme });
+  mermaid.initialize({
+    startOnLoad: true,
+    theme,
+    flowchart: { useMaxWidth: false },
+    sequence: { useMaxWidth: false },
+  });
 
   // Simplest way to make mermaid re-render the diagrams in the new theme is via refreshing the page
-  const getThemeButton = (themeName) =>
-    document.getElementById(`mdbook-theme-${themeName}`) ?? document.getElementById(themeName);
 
   for (const darkTheme of darkThemes) {
-    const button = getThemeButton(darkTheme);
-    button?.addEventListener('click', () => {
+    document.getElementById('mdbook-theme-' + darkTheme).addEventListener('click', () => {
       if (lastThemeWasLight) {
         window.location.reload();
       }
@@ -33,8 +35,7 @@
   }
 
   for (const lightTheme of lightThemes) {
-    const button = getThemeButton(lightTheme);
-    button?.addEventListener('click', () => {
+    document.getElementById('mdbook-theme-' + lightTheme).addEventListener('click', () => {
       if (!lastThemeWasLight) {
         window.location.reload();
       }

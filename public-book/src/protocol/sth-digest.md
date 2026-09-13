@@ -1,200 +1,86 @@
-# STH ダイジェスト
+<a id="sth-ダイジェスト"></a>
 
-このページでは、Signed Tree Head ダイジェストを第三者と照合し、スプリットビュー攻撃を緩和する仕組みを説明します。
+# 掲示板の見え方を照合する
 
-ログ ID、ツリーサイズ、タイムスタンプ、掲示板ルートを束縛するダイジェストにより、サーバーが異なるクライアントに異なるツリー状態を提示する攻撃を検出可能にします。
+自分の票が掲示板に残っていても、ほかの人が同じ掲示板を見ているとは限りません。サーバーが、ある人には 64 票の掲示板、別の人には特定の票を外した 63 票の掲示板を見せたとします。それぞれについて包含証明を作れても、二人が見ている結果は食い違います。これを**スプリットビュー**と呼びます。
 
-## スプリットビュー攻撃に対する位置づけ
+この食い違いを探すには、掲示板の状態をほかの記録源と比較します。その照合用の短い値が **STH ダイジェスト**です。どの掲示板かを示すログ ID、票数、時刻、ルートをハッシュでまとめます。
 
-**スプリットビュー攻撃**（split-view attack）とは、悪意あるサーバーが異なる検証者に対して異なる掲示板の状態を提示する攻撃です。
-STH ダイジェストは、掲示板の状態を（ログ ID、ツリーサイズ、タイムスタンプ、ルートハッシュ）の組として束縛し、独立した第三者ソースとの合意確認を通じてこの攻撃を検出します。
-具体的な攻撃と検出の流れは[後述](#スプリットビュー攻撃と検出メカニズム)します。
+STH は Signed Tree Head に由来する名前ですが、**この実装が行うのはダイジェストの一致確認であり、署名検証ではありません**。また、同じサーバーの応答同士が一致しても、独立した証人の確認にはなりません。スプリットビューを検出するには、比較先が別の観測を保持していることが必要です。
+
+## 締切時の状態を証明に結びつける
+
+ゲストは入力のログ ID、票数、時刻、ルートからダイジェストを計算し、公開出力の `sthDigest` に記録します。サーバーは同じ締切状態を `close-statement.json` にまとめます。
 
 ```mermaid
-flowchart TD
-  subgraph "STH ダイジェストの構成"
-    LID[ログ ID<br/>32 バイト]
-    TSZ[ツリーサイズ<br/>4 バイト]
-    TS[タイムスタンプ<br/>8 バイト]
-    BR[掲示板ルート<br/>32 バイト]
-  end
-
-  LID --> H[SHA-256]
-  TSZ --> H
-  TS --> H
-  BR --> H
-  H --> STH[STH ダイジェスト<br/>32 バイト]
-
-  STH --> J[zkVM ジャーナルに記録]
-  STH --> CS[close-statement.json に記録]
-  STH --> TP[第三者ソースの STH と照合]
+flowchart TB
+  C[締切時の掲示板状態] --> G[ゲストがハッシュ計算]
+  G --> J[証明に結びついた sthDigest]
+  C --> S[close-statement.json]
+  J --> CMP[値を照合]
+  S --> CMP
+  T[別の記録源の STH] --> CMP
 ```
 
-> **本実装での検証対象**: このページで言う「STH ダイジェスト」は `sthDigest` 自体です。
-> 本実装は STH の署名検証は行いません（スコープの詳細は [合意ロジック](#合意ロジック) を参照）。
+締切記録とジャーナルの一致は、集計がどの掲示板状態を参照したかを確かめる必須条件です。外部ソースとの一致は、その状態を別の記録と照合する追加の確認です。前者が成功したことを、後者も実施したこととして扱いません。
 
 ## ダイジェストフォーマット
 
 ```text
 sth_digest = SHA-256(
-    log_id        ← 32 バイト
-    || tree_size  ← u32 リトルエンディアン (4 バイト)
-    || timestamp  ← u64 リトルエンディアン (8 バイト, Unix 時刻ミリ秒)
-    || bulletin_root ← 32 バイト
+    log_id           // 32 バイト
+    || tree_size     // u32 LE、4 バイト
+    || timestamp     // u64 LE、8 バイト、Unix 時刻ミリ秒
+    || bulletin_root // 32 バイト
 )
 ```
 
-SHA-256 への入力は合計 76 バイトです。
-
-### 各フィールドの仕様
-
-| フィールド     | サイズ    | エンコーディング | 説明                       |
-| -------------- | --------- | ---------------- | -------------------------- |
-| ログ ID        | 32 バイト | ハッシュ値       | 掲示板インスタンスの識別子 |
-| ツリーサイズ   | 4 バイト  | u32 LE           | 掲示板のリーフ数           |
-| タイムスタンプ | 8 バイト  | u64 LE           | Unix 時刻（ミリ秒）        |
-| 掲示板ルート   | 32 バイト | ハッシュ値       | Merkle ツリーのルート      |
+入力は合計 76 バイトです。LE はリトルエンディアン、すなわち整数の下位バイトから並べる方式です。ダイジェストには専用タグを付けず、次のログ ID と固定の並びで対象を区別します。
 
 ## ログ ID
 
-ログ ID は掲示板インスタンスを一意に識別する値です。
-次の式で生成されます。
-
 ```text
-log_id = SHA-256("stark-ballot:bulletin-log|v1.0" || seed)
+log_id = SHA-256(UTF-8("stark-ballot:bulletin-log|v1.0") || seed)
 ```
 
-ドメインタグ `"stark-ballot:bulletin-log|v1.0"` と任意のシード値を連結し、SHA-256 でハッシュします。
-ログ ID は掲示板のライフタイム中に変化しない固定値です。
+ログ ID は掲示板の存続中に変わらない識別子です。これをダイジェストに含めることで、票数やルートが同じでも、別の掲示板の締切状態と区別できます。
 
-ログ ID を STH ダイジェストに含めることで、異なる掲示板インスタンスの STH が偶然に衝突することを防止します。
+## 合意ロジック
 
-## スプリットビュー攻撃と検出メカニズム
+検証 API は設定済みソースから応答を取得し、ジャーナルの値と照合します。「合意」とはこの照合の結果を指し、分散合意プロトコルを実行する意味ではありません。
 
-### 攻撃シナリオ
+| 応答フィールド        | 照合方法                                                         |
+| --------------------- | ---------------------------------------------------------------- |
+| `sthDigest`           | 必須。ジャーナルと一致を要求                                     |
+| `bulletinRoot`        | 指定された場合、ジャーナルと一致を要求                           |
+| `treeSize`            | 指定された場合、ジャーナルと一致を要求                           |
+| `timestamp` / `logId` | 指定された場合は型・形式を検査。合意判定で直接比較する値ではない |
 
-```mermaid
-sequenceDiagram
-    participant A as 投票者 A
-    participant S as 悪意あるサーバー
-    participant B as 投票者 B
+外部応答はこの 5 フィールドだけからなる平坦なレコードです。`sthDigest` 以外は省略できますが、未知のキー、別名、ラッパーで包んだ応答は受け付けません。
 
-    S->>A: ツリー状態 X<br/>(64 票、ルート R₁)
-    S->>B: ツリー状態 Y<br/>(63 票、ルート R₂)
-    Note over A,B: A と B は互いに異なる<br/>ツリー状態を見ている
-```
-
-この攻撃では、サーバーは投票者 B に対して特定の票を除外したツリーを見せています。
-投票者 B は自身に提示されたツリーに対する包含証明や整合性証明を検証できますが、投票者 A とは異なるツリーを見ていることに気づけません。
-
-### 第三者合意による検出
-
-検証 API は、`VITE_STH_SOURCES` に設定されたソースから STH evidence を取得し、ジャーナル内の STH ダイジェストと照合することでスプリットビューを検出できます。
-
-```mermaid
-sequenceDiagram
-    participant V as 検証者
-    participant S as 検証 API
-    participant T1 as 第三者ソース 1
-    participant T2 as 第三者ソース 2
-
-    V->>S: 検証リソースを要求
-    S->>S: ジャーナルから STH ダイジェスト D' を取得
-    S->>T1: STH を問い合わせ → D₁
-    S->>T2: STH を問い合わせ → D₂
-    S->>S: D' = D₁ = D₂ ?
-    alt 全て一致
-        S->>V: 合意成立を含む検証結果
-    else 不一致あり
-        S->>V: スプリットビューの疑い → 検証失敗
-    end
-```
-
-### 合意ロジック
-
-合意判定の条件（最小一致数と全会一致の要求）は [チェック一覧 > `recorded_sth_third_party`](../verification/checks-catalog.md#recorded_sth_third_party) を正とします。
-各ソースに対して次のフィールドを照合します。
-
-| 照合フィールド   | 条件                     |
-| ---------------- | ------------------------ |
-| STH ダイジェスト | 必須一致                 |
-| 掲示板ルート     | 提供されている場合は一致 |
-| ツリーサイズ     | 提供されている場合は一致 |
-
-外部 HTTPS ソースの応答は、`sthDigest`、`bulletinRoot`、`treeSize`、`timestamp`、`logId`
-だけを許可する flat な canonical record として fail-closed に受理します。`sthDigest` は必須で、
-その他のフィールドは任意ですが、指定された場合は型と形式を検証します。wrapper、未知のキー、
-`digest` / `root` / `log_id` などの alias は受理しません。
-設定済みソースの取得失敗、利用不能、または malformed response は、ほかの受理済みソースが
-最小一致数を満たしていても合意失敗になります。
-
-冒頭の注記のとおり応答署名は検証しません。外部アンカリングと STH の自動公開も本実装のスコープ外です。
-
-## zkVM との連携
-
-zkVM ゲストプログラムは、入力として受け取ったログ ID、ツリーサイズ、タイムスタンプ、掲示板ルートから STH ダイジェストを再計算し、ジャーナルにコミットします。
-
-finalize 時には、同じツリー状態から `close-statement.json` も構築されます。
-`sthDigest` は、配布対象アーカイブ `bundle.zip` に含まれる公開監査アーティファクトへ反映されます。
-
-この仕組みにより、STARK 証明と `bundle.zip` 内の `close-statement.json` がともに特定のツリー状態へ束縛されます。
-第三者はジャーナルの STH ダイジェストを独立ソースの値と照合することで、サーバーが証明と異なるツリー状態を提示していないかを確認できます。
-
-## 検証パイプラインにおける役割
-
-STH ダイジェストは 2 つの段階で利用されます。
-
-| 段階                | チェック ID                          | 検証内容                                                                         |
-| ------------------- | ------------------------------------ | -------------------------------------------------------------------------------- |
-| Recorded-as-Cast    | `recorded_sth_third_party`           | 独立ソースから取得した STH ダイジェストがジャーナルの値と一致するか              |
-| Counted-as-Recorded | `counted_close_statement_consistent` | `close-statement.json` の `sthDigest` が公開入力およびジャーナルの値と整合するか |
-
-`recorded_sth_third_party` は既定では任意チェック（optional）ですが、STH ソースが設定されている場合は required に昇格します（昇格と最終判定の規則は [ゲーティングロジック](../verification/gating-logic.md) を参照）。
-
-`counted_close_statement_consistent` は常に必須チェック（required）です。
-`close-statement.json` がジャーナルと整合しない場合、検証は失敗します。
-
-各チェックの判定ロジックは [チェック一覧 > Recorded-as-Cast](../verification/checks-catalog.md#recorded-as-cast6-チェック) と [チェック一覧 > Counted-as-Recorded](../verification/checks-catalog.md#counted-as-recorded10-チェック) を参照してください。
+成功には、必要な最小一致数に達し、比較した全レコードが一致することが必要です。設定済みソースに取得失敗、不正な応答、利用不能があった場合も成功にしません。多数の一致で一つの不一致を打ち消す仕組みではありません。判定の詳細は [`recorded_sth_third_party`](../verification/checks-catalog.md#recorded_sth_third_party)に定義しています。
 
 ## 設定
 
-第三者 STH 検証は環境変数で制御されます。
+| 環境変数               | 意味                                                      | 未指定時   |
+| ---------------------- | --------------------------------------------------------- | ---------- |
+| `VITE_STH_SOURCES`     | カンマ区切りのソース URL または同一サーバー用テンプレート | 照合しない |
+| `VITE_STH_MIN_MATCHES` | 必要な最小一致数                                          | 2          |
 
-| 環境変数               | 説明                                                 | コードフォールバック値           |
-| ---------------------- | ---------------------------------------------------- | -------------------------------- |
-| `VITE_STH_SOURCES`     | カンマ区切りの same-origin template / 外部 HTTPS URL | 未設定（第三者照合を実行しない） |
-| `VITE_STH_MIN_MATCHES` | 必要な最小一致ソース数                               | 2                                |
+ソース未設定では `recorded_sth_third_party` は任意チェックの `not_run` です。設定した場合は必須になり、必要な一致を得られなければ Verified を表示できません。署名検証や外部への自動公開を、この設定によって追加するわけではありません。
 
-STH ソースが未設定の場合、`recorded_sth_third_party` は `not_run`（未実行）となり、第三者照合は行いません。
+<a id="same-origin-template-と外部-https-source-の取り扱い"></a>
 
-開発用の `.env.local.example` では、必要な場合に有効化する例として次の値がコメントで示されています。
+### 同一オリジンと外部 HTTPS の照合先
 
-- `VITE_STH_SOURCES=/api/sessions/:sessionId/bulletin/sth`
-- `VITE_STH_MIN_MATCHES=1`
+同一サーバー用の相対ソースとして使えるのは `/api/sessions/:sessionId/bulletin/sth` です。任意で `auditorId` クエリを一つ付けられます。API は現在のセッションから直接 STH の値を取り出すため、この内部照合のために HTTP 通信や認証ヘッダー転送は行いません。
 
-### same-origin template と外部 HTTPS source の取り扱い
+このパスを通常の HTTP API として呼ぶ場合は `X-Session-Capability` が必要です。集計成功済みのセッションについて `{ data: { sth: { ... } }, meta }` の応答を返します。この応答形式は、外部ソースに要求する平坦なレコードとは異なります。
 
-**same-origin template**: 相対 source として受理するのは exact template
-`/api/sessions/:sessionId/bulletin/sth` だけです。任意で `auditorId` query を 1 つ指定できます。
-検証 API は `:sessionId` を現在の session ID で解決し、認証済み session context から STH を
-直接 project します。この内部取得では HTTP request や session capability header の転送を行いません。
+絶対 HTTPS URL は、アプリと同じオリジンを指していても外部ソースとして取得します。セッションの認証情報を送らないので、その取得先はセッション認証なしで照合用レコードを返す必要があります。
 
-同じ path を通常の HTTP endpoint として直接取得する場合は、same-origin request と path の
-session ID に対応する `X-Session-Capability` が必要です。finalization が成功している session に限り、
-`{ data: { sth: { ... } }, meta }` envelope を返します。
+同一サーバーが返す `timestamp` は `session.voting.lastActivityMs` で、ジャーナルのダイジェスト生成に使った時刻とは限りません。このため、応答の任意フィールドをすべて再連結してダイジェストを作り直すのではなく、上表の条件で照合します。
 
-**外部 HTTPS source**: absolute HTTPS URL は、app と同じ origin を指す場合でも外部 source として
-取得します。repository の session capability や同等の認証情報は送信しません。そのため、独立した
-第三者 source は session 認証に依存しない公開 STH endpoint である必要があります。
-
-**same-origin projection の timestamp**: same-origin projection が返す `timestamp` はジャーナル内の
-canonical な時刻ではなく `session.voting.lastActivityMs` です。
-そのため、第三者合意の一致判定で実際に照合するのは必須の `sthDigest` と、ソースが返した場合の `bulletinRoot` / `treeSize` です。
-
-## PoC における制約
-
-本 PoC の開発用テンプレート（`.env.local.example`）では、STH ソースとして同一サーバー上の
-session-scoped template（`/api/sessions/:sessionId/bulletin/sth`）を使う例を示しています。
-同一サーバー上のソースのみでは防御力が限定的であるため、独立した組織が運営する複数ソースを `VITE_STH_MIN_MATCHES >= 2` で構成することを推奨します。
+`.env.local.example` のコメント例は、相対テンプレートと最小一致数 1 の組です。これは照合の動作を試す構成です。同じサーバーしか観測していない以上、成功しても独立した外部監査を受けたとは言えません。
 
 <!-- source: packages/verification/src/verification/sth-verifier.ts, apps/api/src/server/api/adapters/sthProvider.ts, apps/api/src/server/api/handlers/sth.ts, apps/api/src/server/api/handlers/verify.ts, packages/api-contract/src/schemas/bulletin.ts, packages/runtime-config/src/env/nodeSthPublicRuntimeConfig.ts, packages/zkvm-contract/src/zkvm/types.ts:computeSTHDigest, packages/zkvm-contract/src/zkvm/log-id.ts, zkvm/methods/guest/src/sth.rs, packages/verification/src/verification/public-audit-artifacts.ts, packages/verification/src/verification/verification-bundle.ts, infra/docker/entrypoint.sh, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/application/src/finalize/finalization-result.ts, .env.local.example -->

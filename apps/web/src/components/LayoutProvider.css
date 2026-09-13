@@ -1,0 +1,41 @@
+.app-layout {
+  --app-content-width: 760px;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: #fff;
+  color: #171717;
+}
+
+.app-layout[data-layout-page='home'] {
+  --app-content-width: 640px;
+}
+
+.app-layout[data-layout-page='verify'] {
+  --app-content-width: 840px;
+}
+
+.app-layout[data-layout-page='legal'] {
+  --app-content-width: 768px;
+}
+
+.app-layout__main {
+  flex: 1;
+  min-width: 0;
+  width: calc(100% - 72px);
+  max-width: var(--app-content-width);
+  margin-inline: auto;
+  padding-block: 30px 48px;
+}
+
+.app-layout__knowledge {
+  margin-top: 30px;
+}
+
+@media (max-width: 540px) {
+  .app-layout__main {
+    width: calc(100% - 40px);
+    padding-top: 26px;
+  }
+}

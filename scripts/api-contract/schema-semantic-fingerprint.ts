@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { SchemaTypeAny } from '@stark-ballot/validation/schema';
+import { Schema, getSchemaDescriptor, type AnySchema } from '@stark-ballot/validation/schema';
 
 export const SCHEMA_SEMANTIC_ALGORITHM = 'json-wire-admission' as const;
 
@@ -11,10 +11,6 @@ export interface SchemaSemanticEvidence {
 interface JsonWireProbe {
   id: string;
   value: unknown;
-}
-
-interface RuntimeSchemaLike {
-  safeParse: (input: unknown) => unknown;
 }
 
 const JSON_WIRE_PROBES: readonly JsonWireProbe[] = [
@@ -64,18 +60,8 @@ function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function isRuntimeSchema(value: unknown): value is RuntimeSchemaLike {
-  return isUnknownRecord(value) && typeof value['safeParse'] === 'function';
-}
-
-function runtimeSchemaKind(schema: RuntimeSchemaLike): string {
-  const constructor = (schema as { constructor?: unknown }).constructor;
-  return typeof constructor === 'function' && constructor.name ? constructor.name : 'UnknownSchema';
-}
-
-function runtimeSchemaDefinition(schema: RuntimeSchemaLike): Record<string, unknown> {
-  const definition = (schema as unknown as Record<string, unknown>)['_def'];
-  return isUnknownRecord(definition) ? definition : {};
+function isRuntimeSchema(value: unknown): value is AnySchema {
+  return value instanceof Schema;
 }
 
 function stableNormalize(value: unknown): unknown {
@@ -109,7 +95,7 @@ function normalizeSchemaIssues(result: Record<string, unknown>): unknown {
   });
 }
 
-function describeSchemaAdmission(schema: RuntimeSchemaLike): Record<string, unknown> {
+function describeSchemaAdmission(schema: AnySchema): Record<string, unknown> {
   const admission: Record<string, unknown> = {};
   for (const { id, value } of JSON_WIRE_PROBES) {
     try {
@@ -139,11 +125,11 @@ function isUndefinedOnlySchema(schema: unknown): boolean {
   if (!isRuntimeSchema(schema)) {
     return false;
   }
-  const kind = runtimeSchemaKind(schema);
-  if (kind === 'UndefinedSchema') {
+  const descriptor = getSchemaDescriptor(schema);
+  if (descriptor.kind === 'UndefinedSchema') {
     return true;
   }
-  return kind === 'OptionalSchema' && isUndefinedOnlySchema(runtimeSchemaDefinition(schema)['innerType']);
+  return descriptor.kind === 'OptionalSchema' && isUndefinedOnlySchema(descriptor.inner);
 }
 
 export function describeSchemaSemantics(schema: unknown, cache = new WeakMap<object, unknown>()): unknown {
@@ -160,8 +146,8 @@ export function describeSchemaSemantics(schema: unknown, cache = new WeakMap<obj
     return cached;
   }
 
-  const kind = runtimeSchemaKind(schema);
-  const definition = runtimeSchemaDefinition(schema);
+  const definition = getSchemaDescriptor(schema);
+  const kind = definition.kind === 'CustomSchema' ? definition.name : definition.kind;
 
   const descriptor: Record<string, unknown> = {
     kind,
@@ -169,42 +155,35 @@ export function describeSchemaSemantics(schema: unknown, cache = new WeakMap<obj
   };
   cache.set(schemaObject, descriptor);
 
-  if (kind === 'ObjectSchema') {
-    const rawShape = definition['shape'];
-    const shape = isUnknownRecord(rawShape) ? rawShape : {};
-    descriptor['unknownKeys'] = definition['unknownKeys'];
+  if (definition.kind === 'ObjectSchema') {
+    descriptor['unknownKeys'] = definition.unknownKeys;
     descriptor['shape'] = Object.fromEntries(
-      Object.entries(shape)
+      Object.entries(definition.shape)
         .filter(([, fieldSchema]) => !isUndefinedOnlySchema(fieldSchema))
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([fieldName, fieldSchema]) => [fieldName, describeSchemaSemantics(fieldSchema, cache)]),
     );
-    descriptor['catchall'] = describeSchemaSemantics(definition['catchall'], cache);
-  } else if (kind === 'ArraySchema') {
-    descriptor['item'] = describeSchemaSemantics(definition['type'], cache);
-  } else if (kind === 'OptionalSchema' || kind === 'NullableSchema' || kind === 'DefaultSchema') {
-    descriptor['inner'] = describeSchemaSemantics(definition['innerType'], cache);
-  } else if (kind === 'EffectsSchema') {
-    descriptor['inner'] = describeSchemaSemantics(definition['schema'], cache);
-  } else if (kind === 'UnionSchema' || kind === 'DiscriminatedUnionSchema') {
-    const options = definition['options'];
-    descriptor['options'] = Array.isArray(options)
-      ? options.map((option) => describeSchemaSemantics(option, cache))
-      : [];
-  } else if (kind === 'IntersectionSchema') {
-    descriptor['left'] = describeSchemaSemantics(definition['left'], cache);
-    descriptor['right'] = describeSchemaSemantics(definition['right'], cache);
-  } else if (kind === 'EnumSchema') {
-    const values = (schema as unknown as Record<string, unknown>)['values'];
-    descriptor['values'] = Array.isArray(values) ? values : [];
-  } else if (kind === 'LiteralSchema') {
-    descriptor['value'] = (schema as unknown as Record<string, unknown>)['value'];
+    descriptor['catchall'] = describeSchemaSemantics(definition.catchall, cache);
+  } else if (definition.kind === 'ArraySchema') {
+    descriptor['item'] = describeSchemaSemantics(definition.item, cache);
+  } else if (definition.kind === 'TupleSchema') {
+    descriptor['items'] = definition.items.map((item) => describeSchemaSemantics(item, cache));
+  } else if (definition.kind === 'OptionalSchema' || definition.kind === 'NullableSchema') {
+    descriptor['inner'] = describeSchemaSemantics(definition.inner, cache);
+  } else if (definition.kind === 'EffectsSchema') {
+    descriptor['inner'] = describeSchemaSemantics(definition.inner, cache);
+  } else if (definition.kind === 'UnionSchema') {
+    descriptor['options'] = definition.options.map((option) => describeSchemaSemantics(option, cache));
+  } else if (definition.kind === 'EnumSchema') {
+    descriptor['values'] = definition.values;
+  } else if (definition.kind === 'LiteralSchema') {
+    descriptor['value'] = definition.value;
   }
 
   return descriptor;
 }
 
-export function fingerprintSchemaSemantics(schema: SchemaTypeAny): SchemaSemanticEvidence {
+export function fingerprintSchemaSemantics(schema: AnySchema): SchemaSemanticEvidence {
   const normalized = `${JSON.stringify(stableNormalize(describeSchemaSemantics(schema)), null, 2)}\n`;
   return {
     algorithm: SCHEMA_SEMANTIC_ALGORITHM,

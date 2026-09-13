@@ -4,6 +4,7 @@ import type { Readable } from 'node:stream';
 import * as yauzl from 'yauzl';
 import * as yazl from 'yazl';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
+import type { VerificationBundleArtifactMap } from '@stark-ballot/verification/bundle';
 
 const MAX_PUBLIC_BUNDLE_ENTRY_BYTES = 64 * 1024 * 1024;
 const CANONICAL_ARCHIVE_MEMBER_PATTERN = /^[a-z0-9][a-z0-9-]*\.json$/;
@@ -19,7 +20,7 @@ export interface PersistVerificationBundleArtifactsInput {
   sessionId: string;
   verifierWorkDir?: string;
   finalizationId: string;
-  artifacts: Record<string, unknown>;
+  artifacts: VerificationBundleArtifactMap;
 }
 
 export interface PersistedVerificationBundleArtifacts {

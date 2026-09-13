@@ -1,84 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { resolveAllowedDeploymentTarget, resolveDeploymentLaneAuthority } from './index.js';
-import {
-  ECR_SUBJECT_RETENTION_COUNTS,
-  planEcrSubjectRetention,
-  validateProverReleaseRecord,
-  validateToolchainArtifactRecord,
-} from './ecr-retention.js';
+import { ECR_SUBJECT_RETENTION_COUNTS, planEcrSubjectRetention } from './ecr-retention.js';
 
 const target = resolveAllowedDeploymentTarget('stark-dev/develop');
 const foundation = resolveDeploymentLaneAuthority(target, 'foundation');
-const PIPELINE_EXECUTION_ID = '11111111-2222-3333-4444-555555555555';
-const CANDIDATE_EXECUTION_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-const TOOLCHAIN_DIGEST = `sha256:${'1'.repeat(64)}`;
-const PROVER_DIGEST = `sha256:${'2'.repeat(64)}`;
 const SUBJECT_MANIFEST_MEDIA_TYPE = 'application/vnd.docker.distribution.manifest.v2+json';
 const SUBJECT_ARTIFACT_MEDIA_TYPE = 'application/vnd.docker.container.image.v1+json';
 const REFERRER_MANIFEST_MEDIA_TYPE = 'application/vnd.oci.image.manifest.v1+json';
 const REFERRER_ARTIFACT_MEDIA_TYPE = 'application/vnd.cncf.notary.signature';
-
-function imageUri(repository: string, digest: string): string {
-  return `${target.accountId}.dkr.ecr.${target.region}.amazonaws.com/${repository}@${digest}`;
-}
-
-function approvals(kind: 'prover' | 'toolchain') {
-  const buildExecutionId = kind === 'prover' ? PIPELINE_EXECUTION_ID : CANDIDATE_EXECUTION_ID;
-  return {
-    buildApprovalEvidenceId: `${kind}-build/${buildExecutionId}`,
-    promotionApprovalEvidenceId: `${kind}-promotion/${PIPELINE_EXECUTION_ID}`,
-  };
-}
-
-function toolchainRecord() {
-  return {
-    recordType: 'toolchain-artifact',
-    pipelineExecutionId: PIPELINE_EXECUTION_ID,
-    sourceSha: 'a'.repeat(40),
-    candidateExecutionId: `toolchain-candidate/${CANDIDATE_EXECUTION_ID}`,
-    candidateMetadataSha256: 'b'.repeat(64),
-    imageUri: imageUri(foundation.names.toolchainRepository, TOOLCHAIN_DIGEST),
-    imageTag: `source-${'a'.repeat(40)}`,
-    imageDigest: TOOLCHAIN_DIGEST,
-    risc0Version: '3.0.3',
-    rustVersion: '1.93.1',
-    rustToolchainTag: '1.93.1',
-    scanStatus: 'PASS',
-    criticalHighCount: 0,
-    approvals: approvals('toolchain'),
-  };
-}
-
-function proverRecord() {
-  const expectedImageId = `0x${'3'.repeat(64)}`;
-  return {
-    recordType: 'prover-release',
-    pipelineExecutionId: PIPELINE_EXECUTION_ID,
-    sourceSha: 'a'.repeat(40),
-    candidateExecutionId: `prover-candidate/${PIPELINE_EXECUTION_ID}`,
-    candidateMetadataSha256: 'c'.repeat(64),
-    failureMarkerContractSha256: 'd'.repeat(64),
-    failureMarkerSmokeStatus: 'PASS',
-    selectedToolchain: {
-      artifactRecordKey: `${foundation.names.toolchainArtifactPrefix}/${PIPELINE_EXECUTION_ID}/manifest.json`,
-      artifactRecordVersionId: 'toolchain-version-1',
-      artifactRecordSha256: 'e'.repeat(64),
-      imageUri: imageUri(foundation.names.toolchainRepository, TOOLCHAIN_DIGEST),
-    },
-    imageUri: imageUri(foundation.names.proverRepository, PROVER_DIGEST),
-    expectedImageId,
-    zkvmContractHash: 'f'.repeat(64),
-    methodVersion: 1,
-    imageIdVariant: 'default',
-    scanStatus: 'PASS',
-    approvals: approvals('prover'),
-    evidence: {
-      prePushImageId: expectedImageId,
-      postPushImageId: expectedImageId,
-      methodVersionEvidenceId: 'prover-method-version/1',
-    },
-  };
-}
 
 function subject(index: number) {
   return {
@@ -134,74 +63,6 @@ function input() {
     },
   };
 }
-
-describe('current release record validation', () => {
-  it('admits the exact current Toolchain and Prover records and returns their subject digests', () => {
-    const toolchain = validateToolchainArtifactRecord(toolchainRecord(), {
-      accountId: target.accountId,
-      partition: 'aws',
-      region: target.region,
-      repository: foundation.names.toolchainRepository,
-    });
-    const prover = validateProverReleaseRecord(proverRecord(), {
-      prover: {
-        accountId: target.accountId,
-        partition: 'aws',
-        region: target.region,
-        repository: foundation.names.proverRepository,
-      },
-      toolchain: {
-        accountId: target.accountId,
-        partition: 'aws',
-        region: target.region,
-        repository: foundation.names.toolchainRepository,
-      },
-    });
-
-    expect(toolchain.imageDigest).toBe(TOOLCHAIN_DIGEST);
-    expect(prover.imageDigest).toBe(PROVER_DIGEST);
-    expect(prover.selectedToolchain.imageDigest).toBe(TOOLCHAIN_DIGEST);
-    expect(Object.isFrozen(toolchain)).toBe(true);
-    expect(Object.isFrozen(prover)).toBe(true);
-  });
-
-  it.each([
-    ['an extra Toolchain field', { ...toolchainRecord(), legacyDigest: TOOLCHAIN_DIGEST }],
-    ['a detached Toolchain digest', { ...toolchainRecord(), imageDigest: `sha256:${'9'.repeat(64)}` }],
-    [
-      'a Prover record without scan evidence',
-      Object.fromEntries(Object.entries(proverRecord()).filter(([key]) => key !== 'scanStatus')),
-    ],
-    [
-      'a Prover record with mismatched ImageID evidence',
-      { ...proverRecord(), evidence: { ...proverRecord().evidence, postPushImageId: `0x${'4'.repeat(64)}` } },
-    ],
-  ])('rejects %s', (_label, record) => {
-    expect(() =>
-      record['recordType'] === 'toolchain-artifact'
-        ? validateToolchainArtifactRecord(record, {
-            accountId: target.accountId,
-            partition: 'aws',
-            region: target.region,
-            repository: foundation.names.toolchainRepository,
-          })
-        : validateProverReleaseRecord(record, {
-            prover: {
-              accountId: target.accountId,
-              partition: 'aws',
-              region: target.region,
-              repository: foundation.names.proverRepository,
-            },
-            toolchain: {
-              accountId: target.accountId,
-              partition: 'aws',
-              region: target.region,
-              repository: foundation.names.toolchainRepository,
-            },
-          }),
-    ).toThrow();
-  });
-});
 
 describe('ECR subject retention planning', () => {
   it('keeps a static count of ten in develop and main and deletes the oldest unprotected subjects only', () => {

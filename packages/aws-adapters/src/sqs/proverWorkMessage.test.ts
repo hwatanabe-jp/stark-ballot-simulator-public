@@ -287,7 +287,7 @@ describe('parseProverWorkMessage', () => {
       expectedImageId: '0x1234',
     });
 
-    expect(() => parseProverWorkMessage(invalid)).toThrowError(/expectedImageId/i);
+    expect(() => parseProverWorkMessage(invalid)).toThrow(/expectedImageId/i);
   });
 
   it('ensures vote indices are non-negative integers', () => {
@@ -298,7 +298,7 @@ describe('parseProverWorkMessage', () => {
       },
     });
 
-    expect(() => parseProverWorkMessage(invalid)).toThrowError(/index/i);
+    expect(() => parseProverWorkMessage(invalid)).toThrow(/index/i);
   });
 
   it('rejects unsafe integer values before Rust host serialization', () => {
@@ -309,7 +309,7 @@ describe('parseProverWorkMessage', () => {
       },
     });
 
-    expect(() => parseProverWorkMessage(invalid)).toThrowError(/timestamp must be a JavaScript safe integer/i);
+    expect(() => parseProverWorkMessage(invalid)).toThrow(/timestamp must be a JavaScript safe integer/i);
   });
 
   it('rejects numeric values above Rust wire maxima', () => {
@@ -320,7 +320,7 @@ describe('parseProverWorkMessage', () => {
       },
     });
 
-    expect(() => parseProverWorkMessage(invalid)).toThrowError(/treeSize exceeds Rust wire maximum 4294967295/i);
+    expect(() => parseProverWorkMessage(invalid)).toThrow(/treeSize exceeds Rust wire maximum 4294967295/i);
   });
 
   it('rejects zero timestamps at the inline zkVM input boundary', () => {
@@ -331,7 +331,7 @@ describe('parseProverWorkMessage', () => {
       },
     });
 
-    expect(() => parseProverWorkMessage(invalid)).toThrowError(/timestamp must be positive Unix timestamp/i);
+    expect(() => parseProverWorkMessage(invalid)).toThrow(/timestamp must be positive Unix timestamp/i);
   });
 
   it('rejects choice values outside the Rust u8 wire boundary', () => {
@@ -342,7 +342,7 @@ describe('parseProverWorkMessage', () => {
       },
     });
 
-    expect(() => parseProverWorkMessage(invalid)).toThrowError(/votes\[0\]\.choice exceeds Rust wire maximum 255/i);
+    expect(() => parseProverWorkMessage(invalid)).toThrow(/votes\[0\]\.choice exceeds Rust wire maximum 255/i);
   });
 
   it('accepts guest-accounted invalid choices that still fit the Rust wire boundary', () => {

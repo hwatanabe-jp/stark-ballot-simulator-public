@@ -19,7 +19,7 @@ import { CURRENT_METHOD_VERSION, type ZkVMJournal } from '@stark-ballot/zkvm-con
 import type { VoteReceipt } from '@stark-ballot/verification/shared/types';
 import { buildCloseStatement, buildElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
 import { buildDefaultElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
-import { createTestJournal } from './__tests__/test-helpers';
+import { createTestJournal } from './test-support/test-helpers';
 import { deriveVerificationSummary } from '@stark-ballot/verification/summary';
 
 const createPublicInputAuthority = (
@@ -152,7 +152,7 @@ describe('buildVerificationChecks', () => {
     const checks = await buildVerificationChecks({
       missingSlots: 1,
       invalidPresentedSlots: 0,
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
     });
 
     expect(findStatus(checks, 'counted_missing_indices_zero')).toBe('failed');
@@ -163,7 +163,7 @@ describe('buildVerificationChecks', () => {
       missingSlots: 1,
       invalidPresentedSlots: 0,
       excludedSlots: 1,
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
     });
 
     expect(findStatus(checks, 'counted_missing_indices_zero')).toBe('failed');
@@ -171,7 +171,7 @@ describe('buildVerificationChecks', () => {
 
   it('keeps verificationStatus scoped to proof status while excluded slots fail the summary', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       missingSlots: 1,
       invalidPresentedSlots: 0,
       excludedSlots: 1,
@@ -190,8 +190,7 @@ describe('buildVerificationChecks', () => {
 
   it('fails counted_missing_indices_zero for excluded votes while dev-mode proof verification is allowed', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'dev_mode',
-      verificationReportStatus: 'dev_mode',
+      verifierOutcome: { status: 'dev_mode' },
       allowDevModeVerification: true,
       missingSlots: 1,
       invalidPresentedSlots: 0,
@@ -204,10 +203,12 @@ describe('buildVerificationChecks', () => {
 
   it('marks zk-derived checks as demo evidence when dev-mode receipts are admitted', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'dev_mode',
-      verificationReport: {
+      verifierOutcome: {
         status: 'dev_mode',
-        dev_mode_receipt: true,
+        report: {
+          status: 'dev_mode',
+          dev_mode_receipt: true,
+        },
       },
       allowDevModeVerification: true,
     });
@@ -219,7 +220,7 @@ describe('buildVerificationChecks', () => {
 
   it('fails counted_missing_indices_zero for excluded votes even before proof status resolves', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'not_run',
+      verifierOutcome: { status: 'not_run' },
       missingSlots: 1,
       invalidPresentedSlots: 0,
       excludedSlots: 1,
@@ -231,7 +232,7 @@ describe('buildVerificationChecks', () => {
 
   it('fails counted_missing_indices_zero when journal counts are invalid', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       journal: createJournal({
         missingSlots: Number.NaN,
       }),
@@ -242,7 +243,7 @@ describe('buildVerificationChecks', () => {
 
   it('uses journal tally when tally inputs are missing', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       journal: createJournal(),
     });
 
@@ -269,12 +270,14 @@ describe('buildVerificationChecks', () => {
       });
 
       const checks = await buildVerificationChecks({
-        verificationStatus: 'success',
-        verificationReport: {
+        verifierOutcome: {
           status: 'success',
-          expected_image_id: imageId,
-          receipt_image_id: imageId,
-          dev_mode_receipt: false,
+          report: {
+            status: 'success',
+            expected_image_id: imageId,
+            receipt_image_id: imageId,
+            dev_mode_receipt: false,
+          },
         },
         claimedImageId: imageId,
         comparisonImageId: imageId,
@@ -325,7 +328,7 @@ describe('buildVerificationChecks', () => {
 
   it('sets STARK checks to running when verificationStatus is running', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'running',
+      verifierOutcome: { status: 'running' },
       tally: {
         counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
         totalVotes: 1,
@@ -340,7 +343,7 @@ describe('buildVerificationChecks', () => {
 
   it('does not accept an ImageID match without verifier-confirmed ImageID evidence', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       claimedImageId: '0x' + 'd'.repeat(64),
     });
 
@@ -354,7 +357,7 @@ describe('buildVerificationChecks', () => {
       {
         status: 'success' as const,
         receipt_image_id: '0x' + 'd'.repeat(64),
-        dev_mode_receipt: false,
+        dev_mode_receipt: false as const,
       },
     ],
     [
@@ -362,13 +365,12 @@ describe('buildVerificationChecks', () => {
       {
         status: 'success' as const,
         expected_image_id: '0x' + 'd'.repeat(64),
-        dev_mode_receipt: false,
+        dev_mode_receipt: false as const,
       },
     ],
   ])('does not accept an ImageID match when the verifier report omits the %s', async (_label, verificationReport) => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
-      verificationReport,
+      verifierOutcome: { status: 'success', report: verificationReport },
       claimedImageId: '0x' + 'd'.repeat(64),
     });
 
@@ -378,12 +380,14 @@ describe('buildVerificationChecks', () => {
 
   it('rejects matching verifier ImageID strings that are not 32-byte hexadecimal values', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
-      verificationReport: {
+      verifierOutcome: {
         status: 'success',
-        expected_image_id: 'not-hex',
-        receipt_image_id: 'not-hex',
-        dev_mode_receipt: false,
+        report: {
+          status: 'success',
+          expected_image_id: 'not-hex',
+          receipt_image_id: 'not-hex',
+          dev_mode_receipt: false,
+        },
       },
     });
 
@@ -447,7 +451,7 @@ describe('buildVerificationChecks', () => {
     };
 
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       excludedSlots: 1,
       includedBitmapRoot: '0x' + '4'.repeat(64),
       voteReceipt,
@@ -562,7 +566,7 @@ describe('buildVerificationChecks', () => {
     });
 
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       publicInputAuthority: summary,
       journal: createJournal({
         inputCommitment: '0x' + 'b'.repeat(64),
@@ -578,7 +582,7 @@ describe('buildVerificationChecks', () => {
     });
 
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       publicInputAuthority: summary,
       inputCommitment: '0x' + 'c'.repeat(64),
     });
@@ -596,7 +600,7 @@ describe('buildVerificationChecks', () => {
     });
 
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       electionId: electionManifest.electionId,
       electionConfigHash: electionManifest.electionConfigHash,
       logId: closeStatement.logId,
@@ -624,7 +628,7 @@ describe('buildVerificationChecks', () => {
 
   it('keeps public binding checks not_run when public audit artifacts are missing', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       electionId: '550e8400-e29b-41d4-a716-446655440000',
       electionConfigHash: '0x' + '1'.repeat(64),
       logId: '0x' + '2'.repeat(64),
@@ -638,7 +642,7 @@ describe('buildVerificationChecks', () => {
 
   it('fails public binding checks when manifest or close statement drift from journal', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       electionId: '550e8400-e29b-41d4-a716-446655440000',
       electionConfigHash: '0x' + '1'.repeat(64),
       logId: '0x' + '2'.repeat(64),
@@ -673,7 +677,7 @@ describe('buildVerificationChecks', () => {
     });
 
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       electionId: electionManifest.electionId,
       electionConfigHash: electionManifest.electionConfigHash,
       logId: closeStatement.logId,
@@ -700,7 +704,7 @@ describe('buildVerificationChecks', () => {
 
   it('returns failed for all ZK checks when STARK fails', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'failed',
+      verifierOutcome: { status: 'failed' },
       publicInputAuthority: createPublicInputAuthority(),
       journal: createJournal(),
     });
@@ -726,7 +730,7 @@ describe('buildVerificationChecks', () => {
     });
 
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       bitmapProofSource: 'mock',
       includedBitmapProof: { kind: 'admitted', value: bitmapProof },
       treeSize: 1,
@@ -760,7 +764,7 @@ describe('buildVerificationChecks', () => {
     });
 
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       bitmapProofSource: 'real',
       includedBitmapProof: { kind: 'admitted', value: bitmapProof },
       seenBitmapProof: { kind: 'admitted', value: bitmapProof },
@@ -791,7 +795,7 @@ describe('buildVerificationChecks', () => {
 
   it('does not run counted_my_vote_included when authenticated treeSize is unavailable', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       bitmapProofSource: 'real',
       includedBitmapProof: { kind: 'admitted', value: bitmapProof },
       includedBitmapRoot: '0x' + 'f'.repeat(64),
@@ -810,7 +814,7 @@ describe('buildVerificationChecks', () => {
 
   it('uses current slot counts for the my-vote-excluded note when the journal is omitted', async () => {
     const checks = await buildVerificationChecks({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       missingSlots: 1,
       invalidPresentedSlots: 0,
       excludedSlots: 1,

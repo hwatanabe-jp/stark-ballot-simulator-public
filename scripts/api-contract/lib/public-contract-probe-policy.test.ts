@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
 import {
   buildMountedBehaviorProbeSnapshot,
   buildMountedBehaviorProbes,
@@ -29,33 +31,35 @@ describe('public contract mounted-behavior probe policy', () => {
   it('builds exact lifecycle-owned probe records without an aggregate compatibility surface', async () => {
     const sessionId = 'session-baseline-mounted';
     const finalizationId = 'finalization-baseline-mounted';
+    const admittedSessionId = asSessionId(sessionId);
+    const admittedFinalizationId = asFinalizationId(finalizationId);
     const store = buildProbeStore(sessionId, finalizationId);
 
     expect('getSession' in store).toBe(false);
     expect('updateSession' in store).toBe(false);
-    await expect(store.getSessionIdentity(sessionId)).resolves.toMatchObject({
+    await expect(store.getSessionIdentity(admittedSessionId)).resolves.toMatchObject({
       sessionId,
       electionId: '550e8400-e29b-41d4-a716-446655440000',
     });
-    await expect(store.getVotingRecord(sessionId)).resolves.toMatchObject({
+    await expect(store.getVotingRecord(admittedSessionId)).resolves.toMatchObject({
       sessionId,
       userParticipation: { status: 'cast', voteIndex: 0 },
     });
-    await expect(store.getCurrentFinalizationRecord(sessionId)).resolves.toMatchObject({
+    await expect(store.getCurrentFinalizationRecord(admittedSessionId)).resolves.toMatchObject({
       sessionId,
       finalizationId,
       state: { status: 'succeeded', finalizationId },
       finalizationResult: { finalizationId },
     });
-    await expect(store.getVerificationResultRecord(sessionId, finalizationId)).resolves.toMatchObject({
+    await expect(store.getVerificationResultRecord(admittedSessionId, admittedFinalizationId)).resolves.toMatchObject({
       sessionId,
       finalizationId,
       verificationResult: { status: 'success' },
     });
     await expect(
       buildProbeStore(sessionId, finalizationId, { bitmapEvidence: 'unavailable' }).getBitmapData(
-        sessionId,
-        finalizationId,
+        admittedSessionId,
+        admittedFinalizationId,
       ),
     ).resolves.toBeNull();
   });

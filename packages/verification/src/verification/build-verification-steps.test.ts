@@ -19,7 +19,7 @@ vi.mock('@stark-ballot/verification/bitmap-verifier', () => ({
 
 import { verifyCTMerkleInclusion } from './merkle';
 import { explainVoteInclusionStatus, verifyMyVoteWasCounted } from '@stark-ballot/verification/bitmap-verifier';
-import { createTestJournal } from './__tests__/test-helpers';
+import { createTestJournal } from './test-support/test-helpers';
 
 const createPublicInputAuthority = (
   overrides: Partial<VerificationPublicInputAuthority> = {},
@@ -169,13 +169,14 @@ describe('buildVerificationSteps', () => {
       treeSize: journal.treeSize,
       inputCommitment: journal.inputCommitment,
       includedBitmapRoot: journal.includedBitmapRoot,
-      verificationStatus: 'success',
-      verificationReportStatus: 'success',
-      verificationReport: {
+      verifierOutcome: {
         status: 'success',
-        expected_image_id: verifierConfirmedImageId,
-        receipt_image_id: verifierConfirmedImageId,
-        dev_mode_receipt: false,
+        report: {
+          status: 'success',
+          expected_image_id: verifierConfirmedImageId,
+          receipt_image_id: verifierConfirmedImageId,
+          dev_mode_receipt: false,
+        },
       },
     });
 
@@ -302,8 +303,7 @@ describe('buildVerificationSteps', () => {
       },
       bulletinRoot: journal.bulletinRoot,
       treeSize: journal.treeSize,
-      verificationStatus: 'success',
-      verificationReportStatus: 'success',
+      verifierOutcome: { status: 'success' },
     });
 
     const recorded = steps.find((step) => step.id === 'recorded_as_cast');
@@ -331,12 +331,14 @@ describe('buildVerificationSteps', () => {
 
   it('treats dev_mode as success when allowDevModeVerification is true', async () => {
     const steps = await buildVerificationSteps({
-      verificationStatus: 'dev_mode',
-      verificationReport: {
+      verifierOutcome: {
         status: 'dev_mode',
-        expected_image_id: verifierConfirmedImageId,
-        receipt_image_id: verifierConfirmedImageId,
-        dev_mode_receipt: true,
+        report: {
+          status: 'dev_mode',
+          expected_image_id: verifierConfirmedImageId,
+          receipt_image_id: verifierConfirmedImageId,
+          dev_mode_receipt: true,
+        },
       },
       allowDevModeVerification: true,
     });
@@ -347,7 +349,7 @@ describe('buildVerificationSteps', () => {
 
   it('marks counted_as_recorded failed when excluded votes are present', async () => {
     const steps = await buildVerificationSteps({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       missingSlots: 1,
       invalidPresentedSlots: 0,
     });
@@ -362,13 +364,14 @@ describe('buildVerificationSteps', () => {
 
   it('keeps counted_as_recorded failed and STARK verification successful when dev-mode proof verification is allowed', async () => {
     const steps = await buildVerificationSteps({
-      verificationStatus: 'dev_mode',
-      verificationReportStatus: 'dev_mode',
-      verificationReport: {
+      verifierOutcome: {
         status: 'dev_mode',
-        expected_image_id: verifierConfirmedImageId,
-        receipt_image_id: verifierConfirmedImageId,
-        dev_mode_receipt: true,
+        report: {
+          status: 'dev_mode',
+          expected_image_id: verifierConfirmedImageId,
+          receipt_image_id: verifierConfirmedImageId,
+          dev_mode_receipt: true,
+        },
       },
       allowDevModeVerification: true,
       missingSlots: 1,
@@ -387,7 +390,7 @@ describe('buildVerificationSteps', () => {
     const journal = createJournal();
 
     const steps = await buildVerificationSteps({
-      verificationStatus: 'success',
+      verifierOutcome: { status: 'success' },
       journal,
       tally: {
         counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
@@ -447,10 +450,9 @@ describe('buildVerificationSteps', () => {
     expect(recorded?.status).toBe('success');
   });
 
-  it('prefers verificationStatus running over report status for stark_verification', async () => {
+  it('preserves intentional running status-only synthetic evidence', async () => {
     const steps = await buildVerificationSteps({
-      verificationStatus: 'running',
-      verificationReportStatus: 'success',
+      verifierOutcome: { status: 'running' },
     });
 
     const stark = steps.find((step) => step.id === 'stark_verification');
@@ -459,7 +461,7 @@ describe('buildVerificationSteps', () => {
 
   it('marks counted_as_recorded pending while STARK verification is running', async () => {
     const steps = await buildVerificationSteps({
-      verificationStatus: 'running',
+      verifierOutcome: { status: 'running' },
       journal: createJournal(),
       tally: {
         counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
@@ -474,11 +476,12 @@ describe('buildVerificationSteps', () => {
 
   it('marks stark_verification failed when image ID check fails even if receipt verification succeeded', async () => {
     const steps = await buildVerificationSteps({
-      verificationStatus: 'success',
-      verificationReportStatus: 'success',
-      verificationReport: {
-        expected_image_id: '0x' + '1'.repeat(64),
-        receipt_image_id: '0x' + '2'.repeat(64),
+      verifierOutcome: {
+        status: 'success',
+        report: {
+          expected_image_id: '0x' + '1'.repeat(64),
+          receipt_image_id: '0x' + '2'.repeat(64),
+        },
       },
     });
 

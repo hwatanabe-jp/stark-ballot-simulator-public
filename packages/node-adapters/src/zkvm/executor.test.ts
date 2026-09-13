@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { ExecOptions } from 'node:child_process';
+import type { HostProcessResult } from './host-process';
 import { CURRENT_METHOD_VERSION, type ZkVMInput, type VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
 import {
   MAX_GUEST_MERKLE_PATH_NODES_PER_RECORD,
@@ -10,36 +10,37 @@ import {
 } from '@stark-ballot/zkvm-contract/zkvm/work-budget';
 
 const BOT_COUNT = 63;
+const CURRENT_VALID_BITMAP_ROOT = `0x${'40'.repeat(32)}`;
 
-type ExecCallback = (error: Error | null, stdout: string, stderr: string) => void;
+const completedHostProcess: HostProcessResult = {
+  outcome: 'success',
+  stage: 'output_decoded',
+  startedAt: '2026-09-05T00:00:00.000Z',
+  durationMs: 10,
+  timeoutMs: 600_000,
+  exitCode: 0,
+  signal: null,
+  errorCode: null,
+  stderrPresent: false,
+  cleanup: 'complete',
+};
 
-// Use vi.hoisted to set up mocks before module loading
-const { mockFs, mockExec } = vi.hoisted(() => {
-  const mockFs = {
+const { mockFs, mockHostProcess } = vi.hoisted(() => ({
+  mockFs: {
     mkdir: vi.fn().mockResolvedValue(undefined),
     writeFile: vi.fn().mockResolvedValue(undefined),
     readFile: vi.fn().mockResolvedValue('{}'),
     unlink: vi.fn().mockResolvedValue(undefined),
-  };
-
-  const mockExec = vi.fn((cmd: string, opts?: ExecOptions | ExecCallback, callback?: ExecCallback) => {
-    void cmd;
-    // Mock exec function for promisify
-    if (typeof opts === 'function') {
-      opts(null, 'Mock output', '');
-      return;
-    }
-    callback?.(null, 'Mock output', '');
-  });
-
-  return { mockFs, mockExec };
-});
-
-vi.mock('child_process', () => ({
-  default: {
-    exec: mockExec,
   },
-  exec: mockExec,
+  mockHostProcess:
+    vi.fn<
+      (executable: string, args: readonly string[], options: { env: NodeJS.ProcessEnv }) => Promise<HostProcessResult>
+    >(),
+}));
+
+vi.mock('./host-process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./host-process')>()),
+  runHostProcess: mockHostProcess,
 }));
 
 vi.mock('fs/promises', () => ({
@@ -89,8 +90,8 @@ function createValidCurrentHostOutput(overrides: Record<string, unknown> = {}): 
     missingSlots: 0,
     invalidPresentedSlots: 0,
     rejectedRecords: 0,
-    seenBitmapRoot: '0x' + '6'.repeat(64),
-    includedBitmapRoot: '0x' + '3'.repeat(64),
+    seenBitmapRoot: CURRENT_VALID_BITMAP_ROOT,
+    includedBitmapRoot: CURRENT_VALID_BITMAP_ROOT,
     excludedSlots: 0,
     inputCommitment: '0x' + '4'.repeat(64),
     methodVersion: CURRENT_METHOD_VERSION,
@@ -145,16 +146,17 @@ function repeatVote(vote: VoteWithProof, count: number): VoteWithProof[] {
 }
 
 function requireLastChildEnvironment(): NodeJS.ProcessEnv {
-  const options = mockExec.mock.calls.at(-1)?.[1];
+  const options = mockHostProcess.mock.calls.at(-1)?.[2];
   if (!options || typeof options === 'function') {
     throw new Error('zkVM host execution options were not captured');
   }
-  return options.env ?? {};
+  return options.env;
 }
 
 describe('zkVM Executor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockHostProcess.mockResolvedValue(completedHostProcess);
   });
 
   afterEach(() => {
@@ -208,7 +210,7 @@ describe('zkVM Executor', () => {
         `zkVM input exceeds total Merkle path node budget: ${voteCount * pathLength} > ${MAX_GUEST_TOTAL_PATH_NODES}`,
       );
       expect(mockFs.writeFile).not.toHaveBeenCalled();
-      expect(mockExec).not.toHaveBeenCalled();
+      expect(mockHostProcess).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -247,7 +249,7 @@ describe('zkVM Executor', () => {
 
         await expect(executeZkVM(input)).rejects.toThrow(message);
         expect(mockFs.writeFile).not.toHaveBeenCalled();
-        expect(mockExec).not.toHaveBeenCalled();
+        expect(mockHostProcess).not.toHaveBeenCalled();
       },
     );
 
@@ -257,7 +259,7 @@ describe('zkVM Executor', () => {
 
       await expect(executeZkVM(input)).rejects.toThrow('timestamp must be a JavaScript safe integer');
       expect(mockFs.writeFile).not.toHaveBeenCalled();
-      expect(mockExec).not.toHaveBeenCalled();
+      expect(mockHostProcess).not.toHaveBeenCalled();
     });
 
     it('does not preflight-reject guest-accounted invalid records that fit Rust wire types', async () => {
@@ -287,7 +289,7 @@ describe('zkVM Executor', () => {
         rejectedRecords: 1,
       });
       expect(mockFs.writeFile).toHaveBeenCalled();
-      expect(mockExec).toHaveBeenCalled();
+      expect(mockHostProcess).toHaveBeenCalled();
     });
 
     it('should execute zkVM and return proof receipt', async () => {
@@ -301,8 +303,8 @@ describe('zkVM Executor', () => {
         missingSlots: 0,
         invalidPresentedSlots: 0,
         rejectedRecords: 0,
-        seenBitmapRoot: '0x' + '6'.repeat(64),
-        includedBitmapRoot: '0x' + '3'.repeat(64),
+        seenBitmapRoot: CURRENT_VALID_BITMAP_ROOT,
+        includedBitmapRoot: CURRENT_VALID_BITMAP_ROOT,
         excludedSlots: 0,
         inputCommitment: '0x' + '4'.repeat(64),
         methodVersion: CURRENT_METHOD_VERSION,
@@ -378,7 +380,7 @@ describe('zkVM Executor', () => {
       const electionConfigHashBytes = Array.from({ length: 32 }, (_, i) => i);
       const bulletinRootBytes = Array.from({ length: 32 }, (_, i) => 255 - i);
       const sthDigestBytes = Array.from({ length: 32 }, (_, i) => (i * 3) % 256);
-      const includedBitmapRootBytes = Array.from({ length: 32 }, (_, i) => (i * 5) % 256);
+      const bitmapRootBytes = Array.from({ length: 32 }, (_, i) => (i * 5) % 256);
       const inputCommitmentBytes = Array.from({ length: 32 }, (_, i) => (i * 7) % 256);
 
       const mockOutput = {
@@ -398,8 +400,8 @@ describe('zkVM Executor', () => {
         treeSize: 15,
         totalExpected: 15,
         sthDigest: sthDigestBytes,
-        seenBitmapRoot: Array.from({ length: 32 }, (_, i) => (i * 11) % 256),
-        includedBitmapRoot: includedBitmapRootBytes,
+        seenBitmapRoot: bitmapRootBytes,
+        includedBitmapRoot: bitmapRootBytes,
         inputCommitment: inputCommitmentBytes,
         imageId,
       };
@@ -463,8 +465,8 @@ describe('zkVM Executor', () => {
         missingSlots: 0,
         invalidPresentedSlots: 0,
         rejectedRecords: 0,
-        seenBitmapRoot: '0x' + '6'.repeat(64),
-        includedBitmapRoot: '0x' + '3'.repeat(64),
+        seenBitmapRoot: CURRENT_VALID_BITMAP_ROOT,
+        includedBitmapRoot: CURRENT_VALID_BITMAP_ROOT,
         excludedSlots: 0,
         inputCommitment: '0x' + '4'.repeat(64),
         methodVersion: CURRENT_METHOD_VERSION,
@@ -581,7 +583,9 @@ describe('zkVM Executor', () => {
         timestamp: Date.now(),
       };
 
-      await expect(executeZkVM(input)).rejects.toThrow('Current zkVM host output missing methodVersion');
+      await expect(executeZkVM(input)).rejects.toThrow(
+        'Current zkVM host output must contain the exact current fields',
+      );
     });
 
     it('should fail closed when host output only provides legacy count fields', async () => {
@@ -638,7 +642,9 @@ describe('zkVM Executor', () => {
         timestamp: Date.now(),
       };
 
-      await expect(executeZkVM(input)).rejects.toThrow('Current zkVM host output missing missingSlots');
+      await expect(executeZkVM(input)).rejects.toThrow(
+        'Current zkVM host output must contain the exact current fields',
+      );
     });
 
     it('should fail closed when host output only uses legacy snake_case keys', async () => {
@@ -695,7 +701,9 @@ describe('zkVM Executor', () => {
         timestamp: Date.now(),
       };
 
-      await expect(executeZkVM(input)).rejects.toThrow('Current zkVM host output missing methodVersion');
+      await expect(executeZkVM(input)).rejects.toThrow(
+        'Current zkVM host output must contain the exact current fields',
+      );
     });
 
     it('should fail closed when output omits top-level imageId even if receipt provides image_id', async () => {
@@ -756,7 +764,9 @@ describe('zkVM Executor', () => {
         timestamp: Date.now(),
       };
 
-      await expect(executeZkVM(input)).rejects.toThrow('Current zkVM host output missing imageId');
+      await expect(executeZkVM(input)).rejects.toThrow(
+        'Current zkVM host output must contain the exact current fields',
+      );
     });
 
     it('should fail closed when host output uses invalid 32-byte hash lengths', async () => {
@@ -789,105 +799,48 @@ describe('zkVM Executor', () => {
       await expect(executeZkVM(createBaseInput())).rejects.toThrow('Current zkVM host output invalid imageId');
     });
 
-    it('should surface zkVM execution errors', async () => {
-      const privateErrorText = 'PRIVATE_CHILD_PROCESS_ERROR_WITH_INPUT_PATH';
-      const execError = new Error(privateErrorText);
+    it('reports a failed host exit with bounded diagnostics', async () => {
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      mockExec.mockImplementationOnce((cmd: string, opts?: ExecOptions | ExecCallback, callback?: ExecCallback) => {
-        void cmd;
-        if (typeof opts === 'function') {
-          opts(execError, '', '');
-          return;
-        }
-        callback?.(execError, '', '');
-      });
-
-      const votes: VoteWithProof[] = [
-        {
-          choice: 0,
-          commitment: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
-          random: '0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
-          index: 0,
-          merklePath: [],
-        },
-      ];
-
-      const input: ZkVMInput = {
-        votes,
-        bulletinRoot: '0x9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba',
-        treeSize: votes.length,
-        totalExpected: votes.length,
-        electionId: '550e8400-e29b-41d4-a716-446655440000',
-        electionConfigHash: '0x' + '00'.repeat(32),
-        logId: '0x' + '00'.repeat(32),
-        timestamp: Date.now(),
-      };
-
-      await expect(executeZkVM(input)).rejects.toThrow(privateErrorText);
-      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateErrorText);
-      errorSpy.mockRestore();
-    });
-
-    it('does not log arbitrary host stderr', async () => {
-      const privateStderr = 'PRIVATE_HOST_STDERR_WITH_INPUT_PATH';
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      mockHostArtifacts(createValidCurrentHostOutput());
-      mockExec.mockImplementationOnce((cmd: string, opts?: ExecOptions | ExecCallback, callback?: ExecCallback) => {
-        void cmd;
-        if (typeof opts === 'function') {
-          opts(null, { stdout: '', stderr: privateStderr } as unknown as string, privateStderr);
-          return;
-        }
-        callback?.(null, { stdout: '', stderr: privateStderr } as unknown as string, privateStderr);
-      });
-
-      await expect(executeZkVM(createBaseInput())).resolves.toBeDefined();
-      const captured = JSON.stringify(warnSpy.mock.calls);
-      expect(captured).not.toContain(privateStderr);
-      expect(captured).toContain('stderr_present');
-      warnSpy.mockRestore();
-    });
-
-    it('should timeout after configured duration', async () => {
-      const timeoutError = Object.assign(new Error('Command failed: timeout'), {
-        code: 'ETIMEDOUT',
-      });
-      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      mockExec.mockImplementationOnce((cmd: string, opts?: ExecOptions | ExecCallback, callback?: ExecCallback) => {
-        void cmd;
-        if (typeof opts === 'function') {
-          opts(timeoutError, '', '');
-          return;
-        }
-        callback?.(timeoutError, '', '');
-      });
-
-      const votes: VoteWithProof[] = [
-        {
-          choice: 0,
-          commitment: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
-          random: '0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
-          index: 0,
-          merklePath: [],
-        },
-      ];
-
-      const input: ZkVMInput = {
-        votes,
-        bulletinRoot: '0x9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba',
-        treeSize: votes.length,
-        totalExpected: votes.length,
-        electionId: '550e8400-e29b-41d4-a716-446655440000',
-        electionConfigHash: '0x' + '00'.repeat(32),
-        logId: '0x' + '00'.repeat(32),
-        timestamp: Date.now(),
-      };
-
-      await expect(executeZkVM(input)).rejects.toThrow('zkVM execution timeout');
+      mockHostProcess.mockResolvedValueOnce({ ...completedHostProcess, outcome: 'nonzero_exit', exitCode: 7 });
+      await expect(executeZkVM(createBaseInput())).rejects.toThrow('zkVM host nonzero_exit');
       const captured = JSON.stringify(errorSpy.mock.calls);
       expect(captured).toContain('prover_failed');
-      expect(captured).not.toContain('Command failed: timeout');
-      errorSpy.mockRestore();
+      expect(captured).toContain('nonzero_exit');
+      expect(captured).toContain('exit_code');
+    });
+
+    it('reports stderr presence without carrying private output', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockHostArtifacts(createValidCurrentHostOutput());
+      mockHostProcess.mockResolvedValueOnce({ ...completedHostProcess, stderrPresent: true });
+      await expect(executeZkVM(createBaseInput())).resolves.toBeDefined();
+      expect(JSON.stringify(warnSpy.mock.calls)).toContain('stderr_present');
+    });
+
+    it('retains the host deadline as the failure reason', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockHostProcess.mockResolvedValueOnce({
+        ...completedHostProcess,
+        outcome: 'timeout',
+        stage: 'proving',
+        exitCode: null,
+        signal: 'SIGTERM',
+      });
+      await expect(executeZkVM(createBaseInput())).rejects.toThrow('zkVM execution timeout');
+      const captured = JSON.stringify(errorSpy.mock.calls);
+      expect(captured).toContain('prover_failed');
+      expect(captured).toContain('proving');
+      expect(captured).toContain('timeout');
+    });
+
+    it.each(['ENOENT', 'EACCES'])('continues cleanup after %s without replacing the primary error', async (code) => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockHostProcess.mockResolvedValueOnce({ ...completedHostProcess, outcome: 'nonzero_exit', exitCode: 7 });
+      mockFs.unlink.mockRejectedValueOnce(Object.assign(new Error('PRIVATE_PATH'), { code }));
+      await expect(executeZkVM(createBaseInput())).rejects.toThrow('zkVM host nonzero_exit');
+      expect(mockFs.unlink).toHaveBeenCalledTimes(5);
+      expect(mockFs.unlink.mock.calls.at(-1)?.[0]).toMatch(/-bitmap\.json$/);
     });
   });
 });

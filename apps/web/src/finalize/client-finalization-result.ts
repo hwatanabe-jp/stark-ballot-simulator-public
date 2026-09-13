@@ -1,11 +1,8 @@
 import { VOTE_CHOICES, type VoteChoice } from '@stark-ballot/verification/shared/constants';
 import type { FinalizationResource } from '@stark-ballot/api-contract';
-import type {
-  PublicVerificationErrorMessage,
-  PublicVerificationReport,
-  PublicVerificationResult,
-  VerificationStatus,
-} from '@stark-ballot/verification/shared/types';
+import type { PublicVerificationResult } from '@stark-ballot/verification/public-result';
+import type { VerificationStatus } from '@stark-ballot/verification/shared/types';
+import { VERIFICATION_STATUS_VALUES } from '@stark-ballot/verification/shared/types';
 import { sanitizeFinalizationPayloadVerificationStatus } from '@stark-ballot/verification/fail-closed-status';
 import { isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import {
@@ -21,7 +18,7 @@ import {
   resolveFinalizationTamperDetected,
   resolveScenarioTamperCount,
 } from '@stark-ballot/verification/finalization-tamper';
-import { isPublicVerificationErrorMessage } from '@stark-ballot/verification/public-result';
+import { parsePublicVerificationResult } from '@stark-ballot/verification/public-result';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
 
@@ -69,14 +66,6 @@ export interface ClientFinalizationSnapshot {
 }
 
 const IMAGE_ID_BYTE_LENGTH = 32;
-const VERIFICATION_STATUS_VALUES: readonly VerificationStatus[] = [
-  'success',
-  'failed',
-  'dev_mode',
-  'not_run',
-  'running',
-];
-
 function getSafeFinalizationId(value: Record<string, unknown>): string | undefined {
   const finalizationId = getStringProperty(value, 'finalizationId');
   return finalizationId && isSafeVerifierSegment(finalizationId) ? finalizationId : undefined;
@@ -198,61 +187,25 @@ function resolveScenarios(value: Record<string, unknown>): string[] | undefined 
   return normalized.length > 0 ? normalized : undefined;
 }
 
-function resolveVerificationReport(value: Record<string, unknown>): PublicVerificationReport | undefined {
-  const report =
-    getRecordProperty(getRecordProperty(value, 'verificationResult'), 'report') ??
-    getRecordProperty(value, 'verificationReport');
-  if (!report) {
-    return undefined;
-  }
-
-  const status = toVerificationStatus(getStringProperty(report, 'status'));
-  if (!status) {
-    return undefined;
-  }
-
-  const receiptImageId = report['receipt_image_id'];
-  const verifierVersion = getStringProperty(report, 'verifier_version');
-  const verifiedAt = getStringProperty(report, 'verified_at');
-  const durationMs = getNumberProperty(report, 'duration_ms');
-  const expectedImageId = getStringProperty(report, 'expected_image_id');
-  return {
-    status,
-    ...omitUndefinedProperties({
-      verifier_version: verifierVersion,
-      verified_at: verifiedAt,
-      duration_ms: typeof durationMs === 'number' ? durationMs : undefined,
-      expected_image_id: expectedImageId,
-    }),
-    ...(receiptImageId === null || typeof receiptImageId === 'string' ? { receipt_image_id: receiptImageId } : {}),
-    ...(typeof report['dev_mode_receipt'] === 'boolean' ? { dev_mode_receipt: report['dev_mode_receipt'] } : {}),
-    ...(Array.isArray(report['errors'])
-      ? {
-          errors: report['errors'].filter(
-            (entry): entry is PublicVerificationErrorMessage =>
-              typeof entry === 'string' && isPublicVerificationErrorMessage(entry),
-          ),
-        }
-      : {}),
-  };
-}
-
 function resolveVerificationResult(
   value: Record<string, unknown>,
   verificationStatus: VerificationStatus | undefined,
 ): PublicVerificationResult | undefined {
-  const verificationResult = getRecordProperty(value, 'verificationResult');
-  const status = verificationStatus ?? toVerificationStatus(getStringProperty(verificationResult, 'status'));
-  if (!status) {
-    return undefined;
+  const nestedCandidate = value['verificationResult'];
+  if (nestedCandidate !== undefined) {
+    const nested = parsePublicVerificationResult(nestedCandidate);
+    if (!nested || (verificationStatus !== undefined && nested.status !== verificationStatus)) {
+      return undefined;
+    }
+    return nested;
   }
 
-  const report = resolveVerificationReport(value);
-
-  return {
-    status,
-    ...(report ? { report } : {}),
-  };
+  return verificationStatus === undefined
+    ? undefined
+    : parsePublicVerificationResult({
+        status: verificationStatus,
+        ...(value['verificationReport'] !== undefined ? { report: value['verificationReport'] } : {}),
+      });
 }
 
 function resolveClientSnapshotImageId(
@@ -317,6 +270,13 @@ export function resolveCanonicalFinalizationPayload(value: unknown): ClientFinal
   const receiptPublication = resolveReceiptPublication(sanitized);
   const scenarios = resolveScenarios(sanitized);
   const verificationResult = resolveVerificationResult(sanitized, verificationStatus);
+  const hasVerificationState =
+    sanitized['verificationStatus'] !== undefined ||
+    sanitized['verificationReport'] !== undefined ||
+    sanitized['verificationResult'] !== undefined;
+  if (hasVerificationState && !verificationResult) {
+    return null;
+  }
   const tamperSummary = resolveTamperSummary(sanitized);
 
   return {

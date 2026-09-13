@@ -1,179 +1,90 @@
-# シナリオ一覧
+# シナリオごとに何が食い違うか
 
-改ざんシナリオ S0〜S5 の定義と、実装上どこを改変するかを整理します。
-説明の中心は、zkVM 入力、主張集計（claimed tally）、ジャーナル統計（missing/invalid/excluded）の関係です。
-
-## 教育モードの目的
-
-改ざんシナリオは、暗号的検証が実際に機能することを確認するために設計されています。
-
-- 正常ケース（S0）を基準として、検証パイプラインが通過する状態を確認する
-- 攻撃シナリオ（S1〜S5）を適用して、どの不変条件が破れると検証が失敗するかを確認する
-
-## 攻撃の類型
-
-- **入力改ざん** (`tamperMode=input`): S1 / S3 / S5
-- **主張改ざん** (`tamperMode=claim`): S2 / S4
-
-この分類は「改ざんがどこに入るか」のみを示します。
-どのチェックで失敗するかの詳細は [検出メカニズム](detection-mechanism.md) を参照してください。
-
-## 実装上の共通前提
-
-- 1 回の finalize で選択されるシナリオは 1 つ（S0〜S5）
-  - UI: `/aggregate` は single-select（S0〜S5 のラジオボタン）
-  - API: `POST /api/sessions/:sessionId/finalizations` は `scenarioId` を 1 つ受け取る
-- `totalExpected` は 64（ユーザー 1 + ボット 63）
-- 掲示板（CT Merkle）は追記専用で、シナリオ適用で既存エントリは削除しない
-- `tamperMode` は `none` / `input` / `claim` の 3 種
-
-### 実行モードと検証の前提
-
-- 本章は実 API 経路（`POST /api/sessions/:sessionId/finalizations` → `finalizeSessionHandler` → `finalizeSessionUsecase` → `finalizeSync|finalizeAsync`）を基準に説明する
-- finalize 実行モード（同期 / 非同期）は `RUNTIME_PROFILE` が一意に決める。profile ごとの意味論は [AWS runtime 境界](../aws/runtime-boundary.md#semantic-runtime-profiles) を参照
-- mock mode の差分: browser mock（`VITE_RUNTIME_PROFILE=local-demo`）の API fixture は本章と異なるチェック結果を返すことがあり、`local-demo` / `static-mock-e2e` の mock zkVM executor は production STARK proof を生成しない
-- `local-proof-development` の dev-mode receipt も production STARK proof ではない
-- 本章の「主な失敗点」は STARK 検証が `success` の局面を前提とする（zkGate の詳細は [検出メカニズム](detection-mechanism.md) を参照）
-
-`tamperMode` は、シナリオ変更を zkVM 入力へ反映するかどうかを決めます。
-
-```mermaid
-flowchart TD
-  A[シナリオ選択] --> B{tamperMode}
-  B -->|none / claim| C[元の votes を zkVM 入力へ]
-  B -->|input| D[modifiedVotes を zkVM 入力へ]
-  C --> E[zkVM 実行]
-  D --> E
-```
+B を選んだユーザー票はインデックス 0、ボット票は残り 63 票です。集計画面で選ぶシナリオは一回につき一つで、掲示板の 64 スロットはそのまま残します。操作するのは、ゲストへ渡す票か、画面へ出す得票数です。
 
 ## シナリオ一覧表
 
-| シナリオ | 類型         | tamperMode | zkVM 入力             |
-| -------- | ------------ | ---------- | --------------------- |
-| S0       | 正常         | `none`     | 元の 64 票            |
-| S1       | 除外         | `input`    | 63 票（ユーザー除外） |
-| S2       | 主張改ざん   | `claim`    | 元の 64 票            |
-| S3       | 除外         | `input`    | 63 票（ボット除外）   |
-| S4       | 主張改ざん   | `claim`    | 元の 64 票            |
-| S5       | ランダム除外 | `input`    | 63 票（通常）         |
-
-シナリオ別に失敗するチェックは [検出メカニズム > シナリオ別の主な失敗チェック](detection-mechanism.md#シナリオ別の主な失敗チェックstark-解決後) を参照してください。
+| シナリオ | 加える変更                                             | ゲストへ渡す票数 | 検出する食い違い                   |
+| -------- | ------------------------------------------------------ | ---------------- | ---------------------------------- |
+| S0       | 変更しない                                             | 64               | なし                               |
+| S1       | ユーザー票を入力から外す                               | 63               | 掲示板の一票が未提示。自票も未計上 |
+| S2       | ユーザーの候補から一票を別候補へ移した得票数を表示する | 64               | 表示集計と証明された集計が違う     |
+| S3       | ボット票を入力から外す                                 | 63               | 掲示板の一票が未提示               |
+| S4       | ボットの候補から一票を別候補へ移した得票数を表示する   | 64               | 表示集計と証明された集計が違う     |
+| S5       | ランダムに一票を入力から外す                           | 63               | 掲示板の一票が未提示               |
 
 ## S0: 正常（改ざんなし）
 
-改ざんを適用しない基準シナリオです。
+元の 64 票をゲストへ渡します。各票が有効なら全スロットが計上され、`excludedSlots = 0`、表示集計と `verifiedTally` は一致します。ユーザー票の included ビットも 1 になります。
 
-| 項目                | 値     |
-| ------------------- | ------ |
-| tamperMode          | `none` |
-| zkVM 入力票数       | 64     |
-| claimed と verified | 一致   |
-| `excludedSlots`     | 0      |
+これは他のシナリオと比べる基準です。S0 を選んだこと自体は検証成功の根拠になりません。手元の証拠、掲示板の証明、STARK なども成功し、補助チェックにも制限がない場合に Verified を表示します。
 
 ## S1: ユーザー票の除外
 
-ユーザー票（インデックス 0）を `modifiedVotes` から削除し、63 票を zkVM に渡します。
+インデックス 0 の票を集計用の入力から外し、63 票をゲストへ渡します。掲示板には元のコミットメントが残っているので、投票時の包含証明や追記の整合性証明は成功できます。
 
-| 項目                | 値                                                             |
-| ------------------- | -------------------------------------------------------------- |
-| tamperMode          | `input`                                                        |
-| zkVM 入力票数       | 63                                                             |
-| claimed と verified | 一致（どちらも 63 票入力ベース）                               |
-| ジャーナル統計      | `missingSlots=1`, `invalidPresentedSlots=0`, `excludedSlots=1` |
+しかしゲストは、掲示板のサイズが 64 なのに一つのスロットを受け取っていないと数えます。残りの票が有効なら、ジャーナルは次の値になります。
 
-失敗するチェックは [検出メカニズム](detection-mechanism.md#シナリオ別の主な失敗チェックstark-解決後) を参照してください。
+```text
+missingSlots = 1
+invalidPresentedSlots = 0
+excludedSlots = 1
+```
+
+これにより `counted_missing_indices_zero` が失敗します。自票のビットマップ証明を取得できれば、index 0 の seen と included がともに 0 であることも確認でき、`counted_my_vote_included` は失敗します。「入力には来たが無効だった」ではなく、「ゲストへ提示されなかった」と説明できます。
+
+表示集計も 63 票の入力を基にするため、表示と `verifiedTally` は一致します。STARK 検証も成功できますが、全 64 スロットの完全性を満たさないため、全体は Verification Failed です。自票の証明が不足していても、全体の一票除外という事実は消えません。
 
 ## S2: ユーザー票に関する主張集計の改ざん
 
-ユーザー票に対する「主張集計（表示する tally）」のみ改ざんします。
-zkVM には元の 64 票を渡します。
-
-| 項目                | 値                                         |
-| ------------------- | ------------------------------------------ |
-| tamperMode          | `claim`                                    |
-| zkVM 入力票数       | 64（元データ）                             |
-| claimed と verified | 不一致（ユーザー選択肢が -1、別候補が +1） |
-| `excludedSlots`     | 0（通常）                                  |
-| `inputCommitment`   | zkVM 入力由来のため通常は一致              |
-
-失敗するチェックは [検出メカニズム](detection-mechanism.md#s2s4-の主張集計改ざん) を参照してください。
-
-## S3: ボット票の除外
-
-現行実装ではボット票インデックス `1`（`targetBotId` 初期値）を削除し、63 票を zkVM に渡します。
-
-| 項目                | 値                                                             |
-| ------------------- | -------------------------------------------------------------- |
-| tamperMode          | `input`                                                        |
-| zkVM 入力票数       | 63                                                             |
-| claimed と verified | 一致（どちらも 63 票入力ベース）                               |
-| ジャーナル統計      | `missingSlots=1`, `invalidPresentedSlots=0`, `excludedSlots=1` |
-
-### S1 との違い
-
-- S1: ユーザー自身の未集計をビットマップで直接示せる
-- S3: ユーザー票は含まれるが、集計全体の完全性違反で検出される
-
-## S4: ボット票に関する主張集計の改ざん
-
-1 票のボット票に関する「主張集計」だけを改ざんします。
-zkVM 入力は元の 64 票のままです。
-
-| 項目                | 値                                             |
-| ------------------- | ---------------------------------------------- |
-| tamperMode          | `claim`                                        |
-| zkVM 入力票数       | 64（元データ）                                 |
-| claimed と verified | 不一致（対象ボットの元候補が -1、別候補が +1） |
-| `excludedSlots`     | 0（通常）                                      |
-| `inputCommitment`   | zkVM 入力由来のため通常は一致                  |
-
-S2 と同様に、改ざん対象は `tally.counts` 側です。失敗するチェックは [検出メカニズム](detection-mechanism.md#s2s4-の主張集計改ざん) を参照してください。
-
-## S5: ランダムな票の除外
-
-現行実装では、64 票からランダムに 1 票を選び、`modifiedVotes` から削除します。
-選んだ票の候補を別候補へ変える処理はありません。
-
-### S5 の処理
-
-- `tamperMode` は常に `input` のため、zkVM 入力は常に `modifiedVotes` が使われる
-- シナリオ変更は `IGNORED` として記録され、`ignoredCount=1`, `recountedCount=0` になる
-- 元の掲示板インデックスは保存される（失敗するチェックは [検出メカニズム](detection-mechanism.md#s5-の除外処理) を参照）
-
-| 項目           | 値                                                             |
-| -------------- | -------------------------------------------------------------- |
-| tamperMode     | `input`                                                        |
-| zkVM 入力票数  | 63（通常）                                                     |
-| シナリオ変更   | ランダムに選ばれた 1 票を `IGNORED`                            |
-| ジャーナル統計 | `missingSlots=1`, `invalidPresentedSlots=0`, `excludedSlots=1` |
-
-## ジャーナル統計の扱い（sync / async 共通）
-
-現行実装では、`missingSlots` / `invalidPresentedSlots` / `excludedSlots` / `validVotes` などのジャーナル統計は、sync / async いずれも **zkVM が返した proof-derived な値をそのまま使います**。
-
-- sync / async いずれも、finalize 後にジャーナル統計を上書きしない
-- target async finalize は finalization writer が S3 の `bundle.zip` から復元した `journal` をそのまま使う
-
-シナリオ由来の `ignoredCount` / `recountedCount` / `claimedCounts` は presentation 用であり、`journal` の統計値を書き換えません。
-
-- `ignoredCount` / `recountedCount` → `tamperSummary` や `tamperedCount` に反映
-- `claimedCounts` → S2/S4 の表示用 tally
-
-`tamperMode=claim`（S2/S4）でも同様に、ジャーナル統計は zkVM の値のままです。
-
-## 集計フローへの挿入点
+ゲストには元の 64 票を渡します。表示側だけで B の得票数を一つ減らし、別の候補を一つ増やします。加算先は B 以外から選び、ユーザー票の振替先として表示する値とも一致させます。
 
 ```mermaid
 flowchart TB
-  A[セッション votes 読み込み] --> B[シナリオ適用]
-  B --> C{tamperMode}
-  C -- input --> D[modifiedVotes で zkVM 入力生成]
-  C -- claim --> E[元の votes で zkVM 入力生成]
-  D --> F[zkVM 実行]
-  E --> F
-  F --> G[finalizationResult 保存]
-  B --> H[claimedCounts 計算]
-  H --> G
+  V["元の 64 票"] --> P["ゲストの計算と証明"]
+  P --> J["ジャーナルの得票数"]
+  V --> T["表示用に B を −1<br/>別候補を ＋1"]
+  J --> C{"候補ごとに一致するか"}
+  T --> C
+  C --> F["不一致を検出"]
 ```
+
+合計はどちらも 64 なので、合計だけでは検出できません。候補ごとに比較する `counted_tally_consistent` が失敗します。入力やジャーナルは変えていないため、入力コミットメント、自票の包含、STARK は通常成功します。必要な他の証拠が揃えば、最終理由は `published_tally_mismatch` です。
+
+この場合、ZIP に収める計算の証拠は正常です。表示集計は ZIP に入っていないため、ZIP のローカル検証だけで S2 の表示改変まで再現検出できるとは限りません。表示された値との比較が必要です。
+
+## S3: ボット票の除外
+
+現在の実装はインデックス 1 のボット票を入力から外し、63 票を渡します。残りの票が有効なら、S1 と同じく `missingSlots = 1`、`invalidPresentedSlots = 0`、`excludedSlots = 1` です。
+
+`counted_missing_indices_zero` は失敗しますが、ユーザー票の index 0 は計上されるので、自票のビットマップ確認は成功できます。このとき最終理由は `votes_excluded` です。自分の票が数えられたことと、全体の票が欠けていないことを別々に確認する必要性が分かります。
+
+## S4: ボット票に関する主張集計の改ざん
+
+ボット票を一つランダムに選び、その元候補の得票数を表示側だけで一つ減らし、別の候補へ一つ加えます。ゲストに渡す入力は元の 64 票です。
+
+S2 と同様に `counted_tally_consistent` が表示とジャーナルの差を検出します。入力コミットメント、STARK、ユーザー票の包含は通常成功できます。必要な他の証拠が揃えば、全体の失敗理由は `published_tally_mismatch` です。
+
+## S5: ランダムな票の除外
+
+64 票の中からランダムに一票を選んで、集計入力から外します。残りの票のインデックスは詰め直さず、掲示板上の位置を保ちます。候補を書き換える操作はしません。
+
+`missingSlots = 1` と `excludedSlots = 1` により、`counted_missing_indices_zero` が失敗します。選ばれたのがユーザー票なら、自票の証明でも未計上を示せます。ボット票なら自票は含まれたままです。どちらの場合も、全体の完全性の確認で検出できます。
+
+表示集計は除外後の 63 票を基にするので、ジャーナルと一致します。`counted_tally_consistent` の成功は、この一票除外を見落とした結果ではなく、比較する対象が異なるためです。
+
+## 改ざんを反映する場所
+
+実装では S1 / S3 / S5 を `tamperMode = input`、S2 / S4 を `tamperMode = claim`、S0 を `none` として扱います。入力改変の場合だけ、変更後の票集合をゲストへ渡します。表示改変の場合は元の票を渡し、変更後の得票数を表示用に保存します。
+
+同期・非同期のどちらでも、ゲストが返したジャーナルの集計値や除外数を、シナリオ説明に合わせて上書きしません。`ignoredCount`、`recountedCount`、`claimedCounts` は表示用の情報です。S5 の変更記録は `IGNORED`、`ignoredCount = 1`、`recountedCount = 0` です。
+
+API は、シナリオ、除外数、改ざん数、対象ボット、得票差の説明も相互に検査します。S0 / S1 / S3 / S5 は表示と検証済み集計の一致を要求し、S2 / S4 は一候補 −1、別候補 ＋1 という差を要求します。説明と証拠が矛盾する応答を、シナリオの正常な結果として受理することはありません。
+
+## 実行モードと検証の前提
+
+上の結果は、実 API での処理について、残りの証拠が有効で STARK 検証が成功した場合を説明しています。実行場所は runtime profile が選ぶ[同期・非同期の構成](../aws/runtime-boundary.md)に従います。
+
+ブラウザ mock の固定応答は、実 API と異なるチェック結果を返すことがあります。`local-demo` と `static-mock-e2e` は本番用 STARK 証明を生成せず、`local-proof-development` のフェイクレシートも本番用の暗号的裏付けにはなりません。証明未完了や証拠不足が加わる場合の状態は、[チェック結果の対応表](detection-mechanism.md)で区別しています。
 
 <!-- source: packages/api-contract/src/routes/inventory.ts, packages/runtime-config/src/env/runtimeProfile.ts, packages/domain/src/lib/scenarios/processor.ts, packages/domain/src/lib/finalize/scenario-application.ts, packages/application/src/finalize/usecases/finalize-session.ts, packages/application/src/finalize/usecases/finalize-sync.ts, packages/application/src/finalize/finalization-result.ts, packages/node-adapters/src/zkvm/executor.ts, apps/api/src/server/api/handlers/finalize.ts, infra/lambdas/finalization-writer/handler.ts, packages/aws-adapters/src/finalize/async-prover-artifacts.ts, apps/web/src/mock-api/fixtures.ts, apps/web/src/mock-api/handlers.ts, .env.local.example -->

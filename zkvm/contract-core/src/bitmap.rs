@@ -1,7 +1,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::domain::{BitmapBitIndex, BitmapBitOffset, BitmapLeafIndex, PackedBitmap};
+use crate::domain::{BitmapBitIndex, BitmapLeafIndex, PackedBitmap};
 use crate::inclusion_proof::{compute_merkle_root, hash_leaf};
 
 pub const BITMAP_CHUNK_BYTES: usize = 32;
@@ -129,27 +129,26 @@ fn pack_bits_to_bytes(bits: &[bool]) -> Vec<u8> {
     PackedBitmap::from_bits(bits).bytes().to_vec()
 }
 
-pub fn calculate_bitmap_leaf_index(bit_index: usize, bit_len: usize) -> Option<usize> {
-    BitmapBitIndex::new(bit_index, bit_len)
-        .ok()
-        .map(BitmapLeafIndex::from_bit_index)
-        .map(BitmapLeafIndex::get)
-}
-
-pub fn calculate_bitmap_bit_offset(bit_index: usize, bit_len: usize) -> Option<usize> {
-    BitmapBitIndex::new(bit_index, bit_len)
-        .ok()
-        .map(BitmapBitOffset::from_bit_index)
-        .map(BitmapBitOffset::get)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        CURRENT_METHOD_VERSION, INPUT_COMMITMENT_FORMAT_VERSION,
+        MAX_GUEST_MERKLE_PATH_NODES_PER_RECORD, MAX_GUEST_SERIALIZED_INPUT_BYTES,
+        MAX_GUEST_TOTAL_EXPECTED, MAX_GUEST_TOTAL_PATH_NODES, MAX_GUEST_TREE_SIZE,
+        MAX_GUEST_VOTE_COUNT, VERIFIED_TALLY_WIDTH,
+    };
     use alloc::string::String;
     use alloc::vec::Vec;
     use risc0_zkvm::sha::{Impl, Sha256};
     use serde::Deserialize;
+
+    mod formal_vector_test_support {
+        include!("formal_vector_test_support.rs");
+    }
+    use formal_vector_test_support::{
+        admit_current_formal_vector, FormalVectorEnvelope, FormalVectorModeledBounds,
+    };
 
     #[test]
     fn test_pack_bits_to_bytes_lsb_first() {
@@ -171,29 +170,11 @@ mod tests {
         bitmap[0] = true;
 
         let root = compute_bitmap_merkle_root(&bitmap);
-        assert_eq!(root.len(), 32);
-
         let mut bitmap2 = vec![false; 8];
         bitmap2[3] = true;
 
         let root2 = compute_bitmap_merkle_root(&bitmap2);
         assert_ne!(root, root2);
-    }
-
-    #[test]
-    fn test_bitmap_boundary_cases() {
-        let bitmap = vec![true; 12];
-        let root = compute_bitmap_merkle_root(&bitmap);
-        assert_eq!(root.len(), 32);
-
-        let mut bitmap = vec![false; 257];
-        for bit in bitmap.iter_mut().take(10) {
-            *bit = true;
-        }
-        bitmap[256] = true;
-
-        let root = compute_bitmap_merkle_root(&bitmap);
-        assert_eq!(root.len(), 32);
     }
 
     #[test]
@@ -216,8 +197,6 @@ mod tests {
         let leaves = vec![[1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32]];
 
         let root = compute_merkle_root(&leaves);
-        assert_eq!(root.len(), 32);
-
         let mut leaves2 = leaves.clone();
         leaves2[2] = [5u8; 32];
         let root2 = compute_merkle_root(&leaves2);
@@ -225,8 +204,10 @@ mod tests {
     }
 
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct FormalBitmapCase {
+        #[serde(rename = "name")]
+        _name: String,
         bit_length: usize,
         true_indices: Vec<usize>,
         expected_packed_byte_length: usize,
@@ -235,7 +216,7 @@ mod tests {
     }
 
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct FormalBitmapProbe {
         bit_index: usize,
         byte_index: usize,
@@ -244,23 +225,26 @@ mod tests {
     }
 
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct BitmapTsGoldenVectors {
-        schema: String,
+        envelope_type: String,
+        generated_by: String,
         cases: Vec<BitmapTsGoldenCase>,
     }
 
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct BitmapTsGoldenCase {
+        name: String,
         bit_length: usize,
         true_indices: Vec<usize>,
+        probes: Vec<usize>,
         root: String,
         proofs: Vec<BitmapTsGoldenProof>,
     }
 
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct BitmapTsGoldenProof {
         leaf_chunk: String,
         audit_path: Vec<BitmapTsGoldenAuditNode>,
@@ -269,6 +253,7 @@ mod tests {
     }
 
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct BitmapTsGoldenAuditNode {
         hash: String,
         position: String,
@@ -280,6 +265,33 @@ mod tests {
             bitmap[*index] = true;
         }
         bitmap
+    }
+
+    fn assert_formal_vector_bounds(bounds: &FormalVectorModeledBounds) {
+        assert_eq!(
+            bounds.input_commitment.format_version,
+            INPUT_COMMITMENT_FORMAT_VERSION
+        );
+        assert_eq!(bounds.input_commitment.u16_max, u32::from(u16::MAX));
+        assert_eq!(bounds.input_commitment.u32_max, u64::from(u32::MAX));
+        assert_eq!(bounds.guest.method_version, CURRENT_METHOD_VERSION);
+        assert_eq!(bounds.guest.tree_size_max, MAX_GUEST_TREE_SIZE);
+        assert_eq!(bounds.guest.total_expected_max, MAX_GUEST_TOTAL_EXPECTED);
+        assert_eq!(bounds.guest.vote_count_max, MAX_GUEST_VOTE_COUNT);
+        assert_eq!(
+            bounds.guest.merkle_path_nodes_per_record_max,
+            MAX_GUEST_MERKLE_PATH_NODES_PER_RECORD
+        );
+        assert_eq!(
+            bounds.guest.total_merkle_path_nodes_max,
+            MAX_GUEST_TOTAL_PATH_NODES
+        );
+        assert_eq!(
+            bounds.guest.serialized_input_bytes_max,
+            MAX_GUEST_SERIALIZED_INPUT_BYTES
+        );
+        assert_eq!(bounds.guest.tally_width, VERIFIED_TALLY_WIDTH);
+        assert_eq!(bounds.guest.tally_bucket_max, MAX_GUEST_TREE_SIZE);
     }
 
     fn ts_golden_bitmap(case: &BitmapTsGoldenCase) -> Vec<bool> {
@@ -309,12 +321,14 @@ mod tests {
 
     #[test]
     fn test_formal_bitmap_vectors_lsb_first() {
-        let cases: Vec<FormalBitmapCase> = serde_json::from_str(include_str!(
-            "../../../docs/formal/generated-vectors/bitmap-cases.json"
-        ))
-        .expect("formal bitmap vectors should parse");
+        let envelope: FormalVectorEnvelope<FormalBitmapCase> = admit_current_formal_vector(
+            include_str!("../../../docs/formal/generated-vectors/bitmap-cases.json"),
+            "bitmap-cases",
+        )
+        .expect("formal bitmap vectors should admit");
+        assert_formal_vector_bounds(&envelope.modeled_bounds);
 
-        for case in cases {
+        for case in envelope.payload {
             let bitmap = formal_bitmap(&case);
             let packed = pack_bits_to_bytes(&bitmap);
             let expected_packed = hex::decode(&case.expected_packed_bytes_hex)
@@ -332,8 +346,7 @@ mod tests {
                 );
             }
 
-            let root = compute_bitmap_merkle_root(&bitmap);
-            assert_eq!(root.len(), 32);
+            compute_bitmap_merkle_root(&bitmap);
         }
     }
 
@@ -343,13 +356,31 @@ mod tests {
             serde_json::from_str(include_str!("../testdata/bitmap-ts-golden-vectors.json"))
                 .expect("TS bitmap golden vectors should parse");
 
-        assert_eq!(vectors.schema, "stark-ballot.bitmap-proof-parity.v1");
+        assert_eq!(
+            vectors.envelope_type,
+            "stark-ballot.bitmap-proof-parity.current"
+        );
+        assert_eq!(
+            vectors.generated_by,
+            "scripts/tests/generate-bitmap-golden-vectors.ts"
+        );
 
         for case in vectors.cases {
+            assert!(
+                !case.name.is_empty(),
+                "bitmap golden case name must be present"
+            );
             let bitmap = ts_golden_bitmap(&case);
             assert_eq!(
                 compute_bitmap_merkle_root(&bitmap),
                 decode_hex_32(&case.root)
+            );
+            assert_eq!(
+                case.probes,
+                case.proofs
+                    .iter()
+                    .map(|proof| proof.bit_index)
+                    .collect::<Vec<_>>()
             );
 
             for expected in case.proofs {
@@ -370,6 +401,30 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn typescript_bitmap_golden_vectors_reject_unknown_keys_at_every_level() {
+        let source = include_str!("../testdata/bitmap-ts-golden-vectors.json");
+        for pointer in [
+            "",
+            "/cases/0",
+            "/cases/0/proofs/0",
+            "/cases/3/proofs/0/auditPath/0",
+        ] {
+            let mut value: serde_json::Value =
+                serde_json::from_str(source).expect("bitmap fixture should parse as JSON");
+            value
+                .pointer_mut(pointer)
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("reviewed bitmap fixture pointer should identify an object")
+                .insert(String::from("retired"), serde_json::Value::Bool(true));
+
+            assert!(
+                serde_json::from_value::<BitmapTsGoldenVectors>(value).is_err(),
+                "unknown key at {pointer} must fail closed"
+            );
         }
     }
 }

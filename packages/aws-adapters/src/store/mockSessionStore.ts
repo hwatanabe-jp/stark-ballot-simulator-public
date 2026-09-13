@@ -5,6 +5,7 @@
  * persists the retired all-purpose session aggregate.
  */
 
+import { encodeFinalizationBitmapData } from '@stark-ballot/application/finalize/finalization-storage';
 import crypto from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -20,19 +21,21 @@ import {
   cloneSuccessfulFinalizationRecord,
   isSuccessfulFinalizationRecord,
 } from '@stark-ballot/application/finalize/successful-finalization-commit-admission';
-import type {
-  FinalizationBitmapData,
-  FinalizationFailedPayload,
-  FinalizationQueuedPayload,
-  FinalizationRunningPayload,
-  FinalizationStore,
-  SuccessfulFinalizationCommitInput,
-  SuccessfulFinalizationCommitResult,
-  FinalizationSucceededPayload,
-  FinalizationTimedOutPayload,
+import {
+  buildFinalizationCommand,
+  requestedFinalizationStatus,
+  type FinalizationBitmapRecord,
+  type FinalizationFailedPayload,
+  type FinalizationQueuedPayload,
+  type FinalizationRunningPayload,
+  type FinalizationStore,
+  type SuccessfulFinalizationCommitInput,
+  type SuccessfulFinalizationCommitResult,
+  type FinalizationSucceededPayload,
+  type FinalizationTimedOutPayload,
 } from '@stark-ballot/application/finalize/finalization-store';
 import {
-  parseFinalizationRecord,
+  finalizationRecordCodec,
   type FinalizationRecord,
 } from '@stark-ballot/application/finalize/finalization-record';
 import {
@@ -50,6 +53,11 @@ import {
   buildSessionRecords,
   evaluateSessionVoteMutation,
 } from '@stark-ballot/application/session/session-mutation-policy';
+import type {
+  SessionVoteMutationStore,
+  SessionVoteStoreError,
+} from '@stark-ballot/application/session/session-vote-store';
+import { ApplicationErrorCode, type Result } from '@stark-ballot/application';
 import {
   assertNoAwsRuntimeTransitionMetadata,
   type AwsFinalizationFailedPayload,
@@ -73,10 +81,11 @@ import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import type {
   AddVoteResult,
+  BotVoteCommand,
   SessionIdentityRecord,
   SessionVotingRecord,
   StoredVoteRecord,
-  VoteData,
+  UserVoteCommand,
 } from '@stark-ballot/domain/types/sessionRecords';
 import { parseSessionIdentityRecord } from '@stark-ballot/domain/types/sessionRecords';
 import type { SessionVotingSummary, VoteStore } from '@stark-ballot/domain/types/voteStore';
@@ -89,7 +98,8 @@ import {
   type VerificationObservationWrite,
 } from '@stark-ballot/domain/types/verificationObservation';
 import { generateVoteId } from '@stark-ballot/domain/vote/voteId';
-import type { VerificationReport, VerificationResult } from '@stark-ballot/verification/shared/types';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
+import type { VerificationResult } from '@stark-ballot/verification/shared/types';
 import { createElectionId } from '@stark-ballot/zkvm-contract/zkvm/types';
 import {
   buildDefaultElectionConfig,
@@ -163,11 +173,11 @@ const AWS_SUCCEEDED_PAYLOAD_KEYS = new Set([
   'bundleMetadata',
 ]);
 
-function buildScopedKey(sessionId: string, finalizationId: string): string {
+function buildScopedKey(sessionId: SessionId, finalizationId: string): string {
   return `${sessionId}\u0000${finalizationId}`;
 }
 
-function deleteSessionScopedRecords<T>(records: Map<string, T>, sessionId: string): void {
+function deleteSessionScopedRecords<T>(records: Map<string, T>, sessionId: SessionId): void {
   const prefix = `${sessionId}\u0000`;
   for (const key of records.keys()) {
     if (key.startsWith(prefix)) {
@@ -275,22 +285,6 @@ function cloneVoting(voting: SessionVotingRecord): SessionVotingRecord {
   };
 }
 
-function requestedStatus(command: FinalizationTransitionCommand): FinalizationState['status'] {
-  switch (command.kind) {
-    case 'queue':
-      return 'pending';
-    case 'start':
-      return 'running';
-    case 'succeed':
-      return 'succeeded';
-    case 'fail':
-    case 'cancel':
-      return 'failed';
-    case 'time_out':
-      return 'timeout';
-  }
-}
-
 function isTerminalVerificationStatus(status: VerificationResult['status']): boolean {
   return status === 'success' || status === 'failed' || status === 'dev_mode';
 }
@@ -298,6 +292,7 @@ function isTerminalVerificationStatus(status: VerificationResult['status']): boo
 export class MockSessionStore
   implements
     VoteStore,
+    SessionVoteMutationStore,
     FinalizationStore,
     VerificationResultStore,
     AwsFinalizationRuntimeTransitionStore,
@@ -309,8 +304,8 @@ export class MockSessionStore
   private currentFinalizationIdBySession = new Map<string, FinalizationId>();
   private verificationResultRecords = new Map<string, VerificationResultRecord>();
   private verificationObservationRecords = new Map<string, VerificationObservation>();
-  private bitmapRecords = new Map<string, FinalizationBitmapData>();
-  private voteIdIndex = new Map<string, { sessionId: string; index: number }>();
+  private bitmapRecords = new Map<string, FinalizationBitmapRecord>();
+  private voteIdIndex = new Map<string, { sessionId: SessionId; index: number }>();
 
   private runtimeMetadataRecords = new Map<string, AwsFinalizationRuntimeMetadata>();
   private deliveryMetadata = new InMemoryAwsVerificationDeliveryMetadataStore();
@@ -334,9 +329,9 @@ export class MockSessionStore
       Array.from(this.bitmapRecords, ([key, bitmap]) => [
         key,
         {
-          ...bitmap,
-          includedBitmap: [...bitmap.includedBitmap],
-          ...(bitmap.seenBitmap ? { seenBitmap: [...bitmap.seenBitmap] } : {}),
+          sessionId: bitmap.sessionId,
+          finalizationId: bitmap.finalizationId,
+          ...encodeFinalizationBitmapData(bitmap),
         },
       ]),
     );
@@ -371,11 +366,13 @@ export class MockSessionStore
     this.receiptCounter = staged.receiptCounter;
   }
 
-  private generateSessionId(): string {
-    return typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+  private generateSessionId(): SessionId {
+    return asSessionId(
+      typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'),
+    );
   }
 
-  private requireIdentity(sessionId: string): SessionIdentityRecord {
+  private requireIdentity(sessionId: SessionId): SessionIdentityRecord {
     const identity = parseSessionIdentityRecord(this.identityRecords.get(sessionId));
     if (!identity || identity.sessionId !== sessionId) {
       throw new Error('Session identity is missing or invalid');
@@ -383,7 +380,7 @@ export class MockSessionStore
     return identity;
   }
 
-  private requireVoting(sessionId: string): SessionVotingRecord {
+  private requireVoting(sessionId: SessionId): SessionVotingRecord {
     const identity = this.requireIdentity(sessionId);
     const voting = this.votingRecords.get(sessionId);
     if (!isVotingRecord(voting, identity)) {
@@ -392,19 +389,21 @@ export class MockSessionStore
     return voting;
   }
 
-  private currentFinalization(sessionId: string): FinalizationRecord | null {
+  private currentFinalization(sessionId: SessionId): FinalizationRecord | null {
     const finalizationId = this.currentFinalizationIdBySession.get(sessionId);
     if (!finalizationId) {
       return null;
     }
-    const record = parseFinalizationRecord(this.finalizationRecords.get(buildScopedKey(sessionId, finalizationId)));
+    const record = finalizationRecordCodec.admit(
+      this.finalizationRecords.get(buildScopedKey(sessionId, finalizationId)),
+    );
     if (!record || record.sessionId !== sessionId || record.finalizationId !== finalizationId) {
       throw new Error('Current finalization record is missing or invalid');
     }
     return record;
   }
 
-  private touchVotingRecord(sessionId: string, atMs = Date.now()): void {
+  private touchVotingRecord(sessionId: SessionId, atMs = Date.now()): void {
     const voting = this.requireVoting(sessionId);
     this.votingRecords.set(sessionId, {
       ...voting,
@@ -437,18 +436,18 @@ export class MockSessionStore
     return Promise.resolve(cloneIdentity(identity));
   }
 
-  getSessionIdentity(sessionId: string): Promise<SessionIdentityRecord | null> {
+  getSessionIdentity(sessionId: SessionId): Promise<SessionIdentityRecord | null> {
     const identity = parseSessionIdentityRecord(this.identityRecords.get(sessionId));
     return Promise.resolve(identity && identity.sessionId === sessionId ? cloneIdentity(identity) : null);
   }
 
-  getVotingRecord(sessionId: string): Promise<SessionVotingRecord | null> {
+  getVotingRecord(sessionId: SessionId): Promise<SessionVotingRecord | null> {
     const identity = parseSessionIdentityRecord(this.identityRecords.get(sessionId));
     const voting = this.votingRecords.get(sessionId);
     return Promise.resolve(identity && isVotingRecord(voting, identity) ? cloneVoting(voting) : null);
   }
 
-  async getSessionVotingSummary(sessionId: string): Promise<SessionVotingSummary | null> {
+  async getSessionVotingSummary(sessionId: SessionId): Promise<SessionVotingSummary | null> {
     const voting = await this.getVotingRecord(sessionId);
     return voting
       ? {
@@ -459,16 +458,25 @@ export class MockSessionStore
       : null;
   }
 
-  touchSession(sessionId: string): Promise<void> {
+  touchSession(sessionId: SessionId): Promise<void> {
     this.touchVotingRecord(sessionId);
     return Promise.resolve();
   }
 
-  async addVote(sessionId: string, voteData: VoteData): Promise<AddVoteResult> {
+  async addVote(
+    sessionId: SessionId,
+    voteData: UserVoteCommand,
+  ): Promise<Result<AddVoteResult, SessionVoteStoreError>> {
     await Promise.resolve();
-    const identity = this.requireIdentity(sessionId);
-    const voting = this.requireVoting(sessionId);
-    const mutation = evaluateSessionVoteMutation(
+    const identity = parseSessionIdentityRecord(this.identityRecords.get(sessionId));
+    const voting = this.votingRecords.get(sessionId);
+    if (!identity) {
+      return { ok: false, error: { code: ApplicationErrorCode.SESSION_NOT_FOUND } };
+    }
+    if (!isVotingRecord(voting, identity)) {
+      throw new Error('Session voting record is missing or invalid');
+    }
+    const outcome = evaluateSessionVoteMutation(
       {
         identity,
         voting,
@@ -480,6 +488,13 @@ export class MockSessionStore
         nowMs: Date.now,
       },
     );
+    if (!outcome.ok) {
+      return outcome;
+    }
+    const mutation = outcome.value;
+    if (mutation.kind === 'user_vote_replayed') {
+      return { ok: true, value: mutation.castResult };
+    }
     if (mutation.kind !== 'user_vote_appended') {
       throw new Error('Session vote mutation invariant violated');
     }
@@ -488,14 +503,23 @@ export class MockSessionStore
     for (const intent of mutation.indexIntents) {
       this.voteIdIndex.set(intent.voteId, { sessionId, index: intent.index });
     }
-    return mutation.castResult;
+    return { ok: true, value: mutation.castResult };
   }
 
-  async addBotVotes(sessionId: string, votes: VoteData[]): Promise<void> {
+  async addBotVotes(
+    sessionId: SessionId,
+    votes: readonly BotVoteCommand[],
+  ): Promise<Result<void, SessionVoteStoreError>> {
     await Promise.resolve();
-    const identity = this.requireIdentity(sessionId);
-    const voting = this.requireVoting(sessionId);
-    const mutation = evaluateSessionVoteMutation(
+    const identity = parseSessionIdentityRecord(this.identityRecords.get(sessionId));
+    const voting = this.votingRecords.get(sessionId);
+    if (!identity) {
+      return { ok: false, error: { code: ApplicationErrorCode.SESSION_NOT_FOUND } };
+    }
+    if (!isVotingRecord(voting, identity)) {
+      throw new Error('Session voting record is missing or invalid');
+    }
+    const outcome = evaluateSessionVoteMutation(
       {
         identity,
         voting,
@@ -507,6 +531,10 @@ export class MockSessionStore
         nowMs: Date.now,
       },
     );
+    if (!outcome.ok) {
+      return outcome;
+    }
+    const mutation = outcome.value;
     if (mutation.kind !== 'bot_votes_appended') {
       throw new Error('Session vote mutation invariant violated');
     }
@@ -524,13 +552,14 @@ export class MockSessionStore
         bulletinSize: mutation.nextVoting.bulletin.getSize(),
       });
     }
+    return { ok: true, value: undefined };
   }
 
   getActiveSessionCount(): Promise<number> {
     const now = Date.now();
-    for (const [sessionId, voting] of this.votingRecords) {
+    for (const voting of this.votingRecords.values()) {
       if (now - voting.lastActivityMs > FIVE_MINUTES_MS) {
-        this.deleteSessionRecords(sessionId);
+        this.deleteSessionRecords(voting.sessionId);
       }
     }
     let count = 0;
@@ -544,7 +573,7 @@ export class MockSessionStore
     return Promise.resolve(count);
   }
 
-  private deleteSessionRecords(sessionId: string): void {
+  private deleteSessionRecords(sessionId: SessionId): void {
     this.identityRecords.delete(sessionId);
     this.votingRecords.delete(sessionId);
     this.currentFinalizationIdBySession.delete(sessionId);
@@ -563,7 +592,10 @@ export class MockSessionStore
     }
   }
 
-  async getVoteById(sessionId: string, voteId: string): Promise<{ voteData: StoredVoteRecord; index: number } | null> {
+  async getVoteById(
+    sessionId: SessionId,
+    voteId: string,
+  ): Promise<{ voteData: StoredVoteRecord; index: number } | null> {
     const indexInfo = this.voteIdIndex.get(voteId);
     if (!indexInfo || indexInfo.sessionId !== sessionId) {
       return null;
@@ -574,7 +606,7 @@ export class MockSessionStore
   }
 
   async getVoteByIdWithProof(
-    sessionId: string,
+    sessionId: SessionId,
     voteId: string,
   ): Promise<{
     voteData: StoredVoteRecord;
@@ -622,16 +654,21 @@ export class MockSessionStore
       : null;
   }
 
-  async getCurrentFinalizationRecord(sessionId: string): Promise<FinalizationRecord | null> {
+  async getCurrentFinalizationRecord(sessionId: SessionId): Promise<FinalizationRecord | null> {
     await Promise.resolve();
     this.requireIdentity(sessionId);
     return this.currentFinalization(sessionId);
   }
 
-  async getFinalizationRecord(sessionId: string, finalizationId: FinalizationId): Promise<FinalizationRecord | null> {
+  async getFinalizationRecord(
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
+  ): Promise<FinalizationRecord | null> {
     await Promise.resolve();
     this.requireIdentity(sessionId);
-    const record = parseFinalizationRecord(this.finalizationRecords.get(buildScopedKey(sessionId, finalizationId)));
+    const record = finalizationRecordCodec.admit(
+      this.finalizationRecords.get(buildScopedKey(sessionId, finalizationId)),
+    );
     return record && record.sessionId === sessionId && record.finalizationId === finalizationId ? record : null;
   }
 
@@ -654,7 +691,7 @@ export class MockSessionStore
     let record = before;
     let mutated = false;
     if (outcome.kind === 'applied') {
-      record = parseFinalizationRecord(outcome.mutations.nextRecord) ?? null;
+      record = finalizationRecordCodec.admit(outcome.mutations.nextRecord) ?? null;
       if (!record) {
         throw new Error('Finalization transition produced an invalid record');
       }
@@ -671,7 +708,7 @@ export class MockSessionStore
       recordFinalizationStorePersistenceOutcome({
         sessionId: command.sessionId,
         requestedFinalizationId: command.finalizationId,
-        requestedTo: requestedStatus(command),
+        requestedTo: requestedFinalizationStatus(command),
         ...(before ? { before: before.state } : {}),
         actual: record.state,
         semanticReason: outcome.reason,
@@ -686,42 +723,26 @@ export class MockSessionStore
     };
   }
 
-  async markFinalizationQueued(sessionId: string, payload: FinalizationQueuedPayload): Promise<FinalizationRecord> {
+  async markFinalizationQueued(sessionId: SessionId, payload: FinalizationQueuedPayload): Promise<FinalizationRecord> {
     await Promise.resolve();
     assertAllowedPayloadKeys(payload, FINALIZATION_QUEUED_PAYLOAD_KEYS, 'queued finalization');
-    return this.applyFinalizationCommand(
-      {
-        kind: 'queue',
-        sessionId,
-        finalizationId: payload.finalizationId,
-        queuedAtMs: payload.queuedAtMs,
-        scenarioContext: payload.scenarioContext,
-        ...(payload.observability?.reason ? { reason: payload.observability.reason } : {}),
-      },
-      payload.observability,
-    ).record;
+    return this.applyFinalizationCommand(buildFinalizationCommand(sessionId, 'queue', payload), payload.observability)
+      .record;
   }
 
-  async markFinalizationRunning(sessionId: string, payload: FinalizationRunningPayload): Promise<FinalizationRecord> {
+  async markFinalizationRunning(
+    sessionId: SessionId,
+    payload: FinalizationRunningPayload,
+  ): Promise<FinalizationRecord> {
     await Promise.resolve();
     assertAllowedPayloadKeys(payload, FINALIZATION_RUNNING_PAYLOAD_KEYS, 'running finalization');
     assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
-    return this.applyFinalizationCommand(
-      {
-        kind: 'start',
-        sessionId,
-        finalizationId: payload.finalizationId,
-        queuedAtMs: payload.queuedAtMs,
-        startedAtMs: payload.startedAtMs,
-        ...(payload.scenarioContext ? { scenarioContext: payload.scenarioContext } : {}),
-        ...(payload.observability?.reason ? { reason: payload.observability.reason } : {}),
-      },
-      payload.observability,
-    ).record;
+    return this.applyFinalizationCommand(buildFinalizationCommand(sessionId, 'start', payload), payload.observability)
+      .record;
   }
 
   async markFinalizationSucceeded(
-    sessionId: string,
+    sessionId: SessionId,
     payload: FinalizationSucceededPayload,
   ): Promise<FinalizationRecord> {
     await Promise.resolve();
@@ -729,17 +750,7 @@ export class MockSessionStore
     assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
     assertDirectSuccessfulFinalizationPayload(payload);
     const current = this.currentFinalization(sessionId);
-    const command: FinalizationTransitionCommand = {
-      kind: 'succeed',
-      sessionId,
-      finalizationId: payload.finalizationId,
-      queuedAtMs: payload.queuedAtMs,
-      startedAtMs: payload.startedAtMs,
-      completedAtMs: payload.completedAtMs,
-      finalizationResult: payload.finalizationResult,
-      ...(payload.scenarioContext ? { scenarioContext: payload.scenarioContext } : {}),
-      ...(payload.observability?.reason ? { reason: payload.observability.reason } : {}),
-    };
+    const command = buildFinalizationCommand(sessionId, 'succeed', payload);
     const admission = evaluateFinalizationTransition({
       authority: { currentRecord: current },
       command,
@@ -764,58 +775,29 @@ export class MockSessionStore
     return committed.record;
   }
 
-  async markFinalizationFailed(sessionId: string, payload: FinalizationFailedPayload): Promise<FinalizationRecord> {
+  async markFinalizationFailed(sessionId: SessionId, payload: FinalizationFailedPayload): Promise<FinalizationRecord> {
     await Promise.resolve();
     assertAllowedPayloadKeys(payload, FINALIZATION_FAILED_PAYLOAD_KEYS, 'failed finalization');
     assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
-    const command: FinalizationTransitionCommand =
-      payload.error.code === 'USER_CANCELLED'
-        ? {
-            kind: 'cancel',
-            sessionId,
-            finalizationId: payload.finalizationId,
-            queuedAtMs: payload.queuedAtMs,
-            ...(payload.startedAtMs === undefined ? {} : { startedAtMs: payload.startedAtMs }),
-            failedAtMs: payload.failedAtMs,
-            message: payload.error.message,
-            ...(payload.scenarioContext ? { scenarioContext: payload.scenarioContext } : {}),
-            ...(payload.observability?.reason ? { reason: payload.observability.reason } : {}),
-          }
-        : {
-            kind: 'fail',
-            sessionId,
-            finalizationId: payload.finalizationId,
-            queuedAtMs: payload.queuedAtMs,
-            ...(payload.startedAtMs === undefined ? {} : { startedAtMs: payload.startedAtMs }),
-            failedAtMs: payload.failedAtMs,
-            error: payload.error,
-            ...(payload.scenarioContext ? { scenarioContext: payload.scenarioContext } : {}),
-            ...(payload.observability?.reason ? { reason: payload.observability.reason } : {}),
-          };
+    const command = buildFinalizationCommand(sessionId, 'fail', payload);
     return this.applyFinalizationCommand(command, payload.observability).record;
   }
 
-  async markFinalizationTimedOut(sessionId: string, payload: FinalizationTimedOutPayload): Promise<FinalizationRecord> {
+  async markFinalizationTimedOut(
+    sessionId: SessionId,
+    payload: FinalizationTimedOutPayload,
+  ): Promise<FinalizationRecord> {
     await Promise.resolve();
     assertAllowedPayloadKeys(payload, FINALIZATION_TIMED_OUT_PAYLOAD_KEYS, 'timed-out finalization');
     assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
     return this.applyFinalizationCommand(
-      {
-        kind: 'time_out',
-        sessionId,
-        finalizationId: payload.finalizationId,
-        queuedAtMs: payload.queuedAtMs,
-        ...(payload.startedAtMs === undefined ? {} : { startedAtMs: payload.startedAtMs }),
-        timeoutAtMs: payload.timeoutAtMs,
-        ...(payload.scenarioContext ? { scenarioContext: payload.scenarioContext } : {}),
-        ...(payload.observability?.reason ? { reason: payload.observability.reason } : {}),
-      },
+      buildFinalizationCommand(sessionId, 'time_out', payload),
       payload.observability,
     ).record;
   }
 
   async markAwsFinalizationRunning(
-    sessionId: string,
+    sessionId: SessionId,
     payload: AwsFinalizationRunningPayload,
   ): Promise<FinalizationState> {
     const { stepFunctionsArn, ...semanticPayload } = payload;
@@ -827,7 +809,7 @@ export class MockSessionStore
   }
 
   async markAwsFinalizationSucceeded(
-    sessionId: string,
+    sessionId: SessionId,
     payload: AwsFinalizationSucceededPayload,
   ): Promise<FinalizationState> {
     assertAllowedPayloadKeys(payload, AWS_SUCCEEDED_PAYLOAD_KEYS, 'AWS succeeded finalization');
@@ -842,8 +824,11 @@ export class MockSessionStore
     ) {
       return current.state;
     }
-    const { bitmapData, ...semanticFinalizationResult } = finalizationResult;
-    const requested = parseFinalizationRecord({
+    const bitmap =
+      finalizationResult.artifacts.bitmap.availability === 'available'
+        ? { availability: 'available' as const, data: finalizationResult.artifacts.bitmap.data }
+        : { availability: 'unavailable' as const };
+    const requested = finalizationRecordCodec.admit({
       sessionId,
       finalizationId: payload.finalizationId,
       scenarioContext: common.scenarioContext ?? current?.scenarioContext,
@@ -856,7 +841,7 @@ export class MockSessionStore
       },
       finalizationResult: {
         finalizationId: payload.finalizationId,
-        ...semanticFinalizationResult,
+        ...finalizationResult,
       },
     });
     if (!requested || requested.state.status !== 'succeeded') {
@@ -871,7 +856,7 @@ export class MockSessionStore
           };
     const committed = await this.commitSuccessfulFinalization({
       record: requested as Extract<FinalizationRecord, { state: { status: 'succeeded' } }>,
-      bitmap: bitmapData ? { availability: 'available', data: bitmapData } : { availability: 'unavailable' },
+      bitmap,
       ...(runtimeMetadata ? { runtimeMetadata } : {}),
       ...(common.observability ? { observability: common.observability } : {}),
     });
@@ -879,7 +864,7 @@ export class MockSessionStore
   }
 
   async markAwsFinalizationFailed(
-    sessionId: string,
+    sessionId: SessionId,
     payload: AwsFinalizationFailedPayload,
   ): Promise<FinalizationState> {
     const { stepFunctionsArn, ...semanticPayload } = payload;
@@ -891,7 +876,7 @@ export class MockSessionStore
   }
 
   async markAwsFinalizationTimedOut(
-    sessionId: string,
+    sessionId: SessionId,
     payload: AwsFinalizationTimedOutPayload,
   ): Promise<FinalizationState> {
     const { stepFunctionsArn, ...semanticPayload } = payload;
@@ -903,8 +888,8 @@ export class MockSessionStore
   }
 
   async getAwsFinalizationRuntimeMetadata(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
   ): Promise<AwsFinalizationRuntimeMetadata | undefined> {
     await Promise.resolve();
     const metadata = this.runtimeMetadataRecords.get(buildScopedKey(sessionId, finalizationId));
@@ -917,8 +902,8 @@ export class MockSessionStore
   }
 
   recordAwsProofBundlePublication(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
     metadata: AwsVerificationDeliveryMetadataInput,
   ): Promise<void> {
     this.requireIdentity(sessionId);
@@ -927,23 +912,23 @@ export class MockSessionStore
   }
 
   recordAwsVerificationDeliveryMetadata(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
     metadata: AwsVerificationDeliveryMetadataInput,
   ): Promise<void> {
     return this.recordAwsProofBundlePublication(sessionId, finalizationId, metadata);
   }
 
   async getAwsVerificationDeliveryMetadata(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
   ): Promise<AwsVerificationDeliveryMetadataInput | undefined> {
     await Promise.resolve();
     const metadata = this.deliveryMetadata.get(sessionId, finalizationId);
     return metadata ? { ...metadata } : undefined;
   }
 
-  private requireSucceededFinalization(sessionId: string, finalizationId: string): FinalizationRecord {
+  private requireSucceededFinalization(sessionId: SessionId, finalizationId: FinalizationId): FinalizationRecord {
     const record = this.currentFinalization(sessionId);
     if (!record || record.finalizationId !== finalizationId || record.state.status !== 'succeeded') {
       throw new Error('Finalization is unavailable for verification');
@@ -952,7 +937,7 @@ export class MockSessionStore
   }
 
   getVerificationResultRecord(
-    sessionId: string,
+    sessionId: SessionId,
     finalizationId: FinalizationId,
   ): Promise<VerificationResultRecord | null> {
     this.requireIdentity(sessionId);
@@ -965,9 +950,8 @@ export class MockSessionStore
   }
 
   async markVerificationRunning(
-    sessionId: string,
+    sessionId: SessionId,
     finalizationId: FinalizationId,
-    report?: VerificationReport,
   ): Promise<VerificationResultRecord> {
     this.requireSucceededFinalization(sessionId, finalizationId);
     const key = buildScopedKey(sessionId, finalizationId);
@@ -981,7 +965,6 @@ export class MockSessionStore
       finalizationId,
       verificationResult: {
         status: 'running',
-        ...(report ? { report } : {}),
       },
     });
     if (!record) {
@@ -992,7 +975,7 @@ export class MockSessionStore
     return record;
   }
 
-  rollbackVerificationResult(sessionId: string, finalizationId: FinalizationId): Promise<void> {
+  rollbackVerificationResult(sessionId: SessionId, finalizationId: FinalizationId): Promise<void> {
     this.requireSucceededFinalization(sessionId, finalizationId);
     const key = buildScopedKey(sessionId, finalizationId);
     const snapshot = this.verificationRollbackSnapshots.get(key);
@@ -1007,7 +990,7 @@ export class MockSessionStore
   }
 
   async completeVerificationResult(
-    sessionId: string,
+    sessionId: SessionId,
     finalizationId: FinalizationId,
     verificationResult: VerificationResult,
   ): Promise<VerificationResultRecord> {
@@ -1032,7 +1015,7 @@ export class MockSessionStore
   }
 
   async recordVerificationObservation(
-    sessionId: string,
+    sessionId: SessionId,
     finalizationId: string,
     input: VerificationObservationWrite,
   ): Promise<RecordVerificationObservationResult> {
@@ -1060,16 +1043,16 @@ export class MockSessionStore
     return resolution;
   }
 
-  getVerificationObservation(sessionId: string, finalizationId: string): VerificationObservation | null {
+  getVerificationObservation(sessionId: SessionId, finalizationId: string): VerificationObservation | null {
     const observation = parseVerificationObservation(
       this.verificationObservationRecords.get(buildScopedKey(sessionId, finalizationId)),
     );
     return observation ?? null;
   }
 
-  getBitmapData(sessionId: string, finalizationId: FinalizationId): Promise<FinalizationBitmapData | null> {
+  getBitmapData(sessionId: SessionId, finalizationId: FinalizationId): Promise<FinalizationBitmapRecord | null> {
     this.requireIdentity(sessionId);
-    const finalization = parseFinalizationRecord(
+    const finalization = finalizationRecordCodec.admit(
       this.finalizationRecords.get(buildScopedKey(sessionId, finalizationId)),
     );
     if (!finalization || finalization.state.status !== 'succeeded' || !finalization.finalizationResult) {
@@ -1160,11 +1143,16 @@ export class MockSessionStore
       receipt && receiptHash !== undefined && boardIndex !== undefined
         ? { receiptHash, boardIndex, timestamp: receipt.timestamp }
         : undefined;
-    const committed = parseFinalizationRecord({
+    const committed = finalizationRecordCodec.admit({
       ...requested,
       finalizationResult: {
         ...requested.finalizationResult,
-        ...(receiptPublication ? { receiptPublication } : {}),
+        artifacts: {
+          ...requested.finalizationResult.artifacts,
+          ...(receiptPublication
+            ? { receiptPublication: { availability: 'available' as const, publication: receiptPublication } }
+            : {}),
+        },
       },
     });
     if (!committed || committed.state.status !== 'succeeded') {
@@ -1250,9 +1238,7 @@ export class MockSessionStore
       staged.bitmapRecords.set(key, {
         sessionId: successful.sessionId,
         finalizationId: successful.finalizationId,
-        ...bitmap.data,
-        includedBitmap: [...bitmap.data.includedBitmap],
-        ...(bitmap.data.seenBitmap ? { seenBitmap: [...bitmap.data.seenBitmap] } : {}),
+        ...encodeFinalizationBitmapData(bitmap.data),
       });
     }
     if (runtimeMetadata) {

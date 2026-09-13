@@ -1,6 +1,5 @@
 const WARNING_MESSAGES = {
   ct_inclusion_failed: '[TamperDetection] CT inclusion verification failed',
-  legacy_image_id_override_ignored: '[ImageID] EXPECTED_IMAGEID_POC is deprecated; ignoring legacy override',
 } as const;
 
 type VerificationWarningCode = keyof typeof WARNING_MESSAGES;

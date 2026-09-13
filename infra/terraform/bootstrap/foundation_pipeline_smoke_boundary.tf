@@ -23,6 +23,13 @@ data "aws_iam_policy_document" "foundation_smoke_deploy_permissions_boundary" {
   }
 
   statement {
+    sid       = "FoundationSmokeProjectConfigurationReadGuardrail"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [local.source_path_foundation_start_build_projects.smoke.project_arn]
+  }
+
+  statement {
     sid    = "FoundationSmokePipelineArtifactsGuardrail"
     effect = "Allow"
     actions = [
@@ -52,7 +59,14 @@ data "aws_iam_policy_document" "foundation_smoke_deploy_permissions_boundary" {
   }
 
   statement {
-    sid    = "FoundationAcceptedBaselinePublisherGuardrail"
+    sid       = "AssumeFoundationAcceptancePublisherGuardrail"
+    effect    = "Allow"
+    actions   = ["sts:AssumeRole"]
+    resources = [local.foundation_terraform_acceptance_publisher_role_arn]
+  }
+
+  statement {
+    sid    = "FoundationAcceptancePublisherGuardrail"
     effect = "Allow"
     actions = [
       "s3:GetObject",
@@ -60,8 +74,8 @@ data "aws_iam_policy_document" "foundation_smoke_deploy_permissions_boundary" {
       "s3:PutObject",
     ]
     resources = [
-      "arn:aws:s3:::${local.terraform_authority_bucket_name}/${local.terraform_baseline_prefix}/${local.foundation_lane_authority.stateIdentity}/executions/*",
-      "arn:aws:s3:::${local.terraform_authority_bucket_name}/${local.terraform_baseline_prefix}/${local.foundation_lane_authority.stateIdentity}/current.json",
+      local.terraform_foundation_acceptance_object_arn_pattern,
+      local.terraform_foundation_acceptance_pointer_object_arn,
     ]
   }
 
@@ -78,6 +92,7 @@ data "aws_iam_policy_document" "foundation_smoke_deploy_permissions_boundary" {
     actions = [
       "ecr:GetLifecyclePolicy",
       "s3:GetBucketPolicy",
+      "s3:GetBucketVersioning",
       "s3:GetLifecycleConfiguration",
     ]
     resources = concat(
@@ -87,25 +102,13 @@ data "aws_iam_policy_document" "foundation_smoke_deploy_permissions_boundary" {
   }
 
   statement {
-    sid    = "FoundationAppNetworkingHandoffGuardrail"
+    sid    = "FoundationSmokeTerraformAuthorityReadGuardrail"
     effect = "Allow"
     actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-      "s3:PutObject",
+      "s3:GetBucketPolicy",
+      "s3:GetBucketVersioning",
     ]
-    resources = [local.foundation_app_networking_object_arn]
-  }
-
-  statement {
-    sid    = "FoundationImageSigningAuthorityGuardrail"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-      "s3:PutObject",
-    ]
-    resources = [local.foundation_image_signing_authority_objects_arn]
+    resources = [local.terraform_authority_bucket_arn]
   }
 
   statement {

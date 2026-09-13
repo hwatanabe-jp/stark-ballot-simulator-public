@@ -1,11 +1,13 @@
 import { ErrorCode } from './apiErrors';
 
-export type FailClosedFinalizationErrorCode = ErrorCode.INVALID_FINALIZATION_ARTIFACT;
+export type FailClosedFinalizationErrorCode = typeof ErrorCode.INVALID_FINALIZATION_ARTIFACT;
 
 export type CapabilityLossErrorCode =
-  ErrorCode.SESSION_CAPABILITY_REQUIRED | ErrorCode.SESSION_CAPABILITY_INVALID | ErrorCode.SESSION_CAPABILITY_EXPIRED;
+  | typeof ErrorCode.SESSION_CAPABILITY_REQUIRED
+  | typeof ErrorCode.SESSION_CAPABILITY_INVALID
+  | typeof ErrorCode.SESSION_CAPABILITY_EXPIRED;
 
-export type SessionUnavailableErrorCode = ErrorCode.SESSION_NOT_FOUND | CapabilityLossErrorCode;
+export type SessionUnavailableErrorCode = typeof ErrorCode.SESSION_NOT_FOUND | CapabilityLossErrorCode;
 
 export function isFailClosedFinalizationErrorCode(errorCode: unknown): errorCode is FailClosedFinalizationErrorCode {
   return errorCode === ErrorCode.INVALID_FINALIZATION_ARTIFACT;

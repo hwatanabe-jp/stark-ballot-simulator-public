@@ -2,11 +2,6 @@
   "name": "@stark-ballot/aws-adapters",
   "private": true,
   "type": "module",
-  "scripts": {
-    "lint": "pnpm --dir ../.. exec eslint packages/aws-adapters",
-    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/aws-adapters",
-    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
-  },
   "exports": {
     ".": "./src/index.ts",
     "./aws/*": "./src/aws/*",
@@ -17,6 +12,11 @@
     "./security/*": "./src/security/*",
     "./sqs/*": "./src/sqs/*",
     "./store/*": "./src/store/*"
+  },
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec oxlint packages/aws-adapters",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/aws-adapters",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "catalog:aws-sdk",

@@ -40,15 +40,26 @@ jobs:
         run: pnpm licenses:check
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master @ 2026-09-12
         with:
           toolchain: '1.97.1'
+
+      - name: Cache mdBook tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/mdbook-tools
+          key: mdbook-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'scripts/docs/build-mdbook.sh') }}
+
+      - name: Select mdBook tools
+        run: |
+          echo "CARGO_INSTALL_ROOT=${{ runner.temp }}/mdbook-tools" >> "$GITHUB_ENV"
+          echo "${{ runner.temp }}/mdbook-tools/bin" >> "$GITHUB_PATH"
 
       - name: Install mdBook
         run: cargo install --locked mdbook --version 0.5.4
 
       - name: Install mdBook Mermaid
-        run: cargo install --locked mdbook-mermaid --version 0.17.0
+        run: cargo install --locked mdbook-mermaid --version 0.17.1
 
       - name: Build public book
         run: ./scripts/docs/build-mdbook.sh public-book

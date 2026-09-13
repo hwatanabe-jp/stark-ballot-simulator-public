@@ -33,7 +33,7 @@ resource "terraform_data" "ecr_signing_configuration" {
   lifecycle {
     precondition {
       condition     = local.deployment_target_inputs_exact
-      error_message = "Foundation inputs must match the exact reviewed stark-dev/develop target and lane configuration."
+      error_message = "Foundation inputs must match the exact reviewed caller target and lane configuration."
     }
   }
 

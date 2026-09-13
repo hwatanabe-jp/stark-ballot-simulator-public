@@ -65,8 +65,6 @@ describe('typed API route inventory', () => {
       'recordVerificationObservation',
       'runVerification',
     ]);
-    expect(TARGET_API_ROUTE_CONTRACTS).toHaveLength(17);
-    expect(new Set(TARGET_API_ROUTE_CONTRACTS.map((route) => route.routeId)).size).toBe(17);
   });
 
   it('carries schema objects rather than schema export names', () => {
@@ -241,9 +239,7 @@ describe('typed API route inventory', () => {
   it('binds every public error code to its status, content type, and concrete envelope', () => {
     for (const route of TARGET_API_ROUTE_CONTRACTS) {
       const responses = route.publicErrors.responses;
-      const derivedCodes = Array.from(
-        new Set(responses.map((response) => response.code).filter((code): code is string => typeof code === 'string')),
-      );
+      const derivedCodes = Array.from(new Set(responses.map((response) => response.code)));
       const concreteEnvelopes = Array.from(new Set(responses.map((response) => response.envelope)));
       const expectedSummaryEnvelope = concreteEnvelopes.length === 1 ? concreteEnvelopes[0] : 'mixed-error-envelopes';
 
@@ -253,7 +249,7 @@ describe('typed API route inventory', () => {
       expect(route.publicErrorShape, routeKey(route.method, route.path)).toBe(route.publicErrors.envelope);
 
       for (const response of responses) {
-        const responseLabel = `${routeKey(route.method, route.path)}: ${response.case ?? response.code ?? 'uncoded'}`;
+        const responseLabel = `${routeKey(route.method, route.path)}: ${response.case ?? response.code}`;
         expect(Object.hasOwn(response, 'status'), responseLabel).toBe(true);
         if (typeof response.status === 'number') {
           expect(Number.isInteger(response.status), responseLabel).toBe(true);
@@ -375,6 +371,33 @@ describe('typed API route inventory', () => {
     expect(failures).toEqual([]);
   });
 
+  it('records the mounted client-IP and global rate-limit scopes without a session-key claim', () => {
+    expect(getApiRouteContract('POST', '/sessions/:sessionId/votes').rateLimit).toMatchObject({
+      required: true,
+      scope: 'client-ip',
+    });
+    expect(
+      getApiRouteContract('POST', '/sessions/:sessionId/finalizations/:finalizationId/cancel').rateLimit,
+    ).toMatchObject({ required: true, scope: 'client-ip' });
+    for (const path of [
+      '/sessions/:sessionId/finalizations',
+      '/sessions/:sessionId/finalizations/:finalizationId/verification',
+    ]) {
+      expect(getApiRouteContract('POST', path).rateLimit).toMatchObject({
+        required: true,
+        scope: 'client-ip-and-global',
+      });
+    }
+  });
+
+  it('does not advertise the unreachable cancellation-unsupported response', () => {
+    const cancel = getApiRouteContract('POST', '/sessions/:sessionId/finalizations/:finalizationId/cancel');
+
+    expect(cancel.publicErrors.responses).not.toContainEqual(
+      expect.objectContaining({ code: 'CANCELLATION_UNSUPPORTED', status: 501 }),
+    );
+  });
+
   it('records browser-equivalent Turnstile body token metadata for public mutation routes', () => {
     const tokenLocations = ['body.turnstileToken'];
 
@@ -457,7 +480,7 @@ describe('typed API route inventory', () => {
       nonOperatorDevelop: 'blocked-by-outer-operator-gate',
       operatorGatedDevelop: 'enabled-for-production-equivalent-smoke',
       ungatedPublic: 'requires-explicit-public-enable-and-server-turnstile',
-      runtimeEnforcementHandoff: 'plans-07-and-11',
+      runtimeEnforcementHandoff: 'trusted-proxy-and-public-admission',
     });
     expect(session.admissionControls).toEqual(
       expect.arrayContaining([

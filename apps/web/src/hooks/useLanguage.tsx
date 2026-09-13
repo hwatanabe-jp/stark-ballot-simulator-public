@@ -13,7 +13,7 @@ import { getCookieValue } from '@stark-ballot/web/shared/cookies';
 export type { Language } from '@stark-ballot/web/i18n/language';
 
 /**
- * useLanguage - 「透明な信頼」デザインシステム
+ * useLanguage - shared language preference
  *
  * 言語選択の初期化・永続化ロジック:
  * 1. localStorage に保存値があれば使用

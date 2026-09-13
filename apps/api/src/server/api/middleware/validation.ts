@@ -44,7 +44,6 @@ async function decodeRequestBodyWithinLimit(request: Request): Promise<string | 
     }
     return errorResponse(ErrorCode.INVALID_REQUEST, {
       message: 'Invalid request payload',
-      cause: result.cause instanceof Error ? result.cause.message : 'Unknown body parse error',
     });
   }
 
@@ -65,10 +64,9 @@ export async function parseJsonBody<TOutput>(
   }
   try {
     raw = JSON.parse(bodyText) as unknown;
-  } catch (error) {
+  } catch {
     return errorResponse(ErrorCode.INVALID_REQUEST, {
       message: 'Invalid JSON payload',
-      cause: error instanceof Error ? error.message : 'Unknown JSON parse error',
     });
   }
 
@@ -95,10 +93,9 @@ export async function parseSessionCreateRequest(
   if (bodyText.trim().length > 0) {
     try {
       raw = JSON.parse(bodyText) as unknown;
-    } catch (error) {
+    } catch {
       return errorResponse(ErrorCode.INVALID_REQUEST, {
         message: 'Invalid JSON payload',
-        cause: error instanceof Error ? error.message : 'Unknown JSON parse error',
       });
     }
   }

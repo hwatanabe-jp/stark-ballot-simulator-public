@@ -3,10 +3,12 @@ import {
   parseVerificationResultRecord,
   type VerificationResultRecord,
 } from '@stark-ballot/application/finalize/finalization-result-store';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 
 const record: VerificationResultRecord = {
-  sessionId: 'session-verification-result',
-  finalizationId: 'finalization-verification-result',
+  sessionId: asSessionId('session-verification-result'),
+  finalizationId: asFinalizationId('finalization-verification-result'),
   verificationResult: {
     status: 'not_run',
   },

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { ApiError, ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
+import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
 import {
   VerificationResourceResponseSchema,
   VERIFICATION_OBSERVATION_CAST_CHECK_IDS,
@@ -7,11 +7,10 @@ import {
   type VerificationObservationCastStatus,
   type VerificationObservationRequest,
 } from '@stark-ballot/api-contract/schemas/verification';
-import type { ApiHandlerArguments, SessionAdmittedContext } from '../context';
+import type { ApiHandlerArguments, RouteBoundResponse, SessionFinalizationAdmittedContext } from '../context';
 import { recordVerificationObservationRoute } from '@stark-ballot/api-contract/routes';
-import { errorResponse } from '../../http/response';
 import { handleApiError } from '../../http/errorHandler';
-import { respondWithRoute } from '../utils/responseSchema';
+import { admitRouteErrorResponse, respondWithRoute, respondWithRouteError } from '../utils/responseSchema';
 import type { VerificationCheck } from '@stark-ballot/verification/checks';
 import { resolveNodeSthPublicRuntimeConfig } from '@stark-ballot/runtime-config/env/nodeSthPublicRuntimeConfig';
 import { getVerifyHandler } from './verify';
@@ -21,17 +20,17 @@ import { omitUndefinedProperties } from '@stark-ballot/validation/definedPropert
 
 const TERMINAL_VERIFICATION_STATUSES = new Set(['success', 'failed', 'dev_mode']);
 
-function conflictResponse(): Response {
-  return errorResponse(
-    new ApiError(
-      ErrorCode.VERIFICATION_OBSERVATION_CONFLICT,
-      409,
-      'Verification observation conflicts with the current finalization',
-    ),
-  );
+function conflictResponse(): RouteBoundResponse<typeof recordVerificationObservationRoute> {
+  return respondWithRouteError(recordVerificationObservationRoute, {
+    code: ErrorCode.VERIFICATION_OBSERVATION_CONFLICT,
+    status: 409,
+    message: 'Verification observation conflicts with the current finalization',
+  });
 }
 
-function successResponse(status: 'idempotent' | 'recorded'): Response {
+function successResponse(
+  status: 'idempotent' | 'recorded',
+): RouteBoundResponse<typeof recordVerificationObservationRoute> {
   return respondWithRoute(
     recordVerificationObservationRoute,
     { status: 200, content: 'json', body: { data: { status } } },
@@ -68,14 +67,18 @@ export function buildObservedVerificationChecks(
 export async function submitVerificationObservationHandler({
   input,
   context,
-}: ApiHandlerArguments<typeof recordVerificationObservationRoute, SessionAdmittedContext>): Promise<Response> {
+}: ApiHandlerArguments<typeof recordVerificationObservationRoute, SessionFinalizationAdmittedContext>): Promise<
+  RouteBoundResponse<typeof recordVerificationObservationRoute>
+> {
   try {
-    const { sessionId, session, store } = context;
+    const { sessionId, finalizationId, session, store } = context;
     if (session.finalization?.state.status !== 'succeeded' || !session.finalization.finalizationResult) {
-      return errorResponse(ErrorCode.SESSION_NOT_FINALIZED);
+      return respondWithRouteError(recordVerificationObservationRoute, {
+        code: ErrorCode.SESSION_NOT_FINALIZED,
+        status: 400,
+      });
     }
 
-    const { finalizationId } = input.params;
     const { castChecks } = input.body;
     const finalizationResult = session.finalization.finalizationResult;
     const verificationRecord = await store.getVerificationResultRecord(sessionId, finalizationId);
@@ -102,18 +105,22 @@ export async function submitVerificationObservationHandler({
       context,
     });
     if (!verifyResponse.ok) {
-      return verifyResponse;
+      return admitRouteErrorResponse(recordVerificationObservationRoute, verifyResponse);
     }
-    const verifyPayload = VerificationResourceResponseSchema.safeParse((await verifyResponse.json()) as unknown);
+    const verifyPayload = VerificationResourceResponseSchema.safeParse(await verifyResponse.json());
     if (!verifyPayload.success || verifyPayload.data.data.availability !== 'available') {
-      return errorResponse(ErrorCode.INTERNAL_ERROR, {
-        details: 'Server verification authority was unavailable',
+      return respondWithRouteError(recordVerificationObservationRoute, {
+        code: ErrorCode.INTERNAL_ERROR,
+        status: 500,
+        details: { details: 'Server verification authority was unavailable' },
       });
     }
     const verifyData = verifyPayload.data.data;
     if (verifyData.finalizationId !== finalizationId) {
-      return errorResponse(ErrorCode.INTERNAL_ERROR, {
-        details: 'Server verification authority did not match the current finalization',
+      return respondWithRouteError(recordVerificationObservationRoute, {
+        code: ErrorCode.INTERNAL_ERROR,
+        status: 500,
+        details: { details: 'Server verification authority did not match the current finalization' },
       });
     }
 
@@ -122,8 +129,10 @@ export async function submitVerificationObservationHandler({
       castChecks,
     );
     if (!observedChecks) {
-      return errorResponse(ErrorCode.INTERNAL_ERROR, {
-        details: 'Server verification check authority was incomplete',
+      return respondWithRouteError(recordVerificationObservationRoute, {
+        code: ErrorCode.INTERNAL_ERROR,
+        status: 500,
+        details: { details: 'Server verification check authority was incomplete' },
       });
     }
 
@@ -155,6 +164,6 @@ export async function submitVerificationObservationHandler({
 
     return successResponse(recordResult.status);
   } catch (error) {
-    return handleApiError(error);
+    return admitRouteErrorResponse(recordVerificationObservationRoute, handleApiError(error));
   }
 }

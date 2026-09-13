@@ -11,13 +11,12 @@ import { AppLink } from '@stark-ballot/web/navigation/appNavigation';
  * LegalPageLayout - 法務ページ用レイアウトコンポーネント
  *
  * プライバシーポリシー、利用規約などの法務文書ページで使用。
- * 「透明な信頼」デザインシステムに準拠した、カードレスで読みやすいレイアウト。
+ * 共通の書体と余白を使った、読みやすい文書レイアウト。
  *
  * Features:
- * - 微かな浮上アニメーション（animate-subtle-rise）
  * - セマンティックな article/section 構造
- * - 権威性のある書体（font-display / font-primary）
- * - コンテンツ幅は LayoutProvider で制御（法務ページは max-w-3xl）
+ * - 共通のsans-serif書体（font-display / font-primary）
+ * - コンテンツ幅は LayoutProvider で制御（法務ページは最大768px）
  * - 「トップに戻る」ナビゲーション付き
  */
 
@@ -49,12 +48,12 @@ export function LegalPageLayout({
   }, []);
 
   return (
-    <article className="w-full animate-subtle-rise">
-      <div className="mx-auto px-6 py-12 lg:px-8">
+    <article className="w-full">
+      <div className="mx-auto py-6">
         {sessionNotice && (
           <div
             role="note"
-            className="mb-6 rounded-lg border border-ink-200 bg-ink-50/60 px-4 py-3 text-sm text-text-secondary font-secondary"
+            className="mb-6 rounded-lg border border-ink-200 bg-ink-50/60 px-4 py-3 font-secondary text-sm text-text-secondary"
           >
             {sessionNotice}
           </div>
@@ -62,41 +61,41 @@ export function LegalPageLayout({
 
         {/* タイトル */}
         <header className="mb-8">
-          <h1 className="font-display text-3xl sm:text-4xl font-bold text-ink-900 tracking-[var(--tracking-display)] leading-[var(--leading-display)]">
+          <h1 className="font-display font-medium text-3xl leading-[var(--leading-display)] tracking-[var(--tracking-display)] text-ink-900 sm:text-4xl">
             {title}
           </h1>
-          <p className="mt-3 text-sm text-text-muted font-secondary">
+          <p className="mt-3 font-secondary text-sm text-text-muted">
             {effectiveDateLabel}: {effectiveDate}
           </p>
         </header>
 
         {/* コンテンツ */}
-        <div className="legal-content font-primary text-text-secondary leading-relaxed space-y-8">{children}</div>
+        <div className="legal-content space-y-8 font-primary leading-relaxed text-text-secondary">{children}</div>
 
         {/* ナビゲーション */}
-        <nav className="mt-12 pbs-8 border-bs border-paper-border space-y-3">
+        <nav className="mt-12 space-y-3 border-bs border-paper-border pbs-8">
           {/* セッション有効時: タブを閉じるオプション */}
           {hasActiveSession && (
             <div className="space-y-1">
               <button
                 type="button"
                 onClick={handleCloseTab}
-                className="inline-flex items-center gap-2 text-ink-600 hover:text-ink-800 transition-colors font-secondary"
+                className="inline-flex items-center gap-2 font-secondary text-ink-600 transition-colors hover:text-ink-800"
                 data-testid="legal-close-tab"
               >
-                <X className="w-4 h-4" />
+                <X className="h-4 w-4" />
                 {t(language, 'legal.closeTab')}
               </button>
-              <p className="text-xs text-text-muted font-secondary">{t(language, 'legal.closeTabHint')}</p>
+              <p className="font-secondary text-xs text-text-muted">{t(language, 'legal.closeTabHint')}</p>
             </div>
           )}
           {/* 常に表示: トップに戻るリンク（フォールバック） */}
           <AppLink
             href="/"
-            className="inline-flex items-center gap-2 text-ink-600 hover:text-ink-800 transition-colors font-secondary"
+            className="inline-flex items-center gap-2 font-secondary text-ink-600 transition-colors hover:text-ink-800"
             data-testid="legal-back-to-home"
           >
-            <ArrowLeft className="w-4 h-4" />
+            <ArrowLeft className="h-4 w-4" />
             {t(language, 'legal.backToHome')}
           </AppLink>
         </nav>
@@ -120,7 +119,7 @@ export interface LegalSectionProps {
 export function LegalSection({ title, children }: LegalSectionProps): React.ReactElement {
   return (
     <section className="space-y-4">
-      <h2 className="font-primary text-xl font-semibold text-ink-900 leading-[var(--leading-h2)]">{title}</h2>
+      <h2 className="font-medium font-primary text-xl leading-[var(--leading-h2)] text-ink-900">{title}</h2>
       <div className="space-y-3">{children}</div>
     </section>
   );
@@ -140,8 +139,8 @@ export interface LegalSubSectionProps {
 
 export function LegalSubSection({ title, children }: LegalSubSectionProps): React.ReactElement {
   return (
-    <div className="space-y-2 pl-4 border-l-2 border-paper-border">
-      <h3 className="font-primary text-base font-medium text-ink-800">{title}</h3>
+    <div className="space-y-2 border-l-2 border-paper-border pl-4">
+      <h3 className="font-medium font-primary text-base text-ink-800">{title}</h3>
       <div className="space-y-2 text-sm">{children}</div>
     </div>
   );
@@ -157,7 +156,7 @@ export interface LegalListProps {
 
 export function LegalList({ items }: LegalListProps): React.ReactElement {
   return (
-    <ul className="list-disc list-inside space-y-1 text-sm">
+    <ul className="list-inside list-disc space-y-1 text-sm">
       {items.map((item, index) => (
         <li key={index}>{item}</li>
       ))}
@@ -178,11 +177,11 @@ export interface LegalTableProps {
 export function LegalTable({ headers, rows }: LegalTableProps): React.ReactElement {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm border-collapse">
+      <table className="w-full border-collapse text-sm">
         <thead>
           <tr className="border-be border-paper-border-dark">
             {headers.map((header, index) => (
-              <th key={index} className="text-left py-2 pr-4 font-medium text-ink-800">
+              <th key={index} className="py-2 pr-4 text-left font-medium text-ink-800">
                 {header}
               </th>
             ))}

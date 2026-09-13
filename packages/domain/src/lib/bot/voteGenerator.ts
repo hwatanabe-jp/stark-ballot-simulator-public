@@ -1,15 +1,7 @@
 import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
 import { VOTE_CHOICES } from '@stark-ballot/domain/shared/constants';
-import type { VoteData } from '@stark-ballot/domain/types/sessionRecords';
-import { createSHA256Commitment, choiceToNumber } from '@stark-ballot/domain/crypto/sha256Commitment';
+import type { BotVoteCommand } from '@stark-ballot/domain/types/sessionRecords';
 import crypto from 'crypto';
-
-/**
- * Generate a bot ID from index (0-62) to bot ID (1-63)
- */
-export function generateBotId(index: number): number {
-  return index + 1;
-}
 
 /**
  * Generate random value for a bot
@@ -32,29 +24,13 @@ function generateBotChoice(): VoteChoice {
   return choice;
 }
 
-/**
- * Generate a complete vote data for a bot
- */
-export function generateBotVote(botId: number, electionId: string): Promise<VoteData> {
-  void botId;
+/** Generate caller-owned bot vote values; the mutation assigns identity and commitment. */
+export function generateBotVote(): Promise<BotVoteCommand> {
   const vote = generateBotChoice();
   const rand = generateBotRandom();
-
-  // Convert random hex string to Uint8Array
-  const randomBytes = new Uint8Array(32);
-  const randHex = rand.startsWith('0x') ? rand.slice(2) : rand;
-  for (let i = 0; i < 32; i++) {
-    randomBytes[i] = parseInt(randHex.slice(i * 2, i * 2 + 2), 16);
-  }
-
-  // Create SHA256 commitment
-  const choice = choiceToNumber(vote);
-  const commit = createSHA256Commitment(electionId, choice, randomBytes);
 
   return Promise.resolve({
     vote,
     rand,
-    commit,
-    path: [], // Will be populated when added to Merkle tree
   });
 }

@@ -2,19 +2,27 @@ import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
 import { normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { BOT_COUNT, VOTE_CHOICES } from '@stark-ballot/domain/shared/constants';
 import type { SessionReadModel } from '@stark-ballot/application/session/session-read-model';
-import type { ApiContextStore, ApiHandlerArguments, SessionAdmittedContext } from '../context';
-import { errorResponse } from '../../http/response';
+import type {
+  ApiContextStore,
+  ApiHandlerArguments,
+  RouteBoundResponse,
+  SessionFinalizationAdmittedContext,
+} from '../context';
 import { handleApiError } from '../../http/errorHandler';
 import { verificationRoute } from '@stark-ballot/api-contract/routes';
 import { availableVerificationResourceSchema } from '@stark-ballot/api-contract/schemas/verification';
-import { respondWithRoute } from '../utils/responseSchema';
+import { admitRouteErrorResponse, respondWithRoute, respondWithRouteError } from '../utils/responseSchema';
 import { buildVerificationSteps } from '@stark-ballot/verification/steps';
 import {
   buildVerificationChecksFromResults,
   evaluateVerificationCheckResults,
   type BuildVerificationChecksInput,
 } from '@stark-ballot/verification/check-results';
-import type { VerificationPublicInputAuthority } from '@stark-ballot/verification/engine-types';
+import { admitVerifierOutcome } from '@stark-ballot/verification/check-evaluator';
+import type {
+  VerificationOutcomeInput,
+  VerificationPublicInputAuthority,
+} from '@stark-ballot/verification/engine-types';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import type { VerificationCheck } from '@stark-ballot/verification/checks';
@@ -37,6 +45,25 @@ import {
   resolveScenarioTamperCount,
 } from '@stark-ballot/verification/finalization-tamper';
 import { admitPersistedFinalizationBitmapData } from '@stark-ballot/application/finalize/finalization-bitmap-admission';
+import type {
+  VerificationFailureCategory,
+  VerificationReport,
+  VerificationStatus,
+} from '@stark-ballot/verification/shared/types';
+
+const INCOHERENT_VERIFIER_OUTCOME = {
+  status: 'failed',
+  failureCategory: 'unknown',
+} satisfies VerificationOutcomeInput;
+
+export function admitVerificationPresentationOutcome(input: {
+  verificationStatus: VerificationStatus;
+  verificationReportStatus?: VerificationStatus;
+  verificationReport?: VerificationReport;
+  failureCategory?: VerificationFailureCategory;
+}): VerificationOutcomeInput {
+  return admitVerifierOutcome(input) ?? INCOHERENT_VERIFIER_OUTCOME;
+}
 
 function createVerificationReadPort(params: {
   session: SessionReadModel;
@@ -168,11 +195,12 @@ function createVerificationReadPort(params: {
 export async function getVerifyHandler({
   input,
   context,
-}: ApiHandlerArguments<typeof verificationRoute, SessionAdmittedContext>): Promise<Response> {
+}: ApiHandlerArguments<typeof verificationRoute, SessionFinalizationAdmittedContext>): Promise<
+  RouteBoundResponse<typeof verificationRoute>
+> {
   try {
     const debugEnabled = process.env['DEBUG_FILE_STORE'] === '1';
-    const { sessionId, session, store, runtimeProfile } = context;
-    const requestedFinalizationId = input.params.finalizationId;
+    const { sessionId, finalizationId: requestedFinalizationId, session, store, runtimeProfile } = context;
     const includeJournal = input.query.include === 'journal';
 
     if (debugEnabled) {
@@ -194,11 +222,11 @@ export async function getVerifyHandler({
 
     // Check if session is finalized
     if (session.finalization?.state.status !== 'succeeded' || !session.finalization.finalizationResult) {
-      return errorResponse(ErrorCode.SESSION_NOT_FINALIZED);
+      return respondWithRouteError(verificationRoute, { code: ErrorCode.SESSION_NOT_FINALIZED, status: 400 });
     }
 
     if (session.voting.userParticipation.status !== 'cast') {
-      return errorResponse(ErrorCode.USER_NOT_VOTED);
+      return respondWithRouteError(verificationRoute, { code: ErrorCode.USER_NOT_VOTED, status: 400 });
     }
     const userVoteIndex = session.voting.userParticipation.voteIndex;
 
@@ -214,7 +242,10 @@ export async function getVerifyHandler({
       }),
     );
     if (preparedRead.availability !== 'available') {
-      return buildVerificationReadFailureResponse(requestedFinalizationId, preparedRead);
+      return admitRouteErrorResponse(
+        verificationRoute,
+        buildVerificationReadFailureResponse(requestedFinalizationId, preparedRead),
+      );
     }
     const finalizationResult = session.finalization.finalizationResult;
     const [verificationRecord, deliveryMetadata, persistedBitmapData] = await Promise.all([
@@ -281,14 +312,20 @@ export async function getVerifyHandler({
     const resolvedTreeSize = presentation.treeSize;
     const resolvedTotalExpected = presentation.totalExpected;
     const inputCommitment = presentation.inputCommitment;
-    const publicInputAuthority = resolvePublicInputAuthority(finalizationResult.publicInputArtifact, {
-      finalizationId: finalizationResult.finalizationId,
-      ...omitUndefinedProperties({ bundleKey: deliveryMetadata?.s3BundleKey }),
-      bulletinRoot: bulletinRootRaw,
-      treeSize: resolvedTreeSize,
-    });
-    const electionManifest = finalizationResult.electionManifest;
-    const closeStatement = finalizationResult.closeStatement;
+    const publicAuditArtifacts = finalizationResult.artifacts.publicAudit;
+    const publicInputAuthority = resolvePublicInputAuthority(
+      publicAuditArtifacts.availability === 'available' ? publicAuditArtifacts.publicInputArtifact : undefined,
+      {
+        finalizationId: finalizationResult.finalizationId,
+        ...omitUndefinedProperties({ bundleKey: deliveryMetadata?.s3BundleKey }),
+        bulletinRoot: bulletinRootRaw,
+        treeSize: resolvedTreeSize,
+      },
+    );
+    const electionManifest =
+      publicAuditArtifacts.availability === 'available' ? publicAuditArtifacts.electionManifest : undefined;
+    const closeStatement =
+      publicAuditArtifacts.availability === 'available' ? publicAuditArtifacts.closeStatement : undefined;
     const consistencyProof = acquireConsistencyProofEvidence({
       session: session.voting,
       ...omitUndefinedProperties({ fromTreeSize: exactVoterEvidence?.userVote.proof.treeSize }),
@@ -353,7 +390,12 @@ export async function getVerifyHandler({
       ...omitUndefinedProperties({ includedBitmapRoot: presentation.includedBitmapRoot }),
       claimedImageId: imageId,
       ...omitUndefinedProperties({ comparisonImageId: journal.imageId }),
-      ...omitUndefinedProperties({ bitmapProofSource: finalizationResult.bitmapProofSource }),
+      ...omitUndefinedProperties({
+        bitmapProofSource:
+          finalizationResult.artifacts.bitmap.availability === 'available'
+            ? finalizationResult.artifacts.bitmap.proofSource
+            : undefined,
+      }),
       consistencyProof,
       includedBitmapProof: bitmapProofEvidence.included,
       ...omitUndefinedProperties({ seenBitmapProof: bitmapProofEvidence.seen }),
@@ -404,19 +446,29 @@ export async function getVerifyHandler({
         ? { total: BOT_COUNT, affectedBotIds, source: 'scenario_simulation' }
         : undefined;
 
+    const verifierOutcome = admitVerificationPresentationOutcome({
+      verificationStatus: presentationVerificationStatus,
+      ...omitUndefinedProperties({ verificationReportStatus: presentationVerificationReportStatus }),
+      ...omitUndefinedProperties({ verificationReport: effectiveVerificationResult?.report }),
+      ...omitUndefinedProperties({ failureCategory: effectiveVerificationResult?.failureCategory }),
+    });
+
     const verificationPresentation = await buildVerificationPresentation({
       ...verificationChecksBaseInput,
       castSource: 'client',
-      verificationStatus: presentationVerificationStatus,
+      verifierOutcome,
       ...omitUndefinedProperties({ voteReceipt }),
-      ...omitUndefinedProperties({ verificationReportStatus: presentationVerificationReportStatus }),
-      ...omitUndefinedProperties({ verificationReport: effectiveVerificationResult?.report }),
       allowDevModeVerification,
     });
     const { verificationSteps, verificationChecks } = verificationPresentation;
     logVerificationFailures(verificationChecks);
 
-    const publicVerificationReport = sanitizeVerificationReportForPublicResponse(effectiveVerificationResult?.report);
+    const admittedVerificationReportStatus = verifierOutcome.report?.status;
+    const publicVerificationReport =
+      admittedVerificationReportStatus !== undefined &&
+      admittedVerificationReportStatus === effectiveVerificationResult?.report?.status
+        ? sanitizeVerificationReportForPublicResponse(effectiveVerificationResult.report)
+        : undefined;
     const policy = deriveVerificationPresentationPolicy({
       availability: 'available',
       checks: verificationChecks,
@@ -426,13 +478,13 @@ export async function getVerifyHandler({
         rejectedRecords: presentation.rejectedRecords,
         excludedSlots: presentation.excludedSlots,
         devModeEvidence:
-          presentationVerificationStatus === 'dev_mode' ||
-          presentationVerificationReportStatus === 'dev_mode' ||
-          effectiveVerificationResult?.report?.dev_mode_receipt === true,
+          verifierOutcome.status === 'dev_mode' ||
+          admittedVerificationReportStatus === 'dev_mode' ||
+          verifierOutcome.report?.dev_mode_receipt === true,
         sthSourcesConfigured: sthPublicRuntimeConfig.sources.length > 0,
       },
-      verificationStatus: presentationVerificationStatus,
-      ...omitUndefinedProperties({ verificationReportStatus: presentationVerificationReportStatus }),
+      verificationStatus: verifierOutcome.status,
+      ...omitUndefinedProperties({ verificationReportStatus: admittedVerificationReportStatus }),
     });
 
     const responseData = {
@@ -472,7 +524,7 @@ export async function getVerifyHandler({
         policy,
       },
       verifierResult: {
-        status: presentationVerificationStatus,
+        status: verifierOutcome.status,
         ...omitUndefinedProperties({ report: publicVerificationReport }),
       },
       verification: {
@@ -504,7 +556,7 @@ export async function getVerifyHandler({
       },
     );
   } catch (error) {
-    return handleApiError(error);
+    return admitRouteErrorResponse(verificationRoute, handleApiError(error));
   }
 }
 

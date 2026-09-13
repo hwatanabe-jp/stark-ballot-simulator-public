@@ -13,7 +13,11 @@ import {
   getDefaultElectionConfigHash,
 } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import { finalizeSessionUsecase } from '@stark-ballot/application/finalize/usecases/finalize-session';
-import { createMockVoteStore } from '../__tests__/support/mockVoteStore';
+import { createMockVoteStore } from '../test-support/mockVoteStore';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+
+const SESSION_ID = asSessionId('session-1');
 
 vi.mock('@stark-ballot/application/zkvm-input/input-builder', () => ({
   buildZkVMInputFromSession: vi.fn(),
@@ -36,7 +40,7 @@ const createVote = (index: number, vote: StoredVoteRecord['vote']): StoredVoteRe
 const createSession = (
   votes: Map<number, StoredVoteRecord>,
 ): { identity: SessionIdentityRecord; voting: SessionVotingRecord } => {
-  const sessionId = 'session-1';
+  const sessionId = SESSION_ID;
   return {
     identity: {
       sessionId,
@@ -99,7 +103,7 @@ describe('finalizeSessionUsecase (zkVM input selection)', () => {
       const session = createSession(votes);
 
       buildZkVMInputFromSessionMock.mockReturnValue(dummyInput);
-      const finalizationId = `exec-${scenarioId.toLowerCase()}`;
+      const finalizationId = asFinalizationId(`exec-${scenarioId.toLowerCase()}`);
       const pendingState = { status: 'pending' as const, finalizationId, queuedAtMs: 1_730_000_000_000 };
       finalizeAsyncMock.mockResolvedValue({
         ok: true,
@@ -111,7 +115,7 @@ describe('finalizeSessionUsecase (zkVM input selection)', () => {
 
       const result = await finalizeSessionUsecase(
         {
-          sessionId: 'session-1',
+          sessionId: SESSION_ID,
           identity: session.identity,
           voting: session.voting,
           currentFinalization: null,
@@ -171,18 +175,19 @@ describe('finalizeSessionUsecase (zkVM input selection)', () => {
     const session = createSession(votes);
 
     buildZkVMInputFromSessionMock.mockReturnValue(dummyInput);
-    const pendingState = { status: 'pending' as const, finalizationId: 'exec-1', queuedAtMs: 1_730_000_000_000 };
+    const finalizationId = asFinalizationId('exec-1');
+    const pendingState = { status: 'pending' as const, finalizationId, queuedAtMs: 1_730_000_000_000 };
     finalizeAsyncMock.mockResolvedValue({
       ok: true,
       value: {
-        payload: { finalizationId: 'exec-1', state: pendingState },
+        payload: { finalizationId, state: pendingState },
         state: pendingState,
       },
     });
 
     const result = await finalizeSessionUsecase(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         identity: session.identity,
         voting: session.voting,
         currentFinalization: null,
@@ -272,7 +277,7 @@ describe('finalizeSessionUsecase (zkVM input selection)', () => {
 
     const result = await finalizeSessionUsecase(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         identity: session.identity,
         voting: session.voting,
         currentFinalization: null,

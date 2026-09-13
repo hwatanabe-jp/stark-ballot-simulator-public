@@ -1,11 +1,5 @@
-import {
-  TARGET_API_ROUTE_CONTRACTS,
-  getApiRouteContract,
-  type ApiContractMethod,
-  type ApiRouteContract,
-} from '@stark-ballot/api-contract/routes';
+import { TARGET_API_ROUTE_CONTRACTS, type ApiRouteContract } from '@stark-ballot/api-contract/routes';
 
-export type ApiMethod = ApiContractMethod;
 export type ApiRouteMode = 'full' | 'readonly' | 'lambda';
 
 export function getApiRouteDefinitions(mode: ApiRouteMode = 'full'): ApiRouteContract[] {
@@ -13,12 +7,4 @@ export function getApiRouteDefinitions(mode: ApiRouteMode = 'full'): ApiRouteCon
     return [...TARGET_API_ROUTE_CONTRACTS];
   }
   return TARGET_API_ROUTE_CONTRACTS.filter((route) => route.kind === 'readonly');
-}
-
-export function getTargetApiRouteContracts(): ApiRouteContract[] {
-  return [...TARGET_API_ROUTE_CONTRACTS];
-}
-
-export function findApiRoute(method: ApiMethod, path: string): ApiRouteContract {
-  return getApiRouteContract(method, path);
 }

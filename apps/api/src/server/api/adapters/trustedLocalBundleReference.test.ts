@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   localRuntimeProfile,
   targetRuntimeProfile,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { resolveTrustedLocalBundleReference } from './trustedLocalBundleReference';
 
 describe('resolveTrustedLocalBundleReference', () => {

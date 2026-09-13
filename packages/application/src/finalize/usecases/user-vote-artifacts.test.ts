@@ -6,6 +6,8 @@ import {
   UserVoteArtifactsUnavailableError,
 } from '@stark-ballot/application/finalize/usecases/user-vote-artifacts';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { createUnavailableFinalizationArtifacts } from '@stark-ballot/application/finalize/finalization-types';
 
 function createSessionWithBulletin(): {
   voting: SessionVotingRecord;
@@ -46,7 +48,7 @@ function createSessionWithBulletin(): {
   ]);
 
   const voting: SessionVotingRecord = {
-    sessionId: 'session-123',
+    sessionId: asSessionId('session-123'),
     votes,
     botCount: 2,
     lastActivityMs: now,
@@ -81,6 +83,7 @@ describe('buildUserVoteArtifacts', () => {
         tamperedCount: 0,
       },
       imageId: '0x' + 'c'.repeat(64),
+      artifacts: createUnavailableFinalizationArtifacts(),
       journal: {
         ...journal,
         bulletinRoot,
@@ -114,6 +117,7 @@ describe('buildUserVoteArtifacts', () => {
         tamperedCount: 0,
       },
       imageId: '0x' + 'c'.repeat(64),
+      artifacts: createUnavailableFinalizationArtifacts(),
       journal: {
         ...createTestJournal(),
         bulletinRoot,
@@ -121,7 +125,7 @@ describe('buildUserVoteArtifacts', () => {
       },
     };
 
-    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrow(
       'Exact cast-time bulletin root is missing for user vote',
     );
   });
@@ -137,6 +141,7 @@ describe('buildUserVoteArtifacts', () => {
         tamperedCount: 0,
       },
       imageId: '0x' + 'c'.repeat(64),
+      artifacts: createUnavailableFinalizationArtifacts(),
       journal: {
         ...createTestJournal(),
         bulletinRoot,
@@ -144,10 +149,8 @@ describe('buildUserVoteArtifacts', () => {
       },
     };
 
-    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
-      UserVoteArtifactsUnavailableError,
-    );
-    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrow(UserVoteArtifactsUnavailableError);
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrow(
       'User vote index is missing for finalization',
     );
   });
@@ -163,6 +166,7 @@ describe('buildUserVoteArtifacts', () => {
         tamperedCount: 0,
       },
       imageId: '0x' + 'c'.repeat(64),
+      artifacts: createUnavailableFinalizationArtifacts(),
       journal: {
         ...createTestJournal(),
         bulletinRoot,
@@ -170,10 +174,8 @@ describe('buildUserVoteArtifacts', () => {
       },
     };
 
-    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
-      UserVoteArtifactsUnavailableError,
-    );
-    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrow(UserVoteArtifactsUnavailableError);
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrow(
       'Exact user vote record is missing for finalization',
     );
   });
@@ -193,6 +195,7 @@ describe('buildUserVoteArtifacts', () => {
         tamperedCount: 0,
       },
       imageId: '0x' + 'c'.repeat(64),
+      artifacts: createUnavailableFinalizationArtifacts(),
       journal: {
         ...createTestJournal(),
         bulletinRoot,
@@ -200,10 +203,8 @@ describe('buildUserVoteArtifacts', () => {
       },
     };
 
-    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
-      UserVoteArtifactsUnavailableError,
-    );
-    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrow(UserVoteArtifactsUnavailableError);
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrow(
       'Vote identifier is missing for user vote',
     );
   });
@@ -219,6 +220,7 @@ describe('buildUserVoteArtifacts', () => {
         tamperedCount: 0,
       },
       imageId: '0x' + 'c'.repeat(64),
+      artifacts: createUnavailableFinalizationArtifacts(),
       journal: {
         ...createTestJournal(),
         bulletinRoot,
@@ -226,10 +228,8 @@ describe('buildUserVoteArtifacts', () => {
       },
     };
 
-    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
-      UserVoteArtifactsUnavailableError,
-    );
-    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrow(UserVoteArtifactsUnavailableError);
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrow(
       'Bulletin inclusion proof function unavailable for user vote',
     );
   });
@@ -249,6 +249,7 @@ describe('buildUserVoteArtifacts', () => {
         tamperedCount: 0,
       },
       imageId: '0x' + 'c'.repeat(64),
+      artifacts: createUnavailableFinalizationArtifacts(),
       journal: {
         ...createTestJournal(),
         bulletinRoot,
@@ -256,7 +257,7 @@ describe('buildUserVoteArtifacts', () => {
       },
     };
 
-    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrowError(
+    expect(() => buildUserVoteArtifacts({ voting, finalizationResult })).toThrow(
       'Stored cast root does not match exact cast-time inclusion proof root',
     );
   });

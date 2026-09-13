@@ -134,23 +134,3 @@ export function authenticatePreparedFinalizationCallback(input: {
 
   return { ok: true };
 }
-
-export function authenticateFinalizationCallback(input: {
-  rawBody: Uint8Array;
-  timestampHeader: string | null;
-  signatureHeader: string | null;
-  now?: number;
-  secret?: string;
-  maxSkewMs?: string;
-}): FinalizationCallbackAuthResult {
-  const preflight = preflightFinalizationCallbackAuth(input);
-  if (!preflight.ok) {
-    return preflight;
-  }
-  return authenticatePreparedFinalizationCallback({
-    rawBody: input.rawBody,
-    credentials: preflight.credentials,
-    ...(input.now === undefined ? {} : { now: input.now }),
-    ...(input.maxSkewMs === undefined ? {} : { maxSkewMs: input.maxSkewMs }),
-  });
-}

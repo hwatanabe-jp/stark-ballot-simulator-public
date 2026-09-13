@@ -4,8 +4,8 @@ import type {
   ApiContractDataClassification,
   ApiContractErrorEnvelope,
   ApiContractLifecycle,
-  ApiContractMethod,
-  ApiContractProductionBypassPosture,
+  HttpMethod,
+  ProductionBypass,
   ApiContractPublicErrors,
   ApiContractRateLimit,
   ApiContractSourceIp,
@@ -37,7 +37,7 @@ interface BaselineBodySize {
 /** Serializable route evidence used by the reviewed public-contract comparator. */
 export interface BaselineApiRouteContract {
   routeId: string;
-  method: ApiContractMethod;
+  method: HttpMethod;
   path: string;
   kind: 'readonly' | 'mutation';
   lifecycle: ApiContractLifecycle;
@@ -53,7 +53,7 @@ export interface BaselineApiRouteContract {
   sourceIp: ApiContractSourceIp;
   rateLimit?: ApiContractRateLimit;
   turnstile?: ApiContractTurnstile;
-  productionBypass: ApiContractProductionBypassPosture;
+  productionBypass: ProductionBypass;
   targetAdmission?: ApiContractTargetAdmission;
   variants?: readonly ApiRouteVariantContract[];
 }

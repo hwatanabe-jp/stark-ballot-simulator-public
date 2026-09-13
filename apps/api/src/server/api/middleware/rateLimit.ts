@@ -128,14 +128,12 @@ function handleRateLimitError(error: unknown): Response {
   return errorResponse(ErrorCode.GLOBAL_LIMIT_EXCEEDED, { reason: 'rate_limit_unavailable' });
 }
 
-/**
- * Enforce vote submission rate limits.
- */
-export async function enforceVoteRateLimit(
+async function enforceAttemptRateLimit(
   profile: ResolvedRuntimeProfile,
-  clientIp?: string | null,
-  limiter: VoteAttemptLimiter = getVoteAttemptLimiter(profile),
-): Promise<VoteRateLimitContext | Response> {
+  clientIp: string | null | undefined,
+  limiter: VoteAttemptLimiter,
+  reason: 'vote_attempt' | 'session_create' | 'finalize_cancel',
+): Promise<{ clientIp: string } | Response> {
   const resolvedClientIp = resolveClientIp(profile, clientIp);
   if (!resolvedClientIp) {
     return errorResponse(ErrorCode.INVALID_REQUEST, { reason: 'client_ip_missing' });
@@ -147,7 +145,7 @@ export async function enforceVoteRateLimit(
         event: 'rate_limit_hit',
         rate_limit: {
           hit: true,
-          reason: 'vote_attempt',
+          reason,
           ip_hash: hashIpForLogging(resolvedClientIp),
         },
       });
@@ -160,6 +158,17 @@ export async function enforceVoteRateLimit(
   } catch (error) {
     return handleRateLimitError(error);
   }
+}
+
+/**
+ * Enforce vote submission rate limits.
+ */
+export async function enforceVoteRateLimit(
+  profile: ResolvedRuntimeProfile,
+  clientIp?: string | null,
+  limiter: VoteAttemptLimiter = getVoteAttemptLimiter(profile),
+): Promise<VoteRateLimitContext | Response> {
+  return enforceAttemptRateLimit(profile, clientIp, limiter, 'vote_attempt');
 }
 
 /**
@@ -170,31 +179,7 @@ export async function enforceSessionCreateRateLimit(
   clientIp?: string | null,
   limiter: SessionCreateLimiter = getSessionCreateRateLimiter(profile),
 ): Promise<SessionCreateRateLimitContext | Response> {
-  const resolvedClientIp = resolveClientIp(profile, clientIp);
-  if (!resolvedClientIp) {
-    return errorResponse(ErrorCode.INVALID_REQUEST, { reason: 'client_ip_missing' });
-  }
-  try {
-    const rateResult = await limiter.consume(resolvedClientIp);
-    if (!rateResult.allowed) {
-      logger.warn('rate limit exceeded', {
-        event: 'rate_limit_hit',
-        rate_limit: {
-          hit: true,
-          reason: 'session_create',
-          ip_hash: hashIpForLogging(resolvedClientIp),
-        },
-      });
-      return errorResponse(
-        ErrorCode.GLOBAL_LIMIT_EXCEEDED,
-        omitUndefinedProperties({ retryAfter: rateResult.retryAfter }),
-      );
-    }
-
-    return { clientIp: resolvedClientIp };
-  } catch (error) {
-    return handleRateLimitError(error);
-  }
+  return enforceAttemptRateLimit(profile, clientIp, limiter, 'session_create');
 }
 
 /**
@@ -205,31 +190,7 @@ export async function enforceFinalizeCancelRateLimit(
   clientIp?: string | null,
   limiter: VoteAttemptLimiter = getFinalizeCancelRateLimiter(profile),
 ): Promise<FinalizeCancelRateLimitContext | Response> {
-  const resolvedClientIp = resolveClientIp(profile, clientIp);
-  if (!resolvedClientIp) {
-    return errorResponse(ErrorCode.INVALID_REQUEST, { reason: 'client_ip_missing' });
-  }
-  try {
-    const rateResult = await limiter.consume(resolvedClientIp);
-    if (!rateResult.allowed) {
-      logger.warn('rate limit exceeded', {
-        event: 'rate_limit_hit',
-        rate_limit: {
-          hit: true,
-          reason: 'finalize_cancel',
-          ip_hash: hashIpForLogging(resolvedClientIp),
-        },
-      });
-      return errorResponse(
-        ErrorCode.GLOBAL_LIMIT_EXCEEDED,
-        omitUndefinedProperties({ retryAfter: rateResult.retryAfter }),
-      );
-    }
-
-    return { clientIp: resolvedClientIp };
-  } catch (error) {
-    return handleRateLimitError(error);
-  }
+  return enforceAttemptRateLimit(profile, clientIp, limiter, 'finalize_cancel');
 }
 
 /**

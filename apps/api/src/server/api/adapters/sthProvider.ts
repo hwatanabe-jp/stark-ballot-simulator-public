@@ -10,7 +10,7 @@ import {
 } from '@stark-ballot/verification/sth-verifier';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
-type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+type FetchLike = (input: Parameters<typeof fetch>[0], init?: RequestInit) => Promise<Response>;
 
 export const SESSION_STH_SOURCE_TEMPLATE = `/api${API_ROUTES.sessionBulletinSth.path}`;
 

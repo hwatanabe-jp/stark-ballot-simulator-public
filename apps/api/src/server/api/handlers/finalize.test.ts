@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
-import { ApplicationErrorCode } from '@stark-ballot/application/finalize/finalization-types';
+import { ApplicationErrorCode } from '@stark-ballot/application';
 import type { ArtifactReader } from '@stark-ballot/application/verification/artifact-reader';
 import { getGlobalStore } from '@stark-ballot/aws-adapters/store/storeInstance';
 import { MockSessionStore } from '@stark-ballot/aws-adapters/store/mockSessionStore';
 import { ServerRateLimiter } from '@stark-ballot/aws-adapters/rate-limit/serverRateLimit';
 import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sessionCapabilityToken';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import {
   clearRuntimeConfigReferenceResolver,
@@ -16,7 +17,7 @@ import {
 import {
   targetRuntimeProfile,
   targetRuntimeProfileEnv,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { getApiErrorCode, readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
 import { getNumberProperty, getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
@@ -62,7 +63,7 @@ function expectRequestStatusLog(
   expect(getNumberProperty(getRecordProperty(fields, 'http'), 'status')).toBe(expectedStatus);
 }
 
-function buildFinalizeRequest(sessionId: string, headers: Record<string, string> = {}): Request {
+function buildFinalizeRequest(sessionId: SessionId, headers: Record<string, string> = {}): Request {
   return new Request(`https://develop.example/api/sessions/${sessionId}/finalizations`, {
     method: 'POST',
     headers: {

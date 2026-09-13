@@ -22,46 +22,85 @@ The workspace separates contract-critical code from runtime-specific concerns:
   and guest work-budget validation.
 - `methods/guest/` owns the zkVM entrypoint, tally flow, journal emission, and
   Rust-side compatibility/property tests.
-- `host/` owns JSON parsing, proof execution, CLI behavior, and local artifact
-  persistence.
+- `host/` owns JSON parsing, proof execution, CLI behavior, local artifact
+  persistence, and the checked public-audit projection/hash validator used by
+  the async prover.
 - `methods-minimal/` and `benchmarks/` provide supporting workspace targets.
 - `verifier-service/` owns receipt discovery, report shaping, and
   `Receipt::verify(expected_image_id)`.
 - `packages/verification/src/verification/public-bundle-manifest.json` owns
   public bundle membership and private-artifact exclusion policy.
-- `infra/docker/entrypoint.sh` owns async bundle construction and policy
-  enforcement, private artifact promotion, and S3 upload.
+- `infra/docker/entrypoint.sh` owns async process/filesystem/archive/S3
+  orchestration, bundle-policy enforcement, and private artifact promotion.
 
 See [`shared-core-law-inventory.md`](./shared-core-law-inventory.md) for the
 shared-core laws and their Rust-side evidence.
 
 Current contract authorities:
 
-| Concern                                     | Authority                                                            |
-| ------------------------------------------- | -------------------------------------------------------------------- |
-| Rust input/journal types and method version | `contract-core/src/types.rs`                                         |
-| TypeScript input/journal types              | `packages/zkvm-contract/src/zkvm/types.ts`                           |
-| TypeScript-to-host JSON conversion          | `packages/zkvm-contract/src/zkvm/host-io.ts`                         |
-| Guest tally behavior                        | `methods/guest/src/tally.rs`                                         |
-| Host CLI and raw artifacts                  | `host/src/main.rs`                                                   |
-| Expected ImageIDs and provenance            | `public/imageId-mapping.json`                                        |
-| Async public bundle policy                  | `packages/verification/src/verification/public-bundle-manifest.json` |
-| Async construction and enforcement          | `infra/docker/entrypoint.sh`                                         |
+| Concern                                      | Authority                                                            |
+| -------------------------------------------- | -------------------------------------------------------------------- |
+| Rust input/journal types and method version  | `contract-core/src/types.rs`                                         |
+| Exact-current semantic contract and SHA-256  | `contract-core/src/current-zkvm-semantic-contract.json`              |
+| TypeScript input/journal types               | `packages/zkvm-contract/src/zkvm/types.ts`                           |
+| TypeScript-to-host JSON conversion           | `packages/zkvm-contract/src/zkvm/host-io.ts`                         |
+| Guest tally behavior                         | `methods/guest/src/tally.rs`                                         |
+| Host CLI and raw artifacts                   | `host/src/main.rs`                                                   |
+| Public-audit projection and canonical hashes | `host/src/artifacts.rs`                                              |
+| Expected ImageIDs and provenance             | `public/imageId-mapping.json`                                        |
+| Async public bundle policy                   | `packages/verification/src/verification/public-bundle-manifest.json` |
+| Async orchestration and enforcement          | `infra/docker/entrypoint.sh`                                         |
+
+The checked-in semantic descriptor is built from Rust-owned constants and
+field-order metadata. Its `semanticSha256` is the SHA-256 of the descriptor
+body serialized as key-sorted, whitespace-free canonical JSON. Rust tests
+verify freshness against the actual input and logical-journal serde order;
+TypeScript runtime-admits the exact keys and fingerprint before exposing the
+complete binding to server and tooling consumers. Browser-reachable contract
+code consumes only the generated artifact-metadata-free method, input-format,
+tally-width, domain-tag, and host-journal-key projection; the frontend import
+boundary and static-artifact scan keep the complete descriptor and private
+artifact filenames out of browser artifacts. The host-input contract includes the one optional canonical
+`election_config` extension and its exact camelCase nested fields; the artifact
+contract records the canonical public-input filename, schema, version, and
+ordered fields. The prover image copies the same JSON file read-only.
+
+Host tests RISC Zero-serde round-trip deterministic input and journal values
+(the observed 896-byte journal is non-normative). The Rust serializer also
+produces `contract-core/testdata/current-bitmap-artifacts-sentinel.json`, which
+TypeScript exact-admits; opaque serde byte layout remains non-contractual.
+
+This semantic hash runs alongside the existing source-file interface hash. It
+does not replace `zkvmContractHash` in release or deployment authority. The
+receipt payload remains opaque RISC Zero serde, and neither receipt byte
+offsets nor the test-only synthetic packed-journal layout are part of the
+descriptor.
 
 Current cross-language and formal evidence includes:
 
 - `contract-core/testdata/rfc6962-ts-golden-vectors.json`
 - `contract-core/testdata/bitmap-ts-golden-vectors.json`
-- `scripts/tests/__tests__/rfc6962-golden-vectors.test.ts`
+- `scripts/tests/bitmap-golden-vectors.test.ts`
+- `scripts/tests/rfc6962-golden-vectors.test.ts`
 - `docs/formal/generated-vectors/input-commitment-cases.json`
 - `docs/formal/generated-vectors/bitmap-cases.json`
 - `docs/formal/generated-vectors/guest-model-cases.json`
 
-Regenerate the checked-in TypeScript-to-Rust RFC 6962 fixture from the
-repository root:
+The six formal vector files use one unnumbered exact-current envelope generated
+only by Lean. TypeScript admits the exact envelope, payload, modeled bounds, and
+canonical fingerprint through
+`@stark-ballot/zkvm-contract/zkvm/formal-vectors`; the Rust contract-core and
+guest correspondence tests use an exact serde boundary and compare the same
+metadata with their input-format, guest-work, method, and tally constants.
+Neither consumer trusts an imported JSON type assertion, accepts extra fields,
+or provides a fallback for an older envelope.
+
+Regenerate the checked-in TypeScript-to-Rust fixtures from the repository
+root:
 
 ```bash
 pnpm tsx scripts/tests/generate-rfc6962-golden-vectors.ts
+pnpm tsx scripts/tests/generate-bitmap-golden-vectors.ts
 ```
 
 ## Toolchain and Features
@@ -155,6 +194,7 @@ These checks do not generate real proofs:
 cd zkvm
 RISC0_DEV_MODE=1 cargo test
 cargo test -p contract-core
+cargo test -p contract-core --test current_semantic_contract
 cargo test -p guest property_
 ```
 
@@ -238,13 +278,22 @@ The host reads the JSON shape produced by `serializeZkvmAggregatorInput()` in
       "index": 0,
       "merkle_path": [[/* 32 bytes */], [/* 32 bytes */]]
     }
-  ]
+  ],
+  "election_config": {
+    "totalExpected": 8,
+    "choices": ["A", "B", "C", "D", "E"],
+    "version": "v1.0",
+    "botCount": 0,
+    "merkleTreeDepth": 3
+  }
 }
 ```
 
 `timestamp` is a Unix timestamp in milliseconds encoded as a Rust `u64`.
 TypeScript callers require a positive JavaScript safe integer before
-serialization.
+serialization. `election_config` is the sole optional host-only extension; its
+name is snake_case while the exact nested configuration keys are camelCase.
+Unknown top-level, vote, and configuration keys are rejected.
 
 The current guest work budget fails closed when any of these bounds are
 exceeded:
@@ -381,13 +430,20 @@ the public verification bundle.
 `packages/verification/src/verification/public-bundle-manifest.json` is the
 authority for public bundle membership and private-artifact exclusions. The
 ECS entrypoint enforces that policy while constructing the async bundle,
-promoting private supporting artifacts, and uploading results. It converts raw
-host artifacts into application-level names:
+promoting private supporting artifacts, and uploading results. Its checked
+`prover-artifacts` Rust binary exactly admits the private host input and raw
+host output. This async projection requires `election_config` in the input;
+the host proof CLI itself permits that extension to be omitted. The Rust tool
+rejects duplicate vote indices, computes the canonical config/input/STH hashes,
+projects application-level artifacts, and re-admits the serialized
+cross-artifact set before publication. The shell retains process, filesystem,
+archive, and S3 orchestration:
 
-- `*-receipt.json` becomes `receipt.json`.
-- `*-output.json` becomes `journal.json`.
-- the private input and journal produce `public-input.json`,
-  `election-manifest.json`, and `close-statement.json`.
+- the shell copies `*-receipt.json` to `receipt.json`.
+- the Rust tool projects the private input and `*-output.json` into
+  `journal.json`, `public-input.json`, `election-manifest.json`, and
+  `close-statement.json`. The journal projection converts byte arrays to UUID
+  and hex-string representations.
 - `*-bitmap.json` and `*-seen-bitmap.json` are promoted to private
   `included-bitmap.json` and `seen-bitmap.json` when present.
 
@@ -404,9 +460,11 @@ journal.json
 `input.json`, `verification.json`, `included-bitmap.json`, and
 `seen-bitmap.json` are private and must remain outside the public archive.
 
-`infra/docker/entrypoint.sh` validates async host output against the current
-method version. Keep it in lockstep with `contract-core/src/types.rs` when the
-journal contract changes.
+`host/src/artifacts.rs` validates async host output against the current method
+version and derives the public-input schema/version from `contract-core`; the
+entrypoint does not maintain separate method-version or public-input literals.
+Keep the Rust tool and semantic descriptor in lockstep with
+`contract-core/src/types.rs` when the journal contract changes.
 
 ## ImageID Trust and Rotation
 
@@ -427,8 +485,9 @@ For a proof-free query:
 The expected-ID source of truth is `public/imageId-mapping.json`. The current
 mapping is keyed by method version 14 and has two explicit variants:
 
-- `default` is the confirmed accepted managed ARM64 prover release.
-- `x86_64` is the independently confirmed local x86_64 build.
+- `default` is confirmed by the accepted managed ARM64 Prover release
+  for the current guest source.
+- `x86_64` is independently confirmed from a fresh local production build.
 
 Each variant is discriminated:
 
@@ -439,14 +498,15 @@ Each variant is discriminated:
 Runtime selection never falls back between variants. An unset variant means
 `default`; local x86_64 receipts require an explicit `x86_64` selection.
 Unknown method versions, missing mappings, unavailable variants, and
-unconfirmed variants fail closed.
+unconfirmed variants fail closed. Normal App deployment requires the confirmed
+`default` to match its selected managed ARM64 Prover release.
 
-There is no resolver fallback to `DEFAULT_POC_IMAGE_ID`. That constant remains
-only for tests and compatibility references. `resolveExpectedImageId()`
-requires either an explicit `EXPECTED_IMAGE_ID` supplied by an authorized
-runtime boundary or a valid mapping loader. Target runtime configuration must
-still bind any explicit override to the deployed guest and active method
-version.
+There is no resolver fallback or compatibility ImageID constant.
+`resolveExpectedImageId()` requires either an explicit `EXPECTED_IMAGE_ID`
+supplied by an authorized runtime boundary or a valid mapping loader. Target
+runtime configuration must still bind any explicit override to the deployed
+guest and active method version. The retired `EXPECTED_IMAGEID_POC` selector is
+rejected by runtime-profile admission.
 
 When guest source, features, or dependencies change:
 
@@ -460,7 +520,7 @@ When guest source, features, or dependencies change:
 5. Regenerate local receipts and output artifacts before using them for
    verification.
 
-Do not update `DEFAULT_POC_IMAGE_ID` as part of release rotation. Do not mix a
+Do not introduce a fallback constant as part of release rotation. Do not mix a
 new mapping with artifacts produced by an older guest build.
 
 The managed ARM64 evidence and release model is documented in
@@ -477,6 +537,32 @@ The managed ARM64 evidence and release model is documented in
 - validates and reads `*-output.json` and `*-receipt.json`
 - restores exact included/seen bitmaps when their artifacts are present
 - normalizes byte arrays for application consumers
+- attempts to delete its temporary input and four output files in `finally`,
+  on both success and failure; missing files are harmless, and other deletion
+  failures produce a safe warning while preserving the original result
+
+The local adapter launches the host directly in its own POSIX process group
+(Linux, WSL, or macOS). The proof deadline stays at 600 seconds. Deadline and
+host-exit cleanup signals the owned group, allows five seconds for termination,
+then uses SIGKILL with a final one-second wait. Unconfirmed process-group
+termination cannot produce a successful result. This manages children that
+remain in the owned group; it is not a containment mechanism for a process
+that deliberately creates another session.
+
+The local static server also stops admission and waits for owned hosts on
+SIGTERM or SIGINT, then closes remaining HTTP connections and lets artifact
+cleanup finish. A SIGKILL of the server cannot execute this shutdown handler.
+
+Logs distinguish spawn errors, nonzero exits, external signals, server shutdown, and the
+adapter's own deadline. They include the configured deadline, elapsed time,
+exit code, signal, and the admitted `starting`, `proving`, or `output_decoded`
+stage. Arbitrary host stdout/stderr is drained without retaining its contents.
+These progress stages are diagnostic and never establish receipt validity.
+
+Real-mode CLI HTTP waits have a 636-second minimum: the host deadline plus
+bounded shutdown and 30 seconds to return the result. The CLI reports a shorter
+requested wait and the effective wait separately; it does not extend the
+host's proof deadline.
 
 ### Asynchronous
 

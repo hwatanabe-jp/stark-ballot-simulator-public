@@ -1,3 +1,6 @@
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
+
 export const ARTIFACT_DELIVERY_LIMITS = Object.freeze({
   bundleInlineMaxBytes: 4 * 1024 * 1024,
   bundleRangeMaxBytes: 4 * 1024 * 1024,
@@ -14,8 +17,8 @@ export type ArtifactRangeRequest =
 
 export interface ArtifactReadRequest {
   artifact: ArtifactKind;
-  sessionId: string;
-  finalizationId: string;
+  sessionId: SessionId;
+  finalizationId: FinalizationId;
   range?: ArtifactRangeRequest;
 }
 

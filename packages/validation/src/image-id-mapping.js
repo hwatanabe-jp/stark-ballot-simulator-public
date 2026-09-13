@@ -1,3 +1,78 @@
+/** @typedef {'default' | 'x86_64'} ImageIdVariant */
+
+/** @typedef {'unknown_method' | 'variant_unconfirmed'} ImageIdVariantResolutionReason */
+
+/**
+ * @typedef {{
+ *   readonly state: 'unconfirmed';
+ *   readonly requiredEvidence: 'accepted-prover-release';
+ * }} UnconfirmedImageIdVariant
+ */
+
+/**
+ * @typedef {{
+ *   readonly evidenceType: 'local-guest-build';
+ *   readonly compiledAt: string;
+ *   readonly buildProfile: string;
+ *   readonly hostRustVersion: string;
+ *   readonly hostRustCommit: string;
+ *   readonly risc0Version: string;
+ *   readonly risc0Commit: string;
+ *   readonly guestToolchain: string;
+ *   readonly guestToolchainCommit: string;
+ *   readonly guestElfSha256: string;
+ *   readonly guestProgramBinarySha256: string;
+ *   readonly hostBinarySha256: string;
+ *   readonly zkvmCargoLockSha256: string;
+ * }} LocalGuestBuildProvenance
+ */
+
+/**
+ * @typedef {{
+ *   readonly evidenceType: 'accepted-prover-release';
+ *   readonly sourceSha: string;
+ *   readonly proverImageDigest: string;
+ *   readonly candidateMetadataSha256: string;
+ *   readonly releaseRecordSha256: string;
+ *   readonly toolchainArtifactRecordSha256: string;
+ * }} AcceptedProverReleaseProvenance
+ */
+
+/** @typedef {LocalGuestBuildProvenance | AcceptedProverReleaseProvenance} ImageIdProvenance */
+
+/**
+ * @typedef {{
+ *   readonly state: 'confirmed';
+ *   readonly imageId: string;
+ *   readonly provenance: ImageIdProvenance;
+ * }} ConfirmedImageIdVariant
+ */
+
+/** @typedef {ConfirmedImageIdVariant | UnconfirmedImageIdVariant} ImageIdVariantAuthority */
+
+/**
+ * @typedef {{
+ *   readonly methodVersion: number;
+ *   readonly variants: Readonly<Record<ImageIdVariant, ImageIdVariantAuthority>>;
+ *   readonly description: string;
+ *   readonly features: readonly string[];
+ * }} ImageIdMethodMapping
+ */
+
+/**
+ * @typedef {{
+ *   readonly mappingType: 'image-id-mapping';
+ *   readonly mappings: Readonly<Record<string, ImageIdMethodMapping>>;
+ *   readonly current: string;
+ *   readonly deprecated: readonly string[];
+ *   readonly metadata: {
+ *     readonly lastUpdated: string;
+ *     readonly purpose: string;
+ *     readonly notes: string;
+ *   };
+ * }} ImageIdMapping
+ */
+
 const checksumPattern = /^[0-9a-f]{64}$/;
 const gitShaPattern = /^[0-9a-f]{40}$/;
 const imageDigestPattern = /^sha256:[0-9a-f]{64}$/;

@@ -206,9 +206,9 @@ describe('ScenarioRunner', () => {
       expect(detailedReport).toContain('Total Tests: 3');
       expect(detailedReport).toContain('Passed: 2');
       expect(detailedReport).toContain('Failed: 1');
-      expect(detailedReport).toContain('✅ S0: PASS');
-      expect(detailedReport).toContain('✅ S1: PASS');
-      expect(detailedReport).toContain('❌ S2: FAIL');
+      expect(detailedReport).toContain('S0: PASS (no tamper,');
+      expect(detailedReport).toContain('S1: PASS (tamper detected,');
+      expect(detailedReport).toContain('S2: FAIL (no tamper,');
       expect(detailedReport).toContain('missingSlots=1');
       expect(detailedReport).toContain('validVotes=63');
       expect(detailedReport).toContain('Connection timeout');
@@ -219,9 +219,9 @@ describe('ScenarioRunner', () => {
       expect(simpleReport).toContain('Total: 3');
       expect(simpleReport).toContain('Passed: 2');
       expect(simpleReport).toContain('Failed: 1');
-      expect(simpleReport).toContain('S0: ✅ PASS');
-      expect(simpleReport).toContain('S1: ✅ PASS');
-      expect(simpleReport).toContain('S2: ❌ FAIL');
+      expect(simpleReport).toContain('S0: PASS');
+      expect(simpleReport).toContain('S1: PASS');
+      expect(simpleReport).toContain('S2: FAIL');
       expect(simpleReport).toContain('Connection timeout');
     });
   });

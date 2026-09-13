@@ -19,8 +19,372 @@ import {
   requireGroupedLowercaseUuid,
   requireString,
   sha256Text,
+  validateCanonicalSha256Binding,
 } from './internal.js';
 import rawDeploymentTargetConfiguration from '../deployment-targets.json' with { type: 'json' };
+
+/**
+ * @typedef {import('./canonical-json-value.js').CanonicalJsonValue} CanonicalJsonValue
+ */
+
+/**
+ * @typedef {{
+ *     readonly key: string;
+ *     readonly versionId: string;
+ *     readonly sha256: string;
+ * }} ImmutableObjectReference
+ */
+
+/**
+ * @typedef {{
+ *     readonly expectedVersionOrEtag: string;
+ *     readonly observedVersionOrEtag: string;
+ * }} PointerCompareAndSwapInput
+ */
+
+/**
+ * @typedef {{
+ *     readonly requestedSourceSha: string;
+ *     readonly sourceActionSourceSha: string;
+ *     readonly resolvedSourceSha: string;
+ * }} SourcePinComparison
+ */
+
+/**
+ * @typedef {{
+ *     readonly Account: string;
+ *     readonly Arn: string;
+ * }} AwsSsoCallerIdentity
+ */
+
+/**
+ * @typedef {{
+ *     readonly accountId: string;
+ *     readonly arn: string;
+ * }} ValidatedAwsSsoCallerIdentity
+ */
+
+/**
+ * @typedef {{
+ *     readonly namePrefix: string;
+ *     readonly signingProfileName: string;
+ *     readonly signingProfileArn: string;
+ *     readonly repositories: {
+ *         readonly prover: string;
+ *         readonly toolchain: string;
+ *     };
+ * }} ImageSigningIdentity
+ */
+
+/**
+ * @typedef {{
+ *     readonly partition: 'aws';
+ *     readonly accountId: string;
+ *     readonly region: string;
+ *     readonly repository: string;
+ * }} DigestPinnedImagePolicy
+ */
+
+/**
+ * @typedef {DigestPinnedImagePolicy & {
+ *     readonly digest: string;
+ *     readonly imageUri: string;
+ * }} DigestPinnedImageReference
+ */
+
+/**
+ * @typedef {{
+ *     readonly observedSha256: string | undefined;
+ *     readonly proposedSha256: string;
+ * }} ImmutablePublicationInput
+ */
+
+/**
+ * @typedef {{
+ *     readonly appExecutionAuthoritySha256: string;
+ *     readonly appSourceSha: string;
+ *     readonly deployMode: 'normal' | 'rollback';
+ *     readonly pipelineExecutionId: string;
+ * }} DeploymentIdentityInput
+ */
+
+/**
+ * @typedef {{
+ *     readonly identityType: 'app-deployment';
+ *     readonly deploymentId: string;
+ *     readonly authoritySha256: string;
+ *     readonly authority: DeploymentIdentityInput;
+ * }} DeploymentIdentity
+ */
+
+/**
+ * @typedef {'stark-dev/develop' | 'stark-prod/main'} DeploymentTargetKey
+ * @typedef {'app' | 'bootstrap' | 'foundation' | 'prover' | 'static-fast' | 'toolchain'} DeploymentLane
+ */
+
+/**
+ * @typedef {{
+ *     readonly targetKey: DeploymentTargetKey;
+ *     readonly accountId: string;
+ *     readonly projectId: string;
+ *     readonly resourcePrefix: string;
+ *     readonly stateNamespace: string;
+ *     readonly artifactNamespace: string;
+ *     readonly partition: 'aws';
+ *     readonly accountLabel: string;
+ *     readonly region: string;
+ *     readonly environmentId: string;
+ *     readonly environmentTier: string;
+ *     readonly operatorPermissionSetName: string;
+ *     readonly sourceProvider: 'github';
+ *     readonly repository: string;
+ *     readonly repositoryUrl: string;
+ *     readonly sourceBranch: string;
+ *     readonly sourceAction: string;
+ * }} AllowedDeploymentTarget
+ */
+
+/**
+ * @typedef {{
+ *     readonly target: AllowedDeploymentTarget;
+ *     readonly lane: DeploymentLane;
+ *     readonly accountId: string;
+ *     readonly requestedControlSourceSha: string;
+ *     readonly selectedApplicationSourceSha: string;
+ *     readonly frameworkSourceSha: string;
+ * }} RenderDeploymentLaneContextInput
+ */
+
+/**
+ * @typedef {{
+ *     readonly acceptedDeploymentPointerKey: string;
+ *     readonly pipeline: string;
+ *     readonly sourceAction: string;
+ *     readonly acceptedDeploymentPrefix: string;
+ *     readonly appAcceptancePublisherRole: string;
+ *     readonly appDeploymentStatusKey: string;
+ *     readonly appDeploymentStatusPublisherProject: string;
+ *     readonly appDeploymentStatusPublisherRole: string;
+ *     readonly appExecutionAuthorityProject: string;
+ *     readonly appExecutionAuthorityRole: string;
+ *     readonly appRetainedArtifactBucket: string;
+ *     readonly appSignaturePreflightApplyProject: string;
+ *     readonly appSignaturePreflightApplyRole: string;
+ *     readonly appSignaturePreflightInvokeProject: string;
+ *     readonly appSignaturePreflightInvokerRole: string;
+ *     readonly appSignaturePreflightPlanProject: string;
+ *     readonly appSignaturePreflightPlanRole: string;
+ *     readonly appSignatureStateRefreshApplyProject: string;
+ *     readonly appSignatureStateRefreshApplyRole: string;
+ *     readonly appSignatureStateRefreshPlanProject: string;
+ *     readonly appStaticDeployProject: string;
+ *     readonly appStaticDeployRole: string;
+ *     readonly appStaticFastDeployProject?: string;
+ *     readonly appStaticFastDeployRole?: string;
+ *     readonly appStaticFastGateProject?: string;
+ *     readonly appStaticFastGateRole?: string;
+ *     readonly appStaticFastPipelineRole?: string;
+ *     readonly appStaticFastSmokeProject?: string;
+ *     readonly appStaticFastSmokeRole?: string;
+ *     readonly approvalEvidencePrefix: string;
+ *     readonly artifactBucket: string;
+ *     readonly artifactKmsAlias: string;
+ *     readonly bootstrapTerraformAcceptancePublisherRole: string;
+ *     readonly ecrRetentionFunction: string;
+ *     readonly ecrRetentionLogGroup: string;
+ *     readonly ecrRetentionPermissionsBoundary: string;
+ *     readonly ecrRetentionRole: string;
+ *     readonly ecrRetentionSchedule: string;
+ *     readonly finalizationStateMachine: string;
+ *     readonly foundationTerraformAcceptancePublisherRole: string;
+ *     readonly foundationSigningAuthorityPrefix: string;
+ *     readonly foundationSigningResolverProject: string;
+ *     readonly foundationSigningResolverRole: string;
+ *     readonly foundationAppNetworkingKey: string;
+ *     readonly frontendBucket: string;
+ *     readonly githubTriggerRole: string;
+ *     readonly lambdaArtifactPrefix: string;
+ *     readonly pipelineRole: string;
+ *     readonly proofBucket: string;
+ *     readonly proverEcsCluster: string;
+ *     readonly proverEcsTaskFamily: string;
+ *     readonly proverAcceptedPointerKey: string;
+ *     readonly proverCandidateProject: string;
+ *     readonly proverCandidateRole: string;
+ *     readonly proverPointerProject: string;
+ *     readonly proverPointerRole: string;
+ *     readonly proverReleasePrefix: string;
+ *     readonly proverRepository: string;
+ *     readonly proverToolchainResolverProject: string;
+ *     readonly proverToolchainResolverRole: string;
+ *     readonly recoveryManifestPrefix: string;
+ *     readonly releaseManifestBucket: string;
+ *     readonly runtimeConfigReferencePrefix: string;
+ *     readonly runtimeNamePrefix: string;
+ *     readonly runtimeSecretReferencePrefix: string;
+ *     readonly signatureRuntimeNamePrefix: string;
+ *     readonly signaturePreflightPrefix: string;
+ *     readonly signatureVerifierFunction: string;
+ *     readonly signatureVerifierPermissionsBoundary: string;
+ *     readonly signatureVerifierRole: string;
+ *     readonly signerProfile: string;
+ *     readonly smokeProject: string;
+ *     readonly staticFrontendArtifactPrefix: string;
+ *     readonly terraformAuthorityBucket: string;
+ *     readonly terraformAuthorityKmsAlias: string;
+ *     readonly terraformBaselinePrefix: string;
+ *     readonly terraformApplyProject: string;
+ *     readonly terraformApplyRole: string;
+ *     readonly terraformDriftAppProject: string;
+ *     readonly terraformDriftAppProviderCorePolicy: string;
+ *     readonly terraformDriftAppProviderRuntimePolicy: string;
+ *     readonly terraformDriftBootstrapProject: string;
+ *     readonly terraformDriftCoordinatorAuthorityEnvironmentPolicy: string;
+ *     readonly terraformDriftCoordinatorExecutionEnvironmentPolicy: string;
+ *     readonly terraformDriftCoordinatorProject: string;
+ *     readonly terraformDriftCoordinatorRequestShapePolicy: string;
+ *     readonly terraformDriftCoordinatorRole: string;
+ *     readonly terraformDriftFoundationProject: string;
+ *     readonly terraformDriftReportPrefix: string;
+ *     readonly terraformDriftRunnerRole: string;
+ *     readonly terraformDriftSchedule: string;
+ *     readonly terraformDriftScheduleRole: string;
+ *     readonly terraformPlanProject: string;
+ *     readonly terraformPlanRole: string;
+ *     readonly terraformStateBucket: string;
+ *     readonly terraformStateKmsAlias: string;
+ *     readonly terraformSmokeRole: string;
+ *     readonly toolchainAcceptedPointerKey: string;
+ *     readonly toolchainArtifactPrefix: string;
+ *     readonly toolchainCandidateProject: string;
+ *     readonly toolchainCandidateRole: string;
+ *     readonly toolchainPointerProject: string;
+ *     readonly toolchainPointerRole: string;
+ *     readonly toolchainRepository: string;
+ *     readonly validateProject: string;
+ *     readonly targetLambdaFunctions: {
+ *         readonly finalizationWriter: string;
+ *         readonly imageSignatureVerifier: string;
+ *         readonly proofDispatcher: string;
+ *         readonly publicApi: string;
+ *         readonly semaphoreJanitor: string;
+ *         readonly verificationWorker: string;
+ *     };
+ *     readonly targetLogGroups: {
+ *         readonly finalizationWriter: string;
+ *         readonly imageSignatureVerifier: string;
+ *         readonly opsLedger: string;
+ *         readonly proofDispatcher: string;
+ *         readonly prover: string;
+ *         readonly publicApi: string;
+ *         readonly semaphoreJanitor: string;
+ *         readonly verificationWorker: string;
+ *     };
+ * }} DeploymentContextNames
+ */
+
+/**
+ * @typedef {DeploymentContextNames} DeploymentLaneAuthorityNames
+ */
+
+/**
+ * @typedef {Pick<DeploymentContextNames, 'artifactBucket' | 'artifactKmsAlias' | 'githubTriggerRole' | 'pipeline' | 'pipelineRole' | 'smokeProject' | 'terraformApplyProject' | 'terraformApplyRole' | 'terraformPlanProject' | 'terraformPlanRole' | 'terraformSmokeRole' | 'validateProject'>} DeploymentTargetLaneNames
+ */
+
+/**
+ * @typedef {Omit<DeploymentContextNames, keyof DeploymentTargetLaneNames | 'sourceAction'>} SharedDeploymentTargetNames
+ */
+
+/**
+ * @typedef {{
+ *     readonly scope: 'app' | 'bootstrap' | 'foundation';
+ *     readonly stateIdentity: string;
+ *     readonly backendKey: string;
+ *     readonly policy: Readonly<{
+ *         signatureVerificationRequired: boolean;
+ *     }>;
+ *     readonly names: DeploymentTargetLaneNames;
+ * }} DeploymentTargetLaneConfiguration
+ */
+
+/**
+ * @typedef {{
+ *     readonly bootstrapApprovalAction: 'ApproveBootstrapApply';
+ *     readonly foundationPublicSubnetException: 'accepted-for-production-prover-egress';
+ * }} ProductionDeploymentPolicy
+ */
+
+/**
+ * @typedef {AllowedDeploymentTarget & {
+ *     readonly sharedNames: SharedDeploymentTargetNames;
+ *     readonly lanes: Readonly<Record<Exclude<DeploymentLane, 'static-fast'>, DeploymentTargetLaneConfiguration> & { 'static-fast'?: DeploymentTargetLaneConfiguration }>;
+ * } & (
+ *     { readonly targetKey: 'stark-dev/develop'; readonly productionPolicy?: never }
+ *     | { readonly targetKey: 'stark-prod/main'; readonly productionPolicy: ProductionDeploymentPolicy }
+ * )} ReviewedDeploymentTarget
+ */
+
+/**
+ * @typedef {{
+ *     readonly configurationType: 'deployment-target-configuration';
+ *     readonly allowedTargets: Readonly<{
+ *         'stark-dev/develop': ReviewedDeploymentTarget;
+ *         'stark-prod/main'?: ReviewedDeploymentTarget;
+ *     }>;
+ * }} DeploymentTargetConfiguration
+ */
+
+/**
+ * @typedef {{
+ *     readonly contextType: 'deployment-lane-context';
+ *     readonly project: {
+ *         readonly projectId: string;
+ *         readonly resourcePrefix: string;
+ *         readonly stateNamespace: string;
+ *         readonly artifactNamespace: string;
+ *     };
+ *     readonly target: {
+ *         readonly partition: 'aws';
+ *         readonly accountId: string;
+ *         readonly accountLabel: string;
+ *         readonly region: string;
+ *         readonly environmentId: string;
+ *         readonly environmentTier: string;
+ *         readonly operatorPermissionSetName: string;
+ *     };
+ *     readonly root: {
+ *         readonly lane: DeploymentLane;
+ *         readonly scope: 'app' | 'bootstrap' | 'foundation';
+ *         readonly stateIdentity: string;
+ *         readonly backendKey: string;
+ *     };
+ *     readonly source: {
+ *         readonly branch: string;
+ *         readonly provider: 'github';
+ *         readonly repository: string;
+ *         readonly repositoryUrl: string;
+ *         readonly requestedControlSourceSha: string;
+ *         readonly selectedApplicationSourceSha: string;
+ *         readonly frameworkSourceSha: string;
+ *     };
+ *     readonly names: DeploymentContextNames;
+ *     readonly policy: {
+ *         readonly signatureVerificationRequired: boolean;
+ *     };
+ *     readonly targetConfigurationSha256: string;
+ * }} DeploymentLaneContext
+ */
+
+/**
+ * @typedef {{
+ *     readonly lane: DeploymentLane;
+ *     readonly scope: 'app' | 'bootstrap' | 'foundation';
+ *     readonly stateIdentity: string;
+ *     readonly backendKey: string;
+ *     readonly names: DeploymentLaneAuthorityNames;
+ *     readonly policy: DeploymentLaneContext['policy'];
+ * }} DeploymentLaneAuthority
+ */
 
 export {
   assertMatchingSourcePins,
@@ -36,10 +400,10 @@ export {
   parseImageDigest,
   parseS3VersionId,
   parseSha256,
+  validateCanonicalSha256Binding,
 };
 
 const ACCOUNT_ID_PATTERN = /^[0-9]{12}$/u;
-const OPERATIONAL_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@/+,-]{0,1023}$/u;
 
 const DEPLOYMENT_TARGET_KEYS = [
   'accountId',
@@ -62,8 +426,27 @@ const DEPLOYMENT_TARGET_KEYS = [
   'stateNamespace',
   'targetKey',
 ];
-const ALLOWED_TARGET_KEYS = ['stark-dev/develop'];
+const ALLOWED_TARGET_KEYS = ['stark-dev/develop', 'stark-prod/main'];
+/** @type {readonly DeploymentLane[]} */
 const DEPLOYMENT_LANES = ['app', 'bootstrap', 'foundation', 'prover', 'static-fast', 'toolchain'];
+const PRODUCTION_LANES = DEPLOYMENT_LANES.filter((lane) => lane !== 'static-fast');
+const STATIC_FAST_NAME_KEYS = [
+  'appStaticFastDeployProject',
+  'appStaticFastDeployRole',
+  'appStaticFastGateProject',
+  'appStaticFastGateRole',
+  'appStaticFastPipelineRole',
+  'appStaticFastSmokeProject',
+  'appStaticFastSmokeRole',
+];
+
+/** @param {DeploymentTargetKey} targetKey */
+function targetNameKeys(targetKey) {
+  return targetKey === 'stark-dev/develop'
+    ? NAME_KEYS
+    : NAME_KEYS.filter((key) => !STATIC_FAST_NAME_KEYS.includes(key));
+}
+
 const DEPLOYMENT_LANE_SCOPES = Object.freeze({
   app: 'app',
   bootstrap: 'bootstrap',
@@ -87,6 +470,7 @@ const DEPLOYMENT_LANE_NAME_KEYS = [
   'terraformSmokeRole',
   'validateProject',
 ];
+/** @type {readonly (keyof DeploymentContextNames['targetLambdaFunctions'])[]} */
 const TARGET_LAMBDA_FUNCTION_KEYS = [
   'finalizationWriter',
   'imageSignatureVerifier',
@@ -95,6 +479,7 @@ const TARGET_LAMBDA_FUNCTION_KEYS = [
   'semaphoreJanitor',
   'verificationWorker',
 ];
+/** @type {readonly (keyof DeploymentContextNames['targetLogGroups'])[]} */
 const TARGET_LOG_GROUP_KEYS = [
   'finalizationWriter',
   'imageSignatureVerifier',
@@ -139,8 +524,12 @@ const SOURCE_KEYS = [
 const NAME_KEYS = [
   'acceptedDeploymentPointerKey',
   'acceptedDeploymentPrefix',
-  'appDeploymentRecordProject',
-  'appDeploymentRecordRole',
+  'appAcceptancePublisherRole',
+  'appDeploymentStatusKey',
+  'appDeploymentStatusPublisherProject',
+  'appDeploymentStatusPublisherRole',
+  'appExecutionAuthorityProject',
+  'appExecutionAuthorityRole',
   'appRetainedArtifactBucket',
   'appSignaturePreflightApplyProject',
   'appSignaturePreflightApplyRole',
@@ -163,13 +552,14 @@ const NAME_KEYS = [
   'approvalEvidencePrefix',
   'artifactBucket',
   'artifactKmsAlias',
-  'deploymentRecordPrefix',
+  'bootstrapTerraformAcceptancePublisherRole',
   'ecrRetentionFunction',
   'ecrRetentionLogGroup',
   'ecrRetentionPermissionsBoundary',
   'ecrRetentionRole',
   'ecrRetentionSchedule',
   'finalizationStateMachine',
+  'foundationTerraformAcceptancePublisherRole',
   'foundationSigningAuthorityPrefix',
   'foundationSigningResolverProject',
   'foundationSigningResolverRole',
@@ -192,13 +582,7 @@ const NAME_KEYS = [
   'proverToolchainResolverProject',
   'proverToolchainResolverRole',
   'recoveryManifestPrefix',
-  'recoveryReadinessProject',
-  'recoveryReadinessReportPrefix',
-  'recoveryReadinessRole',
   'releaseManifestBucket',
-  'rollbackReadinessProject',
-  'rollbackReadinessReportPrefix',
-  'rollbackReadinessRole',
   'runtimeConfigReferencePrefix',
   'runtimeNamePrefix',
   'runtimeSecretReferencePrefix',
@@ -247,6 +631,7 @@ const NAME_KEYS = [
   'validateProject',
 ];
 const POLICY_KEYS = ['signatureVerificationRequired'];
+/** @type {readonly (keyof SharedDeploymentTargetNames)[]} */
 const TERRAFORM_DRIFT_MANAGED_POLICY_NAME_KEYS = [
   'terraformDriftAppProviderCorePolicy',
   'terraformDriftAppProviderRuntimePolicy',
@@ -255,34 +640,39 @@ const TERRAFORM_DRIFT_MANAGED_POLICY_NAME_KEYS = [
   'terraformDriftCoordinatorRequestShapePolicy',
 ];
 const SHARED_NAME_KEYS = NAME_KEYS.filter((key) => key !== 'sourceAction' && !DEPLOYMENT_LANE_NAME_KEYS.includes(key));
-const ALLOWED_DEPLOYMENT_TARGET_KEYS = DEPLOYMENT_TARGET_KEYS.filter((key) => key !== 'lanes' && key !== 'sharedNames');
 const S3_CONTEXT_NAME_KEYS = [
   'acceptedDeploymentPointerKey',
   'acceptedDeploymentPrefix',
+  'appDeploymentStatusKey',
   'approvalEvidencePrefix',
-  'deploymentRecordPrefix',
   'foundationAppNetworkingKey',
   'foundationSigningAuthorityPrefix',
   'lambdaArtifactPrefix',
   'proverAcceptedPointerKey',
   'proverReleasePrefix',
   'recoveryManifestPrefix',
-  'recoveryReadinessReportPrefix',
   'signaturePreflightPrefix',
   'staticFrontendArtifactPrefix',
   'terraformBaselinePrefix',
   'terraformDriftReportPrefix',
-  'rollbackReadinessReportPrefix',
   'toolchainAcceptedPointerKey',
   'toolchainArtifactPrefix',
 ];
+const APP_RETAINED_ARTIFACT_S3_NAME_KEYS = /** @type {const} */ ([
+  'acceptedDeploymentPointerKey',
+  'acceptedDeploymentPrefix',
+  'approvalEvidencePrefix',
+  'lambdaArtifactPrefix',
+  'recoveryManifestPrefix',
+  'signaturePreflightPrefix',
+  'staticFrontendArtifactPrefix',
+]);
 const MAXIMUM_UUID_SEGMENT = '0'.repeat(36);
 const MAXIMUM_SHA256_SEGMENT = '0'.repeat(64);
 const MAXIMUM_SOURCE_SHA_SEGMENT = '0'.repeat(40);
 const S3_PREFIX_DERIVED_SUFFIXES = Object.freeze({
-  acceptedDeploymentPrefix: `/executions/${MAXIMUM_UUID_SEGMENT}/attempts/${MAXIMUM_UUID_SEGMENT}/authoritative-app-deployment.json`,
+  acceptedDeploymentPrefix: `/acceptances/${MAXIMUM_SHA256_SEGMENT}.json`,
   approvalEvidencePrefix: `/${MAXIMUM_UUID_SEGMENT}.json`,
-  deploymentRecordPrefix: `/${MAXIMUM_SOURCE_SHA_SEGMENT}/${MAXIMUM_SHA256_SEGMENT}.json`,
   foundationSigningAuthorityPrefix: `/${MAXIMUM_SOURCE_SHA_SEGMENT}/authority.json`,
   lambdaArtifactPrefix: `/${MAXIMUM_SOURCE_SHA_SEGMENT}/image-signature-verifier.zip`,
   proverReleasePrefix: `/${MAXIMUM_UUID_SEGMENT}/manifest.json`,
@@ -292,8 +682,15 @@ const S3_PREFIX_DERIVED_SUFFIXES = Object.freeze({
   toolchainArtifactPrefix: `/${MAXIMUM_UUID_SEGMENT}/manifest.json`,
 });
 
+/**
+ * @param {unknown} value
+ * @param {readonly string[]} expectedKeys
+ * @param {string} label
+ * @returns {Record<string, unknown>}
+ */
 function parseConfiguredNames(value, expectedKeys, label) {
   const record = requireExactKeys(value, expectedKeys, label);
+  /** @type {Record<string, unknown>} */
   const names = {};
   for (const key of expectedKeys) {
     if (key === 'targetLambdaFunctions' || key === 'targetLogGroups') {
@@ -321,8 +718,14 @@ function parseConfiguredNames(value, expectedKeys, label) {
   return names;
 }
 
-function assertConfiguredContextNames(names) {
-  requireExactKeys(names, NAME_KEYS, 'deployment target context names');
+/**
+ * @param {DeploymentContextNames} names
+ * @param {DeploymentTargetKey} targetKey
+ * @returns {void}
+ */
+function assertConfiguredContextNames(names, targetKey) {
+  const nameKeys = targetNameKeys(targetKey);
+  const configuredNames = requireExactKeys(names, nameKeys, 'deployment target context names');
   assertGeneratedPipelineName(names.pipeline);
   assertGeneratedCodePipelineActionName(names.sourceAction);
   assertGeneratedEcrRepository(names.proverRepository);
@@ -334,11 +737,11 @@ function assertConfiguredContextNames(names) {
   assertGeneratedBucketName(names.frontendBucket);
   assertGeneratedBucketName(names.terraformAuthorityBucket);
   assertGeneratedBucketName(names.terraformStateBucket);
-  for (const key of NAME_KEYS.filter((key) => key.endsWith('Role'))) {
-    assertGeneratedIamName(names[key], key);
+  for (const key of nameKeys.filter((key) => key.endsWith('Role'))) {
+    assertGeneratedIamName(requireString(configuredNames[key], `deployment target name ${key}`), key);
   }
-  for (const key of NAME_KEYS.filter((key) => key.endsWith('Project'))) {
-    assertGeneratedCodeBuildName(names[key]);
+  for (const key of nameKeys.filter((key) => key.endsWith('Project'))) {
+    assertGeneratedCodeBuildName(requireString(configuredNames[key], `deployment target name ${key}`));
   }
   for (const functionName of Object.values(names.targetLambdaFunctions)) {
     assertGeneratedLambdaName(functionName);
@@ -350,8 +753,8 @@ function assertConfiguredContextNames(names) {
   assertGeneratedCloudWatchLogGroupName(names.ecrRetentionLogGroup);
   assertGeneratedLambdaName(names.signatureVerifierFunction);
   assertGeneratedIamPolicyName(names.signatureVerifierPermissionsBoundary, 'signatureVerifierPermissionsBoundary');
-  for (const key of NAME_KEYS.filter((key) => key.endsWith('Policy'))) {
-    assertGeneratedIamPolicyName(names[key], key);
+  for (const key of nameKeys.filter((key) => key.endsWith('Policy'))) {
+    assertGeneratedIamPolicyName(requireString(configuredNames[key], `deployment target name ${key}`), key);
   }
   assertGeneratedKmsAlias(names.artifactKmsAlias);
   assertGeneratedKmsAlias(names.terraformAuthorityKmsAlias);
@@ -374,213 +777,357 @@ function assertConfiguredContextNames(names) {
   assertGeneratedIamPolicyName(names.ecrRetentionPermissionsBoundary, 'ecrRetentionPermissionsBoundary');
   assertGeneratedLambdaName(`${names.signatureRuntimeNamePrefix}-image-signature-verifier`);
   for (const key of S3_CONTEXT_NAME_KEYS) {
-    assertGeneratedS3Key(names[key], key);
+    assertGeneratedS3Key(requireString(configuredNames[key], `deployment target name ${key}`), key);
   }
   for (const [key, suffix] of Object.entries(S3_PREFIX_DERIVED_SUFFIXES)) {
-    assertGeneratedS3Key(`${names[key]}${suffix}`, `${key} derived`);
+    assertGeneratedS3Key(
+      `${requireString(configuredNames[key], `deployment target name ${key}`)}${suffix}`,
+      `${key} derived`,
+    );
   }
 }
 
+/**
+ * @param {unknown} value
+ * @param {DeploymentLane} lane
+ * @param {SharedDeploymentTargetNames} sharedNames
+ * @param {string} sourceAction
+ * @param {AllowedDeploymentTarget} target
+ * @returns {DeploymentTargetLaneConfiguration}
+ */
 function parseDeploymentLaneConfiguration(value, lane, sharedNames, sourceAction, target) {
   const record = requireExactKeys(value, DEPLOYMENT_LANE_CONFIGURATION_KEYS, `deployment target lane ${lane}`);
-  const scope = requireString(record.scope, `deployment target lane ${lane} scope`);
+  const scope = requireString(record['scope'], `deployment target lane ${lane} scope`);
   const expectedScope = DEPLOYMENT_LANE_SCOPES[lane];
   if (scope !== expectedScope) {
     throw new Error(`deployment target lane ${lane} scope must be ${expectedScope}`);
   }
-  const policy = requireExactKeys(record.policy, POLICY_KEYS, `deployment target lane ${lane} policy`);
-  if (typeof policy.signatureVerificationRequired !== 'boolean') {
+  const policy = requireExactKeys(record['policy'], POLICY_KEYS, `deployment target lane ${lane} policy`);
+  if (typeof policy['signatureVerificationRequired'] !== 'boolean') {
     throw new Error(`deployment target lane ${lane} signature verification policy is invalid`);
   }
-  const names = parseConfiguredNames(record.names, DEPLOYMENT_LANE_NAME_KEYS, `deployment target lane ${lane} names`);
-  assertConfiguredContextNames({ sourceAction, ...sharedNames, ...names });
-  const stateIdentity = requireString(record.stateIdentity, `deployment target lane ${lane} state identity`);
+  const names = /** @type {DeploymentTargetLaneNames} */ (
+    parseConfiguredNames(record['names'], DEPLOYMENT_LANE_NAME_KEYS, `deployment target lane ${lane} names`)
+  );
+  assertConfiguredContextNames(
+    /** @type {DeploymentContextNames} */ ({ sourceAction, ...sharedNames, ...names }),
+    target.targetKey,
+  );
+  const stateIdentity = requireString(record['stateIdentity'], `deployment target lane ${lane} state identity`);
   if (stateIdentity !== `${target.accountLabel}/${target.environmentId}/${scope}`) {
     throw new Error(`deployment target lane ${lane} state identity does not match its target and scope`);
   }
-  const backendKey = requireString(record.backendKey, `deployment target lane ${lane} backend key`);
+  const backendKey = requireString(record['backendKey'], `deployment target lane ${lane} backend key`);
   if (backendKey !== `${target.stateNamespace}/${scope}/terraform.tfstate`) {
     throw new Error(`deployment target lane ${lane} backend key does not match its target and scope`);
   }
   return {
-    scope,
+    scope: expectedScope,
     stateIdentity,
     backendKey,
-    policy: { signatureVerificationRequired: policy.signatureVerificationRequired },
+    policy: { signatureVerificationRequired: policy['signatureVerificationRequired'] },
     names,
   };
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} targetKey
+ * @returns {ReviewedDeploymentTarget}
+ */
 function parseAllowedDeploymentTarget(value, targetKey) {
-  const record = requireExactKeys(value, DEPLOYMENT_TARGET_KEYS, 'deployment allowed target');
-  const target = Object.fromEntries(
-    ALLOWED_DEPLOYMENT_TARGET_KEYS.map((key) => [key, requireString(record[key], `deployment target ${key}`)]),
+  const record = requireExactKeys(
+    value,
+    targetKey === 'stark-prod/main' ? [...DEPLOYMENT_TARGET_KEYS, 'productionPolicy'] : DEPLOYMENT_TARGET_KEYS,
+    'deployment allowed target',
   );
-  if (!/^[a-z][a-z0-9-]{1,62}$/u.test(target.accountLabel)) {
+  const accountId = requireString(record['accountId'], 'deployment target accountId');
+  const accountLabel = requireString(record['accountLabel'], 'deployment target accountLabel');
+  const artifactNamespace = requireString(record['artifactNamespace'], 'deployment target artifactNamespace');
+  const environmentId = requireString(record['environmentId'], 'deployment target environmentId');
+  const environmentTier = requireString(record['environmentTier'], 'deployment target environmentTier');
+  const operatorPermissionSetName = requireString(
+    record['operatorPermissionSetName'],
+    'deployment target operatorPermissionSetName',
+  );
+  const partition = requireString(record['partition'], 'deployment target partition');
+  const projectId = requireString(record['projectId'], 'deployment target projectId');
+  const region = requireString(record['region'], 'deployment target region');
+  const repository = requireString(record['repository'], 'deployment target repository');
+  const repositoryUrl = requireString(record['repositoryUrl'], 'deployment target repositoryUrl');
+  const resourcePrefix = requireString(record['resourcePrefix'], 'deployment target resourcePrefix');
+  const sourceAction = requireString(record['sourceAction'], 'deployment target sourceAction');
+  const sourceBranch = requireString(record['sourceBranch'], 'deployment target sourceBranch');
+  const sourceProvider = requireString(record['sourceProvider'], 'deployment target sourceProvider');
+  const stateNamespace = requireString(record['stateNamespace'], 'deployment target stateNamespace');
+  const parsedTargetKey = requireString(record['targetKey'], 'deployment target targetKey');
+  if (!/^[a-z][a-z0-9-]{1,62}$/u.test(accountLabel)) {
     throw new Error('deployment target accountLabel is invalid');
   }
-  if (!/^[a-z][a-z0-9-]{1,31}$/u.test(target.environmentId)) {
+  if (!/^[a-z][a-z0-9-]{1,31}$/u.test(environmentId)) {
     throw new Error('deployment target environmentId is invalid');
   }
-  if (!['development', 'production'].includes(target.environmentTier)) {
+  if (environmentTier !== 'development' && environmentTier !== 'production') {
     throw new Error('deployment target environmentTier is invalid');
   }
-  if (!/^[A-Za-z0-9+=,.@_-]{1,32}$/u.test(target.operatorPermissionSetName)) {
+  if (!/^[A-Za-z0-9+=,.@_-]{1,32}$/u.test(operatorPermissionSetName)) {
     throw new Error('deployment target operatorPermissionSetName is invalid');
   }
-  if (target.targetKey !== `${target.accountLabel}/${target.environmentId}`) {
+  if (parsedTargetKey !== `${accountLabel}/${environmentId}`) {
     throw new Error('deployment target key does not match accountLabel/environmentId');
   }
-  if (target.targetKey !== targetKey) {
+  if (
+    parsedTargetKey !== targetKey ||
+    (parsedTargetKey !== 'stark-dev/develop' && parsedTargetKey !== 'stark-prod/main')
+  ) {
     throw new Error('deployment target key does not match its allowed-target entry');
   }
-  if (!ACCOUNT_ID_PATTERN.test(target.accountId)) {
+  if (!ACCOUNT_ID_PATTERN.test(accountId)) {
     throw new Error('deployment target accountId is invalid');
   }
-  if (target.partition !== 'aws') {
+  if (partition !== 'aws') {
     throw new Error('deployment target partition is invalid');
   }
-  if (target.sourceProvider !== 'github') {
+  if (sourceProvider !== 'github') {
     throw new Error('deployment target sourceProvider is invalid');
   }
-  if (!/^[a-z]{2}(?:-gov)?-[a-z]+-[0-9]$/u.test(target.region)) {
+  if (!/^[a-z]{2}(?:-gov)?-[a-z]+-[0-9]$/u.test(region)) {
     throw new Error('deployment target region is invalid');
   }
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(target.repository)) {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository)) {
     throw new Error('deployment target repository is invalid');
   }
-  if (target.repositoryUrl !== `https://github.com/${target.repository}`) {
+  if (repositoryUrl !== `https://github.com/${repository}`) {
     throw new Error('deployment target repositoryUrl must match repository');
   }
   if (
-    !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/u.test(target.sourceBranch) ||
-    target.sourceBranch.includes('..') ||
-    target.sourceBranch.includes('//') ||
-    target.sourceBranch.endsWith('.lock')
+    !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/u.test(sourceBranch) ||
+    sourceBranch.includes('..') ||
+    sourceBranch.includes('//') ||
+    sourceBranch.endsWith('.lock')
   ) {
     throw new Error('deployment target sourceBranch is invalid');
   }
-  if (!/^[a-z0-9][a-z0-9-]{1,62}$/u.test(target.projectId)) {
+  if (
+    (parsedTargetKey === 'stark-dev/develop' && (environmentTier !== 'development' || sourceBranch !== 'develop')) ||
+    (parsedTargetKey === 'stark-prod/main' && (environmentTier !== 'production' || sourceBranch !== 'main'))
+  ) {
+    throw new Error('deployment target environment tier or source branch does not match its target');
+  }
+  if (!/^[a-z0-9][a-z0-9-]{1,62}$/u.test(projectId)) {
     throw new Error('deployment target projectId is invalid');
   }
-  if (target.resourcePrefix !== `${target.projectId}-${target.accountLabel}-${target.environmentId}`) {
+  if (resourcePrefix !== `${projectId}-${accountLabel}-${environmentId}`) {
     throw new Error('deployment target resourcePrefix does not match project/account/environment');
   }
-  const expectedNamespace = `${target.projectId}/${target.accountLabel}/${target.environmentId}`;
-  if (target.stateNamespace !== expectedNamespace) {
+  const expectedNamespace = `${projectId}/${accountLabel}/${environmentId}`;
+  if (stateNamespace !== expectedNamespace) {
     throw new Error('deployment target stateNamespace does not match project/account/environment');
   }
-  if (target.artifactNamespace !== expectedNamespace) {
+  if (artifactNamespace !== expectedNamespace) {
     throw new Error('deployment target artifactNamespace does not match project/account/environment');
   }
-  const sharedNames = parseConfiguredNames(record.sharedNames, SHARED_NAME_KEYS, 'deployment target shared names');
-  const laneRecords = requireExactKeys(record.lanes, DEPLOYMENT_LANES, 'deployment target lanes');
-  const lanes = Object.fromEntries(
-    DEPLOYMENT_LANES.map((lane) => [
-      lane,
-      parseDeploymentLaneConfiguration(laneRecords[lane], lane, sharedNames, target.sourceAction, target),
-    ]),
+  /** @type {AllowedDeploymentTarget} */
+  const target = {
+    targetKey: parsedTargetKey,
+    accountId,
+    projectId,
+    resourcePrefix,
+    stateNamespace,
+    artifactNamespace,
+    partition,
+    accountLabel,
+    region,
+    environmentId,
+    environmentTier,
+    operatorPermissionSetName,
+    sourceProvider,
+    repository,
+    repositoryUrl,
+    sourceBranch,
+    sourceAction,
+  };
+  const sharedNames = /** @type {SharedDeploymentTargetNames} */ (
+    parseConfiguredNames(
+      record['sharedNames'],
+      SHARED_NAME_KEYS.filter((key) => targetNameKeys(target.targetKey).includes(key)),
+      'deployment target shared names',
+    )
   );
-  if (sharedNames.signatureVerifierFunction !== sharedNames.targetLambdaFunctions.imageSignatureVerifier) {
+  const admittedLanes = target.targetKey === 'stark-dev/develop' ? DEPLOYMENT_LANES : PRODUCTION_LANES;
+  const laneRecords = requireExactKeys(record['lanes'], admittedLanes, 'deployment target lanes');
+  const lanes = /** @type {ReviewedDeploymentTarget['lanes']} */ (
+    Object.fromEntries(
+      admittedLanes.map((lane) => [
+        lane,
+        parseDeploymentLaneConfiguration(laneRecords[lane], lane, sharedNames, target['sourceAction'], target),
+      ]),
+    )
+  );
+  if (sharedNames['signatureVerifierFunction'] !== sharedNames['targetLambdaFunctions'].imageSignatureVerifier) {
     throw new Error('deployment target signatureVerifierFunction must match its target Lambda function');
   }
-  if (sharedNames.signatureVerifierRole !== `${sharedNames.signatureRuntimeNamePrefix}-image-signature-verifier-role`) {
+  if (
+    sharedNames['appAcceptancePublisherRole'] !==
+      `sbs-app-acceptance-publisher-${target['accountLabel']}-${target['environmentId']}` ||
+    sharedNames['appAcceptancePublisherRole'] === lanes['app'].names['terraformSmokeRole']
+  ) {
+    throw new Error('deployment target appAcceptancePublisherRole must match its target');
+  }
+  if (
+    sharedNames['bootstrapTerraformAcceptancePublisherRole'] !==
+      `sbs-terraform-acceptance-publisher-${target['accountLabel']}-${target['environmentId']}-bootstrap` ||
+    sharedNames['bootstrapTerraformAcceptancePublisherRole'] === lanes['bootstrap'].names['terraformSmokeRole']
+  ) {
+    throw new Error('deployment target bootstrapTerraformAcceptancePublisherRole must match its target');
+  }
+  if (
+    sharedNames['foundationTerraformAcceptancePublisherRole'] !==
+      `sbs-terraform-acceptance-publisher-${target['accountLabel']}-${target['environmentId']}-foundation` ||
+    sharedNames['foundationTerraformAcceptancePublisherRole'] === lanes['foundation'].names['terraformSmokeRole']
+  ) {
+    throw new Error('deployment target foundationTerraformAcceptancePublisherRole must match its target');
+  }
+  if (
+    sharedNames['signatureVerifierRole'] !==
+    `${sharedNames['signatureRuntimeNamePrefix']}-image-signature-verifier-role`
+  ) {
     throw new Error('deployment target signatureVerifierRole must match its signatureRuntimeNamePrefix');
   }
   if (
-    sharedNames.signatureVerifierPermissionsBoundary !==
-    `${target.projectId}-image-signature-verifier-boundary-${target.accountLabel}-${target.environmentId}`
+    sharedNames['signatureVerifierPermissionsBoundary'] !==
+    `${target['projectId']}-image-signature-verifier-boundary-${target['accountLabel']}-${target['environmentId']}`
   ) {
     throw new Error('deployment target signatureVerifierPermissionsBoundary must match its target');
   }
   const expectedLambdaFunctions = {
-    finalizationWriter: `${sharedNames.runtimeNamePrefix}-finalization-writer`,
-    imageSignatureVerifier: `${sharedNames.signatureRuntimeNamePrefix}-image-signature-verifier`,
-    proofDispatcher: `${sharedNames.runtimeNamePrefix}-proof-dispatcher`,
-    publicApi: `${sharedNames.runtimeNamePrefix}-public-api`,
-    semaphoreJanitor: `${sharedNames.runtimeNamePrefix}-semaphore-janitor`,
-    verificationWorker: `${sharedNames.runtimeNamePrefix}-verification-worker`,
+    finalizationWriter: `${sharedNames['runtimeNamePrefix']}-finalization-writer`,
+    imageSignatureVerifier: `${sharedNames['signatureRuntimeNamePrefix']}-image-signature-verifier`,
+    proofDispatcher: `${sharedNames['runtimeNamePrefix']}-proof-dispatcher`,
+    publicApi: `${sharedNames['runtimeNamePrefix']}-public-api`,
+    semaphoreJanitor: `${sharedNames['runtimeNamePrefix']}-semaphore-janitor`,
+    verificationWorker: `${sharedNames['runtimeNamePrefix']}-verification-worker`,
   };
   for (const functionKey of TARGET_LAMBDA_FUNCTION_KEYS) {
-    if (sharedNames.targetLambdaFunctions[functionKey] !== expectedLambdaFunctions[functionKey]) {
+    if (sharedNames['targetLambdaFunctions'][functionKey] !== expectedLambdaFunctions[functionKey]) {
       throw new Error(`deployment target Lambda function ${functionKey} must match its governed name prefix`);
     }
   }
   if (
-    sharedNames.ecrRetentionRole !== `sbs-ecr-retention-${target.accountLabel}-${target.environmentId}` ||
-    sharedNames.ecrRetentionPermissionsBoundary !==
-      `sbs-ecr-retention-boundary-${target.accountLabel}-${target.environmentId}` ||
-    sharedNames.ecrRetentionFunction !== `${sharedNames.runtimeNamePrefix}-ecr-retention` ||
-    sharedNames.ecrRetentionLogGroup !== `/aws/lambda/${sharedNames.ecrRetentionFunction}` ||
-    sharedNames.ecrRetentionSchedule !== `${sharedNames.runtimeNamePrefix}-ecr-retention-daily` ||
-    sharedNames.finalizationStateMachine !== `${sharedNames.runtimeNamePrefix}-finalization` ||
-    sharedNames.proverEcsCluster !== `${sharedNames.runtimeNamePrefix}-prover` ||
-    sharedNames.proverEcsTaskFamily !== `${sharedNames.runtimeNamePrefix}-prover`
+    sharedNames['ecrRetentionRole'] !== `sbs-ecr-retention-${target['accountLabel']}-${target['environmentId']}` ||
+    sharedNames['ecrRetentionPermissionsBoundary'] !==
+      `sbs-ecr-retention-boundary-${target['accountLabel']}-${target['environmentId']}` ||
+    sharedNames['ecrRetentionFunction'] !== `${sharedNames['runtimeNamePrefix']}-ecr-retention` ||
+    sharedNames['ecrRetentionLogGroup'] !== `/aws/lambda/${sharedNames['ecrRetentionFunction']}` ||
+    sharedNames['ecrRetentionSchedule'] !== `${sharedNames['runtimeNamePrefix']}-ecr-retention-daily` ||
+    sharedNames['finalizationStateMachine'] !== `${sharedNames['runtimeNamePrefix']}-finalization` ||
+    sharedNames['proverEcsCluster'] !== `${sharedNames['runtimeNamePrefix']}-prover` ||
+    sharedNames['proverEcsTaskFamily'] !== `${sharedNames['runtimeNamePrefix']}-prover`
   ) {
     throw new Error('deployment target ECR retention runtime names must match the governed runtime prefix');
   }
   for (const functionKey of TARGET_LAMBDA_FUNCTION_KEYS) {
-    if (sharedNames.targetLogGroups[functionKey] !== `/aws/lambda/${sharedNames.targetLambdaFunctions[functionKey]}`) {
+    if (
+      sharedNames['targetLogGroups'][functionKey] !== `/aws/lambda/${sharedNames['targetLambdaFunctions'][functionKey]}`
+    ) {
       throw new Error(`deployment target log group ${functionKey} must match its target Lambda function`);
     }
   }
-  if (sharedNames.targetLogGroups.prover !== `/aws/ecs/${target.resourcePrefix}-prover`) {
+  if (sharedNames['targetLogGroups'].prover !== `/aws/ecs/${target['resourcePrefix']}-prover`) {
     throw new Error('deployment target Prover log group must match its resourcePrefix');
   }
-  if (sharedNames.targetLogGroups.opsLedger !== `/aws/events/${target.resourcePrefix}-ops-ledger`) {
+  if (sharedNames['targetLogGroups'].opsLedger !== `/aws/events/${target['resourcePrefix']}-ops-ledger`) {
     throw new Error('deployment target operations-ledger log group must match its resourcePrefix');
   }
-  if (sharedNames.acceptedDeploymentPointerKey !== `${sharedNames.acceptedDeploymentPrefix}/current.json`) {
+  if (sharedNames['acceptedDeploymentPointerKey'] !== `${sharedNames['acceptedDeploymentPrefix']}/current.json`) {
     throw new Error('deployment target acceptedDeploymentPointerKey must match its acceptedDeploymentPrefix');
   }
-  if (
-    sharedNames.rollbackReadinessReportPrefix !==
-      `${sharedNames.terraformDriftReportPrefix}/${target.targetKey}/rollback-readiness` ||
-    sharedNames.recoveryReadinessReportPrefix !==
-      `${sharedNames.terraformDriftReportPrefix}/${target.targetKey}/recovery-readiness`
-  ) {
-    throw new Error('deployment target readiness report prefixes must match the governed target and drift prefix');
+  if (sharedNames['appDeploymentStatusKey'] !== 'status/current.json') {
+    throw new Error('deployment target appDeploymentStatusKey must be the exact current status key');
   }
-  if (sharedNames.appStaticFastPipelineRole !== lanes['static-fast'].names.pipelineRole) {
+  if (
+    APP_RETAINED_ARTIFACT_S3_NAME_KEYS.some((key) => {
+      const retainedName = sharedNames[key];
+      return (
+        retainedName === sharedNames['appDeploymentStatusKey'] ||
+        retainedName.startsWith(`${sharedNames['appDeploymentStatusKey']}/`) ||
+        sharedNames['appDeploymentStatusKey'].startsWith(`${retainedName}/`)
+      );
+    })
+  ) {
+    throw new Error('deployment target appDeploymentStatusKey must differ from every governed retained App key family');
+  }
+  const staticFast = lanes['static-fast'];
+  if (staticFast !== undefined && sharedNames['appStaticFastPipelineRole'] !== staticFast.names['pipelineRole']) {
     throw new Error('deployment target appStaticFastPipelineRole must match the static-fast lane pipelineRole');
   }
   const staticFastDeployProjectPeers = [
-    sharedNames.appDeploymentRecordProject,
-    sharedNames.appSignaturePreflightApplyProject,
-    sharedNames.appSignaturePreflightInvokeProject,
-    sharedNames.appSignaturePreflightPlanProject,
-    sharedNames.appSignatureStateRefreshApplyProject,
-    sharedNames.appSignatureStateRefreshPlanProject,
-    sharedNames.appStaticDeployProject,
-    sharedNames.appStaticFastGateProject,
-    sharedNames.appStaticFastSmokeProject,
-    lanes.app.names.smokeProject,
-    lanes.app.names.terraformApplyProject,
-    lanes.app.names.terraformPlanProject,
-    lanes.app.names.validateProject,
+    sharedNames['appExecutionAuthorityProject'],
+    sharedNames['appSignaturePreflightApplyProject'],
+    sharedNames['appSignaturePreflightInvokeProject'],
+    sharedNames['appSignaturePreflightPlanProject'],
+    sharedNames['appSignatureStateRefreshApplyProject'],
+    sharedNames['appSignatureStateRefreshPlanProject'],
+    sharedNames['appStaticDeployProject'],
+    sharedNames['appStaticFastGateProject'],
+    sharedNames['appStaticFastSmokeProject'],
+    lanes['app'].names['smokeProject'],
+    lanes['app'].names['terraformApplyProject'],
+    lanes['app'].names['terraformPlanProject'],
+    lanes['app'].names['validateProject'],
   ];
-  if (staticFastDeployProjectPeers.includes(sharedNames.appStaticFastDeployProject)) {
+  if (staticFast !== undefined && staticFastDeployProjectPeers.includes(sharedNames['appStaticFastDeployProject'])) {
     throw new Error('deployment target static-fast deploy project must differ from every governed App project');
   }
+  const statusPublisherProjectCollides =
+    Object.entries(sharedNames).some(
+      ([name, value]) =>
+        name !== 'appDeploymentStatusPublisherProject' &&
+        name.endsWith('Project') &&
+        value === sharedNames['appDeploymentStatusPublisherProject'],
+    ) ||
+    Object.values(lanes).some((lane) =>
+      Object.entries(lane.names).some(
+        ([name, value]) => name.endsWith('Project') && value === sharedNames['appDeploymentStatusPublisherProject'],
+      ),
+    );
+  if (statusPublisherProjectCollides) {
+    throw new Error('deployment target status publisher project must differ from every other governed project');
+  }
   const staticFastDeployRolePeers = [
-    sharedNames.appDeploymentRecordRole,
-    sharedNames.appSignaturePreflightApplyRole,
-    sharedNames.appSignaturePreflightInvokerRole,
-    sharedNames.appSignaturePreflightPlanRole,
-    sharedNames.appSignatureStateRefreshApplyRole,
-    sharedNames.appStaticDeployRole,
-    sharedNames.appStaticFastGateRole,
-    sharedNames.appStaticFastPipelineRole,
-    sharedNames.appStaticFastSmokeRole,
-    sharedNames.signatureVerifierRole,
-    lanes.app.names.githubTriggerRole,
-    lanes.app.names.pipelineRole,
-    lanes.app.names.terraformApplyRole,
-    lanes.app.names.terraformPlanRole,
-    lanes.app.names.terraformSmokeRole,
+    sharedNames['appExecutionAuthorityRole'],
+    sharedNames['appSignaturePreflightApplyRole'],
+    sharedNames['appSignaturePreflightInvokerRole'],
+    sharedNames['appSignaturePreflightPlanRole'],
+    sharedNames['appSignatureStateRefreshApplyRole'],
+    sharedNames['appStaticDeployRole'],
+    sharedNames['appStaticFastGateRole'],
+    sharedNames['appStaticFastPipelineRole'],
+    sharedNames['appStaticFastSmokeRole'],
+    sharedNames['signatureVerifierRole'],
+    lanes['app'].names['githubTriggerRole'],
+    lanes['app'].names['pipelineRole'],
+    lanes['app'].names['terraformApplyRole'],
+    lanes['app'].names['terraformPlanRole'],
+    lanes['app'].names['terraformSmokeRole'],
   ];
-  if (staticFastDeployRolePeers.includes(sharedNames.appStaticFastDeployRole)) {
+  if (staticFast !== undefined && staticFastDeployRolePeers.includes(sharedNames['appStaticFastDeployRole'])) {
     throw new Error('deployment target static-fast deploy role must differ from every governed App role');
+  }
+  const statusPublisherRoleCollides =
+    Object.entries(sharedNames).some(
+      ([name, value]) =>
+        name !== 'appDeploymentStatusPublisherRole' &&
+        name.endsWith('Role') &&
+        value === sharedNames['appDeploymentStatusPublisherRole'],
+    ) ||
+    Object.values(lanes).some((lane) =>
+      Object.entries(lane.names).some(
+        ([name, value]) => name.endsWith('Role') && value === sharedNames['appDeploymentStatusPublisherRole'],
+      ),
+    );
+  if (statusPublisherRoleCollides) {
+    throw new Error('deployment target status publisher role must differ from every other governed role');
   }
   if (
     new Set(TERRAFORM_DRIFT_MANAGED_POLICY_NAME_KEYS.map((key) => sharedNames[key])).size !==
@@ -590,86 +1137,164 @@ function parseAllowedDeploymentTarget(value, targetKey) {
   }
   if (
     new Set([
-      sharedNames.appRetainedArtifactBucket,
-      lanes.app.names.artifactBucket,
-      lanes['static-fast'].names.artifactBucket,
-    ]).size !== 3
+      sharedNames['appRetainedArtifactBucket'],
+      lanes['app'].names['artifactBucket'],
+      ...(staticFast === undefined ? [] : [staticFast.names['artifactBucket']]),
+    ]).size !== (staticFast === undefined ? 2 : 3)
   ) {
     throw new Error('deployment target App retained and execution artifact buckets must be pairwise distinct');
   }
-  if (lanes.app.names.artifactKmsAlias !== lanes['static-fast'].names.artifactKmsAlias) {
+  if (staticFast !== undefined && lanes['app'].names['artifactKmsAlias'] !== staticFast.names['artifactKmsAlias']) {
     throw new Error('deployment target App execution lanes must share the governed artifact KMS alias');
   }
-  if (lanes.bootstrap.names.terraformSmokeRole === lanes.bootstrap.names.terraformPlanRole) {
+  if (lanes['bootstrap'].names['terraformSmokeRole'] === lanes['bootstrap'].names['terraformPlanRole']) {
     throw new Error('deployment target Bootstrap terraformSmokeRole must differ from terraformPlanRole');
   }
-  return { ...target, sharedNames, lanes };
+  if (target.targetKey === 'stark-dev/develop') {
+    return { ...target, targetKey: 'stark-dev/develop', sharedNames, lanes };
+  }
+  const productionPolicy = requireExactKeys(
+    record['productionPolicy'],
+    ['bootstrapApprovalAction', 'foundationPublicSubnetException'],
+    'deployment production policy',
+  );
+  if (
+    productionPolicy['bootstrapApprovalAction'] !== 'ApproveBootstrapApply' ||
+    productionPolicy['foundationPublicSubnetException'] !== 'accepted-for-production-prover-egress'
+  ) {
+    throw new Error('deployment production policy does not match its reviewed approval and networking contract');
+  }
+  return {
+    ...target,
+    targetKey: 'stark-prod/main',
+    sharedNames,
+    lanes,
+    productionPolicy: {
+      bootstrapApprovalAction: productionPolicy['bootstrapApprovalAction'],
+      foundationPublicSubnetException: productionPolicy['foundationPublicSubnetException'],
+    },
+  };
 }
 
+/**
+ * @param {unknown} value
+ * @returns {DeploymentTargetConfiguration}
+ */
 export function parseDeploymentTargetConfiguration(value) {
   const record = requireExactKeys(value, ['allowedTargets', 'configurationType'], 'deployment target configuration');
-  if (record.configurationType !== 'deployment-target-configuration') {
+  if (record['configurationType'] !== 'deployment-target-configuration') {
     throw new Error('deployment target configurationType must be deployment-target-configuration');
   }
+  const configuredTargets = record['allowedTargets'];
+  const hasProduction =
+    typeof configuredTargets === 'object' &&
+    configuredTargets !== null &&
+    Object.hasOwn(configuredTargets, 'stark-prod/main');
   const allowedTargetRecords = requireExactKeys(
-    record.allowedTargets,
-    ALLOWED_TARGET_KEYS,
+    configuredTargets,
+    hasProduction ? ALLOWED_TARGET_KEYS : ['stark-dev/develop'],
     'deployment allowed targets',
   );
-  const allowedTargets = Object.fromEntries(
-    ALLOWED_TARGET_KEYS.map((targetKey) => [
-      targetKey,
-      parseAllowedDeploymentTarget(allowedTargetRecords[targetKey], targetKey),
-    ]),
-  );
+  const development = parseAllowedDeploymentTarget(allowedTargetRecords['stark-dev/develop'], 'stark-dev/develop');
+  const production = hasProduction
+    ? parseAllowedDeploymentTarget(allowedTargetRecords['stark-prod/main'], 'stark-prod/main')
+    : undefined;
+  if (production !== undefined && production.accountId === development.accountId) {
+    throw new Error('deployment targets must use distinct development and production accounts');
+  }
+  const allowedTargets = {
+    'stark-dev/develop': development,
+    ...(production === undefined ? {} : { 'stark-prod/main': production }),
+  };
   return deepFreeze({ configurationType: 'deployment-target-configuration', allowedTargets });
 }
 
+/**
+ * @param {ReviewedDeploymentTarget} targetEntry
+ * @returns {AllowedDeploymentTarget}
+ */
 function selectAllowedDeploymentTarget(targetEntry) {
-  return deepFreeze(Object.fromEntries(ALLOWED_DEPLOYMENT_TARGET_KEYS.map((key) => [key, targetEntry[key]])));
+  return deepFreeze({
+    targetKey: targetEntry.targetKey,
+    accountId: targetEntry.accountId,
+    projectId: targetEntry.projectId,
+    resourcePrefix: targetEntry.resourcePrefix,
+    stateNamespace: targetEntry.stateNamespace,
+    artifactNamespace: targetEntry.artifactNamespace,
+    partition: targetEntry.partition,
+    accountLabel: targetEntry.accountLabel,
+    region: targetEntry.region,
+    environmentId: targetEntry.environmentId,
+    environmentTier: targetEntry.environmentTier,
+    operatorPermissionSetName: targetEntry.operatorPermissionSetName,
+    sourceProvider: targetEntry.sourceProvider,
+    repository: targetEntry.repository,
+    repositoryUrl: targetEntry.repositoryUrl,
+    sourceBranch: targetEntry.sourceBranch,
+    sourceAction: targetEntry.sourceAction,
+  });
 }
 
 const DEPLOYMENT_TARGET_CONFIGURATION = parseDeploymentTargetConfiguration(rawDeploymentTargetConfiguration);
 const ALLOWED_TARGET_ENTRIES = DEPLOYMENT_TARGET_CONFIGURATION.allowedTargets;
 const ALLOWED_TARGETS = deepFreeze(
   Object.fromEntries(
-    ALLOWED_TARGET_KEYS.map((targetKey) => [
-      targetKey,
-      selectAllowedDeploymentTarget(ALLOWED_TARGET_ENTRIES[targetKey]),
-    ]),
+    Object.entries(ALLOWED_TARGET_ENTRIES).map(([key, entry]) => [key, selectAllowedDeploymentTarget(entry)]),
   ),
 );
 
+/** @param {DeploymentTargetKey} targetKey */
+function reviewedTargetEntry(targetKey) {
+  const entry = ALLOWED_TARGET_ENTRIES[targetKey];
+  if (entry === undefined) {
+    throw new Error('deployment target is absent from the reviewed configuration');
+  }
+  return entry;
+}
+
+/**
+ * @param {unknown} leftValue
+ * @param {unknown} rightValue
+ * @returns {boolean}
+ */
 export function immutableObjectReferencesEqual(leftValue, rightValue) {
   const left = parseImmutableObjectReference(leftValue);
   const right = parseImmutableObjectReference(rightValue);
   return left.key === right.key && left.versionId === right.versionId && left.sha256 === right.sha256;
 }
 
+/**
+ * @param {unknown} input
+ * @returns {DeploymentIdentityInput}
+ */
 function normalizeDeploymentIdentityInput(input) {
   let record;
   try {
     record = requireExactKeys(
       input,
-      ['appDeploymentRecordSha256', 'appSourceSha', 'deployMode', 'pipelineExecutionId'],
+      ['appExecutionAuthoritySha256', 'appSourceSha', 'deployMode', 'pipelineExecutionId'],
       'deployment identity input',
     );
   } catch {
     throw new Error('deployment identity input is invalid');
   }
-  const deployMode = record.deployMode;
+  const deployMode = record['deployMode'];
   if (deployMode !== 'normal' && deployMode !== 'rollback') {
     throw new Error('deployMode must be normal or rollback');
   }
-  const pipelineExecutionId = requireGroupedLowercaseUuid(record.pipelineExecutionId, 'pipelineExecutionId');
+  const pipelineExecutionId = requireGroupedLowercaseUuid(record['pipelineExecutionId'], 'pipelineExecutionId');
   return deepFreeze({
-    appDeploymentRecordSha256: parseSha256(record.appDeploymentRecordSha256, 'appDeploymentRecordSha256'),
-    appSourceSha: parseFullSourceSha(record.appSourceSha, 'appSourceSha'),
+    appExecutionAuthoritySha256: parseSha256(record['appExecutionAuthoritySha256'], 'appExecutionAuthoritySha256'),
+    appSourceSha: parseFullSourceSha(record['appSourceSha'], 'appSourceSha'),
     deployMode,
     pipelineExecutionId,
   });
 }
 
+/**
+ * @param {unknown} input
+ * @returns {DeploymentIdentity}
+ */
 export function deriveDeploymentIdentity(input) {
   const authority = normalizeDeploymentIdentityInput(input);
   const authoritySha256 = sha256Text(`${canonicalJson(authority)}\n`);
@@ -681,6 +1306,10 @@ export function deriveDeploymentIdentity(input) {
   });
 }
 
+/**
+ * @param {unknown} value
+ * @returns {DeploymentIdentity}
+ */
 export function validateDeploymentIdentity(value) {
   let identity;
   try {
@@ -692,92 +1321,72 @@ export function validateDeploymentIdentity(value) {
   } catch {
     throw new Error('deployment identity is invalid');
   }
-  if (identity.identityType !== 'app-deployment') {
+  if (identity['identityType'] !== 'app-deployment') {
     throw new Error('identityType is invalid');
   }
-  const derived = deriveDeploymentIdentity(identity.authority);
-  if (identity.authoritySha256 !== derived.authoritySha256) {
+  const derived = deriveDeploymentIdentity(identity['authority']);
+  if (identity['authoritySha256'] !== derived['authoritySha256']) {
     throw new Error('authoritySha256 does not match the canonical deployment authority');
   }
-  if (identity.deploymentId !== derived.deploymentId) {
+  if (identity['deploymentId'] !== derived['deploymentId']) {
     throw new Error('deploymentId does not match the deployment authority');
   }
   return derived;
 }
 
+/**
+ * @param {string | undefined} observedVersionId
+ * @returns {void}
+ */
 export function assertFirstPublication(observedVersionId) {
   if (observedVersionId !== undefined) {
     throw new Error('immutable object already exists');
   }
 }
 
-export function validateAcceptedReleasePointer(value, imageKind) {
-  if (imageKind !== 'toolchain' && imageKind !== 'prover') {
-    throw new Error('Accepted release pointer image kind is invalid.');
-  }
-  const recordPrefix = imageKind === 'toolchain' ? 'artifactRecord' : 'releaseRecord';
-  const label = `${imageKind} accepted pointer`;
-  let record;
-  try {
-    record = requireExactKeys(
-      value,
-      [
-        'compareAndSwapEvidenceId',
-        'pointerType',
-        'previousVersionOrEtag',
-        'promotionExecutionId',
-        `${recordPrefix}Key`,
-        `${recordPrefix}Sha256`,
-        `${recordPrefix}VersionId`,
-      ],
-      label,
-    );
-  } catch {
-    throw new Error(`${label} must use the exact current shape.`);
-  }
-  if (record.pointerType !== `${imageKind}-accepted-pointer`) {
-    throw new Error(`${imageKind} accepted pointer type is invalid.`);
-  }
-  const key = requireString(
-    record[`${recordPrefix}Key`],
-    `${imageKind} accepted pointer record key`,
-    /^[A-Za-z0-9][A-Za-z0-9._/@+-]{1,1023}$/u,
-  );
-  const configuredPrefix =
-    imageKind === 'toolchain'
-      ? ALLOWED_TARGET_ENTRIES['stark-dev/develop'].sharedNames.toolchainArtifactPrefix
-      : ALLOWED_TARGET_ENTRIES['stark-dev/develop'].sharedNames.proverReleasePrefix;
-  if (!key.startsWith(`${configuredPrefix}/`)) {
-    throw new Error(`${imageKind} accepted pointer record key is outside its immutable prefix.`);
-  }
-  parseS3VersionId(record[`${recordPrefix}VersionId`], `${imageKind} accepted pointer record VersionId`);
-  parseSha256(record[`${recordPrefix}Sha256`], `${imageKind} accepted pointer record SHA-256`);
-  requireString(
-    record.promotionExecutionId,
-    `${imageKind} accepted pointer promotion execution`,
-    OPERATIONAL_IDENTIFIER_PATTERN,
-  );
-  requireString(
-    record.previousVersionOrEtag,
-    `${imageKind} accepted pointer previous version or ETag`,
-    OPERATIONAL_IDENTIFIER_PATTERN,
-  );
-  requireString(
-    record.compareAndSwapEvidenceId,
-    `${imageKind} accepted pointer CAS evidence`,
-    OPERATIONAL_IDENTIFIER_PATTERN,
-  );
-  return deepFreeze({ ...record });
-}
-
+/**
+ * @template {string} T
+ * @param {T} targetKey
+ * @returns {AllowedDeploymentTarget & {readonly targetKey: T}}
+ */
 export function resolveAllowedDeploymentTarget(targetKey) {
   if (typeof targetKey !== 'string' || !Object.hasOwn(ALLOWED_TARGETS, targetKey)) {
     throw new Error(`deployment target "${String(targetKey)}" is not authorized`);
   }
-  return ALLOWED_TARGETS[targetKey];
+  const target = ALLOWED_TARGETS[targetKey];
+  if (target === undefined || target.targetKey !== targetKey) {
+    throw new Error('deployment target is detached from its reviewed key');
+  }
+  return /** @type {AllowedDeploymentTarget & {readonly targetKey: T}} */ (target);
 }
 
+/**
+ * @param {unknown} value
+ * @param {AllowedDeploymentTarget} target
+ * @returns {ValidatedAwsSsoCallerIdentity}
+ */
 export function validateAwsSsoCallerIdentity(value, target) {
+  try {
+    return validateAwsSsoCallerIdentityForPermissionSet(
+      value,
+      target,
+      assertAllowedTarget(target).operatorPermissionSetName,
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message === 'AWS caller role does not match the reviewed permission set.') {
+      throw new Error('AWS caller role does not match the reviewed operator permission set.');
+    }
+    throw error;
+  }
+}
+
+/**
+ * @param {unknown} value
+ * @param {AllowedDeploymentTarget} target
+ * @param {unknown} permissionSetName
+ * @returns {ValidatedAwsSsoCallerIdentity}
+ */
+export function validateAwsSsoCallerIdentityForPermissionSet(value, target, permissionSetName) {
   const allowedTarget = assertAllowedTarget(target);
   let identity;
   try {
@@ -785,29 +1394,37 @@ export function validateAwsSsoCallerIdentity(value, target) {
   } catch {
     throw new Error('AWS caller identity must use exact Account and Arn fields.');
   }
-  const accountId = requireString(identity.Account, 'AWS caller account', ACCOUNT_ID_PATTERN);
-  const arn = requireString(identity.Arn, 'AWS caller ARN');
-  if (accountId !== allowedTarget.accountId) {
+  const accountId = requireString(identity['Account'], 'AWS caller account', ACCOUNT_ID_PATTERN);
+  const arn = requireString(identity['Arn'], 'AWS caller ARN');
+  if (accountId !== allowedTarget['accountId']) {
     throw new Error('AWS caller account does not match the reviewed deployment target.');
   }
-  const permissionSetName = allowedTarget.operatorPermissionSetName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const admittedPermissionSetName = requireString(permissionSetName, 'AWS caller permission set');
+  if (!/^[A-Za-z0-9+=,.@_-]{1,32}$/u.test(admittedPermissionSetName)) {
+    throw new Error('AWS caller permission-set authority is invalid.');
+  }
+  const escapedPermissionSetName = admittedPermissionSetName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
   const expectedArn = new RegExp(
-    `^arn:${allowedTarget.partition}:sts::${allowedTarget.accountId}:assumed-role/AWSReservedSSO_${permissionSetName}_[0-9a-f]{16}/[A-Za-z0-9+=,.@_-]+$`,
+    `^arn:${allowedTarget['partition']}:sts::${allowedTarget['accountId']}:assumed-role/AWSReservedSSO_${escapedPermissionSetName}_[0-9a-f]{16}/[A-Za-z0-9+=,.@_-]+$`,
     'u',
   );
   if (!expectedArn.test(arn)) {
-    throw new Error('AWS caller role does not match the reviewed operator permission set.');
+    throw new Error('AWS caller role does not match the reviewed permission set.');
   }
   return deepFreeze({ accountId, arn });
 }
 
+/**
+ * @param {AllowedDeploymentTarget} target
+ * @returns {ImageSigningIdentity}
+ */
 export function resolveImageSigningIdentity(target) {
   const allowedTarget = assertAllowedTarget(target);
-  const names = ALLOWED_TARGET_ENTRIES[allowedTarget.targetKey].sharedNames;
+  const names = reviewedTargetEntry(allowedTarget.targetKey).sharedNames;
   return deepFreeze({
-    namePrefix: allowedTarget.resourcePrefix,
+    namePrefix: allowedTarget['resourcePrefix'],
     signingProfileName: names.signerProfile,
-    signingProfileArn: `arn:${allowedTarget.partition}:signer:${allowedTarget.region}:${allowedTarget.accountId}:/signing-profiles/${names.signerProfile}`,
+    signingProfileArn: `arn:${allowedTarget['partition']}:signer:${allowedTarget['region']}:${allowedTarget['accountId']}:/signing-profiles/${names.signerProfile}`,
     repositories: {
       prover: names.proverRepository,
       toolchain: names.toolchainRepository,
@@ -815,43 +1432,160 @@ export function resolveImageSigningIdentity(target) {
   });
 }
 
+/**
+ * @param {AllowedDeploymentTarget} target
+ * @returns {'ApproveInitialDevelopmentApply' | 'ApproveBootstrapApply'}
+ */
+export function resolveBootstrapSavedPlanApprovalAction(target) {
+  const entry = reviewedTargetEntry(assertAllowedTarget(target).targetKey);
+  return entry.targetKey === 'stark-dev/develop'
+    ? 'ApproveInitialDevelopmentApply'
+    : entry.productionPolicy.bootstrapApprovalAction;
+}
+
+/**
+ * @param {AllowedDeploymentTarget} target
+ * @returns {'accepted-for-develop-prover-egress' | 'accepted-for-production-prover-egress'}
+ */
+export function resolveFoundationPublicSubnetException(target) {
+  const entry = reviewedTargetEntry(assertAllowedTarget(target).targetKey);
+  return entry.targetKey === 'stark-dev/develop'
+    ? 'accepted-for-develop-prover-egress'
+    : entry.productionPolicy.foundationPublicSubnetException;
+}
+
+/**
+ * Select a reviewed target from the independently observed CodeBuild identity.
+ * This selection does not replace source, installed-project, or runtime admission.
+ *
+ * @param {unknown} value
+ * @returns {AllowedDeploymentTarget}
+ */
+export function resolveCodeBuildDeploymentTarget(value) {
+  const input = requireExactKeys(
+    value,
+    ['buildArn', 'buildId', 'callerIdentity', 'lane', 'projectKey', 'region', 'roleKey'],
+    'CodeBuild target selection',
+  );
+  const caller = requireExactKeys(input['callerIdentity'], ['Account', 'Arn', 'UserId'], 'CodeBuild target caller');
+  const accountId = requireString(caller['Account'], 'CodeBuild target account', /^[0-9]{12}$/u);
+  const region = requireString(input['region'], 'CodeBuild target region');
+  const candidates = Object.values(ALLOWED_TARGETS).filter(
+    (target) => target.accountId === accountId && target.region === region,
+  );
+  if (candidates.length !== 1 || candidates[0] === undefined) {
+    throw new Error('CodeBuild identity does not select exactly one reviewed deployment target.');
+  }
+  const target = candidates[0];
+  const lane = requireLane(input['lane']);
+  const authority = resolveDeploymentLaneAuthority(target, lane);
+  const projectKey = requireString(input['projectKey'], 'CodeBuild target project key', /^[a-zA-Z]+Project$/u);
+  const roleKey = requireString(input['roleKey'], 'CodeBuild target role key', /^[a-zA-Z]+Role$/u);
+  const names = /** @type {Readonly<Record<string, unknown>>} */ (authority.names);
+  if (!Object.hasOwn(names, projectKey) || !Object.hasOwn(names, roleKey)) {
+    throw new Error('CodeBuild target role or project key is outside the reviewed lane.');
+  }
+  const project = requireString(names[projectKey], 'CodeBuild target project');
+  const role = requireString(names[roleKey], 'CodeBuild target role');
+  const buildId = requireString(input['buildId'], 'CodeBuild target build ID');
+  const prefix = `${project}:`;
+  if (!buildId.startsWith(prefix)) throw new Error('CodeBuild target project does not match the running build.');
+  requireGroupedLowercaseUuid(buildId.slice(prefix.length), 'CodeBuild target build execution ID');
+  if (input['buildArn'] !== `arn:${target.partition}:codebuild:${region}:${accountId}:build/${buildId}`) {
+    throw new Error('CodeBuild target build ARN does not match its account, region, and build ID.');
+  }
+  const callerArn = requireString(caller['Arn'], 'CodeBuild target caller ARN');
+  const rolePrefix = `arn:${target.partition}:sts::${accountId}:assumed-role/${role}/`;
+  if (!callerArn.startsWith(rolePrefix)) throw new Error('CodeBuild target caller does not match its reviewed role.');
+  const sessionName = requireString(
+    callerArn.slice(rolePrefix.length),
+    'CodeBuild target role session',
+    /^[A-Za-z0-9+=,.@_-]{2,64}$/u,
+  );
+  const userId = requireString(
+    caller['UserId'],
+    'CodeBuild target caller user ID',
+    /^AROA[A-Z0-9]{17}:[A-Za-z0-9+=,.@_-]{2,64}$/u,
+  );
+  if (!userId.endsWith(`:${sessionName}`)) throw new Error('CodeBuild target caller session is inconsistent.');
+  return target;
+}
+
+/**
+ * @param {unknown} target
+ * @returns {AllowedDeploymentTarget}
+ */
 function assertAllowedTarget(target) {
-  const allowedTarget = ALLOWED_TARGETS['stark-dev/develop'];
-  if (canonicalJson(target) !== canonicalJson(allowedTarget)) {
+  const encoded = canonicalJson(target);
+  const allowedTarget = Object.values(ALLOWED_TARGETS).find((entry) => canonicalJson(entry) === encoded);
+  if (allowedTarget === undefined) {
     throw new Error('deployment target does not match the reviewed allowed-target configuration');
   }
   return allowedTarget;
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} label
+ * @returns {string}
+ */
 function requireSourceSha(value, label) {
   return parseFullSourceSha(value, label);
 }
 
+/**
+ * @param {unknown} value
+ * @returns {DeploymentLane}
+ */
 function requireLane(value) {
-  if (typeof value !== 'string' || !Object.hasOwn(ALLOWED_TARGET_ENTRIES['stark-dev/develop'].lanes, value)) {
-    throw new Error('deployment lane is not authorized');
+  switch (value) {
+    case 'app':
+    case 'bootstrap':
+    case 'foundation':
+    case 'prover':
+    case 'static-fast':
+    case 'toolchain':
+      return value;
+    default:
+      throw new Error('deployment lane is not authorized');
   }
-  return value;
 }
 
+/**
+ * @param {string} value
+ * @returns {void}
+ */
 function assertGeneratedPipelineName(value) {
   if (!/^[A-Za-z0-9.@_-]{1,100}$/u.test(value)) {
     throw new Error('generated CodePipeline name is invalid');
   }
 }
 
+/**
+ * @param {string} value
+ * @returns {void}
+ */
 function assertGeneratedCodePipelineActionName(value) {
   if (!/^[A-Za-z0-9.@_-]{1,100}$/u.test(value)) {
     throw new Error('generated CodePipeline action name is invalid');
   }
 }
 
+/**
+ * @param {string} value
+ * @returns {void}
+ */
 function assertGeneratedEcrRepository(value) {
   if (value.length > 256 || !/^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$/u.test(value)) {
     throw new Error('generated ECR repository name is invalid');
   }
 }
 
+/**
+ * @param {string} value
+ * @param {string} label
+ * @returns {void}
+ */
 function assertGeneratedS3Key(value, label) {
   if (
     value.length === 0 ||
@@ -864,6 +1598,10 @@ function assertGeneratedS3Key(value, label) {
   }
 }
 
+/**
+ * @param {string} value
+ * @returns {void}
+ */
 function assertGeneratedBucketName(value) {
   if (
     value.length < 3 ||
@@ -880,48 +1618,82 @@ function assertGeneratedBucketName(value) {
   }
 }
 
+/**
+ * @param {string} value
+ * @param {string} label
+ * @returns {void}
+ */
 function assertGeneratedIamName(value, label) {
   if (!/^[A-Za-z0-9+=,.@_-]{1,64}$/u.test(value)) {
     throw new Error(`generated ${label} IAM name is invalid`);
   }
 }
 
+/**
+ * @param {string} value
+ * @param {string} label
+ * @returns {void}
+ */
 function assertGeneratedIamPolicyName(value, label) {
   if (!/^[A-Za-z0-9+=,.@_-]{1,128}$/u.test(value)) {
     throw new Error(`generated ${label} IAM policy name is invalid`);
   }
 }
 
+/**
+ * @param {string} value
+ * @returns {void}
+ */
 function assertGeneratedCodeBuildName(value) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{1,254}$/u.test(value)) {
     throw new Error('generated CodeBuild project name is invalid');
   }
 }
 
+/**
+ * @param {string} value
+ * @returns {void}
+ */
 function assertGeneratedLambdaName(value) {
   if (!/^[A-Za-z0-9_-]{1,64}$/u.test(value)) {
     throw new Error('generated Lambda function name is invalid');
   }
 }
 
+/**
+ * @param {string} value
+ * @returns {void}
+ */
 function assertGeneratedCloudWatchLogGroupName(value) {
   if (value.length > 512 || !/^[A-Za-z0-9_./#-]+$/u.test(value) || value.startsWith('aws/')) {
     throw new Error('generated CloudWatch Logs log-group name is invalid');
   }
 }
 
+/**
+ * @param {string} value
+ * @returns {void}
+ */
 function assertGeneratedEventBridgeRuleName(value) {
   if (!/^[A-Za-z0-9_.-]{1,64}$/u.test(value)) {
     throw new Error('generated EventBridge rule name is invalid');
   }
 }
 
+/**
+ * @param {string} value
+ * @returns {void}
+ */
 function assertGeneratedCloudFrontFunctionName(value) {
   if (!/^[A-Za-z0-9_-]{1,64}$/u.test(value)) {
     throw new Error('generated CloudFront function name is invalid');
   }
 }
 
+/**
+ * @param {string} value
+ * @returns {void}
+ */
 function assertGeneratedKmsAlias(value) {
   if (
     value.length > 256 ||
@@ -933,49 +1705,83 @@ function assertGeneratedKmsAlias(value) {
   }
 }
 
+/**
+ * @param {string} value
+ * @returns {void}
+ */
 function assertGeneratedSignerProfileName(value) {
   if (!/^[A-Za-z0-9_]{2,64}$/u.test(value)) {
     throw new Error('generated Signer profile name is invalid');
   }
 }
 
+/**
+ * @param {string} value
+ * @returns {void}
+ */
 function assertGeneratedSsmParameterPrefix(value) {
   if (value.length > 1011 || !/^\/(?!aws(?:\/|$)|ssm(?:\/|$))[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/iu.test(value)) {
     throw new Error('generated SSM parameter prefix is invalid');
   }
 }
 
+/**
+ * @param {string} value
+ * @returns {void}
+ */
 function assertGeneratedSecretsManagerPrefix(value) {
   if (value.length > 512 || !/^\/[A-Za-z0-9_+=.@-]+(?:\/[A-Za-z0-9_+=.@-]+)*$/u.test(value)) {
     throw new Error('generated Secrets Manager prefix is invalid');
   }
 }
 
+/**
+ * @param {string} value
+ * @param {string} label
+ * @returns {void}
+ */
 function assertGeneratedResourceNamePrefix(value, label) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(value)) {
     throw new Error(`generated ${label} name prefix is invalid`);
   }
 }
 
+/**
+ * @param {AllowedDeploymentTarget} target
+ * @param {Pick<DeploymentLaneAuthority, 'lane'>} laneAuthority
+ * @returns {DeploymentContextNames}
+ */
 function resolveContextNames(target, laneAuthority) {
-  const targetEntry = ALLOWED_TARGET_ENTRIES[target.targetKey];
+  const targetEntry = reviewedTargetEntry(target.targetKey);
   const laneConfiguration = targetEntry.lanes[laneAuthority.lane];
+  if (laneConfiguration === undefined) {
+    throw new Error('deployment lane is not authorized for the selected target');
+  }
   const names = {
     sourceAction: target.sourceAction,
     ...targetEntry.sharedNames,
     ...laneConfiguration.names,
   };
-  assertConfiguredContextNames(names);
+  assertConfiguredContextNames(names, target.targetKey);
   return deepFreeze(names);
 }
 
+/**
+ * @template {DeploymentLane} L
+ * @param {AllowedDeploymentTarget} target
+ * @param {L} selectedLane
+ * @returns {DeploymentLaneAuthority & {readonly lane: L, readonly names: L extends 'static-fast' ? Required<DeploymentContextNames> : DeploymentContextNames}}
+ */
 export function resolveDeploymentLaneAuthority(target, selectedLane) {
   const allowedTarget = assertAllowedTarget(target);
   const lane = requireLane(selectedLane);
-  const targetEntry = ALLOWED_TARGET_ENTRIES[allowedTarget.targetKey];
+  const targetEntry = reviewedTargetEntry(allowedTarget.targetKey);
   const laneConfiguration = targetEntry.lanes[lane];
+  if (laneConfiguration === undefined) {
+    throw new Error('deployment lane is not authorized for the selected target');
+  }
   const names = resolveContextNames(allowedTarget, { lane });
-  return deepFreeze({
+  const authority = deepFreeze({
     lane,
     scope: laneConfiguration.scope,
     stateIdentity: laneConfiguration.stateIdentity,
@@ -983,48 +1789,58 @@ export function resolveDeploymentLaneAuthority(target, selectedLane) {
     names,
     policy: laneConfiguration.policy,
   });
+  return /** @type {DeploymentLaneAuthority & {readonly lane: L, readonly names: L extends 'static-fast' ? Required<DeploymentContextNames> : DeploymentContextNames}} */ (
+    authority
+  );
 }
 
+/**
+ * @param {unknown} input
+ * @returns {DeploymentLaneContext}
+ */
 export function renderDeploymentLaneContext(input) {
   const record = requireExactKeys(
     input,
     ['accountId', 'frameworkSourceSha', 'lane', 'requestedControlSourceSha', 'selectedApplicationSourceSha', 'target'],
     'deployment context input',
   );
-  const target = assertAllowedTarget(record.target);
-  const laneAuthority = resolveDeploymentLaneAuthority(target, record.lane);
-  const accountId = requireString(record.accountId, 'AWS account ID', ACCOUNT_ID_PATTERN);
-  if (accountId !== target.accountId) {
+  const target = assertAllowedTarget(record['target']);
+  const laneAuthority = resolveDeploymentLaneAuthority(target, requireLane(record['lane']));
+  const accountId = requireString(record['accountId'], 'AWS account ID', ACCOUNT_ID_PATTERN);
+  if (accountId !== target['accountId']) {
     throw new Error('AWS account ID does not match the reviewed allowed target');
   }
-  const requestedControlSourceSha = requireSourceSha(record.requestedControlSourceSha, 'requested control source SHA');
+  const requestedControlSourceSha = requireSourceSha(
+    record['requestedControlSourceSha'],
+    'requested control source SHA',
+  );
   const selectedApplicationSourceSha = requireSourceSha(
-    record.selectedApplicationSourceSha,
+    record['selectedApplicationSourceSha'],
     'selected application source SHA',
   );
-  const frameworkSourceSha = requireSourceSha(record.frameworkSourceSha, 'framework source SHA');
+  const frameworkSourceSha = requireSourceSha(record['frameworkSourceSha'], 'framework source SHA');
   if (requestedControlSourceSha !== frameworkSourceSha) {
     throw new Error('requested control source SHA must match framework source SHA');
   }
-  const resourcePrefix = target.resourcePrefix;
+  const resourcePrefix = target['resourcePrefix'];
   const names = resolveContextNames(target, laneAuthority);
 
   return assembleDeploymentContext({
     contextType: 'deployment-lane-context',
     project: {
-      projectId: target.projectId,
+      projectId: target['projectId'],
       resourcePrefix,
-      stateNamespace: target.stateNamespace,
-      artifactNamespace: target.artifactNamespace,
+      stateNamespace: target['stateNamespace'],
+      artifactNamespace: target['artifactNamespace'],
     },
     target: {
-      partition: target.partition,
+      partition: target['partition'],
       accountId,
-      accountLabel: target.accountLabel,
-      region: target.region,
-      environmentId: target.environmentId,
-      environmentTier: target.environmentTier,
-      operatorPermissionSetName: target.operatorPermissionSetName,
+      accountLabel: target['accountLabel'],
+      region: target['region'],
+      environmentId: target['environmentId'],
+      environmentTier: target['environmentTier'],
+      operatorPermissionSetName: target['operatorPermissionSetName'],
     },
     root: {
       lane: laneAuthority.lane,
@@ -1033,38 +1849,45 @@ export function renderDeploymentLaneContext(input) {
       backendKey: laneAuthority.backendKey,
     },
     source: {
-      branch: target.sourceBranch,
-      provider: target.sourceProvider,
-      repository: target.repository,
-      repositoryUrl: target.repositoryUrl,
+      branch: target['sourceBranch'],
+      provider: target['sourceProvider'],
+      repository: target['repository'],
+      repositoryUrl: target['repositoryUrl'],
       requestedControlSourceSha,
       selectedApplicationSourceSha,
       frameworkSourceSha,
     },
     names,
     policy: laneAuthority.policy,
-    targetConfigurationSha256: canonicalJsonSha256(ALLOWED_TARGET_ENTRIES[target.targetKey]),
+    targetConfigurationSha256: canonicalJsonSha256(reviewedTargetEntry(target.targetKey)),
   });
 }
 
+/**
+ * @param {unknown} value
+ * @returns {DeploymentLaneContext}
+ */
 export function parseDeploymentLaneContext(value) {
   const context = requireExactKeys(value, CONTEXT_KEYS, 'deployment lane context');
-  requireExactKeys(context.project, PROJECT_KEYS, 'deployment context project');
-  const target = requireExactKeys(context.target, TARGET_KEYS, 'deployment context target');
-  const root = requireExactKeys(context.root, ROOT_KEYS, 'deployment context root');
-  const source = requireExactKeys(context.source, SOURCE_KEYS, 'deployment context source');
-  requireExactKeys(context.names, NAME_KEYS, 'deployment context names');
-  requireExactKeys(context.policy, POLICY_KEYS, 'deployment context policy');
-  if (context.contextType !== 'deployment-lane-context') {
+  requireExactKeys(context['project'], PROJECT_KEYS, 'deployment context project');
+  const target = requireExactKeys(context['target'], TARGET_KEYS, 'deployment context target');
+  const root = requireExactKeys(context['root'], ROOT_KEYS, 'deployment context root');
+  const source = requireExactKeys(context['source'], SOURCE_KEYS, 'deployment context source');
+  const allowedTarget = resolveAllowedDeploymentTarget(
+    `${requireString(target['accountLabel'], 'deployment context account label')}/${requireString(target['environmentId'], 'deployment context environment')}`,
+  );
+  requireExactKeys(context['names'], targetNameKeys(allowedTarget.targetKey), 'deployment context names');
+  requireExactKeys(context['policy'], POLICY_KEYS, 'deployment context policy');
+  if (context['contextType'] !== 'deployment-lane-context') {
     throw new Error('deployment contextType must be deployment-lane-context');
   }
   const rendered = renderDeploymentLaneContext({
-    target: resolveAllowedDeploymentTarget('stark-dev/develop'),
-    lane: root.lane,
-    accountId: target.accountId,
-    requestedControlSourceSha: source.requestedControlSourceSha,
-    selectedApplicationSourceSha: source.selectedApplicationSourceSha,
-    frameworkSourceSha: source.frameworkSourceSha,
+    target: allowedTarget,
+    lane: root['lane'],
+    accountId: target['accountId'],
+    requestedControlSourceSha: source['requestedControlSourceSha'],
+    selectedApplicationSourceSha: source['selectedApplicationSourceSha'],
+    frameworkSourceSha: source['frameworkSourceSha'],
   });
   if (canonicalJson(rendered) !== canonicalJson(context)) {
     throw new Error('deployment lane context does not match the canonical allowed target');

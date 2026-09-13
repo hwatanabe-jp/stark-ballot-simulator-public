@@ -2,14 +2,12 @@ import type { Page, Locator } from '@playwright/test';
 import { BasePage } from './BasePage';
 
 export class ResultPage extends BasePage {
-  readonly title: Locator;
   readonly startVerificationButton: Locator;
   readonly totalVotes: Locator;
   readonly tallyValues: Record<'A' | 'B' | 'C' | 'D' | 'E', Locator>;
 
   constructor(page: Page) {
     super(page);
-    this.title = page.locator('h1');
     this.startVerificationButton = page.getByTestId('start-verification');
     this.totalVotes = page.getByTestId('total-votes');
     this.tallyValues = {

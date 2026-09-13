@@ -8,10 +8,17 @@ import {
   buildSessionRecords,
   evaluateSessionVoteMutation,
   type SessionMutationDependencies,
+  type SessionVoteMutation,
+  type SessionVoteMutationResult,
   type SessionVoteAuthority,
 } from './session-mutation-policy';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+import type { BotVoteCommand, UserVoteCommand } from '@stark-ballot/domain/types/sessionRecords';
+import { ApplicationErrorCode } from '@stark-ballot/application';
 
-const SESSION_ID = '00000000-0000-4000-8000-000000000010';
+const SESSION_ID = asSessionId('00000000-0000-4000-8000-000000000010');
+const FINALIZATION_ID = asFinalizationId('finalization-1');
 const ELECTION_ID = '00000000-0000-4000-8000-000000000020';
 const LOG_ID = `0x${'ab'.repeat(32)}`;
 const USER_VOTE_ID = '00000000-0000-4000-8000-000000000030';
@@ -44,14 +51,29 @@ function buildDependencies(ids: string[], times: number[]): SessionMutationDepen
   };
 }
 
-function vote(voteId: string | undefined, choice: 'A' | 'B' | 'C', randomNibble: string) {
+function requireSuccessfulMutation(
+  result: SessionVoteMutationResult,
+): Exclude<SessionVoteMutation, { kind: 'user_vote_replayed' }> {
+  if (!result.ok) {
+    throw new Error(`Expected successful mutation, received ${result.error.code}`);
+  }
+  if (result.value.kind === 'user_vote_replayed') throw new Error('Expected an append mutation');
+  return result.value;
+}
+
+function userVote(voteId: string, choice: 'A' | 'B' | 'C', randomNibble: string): UserVoteCommand {
   return {
-    ...(voteId ? { voteId } : {}),
+    voteId,
     vote: choice,
     rand: randomNibble.repeat(64),
-    commit: `0x${'0'.repeat(64)}`,
-    path: [],
     timestamp: 50,
+  };
+}
+
+function botVote(choice: 'A' | 'B' | 'C', randomNibble: string): BotVoteCommand {
+  return {
+    vote: choice,
+    rand: randomNibble.repeat(64),
   };
 }
 
@@ -80,10 +102,12 @@ describe('session mutation policy', () => {
 
   it('prepares a user vote, exact commitment, CT proof, and index intent without mutating current records', () => {
     const authority = buildSession();
-    const mutation = evaluateSessionVoteMutation(
-      authority,
-      { kind: 'append_user_vote', vote: vote(undefined, 'B', 'a') },
-      buildDependencies([USER_VOTE_ID], [500]),
+    const mutation = requireSuccessfulMutation(
+      evaluateSessionVoteMutation(
+        authority,
+        { kind: 'append_user_vote', vote: userVote(USER_VOTE_ID, 'B', 'a') },
+        buildDependencies([], [500]),
+      ),
     );
 
     expect(mutation.kind).toBe('user_vote_appended');
@@ -111,41 +135,68 @@ describe('session mutation policy', () => {
 
   it('rejects a second user vote before staging any CT mutation', () => {
     const authority = buildSession();
-    const first = evaluateSessionVoteMutation(
-      authority,
-      { kind: 'append_user_vote', vote: vote(USER_VOTE_ID, 'A', '1') },
-      buildDependencies([], [200]),
+    const first = requireSuccessfulMutation(
+      evaluateSessionVoteMutation(
+        authority,
+        { kind: 'append_user_vote', vote: userVote(USER_VOTE_ID, 'A', '1') },
+        buildDependencies([], [200]),
+      ),
     );
     const current = withVoting(authority, first.nextVoting);
 
-    expect(() =>
+    expect(
       evaluateSessionVoteMutation(
         current,
-        { kind: 'append_user_vote', vote: vote(BOT_VOTE_ID, 'B', '2') },
+        { kind: 'append_user_vote', vote: userVote(BOT_VOTE_ID, 'B', '2') },
         buildDependencies([], [300]),
       ),
-    ).toThrow('User vote already exists');
+    ).toEqual({ ok: false, error: { code: ApplicationErrorCode.ALREADY_VOTED } });
     expect(current.voting.votes.size).toBe(1);
     expect(current.voting.bulletin.getSize()).toBe(1);
     expect(current.voting.userParticipation).toEqual({ status: 'cast', voteIndex: 0 });
   });
 
+  it('returns an expected conflict result for a racing second user vote', () => {
+    const authority = buildSession();
+    const first = requireSuccessfulMutation(
+      evaluateSessionVoteMutation(
+        authority,
+        { kind: 'append_user_vote', vote: userVote(USER_VOTE_ID, 'A', '1') },
+        buildDependencies([], [200]),
+      ),
+    );
+    const current = withVoting(authority, first.nextVoting);
+
+    const second = evaluateSessionVoteMutation(
+      current,
+      { kind: 'append_user_vote', vote: userVote(BOT_VOTE_ID, 'B', '2') },
+      buildDependencies([], [300]),
+    );
+
+    expect(second).toEqual({ ok: false, error: { code: ApplicationErrorCode.ALREADY_VOTED } });
+    expect(current.voting.votes.size).toBe(1);
+  });
+
   it('stages a canonical bot batch atomically', () => {
     const authority = buildSession();
-    const userMutation = evaluateSessionVoteMutation(
-      authority,
-      { kind: 'append_user_vote', vote: vote(USER_VOTE_ID, 'A', '1') },
-      buildDependencies([], [200]),
+    const userMutation = requireSuccessfulMutation(
+      evaluateSessionVoteMutation(
+        authority,
+        { kind: 'append_user_vote', vote: userVote(USER_VOTE_ID, 'A', '1') },
+        buildDependencies([], [200]),
+      ),
     );
     const current = withVoting(authority, userMutation.nextVoting);
 
-    const mutation = evaluateSessionVoteMutation(
-      current,
-      {
-        kind: 'append_bot_votes',
-        votes: [vote(BOT_VOTE_ID, 'B', '2'), vote(SECOND_BOT_VOTE_ID, 'C', '3')],
-      },
-      buildDependencies([], [300]),
+    const mutation = requireSuccessfulMutation(
+      evaluateSessionVoteMutation(
+        current,
+        {
+          kind: 'append_bot_votes',
+          votes: [botVote('B', '2'), botVote('C', '3')],
+        },
+        buildDependencies([BOT_VOTE_ID, SECOND_BOT_VOTE_ID], [250, 251, 300]),
+      ),
     );
 
     expect(mutation.kind).toBe('bot_votes_appended');
@@ -168,12 +219,46 @@ describe('session mutation policy', () => {
     expect(current.voting.bulletin.getSize()).toBe(1);
   });
 
+  it('assigns bot identity inside the mutation even for an unchecked value with caller-owned extras', () => {
+    const authority = buildSession();
+    const userMutation = requireSuccessfulMutation(
+      evaluateSessionVoteMutation(
+        authority,
+        { kind: 'append_user_vote', vote: userVote(USER_VOTE_ID, 'A', '1') },
+        buildDependencies([], [200]),
+      ),
+    );
+    const current = withVoting(authority, userMutation.nextVoting);
+    const uncheckedBot = {
+      ...botVote('B', '2'),
+      voteId: SECOND_BOT_VOTE_ID,
+      timestamp: 1,
+      commit: `0x${'f'.repeat(64)}`,
+    } as unknown as BotVoteCommand;
+
+    const mutation = requireSuccessfulMutation(
+      evaluateSessionVoteMutation(
+        current,
+        { kind: 'append_bot_votes', votes: [uncheckedBot] },
+        buildDependencies([BOT_VOTE_ID], [250, 300]),
+      ),
+    );
+
+    expect(mutation.indexIntents).toEqual([{ voteId: BOT_VOTE_ID, index: 1 }]);
+    expect(mutation.nextVoting.votes.get(1)).toMatchObject({
+      voteId: BOT_VOTE_ID,
+      commit: computeCommitment(ELECTION_ID, 1, `0x${'2'.repeat(64)}`),
+    });
+  });
+
   it('rejects inconsistent bot metadata instead of repairing current records', () => {
     const authority = buildSession();
-    const userMutation = evaluateSessionVoteMutation(
-      authority,
-      { kind: 'append_user_vote', vote: vote(USER_VOTE_ID, 'A', '1') },
-      buildDependencies([], [200]),
+    const userMutation = requireSuccessfulMutation(
+      evaluateSessionVoteMutation(
+        authority,
+        { kind: 'append_user_vote', vote: userVote(USER_VOTE_ID, 'A', '1') },
+        buildDependencies([], [200]),
+      ),
     );
     const current = withVoting(authority, {
       ...userMutation.nextVoting,
@@ -186,9 +271,9 @@ describe('session mutation policy', () => {
         current,
         {
           kind: 'append_bot_votes',
-          votes: [vote(BOT_VOTE_ID, 'B', '2')],
+          votes: [botVote('B', '2')],
         },
-        buildDependencies([], [300]),
+        buildDependencies([BOT_VOTE_ID], [250, 300]),
       ),
     ).toThrow('Session voting record bot count is inconsistent');
     expect(current.voting.votes.size).toBe(1);
@@ -198,19 +283,21 @@ describe('session mutation policy', () => {
 
   it('keeps failed batches atomic and rejects voting after a finalization record exists', () => {
     const empty = buildSession();
-    expect(() =>
+    expect(
       evaluateSessionVoteMutation(
         empty,
-        { kind: 'append_bot_votes', votes: [vote(BOT_VOTE_ID, 'B', '2')] },
-        buildDependencies([], [300]),
+        { kind: 'append_bot_votes', votes: [botVote('B', '2')] },
+        buildDependencies([BOT_VOTE_ID], [250, 300]),
       ),
-    ).toThrow('USER_VOTE_REQUIRED_BEFORE_BOT_VOTES');
+    ).toEqual({ ok: false, error: { code: ApplicationErrorCode.USER_NOT_VOTED } });
     expect(empty.voting.votes.size).toBe(0);
 
-    const userMutation = evaluateSessionVoteMutation(
-      empty,
-      { kind: 'append_user_vote', vote: vote(USER_VOTE_ID, 'A', '1') },
-      buildDependencies([], [200]),
+    const userMutation = requireSuccessfulMutation(
+      evaluateSessionVoteMutation(
+        empty,
+        { kind: 'append_user_vote', vote: userVote(USER_VOTE_ID, 'A', '1') },
+        buildDependencies([], [200]),
+      ),
     );
     const current = withVoting(empty, userMutation.nextVoting);
     const sourceRoot = current.voting.bulletin.getCurrentRoot();
@@ -220,22 +307,22 @@ describe('session mutation policy', () => {
         current,
         {
           kind: 'append_bot_votes',
-          votes: [vote(BOT_VOTE_ID, 'B', '2'), vote('not-a-uuid', 'C', '3')],
+          votes: [botVote('B', '2'), botVote('C', '3')],
         },
-        buildDependencies([], [300]),
+        buildDependencies([BOT_VOTE_ID, 'not-a-uuid'], [250, 251, 300]),
       ),
     ).toThrow('Invalid vote ID format');
     expect(current.voting.votes.size).toBe(1);
     expect(current.voting.botCount).toBe(0);
     expect(current.voting.bulletin.getCurrentRoot()).toBe(sourceRoot);
 
-    expect(() =>
+    expect(
       evaluateSessionVoteMutation(
         {
           ...current,
           finalization: {
             sessionId: SESSION_ID,
-            finalizationId: 'finalization-1',
+            finalizationId: FINALIZATION_ID,
             scenarioContext: {
               scenarios: [],
               tamperMode: 'none',
@@ -243,12 +330,12 @@ describe('session mutation policy', () => {
               claimedTotalVotes: 1,
               summary: { ignoredCount: 0, recountedCount: 0, userRecountChoice: null },
             },
-            state: { status: 'pending', finalizationId: 'finalization-1', queuedAtMs: 300 },
+            state: { status: 'pending', finalizationId: FINALIZATION_ID, queuedAtMs: 300 },
           },
         },
-        { kind: 'append_user_vote', vote: vote(BOT_VOTE_ID, 'B', '2') },
+        { kind: 'append_user_vote', vote: userVote(BOT_VOTE_ID, 'B', '2') },
         buildDependencies([], [300]),
       ),
-    ).toThrow('Session already finalized');
+    ).toEqual({ ok: false, error: { code: ApplicationErrorCode.SESSION_FINALIZED } });
   });
 });

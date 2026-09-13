@@ -1,6 +1,17 @@
-data "aws_iam_policy_document" "app_signature_preflight_plan" {
-  count                   = local.app_pipeline_enabled ? 1 : 0
-  source_policy_documents = [data.aws_iam_policy_document.app_codebuild_common[0].json]
+data "aws_iam_policy_document" "app_signature_preflight_specific" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  source_policy_documents = local.deployment_target.environmentId == "main" ? [
+    data.aws_iam_policy_document.app_initialization_execution_read[0].json,
+    data.aws_iam_policy_document.app_initialization_absence_read[0].json,
+  ] : []
+
+  statement {
+    sid       = "ReadCurrentVerifierPreflightPlanActionExecution"
+    effect    = "Allow"
+    actions   = ["codepipeline:ListActionExecutions"]
+    resources = [local.app_pipeline_arn]
+  }
 
   statement {
     sid    = "UseRetainedVerifierPackageForPreflightPlan"
@@ -11,19 +22,6 @@ data "aws_iam_policy_document" "app_signature_preflight_plan" {
       "s3:PutObject",
     ]
     resources = [local.app_retained_lambda_artifact_objects_arn]
-  }
-
-  statement {
-    sid    = "ReadCurrentAcceptedProverForVerifierOnlyPlan"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-    ]
-    resources = [
-      local.app_prover_accepted_pointer_object_arn,
-      local.app_prover_release_records_objects_arn,
-    ]
   }
 
   statement {
@@ -142,6 +140,14 @@ data "aws_iam_policy_document" "app_signature_preflight_plan" {
   }
 }
 
+data "aws_iam_policy_document" "app_signature_preflight_plan" {
+  count = local.app_pipeline_enabled ? 1 : 0
+  source_policy_documents = [
+    data.aws_iam_policy_document.app_codebuild_common[0].json,
+    data.aws_iam_policy_document.app_signature_preflight_specific[0].json,
+  ]
+}
+
 resource "aws_iam_role_policy" "app_signature_preflight_plan" {
   count = local.app_pipeline_enabled ? 1 : 0
 
@@ -150,36 +156,47 @@ resource "aws_iam_role_policy" "app_signature_preflight_plan" {
   policy = data.aws_iam_policy_document.app_signature_preflight_plan[0].json
 }
 
-data "aws_iam_policy_document" "app_signature_state_refresh_apply" {
-  count                   = local.app_pipeline_enabled ? 1 : 0
-  source_policy_documents = [data.aws_iam_policy_document.app_signature_preflight_plan[0].json]
+data "aws_iam_policy_document" "app_signature_preflight_plan_pipeline_state" {
+  count = local.app_pipeline_enabled ? 1 : 0
 
   statement {
-    sid       = "ReadCurrentVerifierStateRefreshApproval"
+    sid       = "ReadAppPipelineStateForVerifierPreflightPlan"
     effect    = "Allow"
-    actions   = ["codepipeline:ListActionExecutions"]
+    actions   = ["codepipeline:GetPipelineState"]
     resources = [local.app_pipeline_arn]
-  }
-
-  statement {
-    sid       = "WriteAppStateForReviewedVerifierRefresh"
-    effect    = "Allow"
-    actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.state.arn}/${local.app_state_backend_key}"]
   }
 }
 
-resource "aws_iam_role_policy" "app_signature_state_refresh_apply" {
+resource "aws_iam_role_policy" "app_signature_preflight_plan_pipeline_state" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  name   = "${local.app_signature_state_refresh_apply_role_name}-policy"
-  role   = aws_iam_role.app_signature_state_refresh_apply[0].id
-  policy = data.aws_iam_policy_document.app_signature_state_refresh_apply[0].json
+  name   = "${local.app_signature_preflight_plan_role_name}-pipeline-state"
+  role   = aws_iam_role.app_signature_preflight_plan[0].id
+  policy = data.aws_iam_policy_document.app_signature_preflight_plan_pipeline_state[0].json
+}
+
+check "app_signature_preflight_plan_inline_policy_size" {
+  assert {
+    condition = (
+      !local.app_pipeline_enabled
+      || try(
+        length(jsonencode(jsondecode(data.aws_iam_policy_document.app_signature_preflight_plan[0].json)))
+        + length(
+          jsonencode(jsondecode(data.aws_iam_policy_document.app_signature_preflight_plan_pipeline_state[0].json))
+        ) <= 10240,
+        false,
+      )
+    )
+    error_message = "The App verifier-preflight Plan aggregate inline policies must remain within IAM's 10,240-character role-policy quota."
+  }
 }
 
 data "aws_iam_policy_document" "app_signature_preflight_apply" {
-  count                   = local.app_pipeline_enabled ? 1 : 0
-  source_policy_documents = [data.aws_iam_policy_document.app_signature_preflight_plan[0].json]
+  count = local.app_pipeline_enabled ? 1 : 0
+  source_policy_documents = [
+    data.aws_iam_policy_document.app_signature_preflight_specific[0].json,
+    data.aws_iam_policy_document.saved_plan_approval_apply_read["app_verifier_preflight"].json,
+  ]
 
   statement {
     sid       = "ReadCurrentVerifierPreflightApproval"
@@ -294,22 +311,43 @@ data "aws_iam_policy_document" "app_signature_preflight_apply" {
 resource "aws_iam_role_policy" "app_signature_preflight_apply" {
   count = local.app_pipeline_enabled ? 1 : 0
 
+  depends_on = [aws_iam_role_policy_attachment.app_codebuild_common_preflight_apply]
+
   name   = "${local.app_signature_preflight_apply_role_name}-policy"
   role   = aws_iam_role.app_signature_preflight_apply[0].id
   policy = data.aws_iam_policy_document.app_signature_preflight_apply[0].json
+
+  lifecycle {
+    precondition {
+      condition     = length(jsonencode(jsondecode(data.aws_iam_policy_document.app_signature_preflight_apply[0].json))) <= 10240
+      error_message = "The App verifier preflight Apply inline policy must remain within IAM's 10,240-character role-policy quota."
+    }
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "app_codebuild_common_preflight_apply" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  depends_on = [
+    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_pipeline_management,
+    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management,
+    terraform_data.bootstrap_apply_authorization_propagation,
+  ]
+
+  role       = aws_iam_role.app_signature_preflight_apply[0].name
+  policy_arn = aws_iam_policy.app_codebuild_common[0].arn
 }
 
 data "aws_iam_policy_document" "app_signature_preflight_invoker" {
   count = local.app_pipeline_enabled ? 1 : 0
 
+  source_policy_documents = [data.aws_iam_policy_document.app_pipeline_clone_reference_source[0].json]
+
   statement {
-    sid    = "UseSignaturePreflightSourceConnection"
-    effect = "Allow"
-    actions = [
-      "codeconnections:UseConnection",
-      "codestar-connections:UseConnection",
-    ]
-    resources = local.app_source_connection_arns
+    sid       = "ReadExactVerifierPreflightInvokeProjectConfiguration"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [local.source_path_app_start_build_projects.app_signature_preflight_invoke.project_arn]
   }
 
   statement {
@@ -339,7 +377,7 @@ data "aws_iam_policy_document" "app_signature_preflight_invoker" {
       "logs:PutLogEvents",
     ]
     resources = [
-      "${module.app_pipeline_codebuild_log_groups.log_groups[local.app_signature_preflight_invoke_project_name].arn}:*",
+      "${local.app_codebuild_log_group_arn_by_project_name[local.app_signature_preflight_invoke_project_name]}:*",
     ]
   }
 
@@ -370,12 +408,14 @@ data "aws_iam_policy_document" "app_signature_preflight_invoker" {
       "kms:Encrypt",
       "kms:GenerateDataKey",
     ]
-    resources = [aws_kms_key.app_pipeline_artifacts[0].arn]
+    resources = [aws_kms_alias.app_pipeline_artifacts[0].target_key_arn]
   }
 }
 
 resource "aws_iam_role_policy" "app_signature_preflight_invoker" {
   count = local.app_pipeline_enabled ? 1 : 0
+
+  depends_on = [module.app_pipeline_codebuild_log_groups]
 
   name   = "${local.app_signature_preflight_invoker_role_name}-policy"
   role   = aws_iam_role.app_signature_preflight_invoker[0].id

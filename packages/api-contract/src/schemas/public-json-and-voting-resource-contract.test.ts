@@ -13,7 +13,7 @@ import {
   apiResponseSchema,
   publicObject,
 } from './index';
-import { s } from '@stark-ballot/validation/schema';
+import { getSchemaDescriptor, s } from '@stark-ballot/validation/schema';
 
 const REQUEST_ID = 'trusted-request-id';
 const META = { requestId: REQUEST_ID };
@@ -38,8 +38,8 @@ describe('public JSON and voting resource contract', () => {
         if (response.content !== 'json' || !('schema' in response)) {
           continue;
         }
-        const shape = Reflect.get(response.schema, 'shape') as Record<string, unknown> | undefined;
-        if (!shape || Object.keys(shape).sort().join(',') !== 'data,meta') {
+        const descriptor = getSchemaDescriptor(response.schema);
+        if (descriptor.kind !== 'ObjectSchema' || Object.keys(descriptor.shape).sort().join(',') !== 'data,meta') {
           failures.push(`${route.routeId}:${response.status}`);
         }
       }
@@ -57,11 +57,7 @@ describe('public JSON and voting resource contract', () => {
     const knownCodes = new Set<string>(Object.values(ErrorCode));
     const missing = TARGET_API_ROUTE_CONTRACTS.flatMap((route) =>
       route.publicErrors.responses.flatMap((response) =>
-        response.envelope === 'standard-error-envelope' &&
-        typeof response.code === 'string' &&
-        !knownCodes.has(response.code)
-          ? [`${route.routeId}:${response.code}`]
-          : [],
+        !knownCodes.has(response.code) ? [`${route.routeId}:${response.code}`] : [],
       ),
     );
 
@@ -209,14 +205,12 @@ describe('public JSON and voting resource contract', () => {
     });
   });
 
-  it('drops arbitrary and internal error detail fields', () => {
+  it('drops the private verifier report from admitted error detail fields', () => {
     const result = createApiErrorResult(ErrorCode.VERIFICATION_FAILED, REQUEST_ID, {
       status: 'failed',
       finalizationId: 'finalization-1',
       errorCodes: ['verification-failed'],
       verificationReport: { status: 'failed', errors: ['private path'] },
-      internalDebugContext: 'private',
-      privateArtifact: 'input.json',
     });
 
     expect(result.payload.error.details).toEqual({

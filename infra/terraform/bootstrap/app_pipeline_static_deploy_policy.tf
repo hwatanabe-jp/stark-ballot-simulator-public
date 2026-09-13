@@ -1,16 +1,7 @@
 data "aws_iam_policy_document" "app_static_deploy_common" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  statement {
-    sid    = "UseSharedSourceConnection"
-    effect = "Allow"
-
-    actions = [
-      "codeconnections:UseConnection",
-      "codestar-connections:UseConnection",
-    ]
-    resources = local.app_source_connection_arns
-  }
+  source_policy_documents = [data.aws_iam_policy_document.app_pipeline_clone_reference_source[0].json]
 
   statement {
     sid    = "UseRetainedStaticFrontendArtifact"
@@ -38,7 +29,7 @@ data "aws_iam_policy_document" "app_static_deploy_common" {
       "kms:ReEncryptFrom",
       "kms:ReEncryptTo",
     ]
-    resources = [aws_kms_key.app_pipeline_artifacts[0].arn]
+    resources = [aws_kms_alias.app_pipeline_artifacts[0].target_key_arn]
   }
 
   statement {
@@ -74,6 +65,17 @@ data "aws_iam_policy_document" "app_static_deploy_common" {
   }
 
   statement {
+    sid    = "ReadStaticFrontendPublicationLeaseHolderBuild"
+    effect = "Allow"
+
+    actions = ["codebuild:BatchGetBuilds"]
+    resources = compact([
+      local.source_path_app_start_build_projects.app_static_deploy.project_arn,
+      local.app_static_fast_enabled ? local.source_path_static_fast_start_build_projects.app_static_fast_static_deploy.project_arn : null,
+    ])
+  }
+
+  statement {
     sid    = "ReadTargetBrowserPublicConfig"
     effect = "Allow"
 
@@ -91,6 +93,13 @@ data "aws_iam_policy_document" "app_static_deploy" {
   source_policy_documents = [data.aws_iam_policy_document.app_static_deploy_common[0].json]
 
   statement {
+    sid       = "ReadExactAppStaticDeployProjectConfiguration"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [local.source_path_app_start_build_projects.app_static_deploy.project_arn]
+  }
+
+  statement {
     sid    = "WriteAppStaticDeployLogs"
     effect = "Allow"
 
@@ -99,7 +108,7 @@ data "aws_iam_policy_document" "app_static_deploy" {
       "logs:PutLogEvents",
     ]
     resources = [
-      "${module.app_pipeline_codebuild_log_groups.log_groups[local.app_static_deploy_project_name].arn}:*",
+      "${local.app_codebuild_log_group_arn_by_project_name[local.app_static_deploy_project_name]}:*",
     ]
   }
 
@@ -123,15 +132,24 @@ data "aws_iam_policy_document" "app_static_deploy" {
 resource "aws_iam_role_policy" "app_static_deploy" {
   count = local.app_pipeline_enabled ? 1 : 0
 
+  depends_on = [module.app_pipeline_codebuild_log_groups]
+
   name   = "${local.app_static_deploy_role_name}-policy"
   role   = aws_iam_role.app_static_deploy[0].id
   policy = data.aws_iam_policy_document.app_static_deploy[0].json
 }
 
 data "aws_iam_policy_document" "app_static_fast_static_deploy" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   source_policy_documents = [data.aws_iam_policy_document.app_static_deploy_common[0].json]
+
+  statement {
+    sid       = "ReadExactAppStaticFastDeployProjectConfiguration"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [local.source_path_static_fast_start_build_projects.app_static_fast_static_deploy.project_arn]
+  }
 
   statement {
     sid    = "WriteAppStaticFastDeployLogs"
@@ -142,7 +160,7 @@ data "aws_iam_policy_document" "app_static_fast_static_deploy" {
       "logs:PutLogEvents",
     ]
     resources = [
-      "${module.app_pipeline_codebuild_log_groups.log_groups[local.app_static_fast_static_deploy_project_name].arn}:*",
+      "${local.app_codebuild_log_group_arn_by_project_name[local.app_static_fast_static_deploy_project_name]}:*",
     ]
   }
 
@@ -164,7 +182,9 @@ data "aws_iam_policy_document" "app_static_fast_static_deploy" {
 }
 
 resource "aws_iam_role_policy" "app_static_fast_static_deploy" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
+
+  depends_on = [module.app_pipeline_codebuild_log_groups]
 
   name   = "${local.app_static_fast_static_deploy_role_name}-policy"
   role   = aws_iam_role.app_static_fast_static_deploy[0].id

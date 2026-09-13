@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   captureSessionIdentity,
-  checkTimeout,
   clearSession,
   getSessionData,
   getSessionDataForIdentity,
@@ -169,33 +168,6 @@ describe('Session Management', () => {
       ).toThrow('Invalid server-issued session identity');
       expect(localStorageMock.getItem('starkBallotSession')).toBeNull();
       expect(window.sessionStorage.getItem('starkBallotSessionLock')).toBeNull();
-    });
-  });
-
-  describe('checkTimeout', () => {
-    it('returns false when session is active', () => {
-      initializeTestSession('active-session', 'capability-token');
-
-      expect(checkTimeout()).toBe(false);
-    });
-
-    it('returns true and clears storage when session expired', () => {
-      localStorageMock.setItem(
-        'starkBallotSession',
-        JSON.stringify(
-          storedVotingSession('expired-session', 'capability-token', now.getTime(), {
-            lastActivity: now.getTime() - SESSION_ACTIVE_TIMEOUT_MS - 1000,
-            expiresAt: now.getTime() - 1000,
-          }),
-        ),
-      );
-
-      expect(checkTimeout()).toBe(true);
-      expect(localStorageMock.getItem('starkBallotSession')).toBeNull();
-    });
-
-    it('returns true when no session exists', () => {
-      expect(checkTimeout()).toBe(true);
     });
   });
 

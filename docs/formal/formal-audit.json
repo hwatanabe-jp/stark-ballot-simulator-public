@@ -295,27 +295,27 @@
   "generatedVectorArtifacts": [
     {
       "path": "docs/formal/generated-vectors/verification-summary-cases.json",
-      "sha256": "cc9a3968f6126b4a9bc00893e788bbc133b4b91846e0a21cbf7213bfba477bce"
+      "sha256": "878496ff03a7ce97c4aa843a852b67d427321b690bbeace6fc08659afaff4145"
     },
     {
       "path": "docs/formal/generated-vectors/verification-display-cases.json",
-      "sha256": "e54274e455d830fa24373055251dbde4964d3fd3824b279512834b8b29c5531e"
+      "sha256": "5b5ba2d9f5fbe6f2d89c94375af83d9378a514e391a5b7de9eeb080c8cb20c8d"
     },
     {
       "path": "docs/formal/generated-vectors/check-definitions.json",
-      "sha256": "da3a1fd4aa7dbec5acab34c0eb4416a325ef4065ff790841ab0c29f13015a93d"
+      "sha256": "d1f3e217fbc283adc5832d56a3652727bc92ba36335fdb71fe65a53214d3e37b"
     },
     {
       "path": "docs/formal/generated-vectors/input-commitment-cases.json",
-      "sha256": "281eecb88cae8adc34c59ad84b9c0c7e8940e060af4ab12e7a88572035a6156b"
+      "sha256": "81e1a4b8310ae4a6d4bfa62dc62dc726314bed2be98bbd571449af4989a5d0b5"
     },
     {
       "path": "docs/formal/generated-vectors/bitmap-cases.json",
-      "sha256": "50e51fe56e997980bf6cf30a9dce63bd48d5f8bbb2c3ecac5f156e3d7eddedde"
+      "sha256": "ed3cc3580d21d76c3f09fb94278397ac08021d81c300eb3bcc92c8795a830541"
     },
     {
       "path": "docs/formal/generated-vectors/guest-model-cases.json",
-      "sha256": "f6a5a052f4a904cdca3ce4a159209b2075839fe6df60c1f0a9f90a249de70d4a"
+      "sha256": "6d77949fcfc3060016fff871a193986c31394389b2a08eb262faf7c9f8a9e25c"
     }
   ]
 }

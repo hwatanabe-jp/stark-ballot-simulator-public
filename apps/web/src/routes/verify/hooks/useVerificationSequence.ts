@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { MutableRefObject } from 'react';
+import type { RefObject } from 'react';
+import type { UseTranslationResult } from '@stark-ballot/web/hooks/useTranslation';
 import {
   getSessionDataForIdentity,
   isSessionReplaced,
@@ -17,7 +18,6 @@ import {
   STARK_POLL_TIMEOUT_MS,
 } from '@stark-ballot/web/verification/stark-verification-polling';
 import { isVerificationClientInvalidationError } from '@stark-ballot/web/verification/client-api-errors';
-import { isBrowserTestMode } from '@stark-ballot/runtime-config/env/browserRuntime';
 import { resolveStarkStatus } from '../lib/verification-data';
 import { STARK_TIMEOUT_ERROR } from '../lib/stark-timeout';
 import type { VerificationPayload } from '../lib/verification-data';
@@ -28,12 +28,12 @@ const SESSION_REPLACED_ERROR_KEY = 'pages.verify.sessionReplaced';
 
 interface UseVerificationSequenceOptions {
   data: VerificationPayload | null;
-  t: (key: string, vars?: Record<string, string | number>) => string;
-  fetchVerificationRef: MutableRefObject<() => Promise<VerificationPayload>>;
+  t: UseTranslationResult['t'];
+  fetchVerificationRef: RefObject<() => Promise<VerificationPayload>>;
   triggerStarkVerificationRun?: () => Promise<void>;
   onError: (message: string) => void;
-  verificationStartedRef: MutableRefObject<boolean>;
-  sessionIdentityRef: MutableRefObject<SessionIdentity | null>;
+  verificationStartedRef: RefObject<boolean>;
+  sessionIdentityRef: RefObject<SessionIdentity | null>;
 }
 
 interface UseVerificationSequenceResult {
@@ -116,13 +116,6 @@ export function useVerificationSequence({
     };
   }, []);
 
-  const updateStepStatus = useCallback((id: VerificationStepId, status: VerificationStepStatus, error?: string) => {
-    setStepStatusMap((prev) => ({
-      ...prev,
-      [id]: { status, ...(error ? { error } : {}) },
-    }));
-  }, []);
-
   const resetStepStatuses = useCallback(() => {
     setStepStatusMap({
       cast_as_intended: { status: 'pending' },
@@ -170,6 +163,7 @@ export function useVerificationSequence({
             await triggerStarkVerificationRun?.();
           } catch (error) {
             if (isVerificationClientInvalidationError(error)) {
+              sequenceAbortRef.current = true;
               onError(error.message);
               return { status: 'failed', error: error.message, ...omitUndefinedProperties({ payload: lastPayload }) };
             }
@@ -191,6 +185,7 @@ export function useVerificationSequence({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (isVerificationClientInvalidationError(error)) {
+        sequenceAbortRef.current = true;
         onError(message);
       }
       return { status: 'failed', error: message, ...omitUndefinedProperties({ payload: lastPayload }) };
@@ -203,7 +198,8 @@ export function useVerificationSequence({
     }
 
     try {
-      const session = getSessionDataForIdentity(sessionIdentityRef.current);
+      const sessionIdentity = sessionIdentityRef.current;
+      const session = getSessionDataForIdentity(sessionIdentity);
       if (!session) {
         onError(resolveSessionErrorMessage());
         return;
@@ -219,12 +215,9 @@ export function useVerificationSequence({
       setVerificationStarted(true);
       resetStepStatuses();
 
-      const baseDelay = isBrowserTestMode() ? 0 : 600;
-      const preparationDelay = isBrowserTestMode() ? 0 : 2000;
-      const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
       const isAborted = () => sequenceAbortRef.current;
 
-      // Wait for STARK to resolve before showing any steps (per TEMP-verify-ux-policy.md)
+      // Publish the resolved stages together after the actual verifier wait.
       let resolvedStarkStatus = actualStarkStatusRef.current;
       let resolvedStarkError: string | undefined;
       let resolvedPayload: VerificationPayload = data;
@@ -237,25 +230,17 @@ export function useVerificationSequence({
         }
       }
       if (isAborted()) return;
+      if (!getSessionDataForIdentity(sessionIdentity)) {
+        onError(resolveSessionErrorMessage());
+        return;
+      }
 
       const knowledgeUpdates = buildVerificationKnowledge(resolvedPayload);
       if (Object.keys(knowledgeUpdates).length > 0) {
         saveKnowledgeData(knowledgeUpdates, {
-          ...omitUndefinedProperties({ expectedSessionId: sessionIdentityRef.current?.sessionId }),
+          expectedSessionId: session.sessionId,
         });
       }
-
-      const finalizeStep = async (
-        id: VerificationStepId,
-        status: VerificationStepStatus,
-        error?: string,
-        delayMs: number = baseDelay,
-      ) => {
-        if (isAborted()) return;
-        await delay(delayMs);
-        if (isAborted()) return;
-        updateStepStatus(id, status, error);
-      };
 
       const resolveStepStatus = (stage: unknown): VerificationStepStatus => {
         if (!stage || typeof stage !== 'object') {
@@ -280,12 +265,6 @@ export function useVerificationSequence({
         return undefined;
       };
 
-      if (isAborted()) return;
-      await delay(preparationDelay);
-      if (isAborted()) return;
-      setVisibleStepCount(1);
-      updateStepStatus('cast_as_intended', 'running');
-
       const apiSteps = resolvedPayload.verificationSteps;
       const apiStepResult = (id: VerificationStepId) => apiSteps?.find((step) => step.id === id);
 
@@ -293,22 +272,6 @@ export function useVerificationSequence({
       const recordedStage = apiSteps ? apiStepResult('recorded_as_cast') : undefined;
       const countedStage = apiSteps ? apiStepResult('counted_as_recorded') : undefined;
       const starkStage = apiSteps ? apiStepResult('stark_verification') : undefined;
-
-      await finalizeStep('cast_as_intended', resolveStepStatus(castStage), resolveStepError(castStage));
-
-      if (isAborted()) return;
-      setVisibleStepCount(2);
-      updateStepStatus('recorded_as_cast', 'running');
-      await finalizeStep('recorded_as_cast', resolveStepStatus(recordedStage), resolveStepError(recordedStage));
-
-      if (isAborted()) return;
-      setVisibleStepCount(3);
-      updateStepStatus('counted_as_recorded', 'running');
-      await finalizeStep('counted_as_recorded', resolveStepStatus(countedStage), resolveStepError(countedStage));
-
-      if (isAborted()) return;
-      setVisibleStepCount(4);
-      updateStepStatus('stark_verification', 'running');
 
       const starkImageIdStatus = resolvedPayload.verificationChecks?.find(
         (check) => check.id === 'stark_image_id_match',
@@ -348,7 +311,20 @@ export function useVerificationSequence({
       }
 
       if (!isAborted()) {
-        await finalizeStep('stark_verification', mappedStarkStatus, mappedStarkError);
+        const resolvedStep = (stage: unknown) => {
+          const error = resolveStepError(stage);
+          return { status: resolveStepStatus(stage), ...(error ? { error } : {}) };
+        };
+        setStepStatusMap({
+          cast_as_intended: resolvedStep(castStage),
+          recorded_as_cast: resolvedStep(recordedStage),
+          counted_as_recorded: resolvedStep(countedStage),
+          stark_verification: {
+            status: mappedStarkStatus,
+            ...(mappedStarkError ? { error: mappedStarkError } : {}),
+          },
+        });
+        setVisibleStepCount(4);
         setSequenceComplete(true);
       }
     } catch (err) {
@@ -366,7 +342,6 @@ export function useVerificationSequence({
     resolveSessionErrorMessage,
     sessionIdentityRef,
     t,
-    updateStepStatus,
   ]);
 
   return {

@@ -17,19 +17,30 @@ scenario metadata からサーバ側で導出します。
 - `excludedSlots`: slot-based の除外数で、`missingSlots + invalidPresentedSlots` と一致する
 
 `missingIndices` / `invalidIndices` / `countedIndices` / `excludedCount` は廃止済みです。
-現行 Journal の admission はこれらを reject し、現行 field への正規化、fallback、
-互換 reader は提供しません。untyped な journal-like payload に廃止 field が残っている場合も、
-その payload を current journal として受理せず fail-closed に扱います。
+現行 Journal の admission は未知 field やこれらの廃止 field を reject し、現行 field への
+正規化、fallback、互換 reader は提供しません。count と tally の各値は `uint32`
+（0–4,294,967,295）、`treeSize` は正の `uint32` に限定し、加算結果も safe integer として
+検査します。tally の合計と `validVotes`、`rejectedRecords` と `invalidVotes` の一致、
+counted / invalid-presented / missing slot が `treeSize` を構成する関係も要求します。
+公開 claimed tally も各値を `uint32` に限定し、A–E の合計と `totalVotes` を照合します。
+`totalExpected` と `treeSize` の不一致は検証失敗を表す証拠として受理できますが、
+成功判定では許可されません。詳しい整合式は
+[検証パイプライン](../verification/README.md)を参照してください。
 
 UI が `Verified` を表示できるのは、shared presentation policy が
-`fullyVerifiedLabelEligible = true` と判定したときだけです。少なくとも次の条件を
-すべて満たす必要があります。
+`fullyVerifiedLabelEligible = true` と判定したときだけです。API はこの値を申告だけで信用せず、
+canonical check 一覧、各 stage、proof authority、voter evidence、report、presentation の
+整合性を再検証します。少なくとも次の条件をすべて満たす必要があります。
 
-1. required check がすべて存在し、`success` である
-2. `missingSlots` / `invalidPresentedSlots` / `excludedSlots` がすべて 0 で、その関係も整合する
-3. cast 時点の exact CT evidence、counted/seen bitmap proof、必要な public audit artifact が整合する
+1. required check と全 stage が `success` で、表示 sequence が完了している
+2. `missingSlots` / `invalidPresentedSlots` / `rejectedRecords` / `excludedSlots` がすべて 0 で、
+   `totalExpected = treeSize = seenIndicesCount`、seen/included bitmap root の一致が成り立つ
+3. available な個票証拠があり、cast 時点の exact CT evidence、counted/seen bitmap proof、
+   必要な public audit artifact が整合する
 4. ImageID 照合と `Receipt::verify(expectedImageId)` が成功する
 5. 証拠が production proof であり、development/fake receipt ではない
+6. S0 の claimed tally と `verifiedTally` が一致し、合計が `totalExpected` と等しく、
+   presentation に改ざんの申告がない
 
 development 許可 path が fake receipt を検出できても、その結果は `demo_only` であり、
 production STARK proof や `Verified` 表示の根拠にはなりません。required check が欠落、
@@ -84,7 +95,16 @@ Journal はバイナリの proof output です。パース後の canonical proof
 
 host-decoded output や application が扱う `journal.json` には、optional な `imageId` が付く場合が
 あります。これは比較用の host metadata であり、canonical proof output ではありません。
-proof identity は verifier report の `receipt_image_id` と expected ImageID の照合で最終確認します。
+production verification が `success` となり、report の `expected_image_id` と
+`receipt_image_id` が一致した場合に、その `receipt_image_id` を proved identity として扱います。
+存在する report の expected ImageID は authority と一致する必要があります。failed report は
+receipt ImageID の不一致を失敗証拠として保持でき、development report は ImageID が一致しても
+production proof identity を確立しません。
+
+verification response に Journal を含める場合、重複する field は proof authority と照合します。
+finalization response でも Journal、presentation、report、voter evidence、scenario、artifact
+availability を相互照合し、矛盾を補正せず reject します。これらの整合性 admission と
+`Receipt::verify(expectedImageId)` による暗号学的検証の両方が必要です。
 
 証拠の公開境界は次のとおりです。
 

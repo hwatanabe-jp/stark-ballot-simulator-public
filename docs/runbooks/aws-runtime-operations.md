@@ -1,8 +1,9 @@
 # AWS Runtime Operations Runbook
 
 > **Scope:** the deployed, operator-gated `stark-dev/develop` AWS runtime.
-> `stark-prod/main` has not been deployed, validated, or approved. Never turn a
-> develop command into a production command by substituting names or profiles.
+> Production `stark-prod/main` is also deployed, with a separate public ingress
+> and target-bound operator procedure. All commands here remain develop-only;
+> never turn them into production commands by substituting names or profiles.
 > The live finalization state machine invokes the qualified cryptographic
 > `image-signature-verifier:runtime` alias. The retired status-only
 > `image-signature-gate` is not part of the current runtime.
@@ -92,16 +93,17 @@ adapter metadata into proof/finalization authority.
 ## 3. Initial response
 
 Record the environment, incident window and timezone, symptom and HTTP/error
-code, gated hostname versus direct origin, source SHA, accepted deployment
-record, pipeline execution, and restricted session/finalization or AWS execution identifiers. Do
-not record the capability token. Any path that can display **Verified** while a
-required check has not passed is a security escalation.
+code, gated hostname versus direct origin, source SHA, live accepted-deployment
+authority identified by the dated inventory, pipeline execution, and restricted
+session/finalization or AWS execution identifiers. Do not record the capability
+token. Any path that can display **Verified** while a required check has not
+passed is a security escalation.
 
 Before interpreting live symptoms as new drift, read the dated inventory and
-the exact retained accepted-baseline and latest root-specific report evidence
+the exact retained acceptance and latest root-specific report evidence
 selected by the private operator procedure. `no-drift`, `drift-detected`, and
 `check-failed` describe report-only evidence; none authorizes a saved plan,
-Apply, remediation, or a readiness invocation.
+Apply, remediation, rollback, or recovery operation.
 
 Check pipeline history without starting or retrying anything:
 
@@ -125,31 +127,40 @@ aws codepipeline get-pipeline-state \
 every result to the selected execution before using it as evidence. Read the
 first failed build log and retained artifact before considering a retry.
 
-For an accepted app deployment, identify both the CodePipeline execution ID
-and the acceptance-attempt ID. The retained authority is immutable under
-`accepted-deployments/stark-dev/develop/app/executions/<pipelineExecutionId>/attempts/<acceptanceAttemptId>/`;
-the mutable
-`accepted-deployments/stark-dev/develop/app/current.json` authority is updated
-by compare-and-swap and contains the exact immutable record coordinates that
-remain reachable for current operation and rollback. Never read or infer
-authority from the retired `index.json`. In a restricted workspace, exact-read
-the selected record by its key, S3 `VersionId`, and body SHA-256, then bind it
-to its exact `tfplan`, checksum, approval-evidence object version and SHA-256,
+### Current App deployment authority
+
+The target App acceptance family and its bounded-history current pointer are
+the sole live App deployment authority. The predecessor authority, bounded
+converter, and sealed conversion-only machinery are absent. Use the current
+pointer's exact selected acceptance for incident correlation, rollback, and
+consumer projections; never reconstruct authority from retired predecessor
+records or `index.json`.
+
+For an accepted App deployment, identify the content-addressed acceptance key,
+CodePipeline execution ID, and acceptance-attempt ID. The retained authority is
+immutable under
+`accepted-deployments/stark-dev/develop/app/acceptances/<bodySha256>.json`; the
+mutable `accepted-deployments/stark-dev/develop/app/current.json` pointer is
+updated by compare-and-swap and retains bounded rollback history. In a
+restricted workspace, exact-read the selected acceptance and verify its
+observed S3 `VersionId` and body SHA-256, then bind it to its exact `tfplan`,
+checksum, approval-evidence object version and SHA-256,
 apply outputs, static deploy record, and smoke report before treating the
 runtime as accepted. Multiple smoke attempts can share one pipeline execution,
 so the pipeline execution ID alone is not sufficient evidence.
 
 Normal evidence must have no rollback selection. Rollback evidence must bind
-the current control source to the selected historical source, historical
-accepted deployment record and acceptance attempt, historical approval
-evidence, and immutable app/toolchain/prover release records. Do not infer
-rollback authority from a successful stage or source SHA alone.
+the current control source to the selected historical source and App
+acceptance, historical approval
+evidence, and immutable App authority plus content-addressed Toolchain/Prover
+ledger selections. Do not infer rollback authority from a successful stage or
+source SHA alone.
 
 ### Recovery posture
 
-Establish the selected DynamoDB recovery phase before diagnosing admission,
-queue-consumer, or store behavior. Read the accepted attempt's authoritative
-deployment record, `apply-outputs.json`, and
+After target App acceptance activation, establish the selected DynamoDB
+recovery phase before diagnosing admission, queue-consumer, or store behavior.
+Read the selected App acceptance's recovery projection, `apply-outputs.json`, and
 `app-smoke-dynamodb-recovery-phase-evidence.json`; do not obtain a phase by
 editing Terraform inputs or starting a pipeline.
 
@@ -238,21 +249,55 @@ maintained in private operator documentation.
 
 ## 4. Edge and API
 
+The command examples below inspect develop. Use production’s exact target-bound
+operator authority for main investigations; the boundary distinctions here do
+not authorize adapting these commands. Current architecture does not replace
+dated inventory observations or incident-specific validation evidence.
+
 Expected boundaries:
 
-- the develop hostname requires the CloudFront signed-cookie gate;
+- the develop hostname requires the CloudFront signed-cookie gate and remains
+  independent of Cloudflare;
+- the production hostname is proxied through Cloudflare. Every CloudFront
+  viewer behavior admits the expected hostname, Cloudflare origin token, and
+  bounded client-IP header before cache lookup or origin access. The token is
+  removed before forwarding, while the API receives `CF-Connecting-IP`;
 - static files use private S3 through OAC;
 - `/api` and `/api/*` route through CloudFront to the HTTP API;
 - the execute-api endpoint remains enabled as the CloudFront origin, while the
   application must reject requests without the expected origin header;
 - DNS is externally owned, and the CloudFront certificate is in ACM
   `us-east-1`;
-- AWS WAF is intentionally absent; rate limits, API throttling, Turnstile where
-  enabled, the outer develop gate, logs, and alarms are compensating controls.
+- AWS WAF is intentionally absent. Develop uses its outer operator gate; main
+  requires server-side Turnstile on session creation, voting, and finalization.
+  Rate limits, API throttling, logs, and alarms provide additional controls.
 
 An unauthenticated develop-hostname `403` can be the expected gate. Successful
 direct-origin access that bypasses the gate or origin-header check is a
-security incident.
+security incident. Production CloudFront admission and the API origin-header
+check are separate boundaries: passing one does not establish the other.
+
+For production, Terraform waits for the guarded distribution deployment before
+updating the API Lambda to `TRUSTED_PROXY=cloudflare`. That mode accepts only a
+single bare valid IPv4 or IPv6 `CF-Connecting-IP`; missing, malformed, list,
+port-suffixed, or bracketed values have no fallback to API Gateway source IP,
+`X-Forwarded-For`, or `X-Real-IP`. The edge character/length check is not the
+API's full IP validation. Never loosen proxy trust to work around a rejection.
+
+Classify the boundary before diagnosing a token, capability, or application
+failure:
+
+| Observation                                                                   | First investigation                                                                                                                                                                                                 |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Develop `403` before the API                                                  | Check the signed-cookie gate and its inspector evidence.                                                                                                                                                            |
+| Main edge rejection or an HTML challenge instead of the expected API response | Inspect the authorized Cloudflare rules and CloudFront viewer admission, hostname, and error evidence. A rejected viewer request never reaches the API; missing API logs alone do not prove which edge rejected it. |
+| API `SAME_ORIGIN_REQUIRED`                                                    | Check the separate CloudFront-to-API origin-header boundary and browser same-origin checks. The error code alone does not distinguish them.                                                                         |
+| API `INVALID_REQUEST` with `client_ip_missing`                                | Check authenticated client-IP forwarding and strict IP admission. Rate-limited routes reject the missing identity before Turnstile validation.                                                                      |
+| API `CAPTCHA_FAILED` and `turnstile_failed` evidence                          | Inspect the redacted server-side validation reason, expected action and hostname, and validation-service failure evidence. This is distinct from an edge challenge or origin-header rejection.                      |
+
+Do not retain Cloudflare origin tokens, Turnstile tokens, or raw client IPs in
+shared incident evidence. Keep capability diagnosis in the authenticated
+bundle/report checks below.
 
 ```bash
 aws cloudfront list-distributions \
@@ -589,14 +634,15 @@ Record caller role, action, resource class, time, and source SHA. Compare with
 app IaC and the accepted plan; never attach a broad policy as a shortcut.
 
 For suspected Terraform drift, bind the diagnosis to the immutable accepted
-baseline and exact-version report selected by the current inventory. The
+authority and exact-version report selected by the current inventory. The
 installed root-specific runners plan the accepted historical configuration
 with refresh and `-lock=false`; their `no-drift`, `drift-detected`, and
 `check-failed` classifications do not write state, move an accepted pointer,
 approve a saved plan, apply, or remediate. Preserve the report and escalate a
 required correction to the ordinary saved-plan lane owned by Bootstrap,
-Foundation, or App. The separate rollback and recovery readiness projects
-remain uninvoked; do not start either as alarm or drift diagnosis.
+Foundation, or App. Rollback and recovery have no readiness-report project to
+start as alarm or drift diagnosis; follow the separately authorized real
+operation in the conditional runbook.
 
 Inspect reference metadata without secret values:
 
@@ -690,8 +736,8 @@ mutation.
 
 An operations notification may initiate diagnosis or, after evidence and normal
 authorization, the relevant deployment lane. It cannot initiate Apply,
-rollback/readiness, recovery, redrive, deletion, cancellation, semaphore repair,
-or accepted-pointer changes. It also never changes a verification result.
+rollback, recovery, redrive, deletion, cancellation, semaphore repair, or
+accepted-pointer changes. It also never changes a verification result.
 
 The invariant SNS topic carries only the last alarm. A subscription in
 `PendingConfirmation` cannot notify, and a confirmed subscription proves
@@ -741,8 +787,10 @@ query smoke that prints query status, not query results.
 Escalate immediately for identity/state-scope uncertainty; possible secret or
 private-artifact leakage; direct-origin bypass; false **Verified** presentation;
 private files in a public bundle; a DLQ/semaphore/IAM/KMS/signing issue that
-needs mutation; Terraform/live drift or partial apply; or any production
-target.
+needs mutation; or Terraform/live drift or partial apply. Route a production
+incident to its exact target-bound operator authority because these command
+procedures cover develop; production deployment does not authorize target
+substitution.
 
 ### Investigation workflows
 
@@ -827,8 +875,10 @@ claims: PostApplySmoke proves resource/configuration wiring, the operator-gate
 probe proves admission behavior, and the full gated journey proves its own
 state-creating end-to-end path.
 
-There is no deployed or validated production lane. Stop rather than adapting
-the develop procedure when the requested target is production.
+For deployed production, use the main target’s own approved change and
+validation procedure. Its public Turnstile journey is separate from the develop
+operator-gated checks above; do not adapt these commands or treat develop
+evidence as production validation.
 
 ## 12. References
 

@@ -232,6 +232,33 @@ describe('resolveCanonicalFinalizationPayload', () => {
     expect(result?.journal).toEqual(journal);
   });
 
+  it('rejects cached verification state whose terminal report contradicts its status', () => {
+    const journal = createTestJournal({
+      totalExpected: 1,
+      validVotes: 1,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
+      seenIndicesCount: 1,
+    });
+
+    expect(
+      resolveSnapshot({
+        tally: {
+          counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
+          totalVotes: 1,
+          tamperedCount: 0,
+        },
+        imageId: '0x' + 'e'.repeat(64),
+        journal,
+        verificationStatus: 'success',
+        verificationReport: {
+          status: 'failed',
+          errors: ['Verification failed'],
+        },
+      }),
+    ).toBeNull();
+  });
+
   it('rejects legacy alias input in current journal payloads', () => {
     const journal = {
       ...createTestJournal({
@@ -324,7 +351,15 @@ describe('resolveCanonicalFinalizationPayload', () => {
             totalVotes: 1,
             tamperedCount: 0,
           },
-          verifiedTally: [...journal.verifiedTally],
+          tamperDetected: false,
+          scenarios: [],
+          verifiedTally: [
+            journal.verifiedTally[0],
+            journal.verifiedTally[1],
+            journal.verifiedTally[2],
+            journal.verifiedTally[3],
+            journal.verifiedTally[4],
+          ],
           bulletinRoot: journal.bulletinRoot,
           missingSlots: journal.missingSlots,
           invalidPresentedSlots: journal.invalidPresentedSlots,
@@ -347,6 +382,7 @@ describe('resolveCanonicalFinalizationPayload', () => {
             bulletinIndex: 0,
             bulletinRootAtCast: hash,
             castAtMs: 1,
+            inputCommitment: journal.inputCommitment,
           },
           userVote: {
             voteId: 'vote-1',
@@ -365,7 +401,7 @@ describe('resolveCanonicalFinalizationPayload', () => {
         },
         artifactAvailability: {
           bundle: 'available',
-          report: 'available',
+          report: 'unavailable',
           includedBitmap: 'available',
           seenBitmap: 'available',
         },

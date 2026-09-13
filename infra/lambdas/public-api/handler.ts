@@ -13,7 +13,8 @@ import { logger } from '@stark-ballot/diagnostics/logger';
 import { bootstrapLambdaRuntime } from '../runtimeBootstrap.js';
 
 type InvocationAdmission =
-  { readonly ok: true } | { readonly ok: false; readonly reason: 'event_shape_invalid' | 'request_id_missing' };
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: 'event_shape_invalid' | 'request_id_missing' };
 
 function admitApiGatewayV2Invocation(value: unknown): InvocationAdmission {
   if (!value || typeof value !== 'object') {

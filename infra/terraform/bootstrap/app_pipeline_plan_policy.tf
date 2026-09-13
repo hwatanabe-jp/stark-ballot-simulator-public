@@ -1,19 +1,31 @@
-data "aws_iam_policy_document" "app_deployment_record" {
+data "aws_iam_policy_document" "app_pipeline_clone_reference_source" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   statement {
-    sid    = "UseSharedSourceConnection"
-    effect = "Allow"
+    sid       = "UseAppPipelineCloneReferenceSource"
+    effect    = "Allow"
+    actions   = ["codeconnections:UseConnection"]
+    resources = [aws_codeconnections_connection.source[0].arn]
+  }
+}
 
-    actions = [
-      "codeconnections:UseConnection",
-      "codestar-connections:UseConnection",
-    ]
-    resources = local.app_source_connection_arns
+data "aws_iam_policy_document" "app_execution_authority" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  source_policy_documents = concat(
+    [data.aws_iam_policy_document.app_pipeline_clone_reference_source[0].json],
+    local.deployment_target.environmentId == "main" ? [data.aws_iam_policy_document.app_initialization_execution_read[0].json] : [],
+  )
+
+  statement {
+    sid       = "ReadExactAppExecutionAuthorityProjectConfiguration"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [local.source_path_app_start_build_projects.app_execution_authority.project_arn]
   }
 
   statement {
-    sid    = "WriteAppDeploymentRecordLogs"
+    sid    = "WriteAppExecutionAuthorityLogs"
     effect = "Allow"
 
     actions = [
@@ -21,12 +33,12 @@ data "aws_iam_policy_document" "app_deployment_record" {
       "logs:PutLogEvents",
     ]
     resources = [
-      "${module.app_pipeline_codebuild_log_groups.log_groups[local.app_deployment_record_project_name].arn}:*",
+      "${local.app_codebuild_log_group_arn_by_project_name[local.app_execution_authority_project_name]}:*",
     ]
   }
 
   statement {
-    sid    = "UseAppDeploymentRecordPipelineArtifacts"
+    sid    = "UseAppExecutionAuthorityPipelineArtifacts"
     effect = "Allow"
 
     actions = [
@@ -42,7 +54,7 @@ data "aws_iam_policy_document" "app_deployment_record" {
   }
 
   statement {
-    sid    = "UseAppDeploymentRecordPipelineArtifactKey"
+    sid    = "UseAppExecutionAuthorityPipelineArtifactKey"
     effect = "Allow"
 
     actions = [
@@ -53,7 +65,7 @@ data "aws_iam_policy_document" "app_deployment_record" {
       "kms:ReEncryptFrom",
       "kms:ReEncryptTo",
     ]
-    resources = [aws_kms_key.app_pipeline_artifacts[0].arn]
+    resources = [aws_kms_alias.app_pipeline_artifacts[0].target_key_arn]
   }
 
   statement {
@@ -65,17 +77,44 @@ data "aws_iam_policy_document" "app_deployment_record" {
       "s3:GetObjectVersion",
     ]
     resources = [
+      local.app_foundation_acceptance_pointer_object_arn,
+      local.app_foundation_acceptance_records_objects_arn,
       local.app_toolchain_accepted_pointer_object_arn,
+      local.app_toolchain_candidate_records_objects_arn,
+      local.app_toolchain_release_records_objects_arn,
       local.app_prover_accepted_pointer_object_arn,
-      local.app_foundation_networking_handoff_object_arn,
-      local.app_toolchain_artifact_records_objects_arn,
+      local.app_prover_candidate_records_objects_arn,
       local.app_prover_release_records_objects_arn,
-      local.app_deployment_record_objects_arn,
     ]
   }
 
   statement {
-    sid    = "ReadRetainedAppDeploymentAuthority"
+    sid       = "DecryptCurrentFoundationAcceptanceForReleaseResolution"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [var.aws_account_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${var.aws_region}.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:aws:s3:arn"
+      values   = [local.terraform_authority_bucket_arn]
+    }
+  }
+
+  statement {
+    sid    = "ReadRetainedAppAcceptanceAuthority"
     effect = "Allow"
     actions = [
       "s3:GetObject",
@@ -83,46 +122,31 @@ data "aws_iam_policy_document" "app_deployment_record" {
     ]
     resources = [
       local.app_retained_accepted_deployment_pointer_object_arn,
-      local.app_retained_authoritative_deployment_manifest_objects_arn,
-      local.app_retained_approval_evidence_objects_arn,
-      local.app_retained_image_signature_verifier_package_objects_arn,
-      local.app_retained_signature_preflight_objects_arn,
-    ]
-  }
-
-  statement {
-    sid    = "WriteGeneratedAppDeploymentRecords"
-    effect = "Allow"
-
-    actions = [
-      "s3:PutObject",
-    ]
-    resources = [
-      local.app_deployment_record_objects_arn,
+      local.app_retained_acceptance_record_objects_arn,
     ]
   }
 }
 
-resource "aws_iam_role_policy" "app_deployment_record" {
+resource "aws_iam_role_policy" "app_execution_authority" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  name   = "${local.app_deployment_record_role_name}-policy"
-  role   = aws_iam_role.app_deployment_record[0].id
-  policy = data.aws_iam_policy_document.app_deployment_record[0].json
+  depends_on = [module.app_pipeline_codebuild_log_groups]
+
+  name   = "${local.app_execution_authority_role_name}-policy"
+  role   = aws_iam_role.app_execution_authority[0].id
+  policy = data.aws_iam_policy_document.app_execution_authority[0].json
 }
 
 data "aws_iam_policy_document" "app_codebuild_common" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  statement {
-    sid    = "UseSharedSourceConnection"
-    effect = "Allow"
+  source_policy_documents = [data.aws_iam_policy_document.app_pipeline_clone_reference_source[0].json]
 
-    actions = [
-      "codeconnections:UseConnection",
-      "codestar-connections:UseConnection",
-    ]
-    resources = local.app_source_connection_arns
+  statement {
+    sid       = "ReadExactAppSourcePathProjectConfigurations"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [for project in values(local.source_path_app_start_build_projects) : project.project_arn]
   }
 
   statement {
@@ -134,8 +158,8 @@ data "aws_iam_policy_document" "app_codebuild_common" {
       "logs:PutLogEvents",
     ]
     resources = [
-      for log_group in module.app_pipeline_codebuild_log_groups.log_groups :
-      "${log_group.arn}:*"
+      for log_group_arn in local.app_codebuild_log_group_arns :
+      "${log_group_arn}:*"
     ]
   }
 
@@ -167,12 +191,24 @@ data "aws_iam_policy_document" "app_codebuild_common" {
       "kms:ReEncryptFrom",
       "kms:ReEncryptTo",
     ]
-    resources = [aws_kms_key.app_pipeline_artifacts[0].arn]
+    resources = [aws_kms_alias.app_pipeline_artifacts[0].target_key_arn]
   }
 }
 
 data "aws_iam_policy_document" "app_terraform_plan" {
   count = local.app_pipeline_enabled ? 1 : 0
+
+  source_policy_documents = local.deployment_target.environmentId == "main" ? [
+    data.aws_iam_policy_document.app_initialization_execution_read[0].json,
+    data.aws_iam_policy_document.app_initial_acceptance_absence_read[0].json,
+  ] : []
+
+  statement {
+    sid       = "ReadCurrentAppPlanActionExecution"
+    effect    = "Allow"
+    actions   = ["codepipeline:ListActionExecutions"]
+    resources = [local.app_pipeline_arn]
+  }
 
   statement {
     sid    = "UseRetainedLambdaArtifactsForAppPlan"
@@ -194,6 +230,7 @@ data "aws_iam_policy_document" "app_terraform_plan" {
     ]
     resources = [
       local.app_retained_accepted_deployment_pointer_object_arn,
+      local.app_retained_acceptance_record_objects_arn,
       local.app_retained_recovery_manifest_objects_arn,
       local.app_retained_signature_preflight_objects_arn,
     ]
@@ -224,19 +261,6 @@ data "aws_iam_policy_document" "app_terraform_plan" {
         [for prefix in local.app_plan_codebuild_cache_prefixes : "${prefix}/*"],
       )
     }
-  }
-
-  statement {
-    sid    = "ReadImmutableReleaseAuthority"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-    ]
-    resources = [
-      local.app_toolchain_artifact_records_objects_arn,
-      local.app_prover_release_records_objects_arn,
-    ]
   }
 
   statement {
@@ -718,7 +742,10 @@ data "aws_iam_policy_document" "app_terraform_plan_runtime" {
 resource "aws_iam_policy" "app_codebuild_common" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management]
+  depends_on = [
+    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
+    module.app_pipeline_codebuild_log_groups,
+  ]
 
   name   = local.app_codebuild_common_policy_name
   policy = data.aws_iam_policy_document.app_codebuild_common[0].json
@@ -747,6 +774,15 @@ resource "aws_iam_role_policy_attachment" "app_codebuild_common_apply" {
   depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 
   role       = aws_iam_role.app_terraform_apply[0].name
+  policy_arn = aws_iam_policy.app_codebuild_common[0].arn
+}
+
+resource "aws_iam_role_policy_attachment" "app_codebuild_common_smoke" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  depends_on = [terraform_data.bootstrap_apply_authorization_propagation]
+
+  role       = aws_iam_role.app_terraform_smoke[0].name
   policy_arn = aws_iam_policy.app_codebuild_common[0].arn
 }
 
@@ -787,8 +823,30 @@ resource "aws_iam_role_policy" "app_terraform_plan" {
 
   lifecycle {
     precondition {
-      condition     = length(jsonencode(jsondecode(data.aws_iam_policy_document.app_terraform_plan[0].json))) <= 10240
+      condition = (
+        length(jsonencode(jsondecode(data.aws_iam_policy_document.app_terraform_plan[0].json)))
+        + length(jsonencode(jsondecode(data.aws_iam_policy_document.app_terraform_plan_pipeline_state[0].json))) <= 10240
+      )
       error_message = "The app Terraform plan inline policy must remain within the IAM 10,240-character role-policy quota."
     }
   }
+}
+
+data "aws_iam_policy_document" "app_terraform_plan_pipeline_state" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  statement {
+    sid       = "ReadAppPipelineStateForPlan"
+    effect    = "Allow"
+    actions   = ["codepipeline:GetPipelineState"]
+    resources = [local.app_pipeline_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "app_terraform_plan_pipeline_state" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  name   = "${local.app_terraform_plan_role_name}-pipeline-state"
+  role   = aws_iam_role.app_terraform_plan[0].id
+  policy = data.aws_iam_policy_document.app_terraform_plan_pipeline_state[0].json
 }

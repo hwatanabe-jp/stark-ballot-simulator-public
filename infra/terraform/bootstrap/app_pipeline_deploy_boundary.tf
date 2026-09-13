@@ -1,22 +1,35 @@
 data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
+  source_policy_documents = local.deployment_target.environmentId == "main" ? [
+    # Retained-bucket s3:* below already covers its versioning and acceptance
+    # inventory. Keep only the distinct state inventory ceiling here; the
+    # identities still carry both exact bounded observations.
+    jsonencode({
+      Version = "2012-10-17"
+      Statement = [
+        for statement in jsondecode(data.aws_iam_policy_document.app_initialization_absence_read[0].json).Statement : statement
+        if statement.Action == "s3:ListBucketVersions" && statement.Resource == aws_s3_bucket.state.arn
+      ]
+    }),
+  ] : []
+
   statement {
     effect = "Allow"
 
     actions = ["s3:*"]
-    resources = [
+    resources = compact([
       local.app_retained_artifact_bucket_arn,
       "${local.app_retained_artifact_bucket_arn}/*",
       local.app_pipeline_execution_artifact_bucket_arn,
       "${local.app_pipeline_execution_artifact_bucket_arn}/*",
-      local.app_static_fast_execution_artifact_bucket_arn,
-      "${local.app_static_fast_execution_artifact_bucket_arn}/*",
+      local.app_static_fast_enabled ? local.app_static_fast_execution_artifact_bucket_arn : null,
+      local.app_static_fast_enabled ? "${local.app_static_fast_execution_artifact_bucket_arn}/*" : null,
       local.app_target_proof_bucket_arn,
       "${local.app_target_proof_bucket_arn}/*",
       local.app_target_frontend_bucket_arn,
       "${local.app_target_frontend_bucket_arn}/*",
-    ]
+    ])
   }
 
   statement {
@@ -27,15 +40,40 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
       "s3:GetObject",
       "s3:GetObjectVersion",
     ]
-    resources = [local.app_release_manifest_bucket_objects_arn]
+    resources = [
+      local.app_toolchain_accepted_pointer_object_arn,
+      local.app_prover_accepted_pointer_object_arn,
+      local.app_foundation_acceptance_pointer_object_arn,
+      local.app_foundation_acceptance_records_objects_arn,
+      local.app_toolchain_candidate_records_objects_arn,
+      local.app_toolchain_release_records_objects_arn,
+      local.app_prover_candidate_records_objects_arn,
+      local.app_prover_release_records_objects_arn,
+    ]
   }
 
   statement {
-    effect  = "Allow"
-    actions = ["s3:PutObject"]
-    resources = [
-      local.app_deployment_record_objects_arn,
-    ]
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [var.aws_account_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${var.aws_region}.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:aws:s3:arn"
+      values   = [local.terraform_authority_bucket_arn]
+    }
   }
 
   statement {
@@ -60,26 +98,32 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
 
   statement {
     effect    = "Allow"
-    actions   = ["s3:ListBucket"]
+    actions   = concat(["s3:ListBucket"], local.deployment_target.environmentId == "main" ? ["s3:GetBucketVersioning"] : [])
     resources = ["arn:aws:s3:::${var.state_bucket_name}"]
   }
 
   statement {
-    sid    = "AppKmsGuardrail"
-    effect = "Allow"
-
-    actions   = ["kms:*"]
-    resources = ["*"]
-  }
-
-  statement {
-    sid    = "AppPipelineGuardrail"
     effect = "Allow"
 
     actions = [
+      "apigateway:*",
+      "cloudfront:*",
+      "cloudwatch:*",
       "codebuild:*",
       "codepipeline:*",
+      "dynamodb:*",
+      "ecs:*",
+      "kms:*",
+      "lambda:*",
       "logs:*",
+      # These subscription APIs expose no resource-level IAM type. Attached
+      # identities retain the exact lifecycle action set.
+      "sns:GetSubscriptionAttributes",
+      "sns:SetSubscriptionAttributes",
+      "sns:Unsubscribe",
+      "sqs:*",
+      "ssm:*",
+      "states:*",
       "sts:GetCallerIdentity",
     ]
     resources = ["*"]
@@ -102,24 +146,6 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
   }
 
   statement {
-    sid    = "AppRuntimeGuardrail"
-    effect = "Allow"
-
-    actions = [
-      "apigateway:*",
-      "cloudfront:*",
-      "cloudwatch:*",
-      "dynamodb:*",
-      "ecs:*",
-      "lambda:*",
-      "sqs:*",
-      "ssm:*",
-      "states:*",
-    ]
-    resources = ["*"]
-  }
-
-  statement {
     effect = "Allow"
 
     actions = [
@@ -138,19 +164,6 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
 
   statement {
     effect = "Allow"
-
-    actions = [
-      "sns:GetSubscriptionAttributes",
-      "sns:SetSubscriptionAttributes",
-      "sns:Unsubscribe",
-    ]
-    # These APIs do not expose a resource-level IAM type. The attached apply
-    # role remains restricted to this exact lifecycle action set.
-    resources = ["*"]
-  }
-
-  statement {
-    effect = "Allow"
     actions = [
       "ecr:BatchGetImage",
       "ecr:GetDownloadUrlForLayer",
@@ -161,7 +174,7 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
   statement {
     effect    = "Allow"
     actions   = ["events:*"]
-    resources = local.app_target_event_rule_arns
+    resources = ["arn:aws:events:${var.aws_region}:${var.aws_account_id}:rule/${local.app_runtime_name_prefix}-*"]
   }
 
   statement {

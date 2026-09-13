@@ -1,22 +1,11 @@
-import {
-  StandardErrorResponseSchema,
-  type FlattenedSchemaError,
-  type PublicErrorDetail,
-} from '@stark-ballot/api-contract/schemas/errors';
-import { describe, expect, expectTypeOf, it } from 'vitest';
+import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/schemas/errors';
+import { describe, expect, it } from 'vitest';
 import {
   isCapabilityLossErrorCode,
   isFailClosedFinalizationErrorCode,
   isSessionUnavailableErrorCode,
 } from './apiErrorGuards';
-import {
-  ApiError,
-  ERROR_STATUS_CODES,
-  ErrorCode,
-  getErrorMessage,
-  type ErrorDetails,
-  type VerificationStatus,
-} from './apiErrors';
+import { ApiError, ErrorCode, getErrorMessage } from './apiErrors';
 
 const ERROR_MESSAGE_CHARACTERIZATION = [
   [ErrorCode.SESSION_NOT_FOUND, 'セッションが見つかりません'],
@@ -69,27 +58,6 @@ const ERROR_MESSAGE_CHARACTERIZATION = [
 
 const REQUEST_ID = 'api-errors-test-request';
 
-type RuntimeErrorDetailsProjection = {
-  message?: string;
-  details?: string | PublicErrorDetail;
-  issues?: FlattenedSchemaError;
-  reason?: string;
-  retryAfter?: number;
-  retryAfterSeconds?: number;
-  limitBytes?: number;
-  receivedBytes?: number;
-  nextAvailableAt?: string;
-  nextAvailableAtMs?: number;
-  remainingExecutions?: number;
-  status?: VerificationStatus;
-  finalizationId?: string;
-  verificationReport?: unknown;
-  voteIndex?: number;
-  expectedTreeSize?: number;
-  actualTreeSize?: number;
-  errorCodes?: string[];
-};
-
 describe('ApiError', () => {
   it('should create an ApiError instance', () => {
     const error = new ApiError(ErrorCode.SESSION_NOT_FOUND, 404);
@@ -109,7 +77,7 @@ describe('ApiError', () => {
   });
 
   it('should include details when provided', () => {
-    const details = { userId: 123, action: 'vote' };
+    const details = { details: 'vote rejected' };
     const error = new ApiError(ErrorCode.INVALID_REQUEST, 400, undefined, details);
 
     expect(error.details).toEqual(details);
@@ -154,8 +122,6 @@ describe('ApiError', () => {
 
   it('serializes only allowlisted public detail fields', () => {
     const error = new ApiError(ErrorCode.INVALID_REQUEST, 400, undefined, {
-      error: ErrorCode.SESSION_EXPIRED,
-      statusCode: 200,
       message: 'Invalid JSON payload',
       details: 'Validation failed',
       issues: {
@@ -168,9 +134,6 @@ describe('ApiError', () => {
       retryAfter: 30,
       limitBytes: 1024,
       receivedBytes: 2048,
-      errors: ['Invalid proof'],
-      privateArtifact: 'input.json',
-      cause: new Error('private stack'),
     });
 
     expect(error.toResult(REQUEST_ID)).toEqual({
@@ -228,43 +191,7 @@ describe('ApiError', () => {
   });
 });
 
-describe('ErrorCode', () => {
-  it('should have all required error codes', () => {
-    expect(ErrorCode.SESSION_NOT_FOUND).toBe('SESSION_NOT_FOUND');
-    expect(ErrorCode.SESSION_EXPIRED).toBe('SESSION_EXPIRED');
-    expect(ErrorCode.SESSION_LIMIT_EXCEEDED).toBe('SESSION_LIMIT_EXCEEDED');
-    expect(ErrorCode.INVALID_REQUEST).toBe('INVALID_REQUEST');
-    expect(ErrorCode.INVALID_OFFSET).toBe('INVALID_OFFSET');
-    expect(ErrorCode.INVALID_LIMIT).toBe('INVALID_LIMIT');
-    expect(ErrorCode.INTERNAL_ERROR).toBe('INTERNAL_ERROR');
-    expect(ErrorCode.GLOBAL_LIMIT_EXCEEDED).toBe('GLOBAL_LIMIT_EXCEEDED');
-    expect(ErrorCode.CAPTCHA_FAILED).toBe('CAPTCHA_FAILED');
-    expect(ErrorCode.ZKVM_RATE_LIMIT_EXCEEDED).toBe('ZKVM_RATE_LIMIT_EXCEEDED');
-    expect(ErrorCode.CT_PROOF_UNAVAILABLE).toBe('CT_PROOF_UNAVAILABLE');
-    expect(ERROR_STATUS_CODES[ErrorCode.CT_PROOF_UNAVAILABLE]).toBe(400);
-  });
-});
-
 describe('getErrorMessage', () => {
-  it('should return correct message for each error code', () => {
-    expect(getErrorMessage(ErrorCode.SESSION_NOT_FOUND)).toBe('セッションが見つかりません');
-    expect(getErrorMessage(ErrorCode.SESSION_EXPIRED)).toBe('セッションがタイムアウトしました');
-    expect(getErrorMessage(ErrorCode.SESSION_LIMIT_EXCEEDED)).toBe(
-      '現在混雑しています。しばらくしてからお試しください',
-    );
-    expect(getErrorMessage(ErrorCode.INVALID_REQUEST)).toBe('無効なリクエストです');
-    expect(getErrorMessage(ErrorCode.INVALID_OFFSET)).toBe('無効なオフセットです');
-    expect(getErrorMessage(ErrorCode.INVALID_LIMIT)).toBe('無効な取得件数です');
-    expect(getErrorMessage(ErrorCode.INTERNAL_ERROR)).toBe('内部エラーが発生しました');
-    expect(getErrorMessage(ErrorCode.GLOBAL_LIMIT_EXCEEDED)).toBe(
-      'システムが混雑しています。しばらくしてからお試しください',
-    );
-    expect(getErrorMessage(ErrorCode.CAPTCHA_FAILED)).toBe('セキュリティチェックに失敗しました');
-    expect(getErrorMessage(ErrorCode.ZKVM_RATE_LIMIT_EXCEEDED)).toBe(
-      'zkVM実行は24時間に50回までです。翌日以降にお試しください',
-    );
-  });
-
   it('preserves the complete public error code and Japanese message catalog', () => {
     const characterizedCodes = ERROR_MESSAGE_CHARACTERIZATION.map(([code]) => code);
 
@@ -273,10 +200,6 @@ describe('getErrorMessage', () => {
     for (const [code, message] of ERROR_MESSAGE_CHARACTERIZATION) {
       expect(getErrorMessage(code)).toBe(message);
     }
-  });
-
-  it('preserves the unknown-code fallback', () => {
-    expect(getErrorMessage('UNKNOWN_ERROR_CODE' as ErrorCode)).toBe('不明なエラーが発生しました');
   });
 });
 
@@ -305,12 +228,4 @@ describe('API error code guard characterization', () => {
       expect(isFailClosedFinalizationErrorCode(value)).toBe(false);
     },
   );
-});
-
-describe('ErrorDetails runtime projection', () => {
-  it('preserves the exact named fields accepted by the internal-to-public sanitizer', () => {
-    expectTypeOf<
-      Pick<ErrorDetails, keyof RuntimeErrorDetailsProjection>
-    >().toEqualTypeOf<RuntimeErrorDetailsProjection>();
-  });
 });

@@ -1,7 +1,7 @@
 import {
   currentFinalizationBitmapProofRoute,
   matchApiRoute,
-  type ApiContractMethod,
+  type HttpMethod,
   type ApiContractRouteId,
 } from '@stark-ballot/api-contract/routes';
 import { ErrorCode, getErrorMessage } from '@stark-ballot/api-contract/errors/apiErrors';
@@ -19,7 +19,7 @@ export interface MockRouteRequest {
   now: number;
 }
 
-const CONTRACT_METHODS = new Set<ApiContractMethod>(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
+const CONTRACT_METHODS = new Set<HttpMethod>(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
 let requestSequence = 0;
 
 function createMockRequestId(now: number): string {
@@ -86,7 +86,7 @@ function collectQueryParams(url: URL): Record<string, string | string[]> {
   return params;
 }
 
-function matchesBitmapProofRouteShape(method: ApiContractMethod, pathname: string): boolean {
+function matchesBitmapProofRouteShape(method: HttpMethod, pathname: string): boolean {
   if (method !== currentFinalizationBitmapProofRoute.method) {
     return false;
   }
@@ -111,13 +111,13 @@ export function routeMockRequest(input: RequestInfo | URL, init?: RequestInit): 
   const rawMethod = (
     init?.method ?? (typeof input === 'string' || input instanceof URL ? 'GET' : input.method)
   ).toUpperCase();
-  if (!CONTRACT_METHODS.has(rawMethod as ApiContractMethod)) {
+  if (!CONTRACT_METHODS.has(rawMethod as HttpMethod)) {
     return errorResponse(requestId, 404, 'MOCK_NOT_FOUND', 'Mock endpoint not implemented');
   }
 
-  const matched = matchApiRoute(rawMethod as ApiContractMethod, url.pathname);
+  const matched = matchApiRoute(rawMethod as HttpMethod, url.pathname);
   if (!matched) {
-    if (matchesBitmapProofRouteShape(rawMethod as ApiContractMethod, url.pathname)) {
+    if (matchesBitmapProofRouteShape(rawMethod as HttpMethod, url.pathname)) {
       return invalidRequestResponse(requestId);
     }
     return errorResponse(requestId, 404, 'MOCK_NOT_FOUND', 'Mock endpoint not implemented');

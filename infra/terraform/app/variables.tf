@@ -1,51 +1,3 @@
-variable "aws_region" {
-  description = "AWS Region for app resources."
-  type        = string
-
-  validation {
-    condition     = can(regex("^[a-z]{2}-[a-z]+-[0-9]{1}$", var.aws_region))
-    error_message = "aws_region must be a valid AWS region name."
-  }
-}
-
-variable "aws_account_id" {
-  description = "Expected AWS account ID for the selected account alias."
-  type        = string
-
-  validation {
-    condition     = can(regex("^[0-9]{12}$", var.aws_account_id))
-    error_message = "aws_account_id must be a 12-digit AWS account ID."
-  }
-}
-
-variable "account_alias" {
-  description = "Target AWS account alias for the app state."
-  type        = string
-
-  validation {
-    condition     = contains(["stark-dev", "stark-prod"], var.account_alias)
-    error_message = "account_alias must be stark-dev or stark-prod for the app state."
-  }
-}
-
-variable "deployment_environment" {
-  description = "Deployment environment name carried in the state identity."
-  type        = string
-
-  validation {
-    condition     = contains(["develop", "main"], var.deployment_environment)
-    error_message = "deployment_environment must be develop or main for the app state."
-  }
-
-  validation {
-    condition = (
-      (var.account_alias == "stark-dev" && var.deployment_environment == "develop")
-      || (var.account_alias == "stark-prod" && var.deployment_environment == "main")
-    )
-    error_message = "app state identity must map develop to stark-dev or main to stark-prod."
-  }
-}
-
 variable "deployment_id" {
   description = "Opaque accepted application deployment generation stamped into target runtimes."
   type        = string
@@ -66,47 +18,10 @@ variable "app_source_sha" {
   }
 }
 
-variable "deploy_mode" {
-  description = "Saved-plan application deployment selection mode."
-  type        = string
 
-  validation {
-    condition     = contains(["normal", "rollback"], var.deploy_mode)
-    error_message = "deploy_mode must be normal or rollback."
-  }
-}
 
-variable "state_scope" {
-  description = "Terraform state scope. This app root supports app only."
-  type        = string
 
-  validation {
-    condition     = var.state_scope == "app"
-    error_message = "infra/terraform/app supports only the app state scope."
-  }
-}
 
-variable "project_name" {
-  description = "Project name used for identity checks and tags."
-  type        = string
-}
-
-variable "image_signature_verifier_permissions_boundary_arn" {
-  description = "Bootstrap-managed least-privilege permissions boundary required on the image-signature verifier execution role."
-  type        = string
-
-  validation {
-    condition = var.image_signature_verifier_permissions_boundary_arn == (
-      "arn:aws:iam::${var.aws_account_id}:policy/${var.project_name}-image-signature-verifier-boundary-${var.account_alias}-${var.deployment_environment}"
-    )
-    error_message = "image_signature_verifier_permissions_boundary_arn must identify the exact bootstrap-managed verifier execution boundary."
-  }
-}
-
-variable "state_backend_key" {
-  description = "Expected S3 backend key for this app state."
-  type        = string
-}
 
 variable "enable_dynamodb_deletion_protection" {
   description = "Whether development DynamoDB tables should enable deletion protection."
@@ -249,66 +164,7 @@ variable "vote_duplicate_detector_ttl_seconds" {
   }
 }
 
-variable "lambda_runtime" {
-  description = "Node.js Lambda runtime for target-owned packages."
-  type        = string
-  default     = "nodejs24.x"
 
-  validation {
-    condition     = contains(["nodejs24.x"], var.lambda_runtime)
-    error_message = "lambda_runtime must be nodejs24.x for the current target runtime."
-  }
-}
-
-variable "lambda_artifacts" {
-  description = "Immutable target-owned Lambda package artifacts produced by the app pipeline."
-  type = map(object({
-    s3_bucket             = string
-    s3_key                = string
-    s3_object_version     = string
-    source_code_hash      = string
-    asset_manifest_sha256 = optional(string)
-    trust_root_sha256     = optional(string)
-  }))
-
-  validation {
-    condition = toset(keys(var.lambda_artifacts)) == toset([
-      "public_api",
-      "finalization_writer",
-      "proof_dispatcher",
-      "verification_worker",
-      "image_signature_verifier",
-      "semaphore_janitor",
-    ])
-    error_message = "lambda_artifacts must contain exactly public_api, finalization_writer, proof_dispatcher, verification_worker, image_signature_verifier, and semaphore_janitor."
-  }
-
-  validation {
-    condition = alltrue([
-      for artifact in values(var.lambda_artifacts) :
-      can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", artifact.s3_bucket))
-      && !can(regex("\\.\\.", artifact.s3_bucket))
-      && trimspace(artifact.s3_key) != ""
-      && !startswith(artifact.s3_key, "/")
-      && trimspace(artifact.s3_object_version) != ""
-      && can(regex("^[A-Za-z0-9+/]{43}=$", artifact.source_code_hash))
-    ])
-    error_message = "Each lambda_artifacts entry must include a valid S3 bucket, nonempty S3 key, nonempty S3 object version, and base64 SHA-256 source_code_hash."
-  }
-
-  validation {
-    condition = alltrue([
-      for name, artifact in var.lambda_artifacts :
-      name == "image_signature_verifier"
-      ? (
-        can(regex("^[0-9a-f]{64}$", artifact.asset_manifest_sha256))
-        && can(regex("^[0-9a-f]{64}$", artifact.trust_root_sha256))
-      )
-      : artifact.asset_manifest_sha256 == null && artifact.trust_root_sha256 == null
-    ])
-    error_message = "Only image_signature_verifier may include asset_manifest_sha256 and trust_root_sha256, and both must be lowercase SHA-256 values."
-  }
-}
 
 variable "prover_max_concurrent_provers" {
   description = "Maximum number of target Fargate prover tasks admitted through the DynamoDB semaphore."
@@ -343,30 +199,7 @@ variable "verifier_service_bin_path" {
   }
 }
 
-variable "prover_image_uri" {
-  description = "Pinned target prover container image URI with digest."
-  type        = string
 
-  validation {
-    condition     = can(regex("^[0-9]{12}\\.dkr\\.ecr\\.[a-z]{2}-[a-z]+-[0-9]\\.amazonaws\\.com\\/[A-Za-z0-9._\\/-]+@sha256:[0-9a-f]{64}$", var.prover_image_uri))
-    error_message = "prover_image_uri must be a digest-pinned ECR URI."
-  }
-}
-
-variable "image_signature_preflight_prover_image_uri" {
-  description = "Optional digest-pinned Prover image used only by the isolated verifier preflight apply; routine full App plans leave this null."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition = (
-      var.image_signature_preflight_prover_image_uri == null
-      || can(regex("^[0-9]{12}\\.dkr\\.ecr\\.[a-z]{2}-[a-z]+-[0-9]\\.amazonaws\\.com\\/[A-Za-z0-9._\\/-]+@sha256:[0-9a-f]{64}$", var.image_signature_preflight_prover_image_uri))
-    )
-    error_message = "image_signature_preflight_prover_image_uri must be null or a digest-pinned ECR URI."
-  }
-}
 
 variable "expected_image_id" {
   description = "Expected zkVM ImageID for the target runtime."
@@ -413,6 +246,14 @@ variable "verifier_public_base_url" {
     )
     error_message = "verifier_public_base_url must be an https origin without path, query, or fragment."
   }
+
+  validation {
+    condition = (
+      var.deployment_environment != "main"
+      || lower(trimsuffix(var.verifier_public_base_url, "/")) == "https://${lower(var.public_hostname)}"
+    )
+    error_message = "Production verifier_public_base_url must match the configured public hostname."
+  }
 }
 
 variable "public_hostname_disposition" {
@@ -454,9 +295,21 @@ variable "cloudfront_acm_certificate_arn" {
   validation {
     condition = (
       var.cloudfront_acm_certificate_arn == null
-      || can(regex("^arn:aws:acm:us-east-1:[0-9]{12}:certificate/[A-Za-z0-9-]+$", var.cloudfront_acm_certificate_arn))
+      || can(regex("^arn:aws:acm:us-east-1:${var.aws_account_id}:certificate/[A-Za-z0-9-]+$", var.cloudfront_acm_certificate_arn))
     )
-    error_message = "cloudfront_acm_certificate_arn must be a us-east-1 ACM certificate ARN when set."
+    error_message = "cloudfront_acm_certificate_arn must be a same-account us-east-1 ACM certificate ARN when set."
+  }
+
+  validation {
+    condition = (
+      var.deployment_environment != "main"
+      || (
+        var.cloudfront_acm_certificate_arn != null
+        && contains(["external-dns-acm", "foundation-owned-dns-acm"], var.public_hostname_disposition)
+        && lower(var.public_hostname) != "develop.stark-ballot-sim.hwatanabe.dev"
+      )
+    )
+    error_message = "Production requires a custom public hostname disposition, explicit hostname, and same-account us-east-1 ACM certificate."
   }
 }
 

@@ -3,7 +3,7 @@ import {
   localRuntimeProfile,
   targetRuntimeProfile,
   targetRuntimeProfileEnv,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { resolveRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 const loggerMocks = vi.hoisted(() => ({

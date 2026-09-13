@@ -16,6 +16,7 @@ export type {
 } from './types';
 
 export { KNOWLEDGE_KEYS, HASH_FIELDS } from './types';
+export { knowledgeItemsFromData } from './items';
 
 export {
   PUBLIC_KNOWLEDGE_KEYS,

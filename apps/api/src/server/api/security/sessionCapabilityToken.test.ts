@@ -13,7 +13,8 @@ import {
 import {
   localRuntimeProfile,
   targetRuntimeProfile,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
+import { asCapabilityToken, asSessionId } from '@stark-ballot/domain/types/identifiers';
 
 const TEST_SECRET = 'test-session-capability-secret-0123456789abcdef';
 const RESOLVED_SESSION_SECRET = 'resolved-session-capability-secret-0123456789abcdef';
@@ -35,7 +36,7 @@ describe('sessionCapabilityToken', () => {
   it('creates and verifies a valid token', () => {
     const token = createSessionCapabilityToken(
       {
-        sessionId: 'session-123',
+        sessionId: asSessionId('session-123'),
         nowMs: 1_700_000_000_000,
         ttlSeconds: 300,
         nonce: 'abc123',
@@ -44,7 +45,7 @@ describe('sessionCapabilityToken', () => {
     );
 
     const result = verifySessionCapabilityToken(token, TEST_SECRET, {
-      sessionId: 'session-123',
+      sessionId: asSessionId('session-123'),
       nowMs: 1_700_000_100_000,
     });
 
@@ -58,7 +59,7 @@ describe('sessionCapabilityToken', () => {
   it('rejects token for a different session id', () => {
     const token = createSessionCapabilityToken(
       {
-        sessionId: 'session-a',
+        sessionId: asSessionId('session-a'),
         nowMs: 1_700_000_000_000,
         ttlSeconds: 60,
       },
@@ -66,7 +67,7 @@ describe('sessionCapabilityToken', () => {
     );
 
     const result = verifySessionCapabilityToken(token, TEST_SECRET, {
-      sessionId: 'session-b',
+      sessionId: asSessionId('session-b'),
       nowMs: 1_700_000_010_000,
     });
 
@@ -76,7 +77,7 @@ describe('sessionCapabilityToken', () => {
   it('rejects expired token', () => {
     const token = createSessionCapabilityToken(
       {
-        sessionId: 'session-expired',
+        sessionId: asSessionId('session-expired'),
         nowMs: 1_700_000_000_000,
         ttlSeconds: 30,
       },
@@ -84,7 +85,7 @@ describe('sessionCapabilityToken', () => {
     );
 
     const result = verifySessionCapabilityToken(token, TEST_SECRET, {
-      sessionId: 'session-expired',
+      sessionId: asSessionId('session-expired'),
       nowMs: 1_700_000_100_000,
     });
 
@@ -94,7 +95,7 @@ describe('sessionCapabilityToken', () => {
   it('treats token as expired when now equals exp', () => {
     const token = createSessionCapabilityToken(
       {
-        sessionId: 'session-exp-eq',
+        sessionId: asSessionId('session-exp-eq'),
         nowMs: 1_700_000_000_000,
         ttlSeconds: 30,
       },
@@ -102,7 +103,7 @@ describe('sessionCapabilityToken', () => {
     );
 
     const result = verifySessionCapabilityToken(token, TEST_SECRET, {
-      sessionId: 'session-exp-eq',
+      sessionId: asSessionId('session-exp-eq'),
       nowMs: 1_700_000_030_000,
     });
 
@@ -112,16 +113,16 @@ describe('sessionCapabilityToken', () => {
   it('rejects tampered token', () => {
     const token = createSessionCapabilityToken(
       {
-        sessionId: 'session-tampered',
+        sessionId: asSessionId('session-tampered'),
         nowMs: 1_700_000_000_000,
         ttlSeconds: 60,
       },
       TEST_SECRET,
     );
-    const tampered = `${token}a`;
+    const tampered = asCapabilityToken(`${token}a`);
 
     const result = verifySessionCapabilityToken(tampered, TEST_SECRET, {
-      sessionId: 'session-tampered',
+      sessionId: asSessionId('session-tampered'),
       nowMs: 1_700_000_010_000,
     });
 
@@ -314,7 +315,7 @@ describe('sessionCapabilityToken', () => {
   it('ignores non-integer ttl option when creating token', () => {
     const token = createSessionCapabilityToken(
       {
-        sessionId: 'session-non-int-ttl',
+        sessionId: asSessionId('session-non-int-ttl'),
         nowMs: 1_700_000_000_000,
         ttlSeconds: 0.5,
       },
@@ -322,7 +323,7 @@ describe('sessionCapabilityToken', () => {
     );
 
     const result = verifySessionCapabilityToken(token, TEST_SECRET, {
-      sessionId: 'session-non-int-ttl',
+      sessionId: asSessionId('session-non-int-ttl'),
       nowMs: 1_700_000_001_000,
     });
 

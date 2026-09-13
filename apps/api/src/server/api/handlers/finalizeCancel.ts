@@ -4,12 +4,16 @@ import {
   isAwsFinalizationRuntimeTransitionStore,
   type AwsFinalizationRuntimeMetadata,
 } from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
-import type { ApiHandlerArguments, ClientRateLimitedContext, SessionAdmittedContext } from '../context';
+import type {
+  ApiHandlerArguments,
+  ClientRateLimitedContext,
+  RouteBoundResponse,
+  SessionFinalizationAdmittedContext,
+} from '../context';
 import { cancelFinalizationRoute } from '@stark-ballot/api-contract/routes';
-import { errorResponse } from '../../http/response';
-import { ApiError, ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
+import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
 import { logger } from '@stark-ballot/diagnostics/logger';
-import { respondWithRoute } from '../utils/responseSchema';
+import { respondWithRoute, respondWithRouteError } from '../utils/responseSchema';
 import { projectFinalizationResourceForPublicResponse } from '../utils/finalizationStateProjection';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { emitCanonicalEvent } from '@stark-ballot/diagnostics/canonicalEvents';
@@ -31,14 +35,19 @@ function isCancellable(
   return state.status === 'pending' || state.status === 'running';
 }
 
-function buildErrorResponse(message: string, status: number): Response {
-  const error =
-    status === 404
-      ? ErrorCode.ASYNC_FINALIZATION_DISABLED
-      : status === 501
-        ? ErrorCode.CANCELLATION_UNSUPPORTED
-        : ErrorCode.FINALIZATION_NOT_CANCELLABLE;
-  return errorResponse(new ApiError(error, status, message));
+function buildErrorResponse(message: string, status: 404 | 409): RouteBoundResponse<typeof cancelFinalizationRoute> {
+  if (status === 404) {
+    return respondWithRouteError(cancelFinalizationRoute, {
+      code: ErrorCode.ASYNC_FINALIZATION_DISABLED,
+      status,
+      message,
+    });
+  }
+  return respondWithRouteError(cancelFinalizationRoute, {
+    code: ErrorCode.FINALIZATION_NOT_CANCELLABLE,
+    status,
+    message,
+  });
 }
 
 async function tryStopExecution(
@@ -64,7 +73,7 @@ async function tryStopExecution(
 /**
  * Cancel an in-flight async finalization.
  */
-type CancelFinalizationContext = SessionAdmittedContext &
+type CancelFinalizationContext = SessionFinalizationAdmittedContext &
   ClientRateLimitedContext & {
     finalizationDependencies: Pick<FinalizationDependencies, 'stopFinalizationExecution'>;
   };
@@ -72,9 +81,10 @@ type CancelFinalizationContext = SessionAdmittedContext &
 export async function cancelFinalizationHandler({
   input,
   context,
-}: ApiHandlerArguments<typeof cancelFinalizationRoute, CancelFinalizationContext>): Promise<Response> {
-  const { sessionId: sessionIdResult, session, store, runtimeProfile } = context;
-  const { finalizationId } = input.params;
+}: ApiHandlerArguments<typeof cancelFinalizationRoute, CancelFinalizationContext>): Promise<
+  RouteBoundResponse<typeof cancelFinalizationRoute>
+> {
+  const { sessionId: sessionIdResult, finalizationId, session, store, runtimeProfile } = context;
   const { reason } = input.body;
   const dependencies = context.finalizationDependencies;
 

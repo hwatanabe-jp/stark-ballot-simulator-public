@@ -1,7 +1,6 @@
 import {
   clearPublicRuntimeEnvForTests,
   readPublicRuntimeEnv,
-  readPublicRuntimeFlag,
   setPublicRuntimeEnvForTests,
   type BrowserPublicEnvKey,
   type PublicRuntimeEnvKey,
@@ -19,8 +18,4 @@ export function clearBrowserPublicEnvForTests(): void {
 
 export function readBrowserPublicEnv(key: BrowserPublicEnvKey): string | undefined {
   return readPublicRuntimeEnv(key);
-}
-
-export function readBrowserPublicFlag(key: BrowserPublicEnvKey): boolean {
-  return readPublicRuntimeFlag(key);
 }

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 import { RuntimeConfigValidationError } from '@stark-ballot/runtime-config/env/configValidationError';
-import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { REPLACED_RUNTIME_SELECTOR_NAMES } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 const ddbSendMock = vi.hoisted(() => vi.fn());
@@ -105,7 +105,6 @@ vi.mock('@stark-ballot/runtime-config/env/validate', () => ({
 }));
 
 vi.mock('@stark-ballot/runtime-config/env/observability', () => ({
-  collectInvalidTargetObservabilityEnvNames: vi.fn(() => []),
   validateTargetObservabilityEnv: vi.fn(),
 }));
 

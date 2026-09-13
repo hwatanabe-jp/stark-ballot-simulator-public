@@ -1,7 +1,7 @@
 import type { VerificationStepId, VerificationStepStatus } from './step-types';
 import { evaluateVerificationCheckResults } from '@stark-ballot/verification/check-results';
 import { deriveStepStatusFromChecks } from '@stark-ballot/verification/stage-status';
-import type { VerificationContext, VerificationStatus, CheckResult } from '@stark-ballot/verification/engine-types';
+import type { CheckResult, VerificationEvaluationInput } from '@stark-ballot/verification/engine-types';
 import {
   getVerificationRequiredCheckIdsForStep,
   getVerificationStepInputs,
@@ -18,13 +18,42 @@ export interface VerificationStep {
   error?: string;
 }
 
-export interface BuildVerificationStepsInput extends VerificationContext {
-  verificationStatus?: VerificationStatus;
-  verificationReportStatus?: VerificationStatus;
-  allowDevModeVerification?: boolean;
-  castSource?: CastSource;
-  checkResults?: Map<VerificationCheckId, CheckResult>;
+export const VERIFICATION_STEP_IDS = [
+  'cast_as_intended',
+  'recorded_as_cast',
+  'counted_as_recorded',
+  'stark_verification',
+] as const satisfies readonly VerificationStepId[];
+
+export function hasCanonicalVerificationSteps(
+  steps: readonly {
+    readonly id: VerificationStepId;
+    readonly status: VerificationStepStatus;
+    readonly inputs: readonly string[];
+    readonly error?: string | undefined;
+  }[],
+): boolean {
+  if (steps.length !== VERIFICATION_STEP_IDS.length) {
+    return false;
+  }
+  return VERIFICATION_STEP_IDS.every((id, index) => {
+    const step = steps[index];
+    const expectedInputs = getVerificationStepInputs(id);
+    return (
+      step !== undefined &&
+      step.id === id &&
+      step.inputs.length === expectedInputs.length &&
+      step.inputs.every((input, inputIndex) => input === expectedInputs[inputIndex]) &&
+      (step.error === undefined || (step.status === 'failed' && step.error.trim().length > 0))
+    );
+  });
 }
+
+export type BuildVerificationStepsInput = VerificationEvaluationInput &
+  Readonly<{
+    castSource?: CastSource;
+    checkResults?: Map<VerificationCheckId, CheckResult>;
+  }>;
 
 /**
  * Build the four-step summary for a verification resource.

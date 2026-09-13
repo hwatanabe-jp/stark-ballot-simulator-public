@@ -5,7 +5,13 @@
 
 import { randomBytes, randomUUID } from 'crypto';
 import { createHash } from 'crypto';
-import type { CurrentZkVMJournal, ZkVMInput, VoteWithProof, ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
+import type {
+  CurrentZkVMJournal,
+  VerifiedTally,
+  VoteWithProof,
+  ZkVMInput,
+  ZkVMJournal,
+} from '@stark-ballot/zkvm-contract/zkvm/types';
 import {
   CURRENT_METHOD_VERSION,
   asUnixTimestampMillis,
@@ -35,7 +41,7 @@ type TestJournalCountInput = Partial<
   >
 >;
 
-export type NormalizedTestJournalCounts = Pick<
+type NormalizedTestJournalCounts = Pick<
   ZkVMJournal,
   | 'totalVotes'
   | 'validVotes'
@@ -54,7 +60,7 @@ function selectNumber(...values: Array<number | undefined>): number | undefined 
 /**
  * Normalize current-contract count fields for tests.
  */
-export function normalizeTestJournalCounts(
+function normalizeTestJournalCounts(
   overrides: TestJournalCountInput,
   base: TestJournalCountInput = {},
 ): NormalizedTestJournalCounts {
@@ -361,6 +367,7 @@ export function createTestJournal(options?: {
     asUnixTimestampMillis(sthParams.timestamp),
     bulletinRoot,
   );
+  const includedBitmapRoot = generateRandomBytes32();
 
   const journal: CurrentZkVMJournal = {
     electionId,
@@ -379,8 +386,8 @@ export function createTestJournal(options?: {
     missingSlots: normalizedCounts.missingSlots,
     invalidPresentedSlots: normalizedCounts.invalidPresentedSlots,
     rejectedRecords: normalizedCounts.rejectedRecords,
-    seenBitmapRoot: generateRandomBytes32(),
-    includedBitmapRoot: generateRandomBytes32(),
+    seenBitmapRoot: normalizedCounts.invalidPresentedSlots === 0 ? includedBitmapRoot : generateRandomBytes32(),
+    includedBitmapRoot,
     ...omitUndefinedProperties({ excludedSlots: normalizedCounts.excludedSlots }),
     inputCommitment: generateRandomBytes32(),
     methodVersion: CURRENT_METHOD_VERSION,
@@ -392,8 +399,8 @@ export function createTestJournal(options?: {
 /**
  * Generate realistic vote tally distribution
  */
-function generateRealisticTally(totalVotes: number): number[] {
-  const tally = [0, 0, 0, 0, 0];
+function generateRealisticTally(totalVotes: number): VerifiedTally {
+  const tally: VerifiedTally = [0, 0, 0, 0, 0];
 
   // Distribute votes somewhat randomly but realistically
   for (let i = 0; i < totalVotes; i++) {

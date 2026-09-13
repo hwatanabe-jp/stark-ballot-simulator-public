@@ -7,11 +7,11 @@ import {
   getVerificationRequiredCheckIdsForStep,
   type VerificationCheckId,
 } from '@stark-ballot/verification/checks';
-import { CHECK_EVALUATORS, evaluateAllChecks } from './evaluate-checks';
+import { admitVerifierOutcome, CHECK_EVALUATORS, evaluateAllChecks } from './evaluate-checks';
 import { deriveStepStatusFromChecks } from './derive-stages';
 import { buildVerificationSteps } from '../build-verification-steps';
 import type { BuildVerificationStepsInput } from '../build-verification-steps';
-import type { CheckResult, VerificationContext } from './types';
+import type { CheckResult, VerificationEvaluationInput } from './types';
 import type { BitmapProofResponse } from '../bitmap-proof-types';
 
 vi.mock('@stark-ballot/verification/merkle', () => ({
@@ -25,7 +25,7 @@ vi.mock('@stark-ballot/verification/bitmap-verifier', () => ({
 
 import { verifyCTMerkleInclusion } from '@stark-ballot/verification/merkle';
 import { verifyMyVoteWasCounted } from '@stark-ballot/verification/bitmap-verifier';
-import { createTestJournal } from '../__tests__/test-helpers';
+import { createTestJournal } from '../test-support/test-helpers';
 
 const createJournal = (overrides: Partial<ZkVMJournal> = {}): ZkVMJournal => ({
   ...createTestJournal({
@@ -62,7 +62,7 @@ const bitmapProof: BitmapProofResponse = {
   auditPath: [],
 };
 
-const createStepGuardContext = (stepId: VerificationStepId): VerificationContext => {
+const createStepGuardContext = (stepId: VerificationStepId): VerificationEvaluationInput => {
   switch (stepId) {
     case 'cast_as_intended':
       return {};
@@ -134,8 +134,7 @@ describe('verification engine contracts', () => {
       missingSlots: 0,
       invalidPresentedSlots: 0,
       excludedSlots: 0,
-      verificationStatus: 'success',
-      verificationReportStatus: 'success',
+      verifierOutcome: { status: 'success' },
       allowDevModeVerification: true,
       bitmapProofSource: 'mock',
       includedBitmapProof: { kind: 'admitted', value: bitmapProof },
@@ -200,4 +199,82 @@ describe('verification engine contracts', () => {
       }
     },
   );
+});
+
+describe('verifier outcome admission', () => {
+  it.each([
+    [{}, 'not_run', 'none'],
+    [{ verificationStatus: 'running' }, 'running', 'none'],
+    [{ verificationStatus: 'success' }, 'success', 'none'],
+    [{ verificationReportStatus: 'success' }, 'success', 'none'],
+    [
+      {
+        verificationReport: { status: 'dev_mode', dev_mode_receipt: true },
+      },
+      'dev_mode',
+      'none',
+    ],
+    [
+      {
+        verificationStatus: 'failed',
+        failureCategory: 'timeout',
+      },
+      'failed',
+      'timeout',
+    ],
+    [{ verificationStatus: 'failed' }, 'failed', 'unknown'],
+  ] as const)('admits intentional status-only and terminal modes: %o', (candidate, status, failureCategory) => {
+    expect(admitVerifierOutcome(candidate)).toMatchObject({ status, failureCategory });
+  });
+
+  it('keeps comparison-only synthetic report evidence without inventing a report status', () => {
+    const report = {
+      expected_image_id: `0x${'1'.repeat(64)}`,
+      receipt_image_id: `0x${'2'.repeat(64)}`,
+    };
+
+    expect(
+      admitVerifierOutcome({
+        verificationStatus: 'success',
+        verificationReport: report,
+      }),
+    ).toEqual({
+      status: 'success',
+      failureCategory: 'none',
+      report,
+    });
+  });
+
+  it.each([
+    {
+      verificationStatus: 'running',
+      verificationReportStatus: 'success',
+    },
+    {
+      verificationStatus: 'success',
+      verificationReportStatus: 'failed',
+    },
+    {
+      verificationStatus: 'success',
+      verificationReport: { status: 'failed', dev_mode_receipt: false },
+    },
+    {
+      verificationStatus: 'running',
+      verificationReport: { status: 'success', dev_mode_receipt: false },
+    },
+    {
+      verificationStatus: 'success',
+      failureCategory: 'verifier_crash',
+    },
+    {
+      verificationStatus: 'failed',
+      failureCategory: 'none',
+    },
+    {
+      verificationStatus: 'success',
+      verificationReport: { status: 'success', dev_mode_receipt: true },
+    },
+  ])('rejects contradictory candidate %o', (candidate) => {
+    expect(admitVerifierOutcome(candidate)).toBeUndefined();
+  });
 });

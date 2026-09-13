@@ -2,11 +2,6 @@
   "name": "@stark-ballot/domain",
   "private": true,
   "type": "module",
-  "scripts": {
-    "lint": "pnpm --dir ../.. exec eslint packages/domain",
-    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/domain",
-    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
-  },
   "exports": {
     ".": "./src/index.ts",
     "./bot/*": "./src/lib/bot/*",
@@ -22,8 +17,12 @@
     "./utils/hex": "./src/lib/utils/hex.ts",
     "./vote/*": "./src/lib/vote/*"
   },
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec oxlint packages/domain",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/domain",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
   "dependencies": {
-    "@noble/hashes": "catalog:crypto-testing",
     "@stark-ballot/crypto-primitives": "workspace:*",
     "@stark-ballot/merkle": "workspace:*",
     "@stark-ballot/validation": "workspace:*"

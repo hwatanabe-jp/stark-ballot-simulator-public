@@ -1,3 +1,6 @@
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
+
 export interface AwsVerificationDeliveryMetadataInput {
   s3BundleKey?: string;
   s3ReportKey?: string;
@@ -7,19 +10,19 @@ export interface AwsVerificationDeliveryMetadataInput {
 
 export interface AwsFinalizationDeliveryMetadataStore {
   getAwsVerificationDeliveryMetadata(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
   ): Promise<AwsVerificationDeliveryMetadataInput | undefined>;
 
   recordAwsProofBundlePublication(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
     metadata: AwsVerificationDeliveryMetadataInput,
   ): Promise<void>;
 
   recordAwsVerificationDeliveryMetadata(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
     metadata: AwsVerificationDeliveryMetadataInput,
   ): Promise<void>;
 }
@@ -35,22 +38,15 @@ export class InMemoryAwsVerificationDeliveryMetadataStore {
     return cloned;
   }
 
-  record(sessionId: string, finalizationId: string, metadata: AwsVerificationDeliveryMetadataInput): void {
+  record(sessionId: SessionId, finalizationId: FinalizationId, metadata: AwsVerificationDeliveryMetadataInput): void {
     this.records.set(buildDeliveryMetadataKey(sessionId, finalizationId), metadata);
   }
 
-  take(sessionId: string, finalizationId: string): AwsVerificationDeliveryMetadataInput | undefined {
-    const key = buildDeliveryMetadataKey(sessionId, finalizationId);
-    const metadata = this.records.get(key);
-    this.records.delete(key);
-    return metadata;
-  }
-
-  get(sessionId: string, finalizationId: string): AwsVerificationDeliveryMetadataInput | undefined {
+  get(sessionId: SessionId, finalizationId: FinalizationId): AwsVerificationDeliveryMetadataInput | undefined {
     return this.records.get(buildDeliveryMetadataKey(sessionId, finalizationId));
   }
 
-  deleteSession(sessionId: string): void {
+  deleteSession(sessionId: SessionId): void {
     const prefix = `${sessionId}:`;
     for (const key of this.records.keys()) {
       if (key.startsWith(prefix)) {
@@ -60,6 +56,6 @@ export class InMemoryAwsVerificationDeliveryMetadataStore {
   }
 }
 
-function buildDeliveryMetadataKey(sessionId: string, finalizationId: string): string {
+function buildDeliveryMetadataKey(sessionId: SessionId, finalizationId: FinalizationId): string {
   return `${sessionId}:${finalizationId}`;
 }

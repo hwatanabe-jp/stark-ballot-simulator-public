@@ -1,6 +1,7 @@
 import type { KnowledgeData, KnowledgeItem, KnowledgePhase, KnowledgeUpdateListener } from './types';
-import { KNOWLEDGE_KEYS } from './types';
-import { normalizeKnowledgeData, getPhaseForKey } from './normalizer';
+import { BOT_KNOWLEDGE_KEYS, KNOWLEDGE_KEYS } from './types';
+import { knowledgeItemsFromData } from './items';
+import { normalizeKnowledgeData, getPhaseForKey, type KnowledgeCandidate } from './normalizer';
 import { toCanonicalRfc6962Proof } from '@stark-ballot/merkle/rfc6962-proof';
 import { isValidHexString } from '@stark-ballot/crypto-primitives';
 import { getSessionData, isSessionReplaced } from '@stark-ballot/web/session';
@@ -264,7 +265,7 @@ function isCurrentKnowledgeData(value: Record<string, unknown>): value is Record
   return true;
 }
 
-function getSessionIdFromKnowledge(data: KnowledgeDataPatch | null | undefined): string | null {
+function getSessionIdFromKnowledge(data: KnowledgeCandidate | null | undefined): string | null {
   const sessionId = data?.sessionId;
   if (typeof sessionId !== 'string' || sessionId.length === 0) {
     return null;
@@ -314,7 +315,7 @@ function readStoredKnowledgeSnapshot(): StoredKnowledgeSnapshot {
 
 function resolveKnowledgeBase(
   existing: Partial<KnowledgeData>,
-  incoming: KnowledgeDataPatch,
+  incoming: KnowledgeCandidate,
   expectedSessionId?: string,
 ): { base: Partial<KnowledgeData>; boundSessionId: string | null; rejected: boolean } {
   const existingSessionId = getSessionIdFromKnowledge(existing);
@@ -354,12 +355,15 @@ function safeParseKnowledge(): KnowledgeData | null {
     return null;
   }
 
-  const snapshot = readStoredKnowledgeSnapshot();
-  if (snapshot.kind === 'missing') {
-    return null;
-  }
   if (isSessionReplaced()) {
     itemTimestamps.clear();
+    return null;
+  }
+  // Session admission can remove knowledge when the session is invalid or
+  // expired. Read its snapshot only after that cleanup has finished.
+  const activeSessionId = getActiveSessionId();
+  const snapshot = readStoredKnowledgeSnapshot();
+  if (snapshot.kind === 'missing') {
     return null;
   }
   if (snapshot.kind === 'corrupt') {
@@ -368,7 +372,6 @@ function safeParseKnowledge(): KnowledgeData | null {
   }
 
   const knowledgeData = snapshot.data;
-  const activeSessionId = getActiveSessionId();
   const storedSessionId = getSessionIdFromKnowledge(knowledgeData);
 
   if (activeSessionId && !storedSessionId) {
@@ -398,7 +401,7 @@ function writeKnowledgeData(data: KnowledgeData): void {
 /**
  * Notify all listeners of knowledge updates
  */
-function notifyListeners(items: KnowledgeItem[], phase: KnowledgePhase): void {
+function notifyListeners(items: readonly KnowledgeItem[], phase: KnowledgePhase): void {
   for (const listener of listeners) {
     try {
       listener(items, phase);
@@ -429,46 +432,40 @@ export function getKnowledgeValue<K extends keyof KnowledgeData>(key: K): Knowle
 /**
  * Save partial knowledge data (merge with existing)
  */
-export function saveKnowledgeData(data: KnowledgeDataPatch, options?: MergeKnowledgeOptions): KnowledgeItem[] {
+export function saveKnowledgeData(data: KnowledgeDataPatch, options?: MergeKnowledgeOptions): readonly KnowledgeItem[] {
+  return saveKnowledgeCandidate(data, options);
+}
+
+function saveKnowledgeCandidate(data: KnowledgeCandidate, options?: MergeKnowledgeOptions): readonly KnowledgeItem[] {
   const existing = safeParseKnowledge() ?? {};
   const { base, boundSessionId, rejected } = resolveKnowledgeBase(existing, data, options?.expectedSessionId);
   if (rejected) {
     return [];
   }
-  const payload: KnowledgeDataPatch =
+  const payload: KnowledgeCandidate =
     boundSessionId && !getSessionIdFromKnowledge(data) ? { sessionId: boundSessionId, ...data } : data;
   const now = Date.now();
-  const newItems: KnowledgeItem[] = [];
   const candidate: Record<string, unknown> = { ...base };
+  const changedKeys: string[] = [];
 
-  const entries = Object.entries(payload) as Array<
-    [keyof KnowledgeData, KnowledgeData[keyof KnowledgeData] | undefined]
-  >;
-
-  for (const [key, value] of entries) {
-    if (value === undefined) {
-      continue;
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined) continue;
+    if (JSON.stringify(candidate[key]) !== JSON.stringify(value)) {
+      changedKeys.push(key);
     }
-    const existingValue = candidate[key];
-
-    // Check if this is a new or updated value
-    const isNewOrUpdated = JSON.stringify(existingValue) !== JSON.stringify(value);
-
-    if (isNewOrUpdated) {
-      newItems.push({
-        key,
-        value,
-        isNew: true,
-        addedAt: now,
-      });
-    }
-
     candidate[key] = value;
   }
 
   if (!isCurrentKnowledgeData(candidate)) {
     return [];
   }
+
+  // Construct typed notification items only after admitting the complete state.
+  const newItems = knowledgeItemsFromData(
+    candidate,
+    () => ({ isNew: true, addedAt: now }),
+    changedKeys.filter((key): key is keyof KnowledgeData => KNOWLEDGE_KEY_SET.has(key)),
+  );
 
   for (const item of newItems) {
     itemTimestamps.set(item.key, now);
@@ -490,27 +487,26 @@ export function saveKnowledgeData(data: KnowledgeDataPatch, options?: MergeKnowl
  * Applies normalization rules before storing
  */
 function omitKnowledgeKeys(
-  data: Partial<KnowledgeData>,
+  data: KnowledgeCandidate,
   omitKeys: ReadonlyArray<keyof KnowledgeData> | undefined,
-): Partial<KnowledgeData> {
+): KnowledgeCandidate {
   if (!omitKeys || omitKeys.length === 0) {
     return data;
   }
-  const filtered: Partial<KnowledgeData> = { ...data };
+  const filtered: KnowledgeCandidate = { ...data };
   for (const key of omitKeys) {
-    delete (filtered as Record<string, unknown>)[key];
+    delete filtered[key];
   }
   return filtered;
 }
 
 export function mergeKnowledgeFromApi(
-  _phase: KnowledgePhase,
   apiData: Record<string, unknown>,
   options?: MergeKnowledgeOptions,
-): KnowledgeItem[] {
+): readonly KnowledgeItem[] {
   const normalized = normalizeKnowledgeData(apiData);
   const filtered = omitKnowledgeKeys(normalized, options?.omitKeys);
-  return saveKnowledgeData(filtered, options);
+  return saveKnowledgeCandidate(filtered, options);
 }
 
 /**
@@ -518,29 +514,17 @@ export function mergeKnowledgeFromApi(
  */
 export function clearBotKnowledge(): void {
   const existing = safeParseKnowledge();
-  if (!existing) {
+  if (!existing || !BOT_KNOWLEDGE_KEYS.some((key) => key in existing)) {
     return;
   }
 
-  const botKeys: (keyof KnowledgeData)[] = [
-    'bot.id',
-    'bot.choice',
-    'bot.random',
-    'bot.commitment',
-    'bot.voteId',
-    'bot.bulletinIndex',
-    'bot.bulletinRootAtCast',
-    'bot.voteTimestamp',
-    'bot.merklePath',
-    'bot.verification.steps',
-  ];
-
-  for (const key of botKeys) {
+  for (const key of BOT_KNOWLEDGE_KEYS) {
     delete (existing as Record<string, unknown>)[key];
     itemTimestamps.delete(key);
   }
 
   writeKnowledgeData(existing);
+  notifyListeners([], 'verify');
 }
 
 /**
@@ -552,6 +536,7 @@ export function clearKnowledge(): void {
   }
 
   clearKnowledgeStorageSnapshot();
+  notifyListeners([], 'session');
 }
 
 export function clearKnowledgeForSession(expectedSessionId: string | null | undefined): void {
@@ -573,6 +558,7 @@ export function clearKnowledgeForSession(expectedSessionId: string | null | unde
   const storedSessionId = getSessionIdFromKnowledge(snapshot.data);
   if (!storedSessionId || storedSessionId === expectedSessionId) {
     clearKnowledgeStorageSnapshot();
+    notifyListeners([], 'session');
   }
 }
 
@@ -591,33 +577,18 @@ export function subscribeToKnowledge(listener: KnowledgeUpdateListener): () => v
 /**
  * Get all knowledge items for display
  */
-export function getKnowledgeItems(): KnowledgeItem[] {
+export function getKnowledgeItems(): readonly KnowledgeItem[] {
   const data = safeParseKnowledge();
   if (!data) {
     return [];
   }
 
   const now = Date.now();
-  const items: KnowledgeItem[] = [];
-
-  for (const [key, value] of Object.entries(data)) {
-    if (value === undefined || value === null) {
-      continue;
-    }
-
-    const typedKey = key as keyof KnowledgeData;
-    const addedAt = itemTimestamps.get(typedKey) ?? 0;
+  return knowledgeItemsFromData(data, (key) => {
+    const addedAt = itemTimestamps.get(key) ?? 0;
     const isNew = now - addedAt < NEW_ITEM_THRESHOLD_MS;
-
-    items.push({
-      key: typedKey,
-      value,
-      isNew,
-      addedAt,
-    });
-  }
-
-  return items;
+    return { isNew, addedAt };
+  });
 }
 
 /**

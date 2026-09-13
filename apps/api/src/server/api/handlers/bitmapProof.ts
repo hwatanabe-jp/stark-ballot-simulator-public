@@ -24,6 +24,7 @@ import { asBitmapBitIndex, type BitmapBitIndex } from '@stark-ballot/verificatio
 // Cache configuration
 const CACHE_MAX_AGE = 86400; // 24 hours (bitmap is immutable after finalization)
 const CACHE_STALE_WHILE_REVALIDATE = 3600; // 1 hour
+type HeadersInput = NonNullable<ConstructorParameters<typeof Headers>[0]>;
 
 export interface BitmapProofData {
   includedBitmap: boolean[];
@@ -68,7 +69,7 @@ function generateETag(data: BitmapProofResponse): string {
  * Create cache headers for bitmap proof
  * Bitmap data is immutable after finalization, so can be cached aggressively
  */
-function getCacheHeaders(etag: string): HeadersInit {
+function getCacheHeaders(etag: string): HeadersInput {
   return {
     ETag: etag,
     'Content-Type': 'application/json',

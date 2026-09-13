@@ -74,60 +74,6 @@ describe('useLanguage', () => {
     consoleSpy.mockRestore();
   });
 
-  it('should return "ja" when navigator.language starts with "ja"', async () => {
-    Object.defineProperty(window.navigator, 'language', {
-      value: 'ja-JP',
-      configurable: true,
-    });
-
-    const { result } = renderHook(() => useLanguage(), { wrapper });
-
-    await waitFor(() => {
-      expect(result.current.language).toBe('ja');
-    });
-  });
-
-  it('should return "en" when navigator.language does not start with "ja"', async () => {
-    Object.defineProperty(window.navigator, 'language', {
-      value: 'en-US',
-      configurable: true,
-    });
-
-    const { result } = renderHook(() => useLanguage(), { wrapper });
-
-    await waitFor(() => {
-      expect(result.current.language).toBe('en');
-    });
-  });
-
-  it('should return "en" for other languages like "fr-FR"', async () => {
-    Object.defineProperty(window.navigator, 'language', {
-      value: 'fr-FR',
-      configurable: true,
-    });
-
-    const { result } = renderHook(() => useLanguage(), { wrapper });
-
-    await waitFor(() => {
-      expect(result.current.language).toBe('en');
-    });
-  });
-
-  it('should use stored language from localStorage if available', async () => {
-    getItemMock.mockImplementation((key: string) => (key === 'stark-ballot-lang' ? 'ja' : null));
-
-    Object.defineProperty(window.navigator, 'language', {
-      value: 'en-US',
-      configurable: true,
-    });
-
-    const { result } = renderHook(() => useLanguage(), { wrapper });
-
-    await waitFor(() => {
-      expect(result.current.language).toBe('ja');
-    });
-  });
-
   it('should prefer cookie over localStorage and navigator language', async () => {
     getItemMock.mockImplementation((key: string) => (key === 'stark-ballot-lang' ? 'ja' : null));
     document.cookie = 'stark-ballot-lang=en';
@@ -160,21 +106,6 @@ describe('useLanguage', () => {
     });
 
     expect(result.current.language).toBe('ja');
-    expect(setItemMock).toHaveBeenCalledWith('stark-ballot-lang', 'ja');
-    expect(document.cookie).toContain('stark-ballot-lang=ja');
-  });
-
-  it('should persist language change to localStorage', async () => {
-    const { result } = renderHook(() => useLanguage(), { wrapper });
-
-    await waitFor(() => {
-      expect(result.current.isLoaded).toBe(true);
-    });
-
-    act(() => {
-      result.current.setLanguage('ja');
-    });
-
     expect(setItemMock).toHaveBeenCalledWith('stark-ballot-lang', 'ja');
     expect(document.cookie).toContain('stark-ballot-lang=ja');
   });

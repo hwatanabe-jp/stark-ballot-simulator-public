@@ -11,8 +11,9 @@ import type {
   StoredVoteRecord,
 } from '@stark-ballot/domain/types/sessionRecords';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
-import { ApplicationErrorCode } from '@stark-ballot/application/finalize/finalization-types';
-import { createMockVoteStore, type MockVoteStore } from '../__tests__/support/mockVoteStore';
+import { ApplicationErrorCode } from '@stark-ballot/application';
+import { createMockVoteStore, type MockVoteStore } from '../test-support/mockVoteStore';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 
 const buildZkVMInputFromSessionMock = vi.hoisted(() => vi.fn());
 
@@ -45,7 +46,7 @@ function createSession(votes = new Map<number, StoredVoteRecord>()): {
   identity: SessionIdentityRecord;
   voting: SessionVotingRecord;
 } {
-  const sessionId = '11111111-1111-4111-8111-111111111111';
+  const sessionId = asSessionId('11111111-1111-4111-8111-111111111111');
   return {
     identity: {
       sessionId,
@@ -70,7 +71,7 @@ function createSession(votes = new Map<number, StoredVoteRecord>()): {
 function createInMemoryStore() {
   const store = createMockVoteStore();
   const applyQueued = store.markFinalizationQueued.bind(store);
-  const markFinalizationQueued = vi.fn((sessionId: string, payload: MarkQueuedPayload) =>
+  const markFinalizationQueued = vi.fn((sessionId: SessionId, payload: MarkQueuedPayload) =>
     applyQueued(sessionId, payload),
   );
   store.markFinalizationQueued = markFinalizationQueued;

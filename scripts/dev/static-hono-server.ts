@@ -5,6 +5,7 @@ import { Readable } from 'node:stream';
 import { createHonoApp, type ApiRouteMode } from '@stark-ballot/api/server';
 import { configureLogger, logger, parseLogFormat, parseLogLevel } from '@stark-ballot/diagnostics/logger';
 import { resolveRuntimeProfile, type ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
+import { shutdownHostProcesses } from '@stark-ballot/node-adapters/zkvm/executor';
 
 const DEFAULT_PORT = 3000;
 const DIST_DIR = resolve(process.cwd(), 'dist');
@@ -150,9 +151,39 @@ export function createStaticHonoServer(
   });
 }
 
+/** Install once at the executable boundary; imported test servers own their own lifetime. */
+export function installStaticServerShutdown(server: Server): void {
+  let shutdown: Promise<void> | undefined;
+  function onSignal(signal: 'SIGTERM' | 'SIGINT'): void {
+    shutdown ??= (async () => {
+      const closed = new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+      try {
+        const executions = await shutdownHostProcesses();
+        const cleanupComplete = executions.every((execution) => execution.cleanup === 'complete');
+        if (!cleanupComplete) {
+          logger.error('Static server host cleanup is unconfirmed', { event: 'static_server_cleanup_unconfirmed' });
+        }
+        process.exitCode = cleanupComplete ? (signal === 'SIGINT' ? 130 : 143) : 1;
+      } catch {
+        logger.error('Static server host shutdown failed', { event: 'static_server_shutdown_failed' });
+        process.exitCode = 1;
+      } finally {
+        server.closeAllConnections();
+        await closed;
+      }
+      // Let in-flight executor finally blocks finish their asynchronous artifact cleanup.
+      // Setting the exit code keeps that cleanup alive after all server sockets close.
+    })();
+  }
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+  process.on('SIGINT', () => onSignal('SIGINT'));
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = getPort();
-  createStaticHonoServer().listen(port, () => {
+  const server = createStaticHonoServer();
+  installStaticServerShutdown(server);
+  server.listen(port, () => {
     logger.info('Static Hono server started', {
       event: 'static_server_started',
       port,

@@ -12,10 +12,13 @@ import type {
   FinalizationState,
 } from '@stark-ballot/application/finalize/finalization-types';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
 
-const SESSION_ID = 'session-policy-current';
-const FINALIZATION_ID = 'exec-policy-current';
-const OTHER_FINALIZATION_ID = 'exec-policy-other';
+const SESSION_ID = asSessionId('session-policy-current');
+const FINALIZATION_ID = asFinalizationId('exec-policy-current');
+const OTHER_FINALIZATION_ID = asFinalizationId('exec-policy-other');
 const QUEUED_AT_MS = 1_700_000_000_000;
 const STARTED_AT_MS = QUEUED_AT_MS + 1_000;
 const TERMINAL_AT_MS = STARTED_AT_MS + 1_000;
@@ -369,7 +372,7 @@ describe('evaluateFinalizationTransition command admission', () => {
     expect(
       evaluateFinalizationTransition({
         authority: createAuthority(null),
-        command: createCommand('queue', finalizationId),
+        command: createCommand('queue', finalizationId as FinalizationId),
         evaluatedAtMs: EVALUATED_AT_MS,
       }),
     ).toEqual({ kind: 'invalid', state: null, reason: 'invalid_finalization_id' });

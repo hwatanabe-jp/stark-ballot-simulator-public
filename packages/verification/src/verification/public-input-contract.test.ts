@@ -4,7 +4,11 @@ import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { getDefaultElectionConfigHash } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import {
   buildPublicInputArtifactFromZkvmInput,
+  buildSupportedPublicInputArtifactFromZkvmInput,
   parsePublicInputArtifact,
+  parseStoredPublicInputArtifact,
+  parseSupportedPublicInputArtifact,
+  toSupportedPublicInputArtifact,
 } from '@stark-ballot/verification/public-input';
 
 const baseInput: ZkVMInput = {
@@ -27,6 +31,37 @@ const baseInput: ZkVMInput = {
 };
 
 describe('public-input contract', () => {
+  it('gives generated artifacts a source that survives the stored representation', () => {
+    const artifact = buildSupportedPublicInputArtifactFromZkvmInput(baseInput, CURRENT_METHOD_VERSION);
+    const persisted: unknown = JSON.parse(JSON.stringify(artifact));
+
+    expect(artifact.provenance).toEqual({ source: 'generated' });
+    expect(parseStoredPublicInputArtifact(persisted)).toEqual(artifact);
+  });
+
+  it('preserves bundle provenance when admitting and storing an external artifact', () => {
+    const artifact = parseSupportedPublicInputArtifact(
+      buildPublicInputArtifactFromZkvmInput(baseInput, CURRENT_METHOD_VERSION),
+      { source: 'bundle', finalizationId: 'finalization-1', bundleKey: 'sessions/session-1/bundle.zip' },
+    );
+    const persisted: unknown = JSON.parse(JSON.stringify(artifact));
+
+    expect(artifact?.provenance).toEqual({
+      source: 'bundle',
+      finalizationId: 'finalization-1',
+      bundleKey: 'sessions/session-1/bundle.zip',
+    });
+    expect(parseStoredPublicInputArtifact(persisted)).toEqual(artifact);
+  });
+
+  it('keeps observations without a source outside supported artifact authority', () => {
+    const parsed = parsePublicInputArtifact(buildPublicInputArtifactFromZkvmInput(baseInput, CURRENT_METHOD_VERSION));
+
+    expect(parsed.valid).toBe(true);
+    expect(parsed.typedAuthority).toBeDefined();
+    expect(toSupportedPublicInputArtifact(parsed)).toBeUndefined();
+  });
+
   it('separates the governed artifact format, typed authority, and provenance', () => {
     const artifact = buildPublicInputArtifactFromZkvmInput(baseInput, CURRENT_METHOD_VERSION);
     const parsed = parsePublicInputArtifact(artifact, {

@@ -1,9 +1,11 @@
 # AWS Architecture (Current Repository Target)
 
-This document summarizes the AWS architecture defined by the repository. It
-describes the target design, not a claim that every checked-in resource is
-currently deployed. Dated account-specific deployment evidence and observed
-drift belong in the private operator inventory.
+This document summarizes the current AWS architecture for the registered
+`stark-dev/develop` and `stark-prod/main` targets, with production operating
+from its accepted deployment baseline. It describes repository-owned boundaries;
+dated account-specific deployment observations and validation evidence belong
+in the private operator inventory. An accepted deployment does not authorize a
+subsequent production execution without its required approvals.
 
 ## Runtime Architecture
 
@@ -11,15 +13,52 @@ In its normal active posture, the target runtime has two durable asynchronous
 paths: finalization/proving and verification. Both begin at the Hono API, but
 each uses its own SQS queue and worker.
 
+### Ingress and Request Admission
+
+Main browser traffic enters through Cloudflare before reaching CloudFront.
+Every production CloudFront cache behavior runs viewer-request admission before
+cache lookup. Admission requires the expected public Host, one valid
+Cloudflare origin token, and one bounded client-IP header; missing or duplicate
+headers fail closed. The token is checked against its reviewed SHA-256 digest
+and removed before forwarding to an origin. Only the digest is retained in the
+repository and Terraform state; the raw token belongs to Cloudflare's request
+header configuration.
+
+For API requests, CloudFront forwards the admitted `CF-Connecting-IP` on main.
+Terraform waits for the guarded CloudFront distribution to finish deploying
+before updating target Lambdas to trust Cloudflare. The public API then accepts
+only a valid IP address from that header in `TRUSTED_PROXY=cloudflare` mode;
+missing or malformed values never fall back to other proxy headers or the peer
+address. Develop retains `TRUSTED_PROXY=api-gateway` and its operator/tester
+signed-cookie gate for static and API access, independently of Cloudflare.
+
+Both targets separately require the `X-Stark-Ballot-Origin-Verify` header
+injected by CloudFront on API origin requests. Main session creation also
+requires server-side Turnstile validation with action `session` and an allowed
+hostname. Cloudflare ingress admission, API origin verification, and Turnstile
+are separate checks.
+
+The develop-only recovery posture uses the
+`target-aws-async-quiesced` server profile. It keeps the DynamoDB/S3-backed
+target available for controlled recovery work while rejecting new public
+session creation even for correctly gated requests and disabling both
+SQS-to-Lambda event-source mappings. It is not a browser profile and does not
+authorize a production target.
+
+### Runtime Flow and API Identity
+
 ```text
 Users / browsers
-  -> CloudFront
-       |- conditional develop operator/tester signed-cookie gate
+  |- main -> Cloudflare -> CloudFront token, Host, and client-IP admission
+  `- develop -> CloudFront operator/tester signed-cookie gate
+
+Target CloudFront distribution
        |- static assets -> private S3 frontend through OAC
        `- /api and /api/*
             + X-Stark-Ballot-Origin-Verify
             -> API Gateway HTTP API
             -> Lambda: Hono public API
+                 |- main session creation -> server-side Turnstile validation
                  |- session, vote, and rate-limit operations
                  |    <-> DynamoDB application-state tables
                  |
@@ -67,13 +106,6 @@ The diagram shows the successful proving sequence. Signature rejection,
 capacity exhaustion, ECS failure, timeout, and callback failure follow explicit
 fail-closed paths; none may be presented as a successful finalization.
 
-The develop-only recovery posture uses the
-`target-aws-async-quiesced` server profile. It keeps the DynamoDB/S3-backed
-target available for controlled recovery work while rejecting new public
-session creation and disabling both SQS-to-Lambda event-source mappings. It is
-not a browser profile, does not describe the normal active posture above, and
-does not authorize a production target.
-
 The public lifecycle surface is path-authoritative:
 
 - `POST /api/sessions/:sessionId/finalizations` creates the current
@@ -115,7 +147,18 @@ vocabulary rather than a second repository lifecycle identity.
 Bootstrap owns the AWS-native deployment control plane. GitHub Actions may
 start and observe selected pipelines through a branch-scoped OIDC trigger role,
 but it does not apply Terraform, read Terraform state, mutate runtime resources
-directly, or read runtime secrets.
+directly, or read runtime secrets. Each target selects its own registered lanes,
+state, artifacts, and retained authority. Retained records must match that
+selected target; a record cannot select another account or environment.
+
+| Target              | Deployment lanes                                           | CodeBuild projects | Static frontend publication |
+| ------------------- | ---------------------------------------------------------- | ------------------ | --------------------------- |
+| `stark-dev/develop` | Bootstrap, Foundation, Toolchain, Prover, App, static-fast | 27                 | Full App or static-fast     |
+| `stark-prod/main`   | Bootstrap, Foundation, Toolchain, Prover, App              | 24                 | Full App                    |
+
+Each count includes three report-only Terraform drift runners. All projects
+select checked-in buildspecs. Pipeline notifications and the operations ledger
+follow the target's registered pipeline set.
 
 ```text
 GitHub repository (CI evidence + branch-pinned trigger)
@@ -136,83 +179,130 @@ GitHub repository (CI evidence + branch-pinned trigger)
        |    -> ECR, Prover signing authority, release storage, networking,
        |       secret/config containers, and DNS/ACM prerequisites
        |    -> daily reference-aware ECR-retention controller
-       |    -> immutable Foundation handoff
        |
        |- Toolchain release lane
-       |    -> build or select an exact retained Toolchain artifact
-       |    -> publish accepted Toolchain release authority
+       |    -> build/publish or select one content-addressed candidate
+       |    -> publish a content-addressed release
+       |    -> first-create or CAS the key-only accepted pointer
        |                         |
        |- Prover release lane <--'
-       |    -> build against the exact Toolchain
-       |    -> sign and promote a digest-pinned Prover artifact
-       |                         |
-       |- App full lane <--------+---- immutable Foundation handoff
-       |    -> verifier state refresh when required
+       |    -> resolve one accepted or pinned Toolchain release key
+       |    -> build and sign against the exact digest-pinned Toolchain image,
+       |       or revalidate an existing candidate without image mutation
+       |    -> publish a content-addressed release for the digest-pinned Prover
+       |    -> first-create or CAS the key-only accepted pointer
+       |
+       |- App full lane (normal, accepted inputs)
+       |    <---- Foundation acceptance + image releases
+       |    -> ResolveRelease selects Foundation, Toolchain, and Prover authority
        |    -> cryptographic verifier preflight
-       |    -> app saved plan/apply, static deploy, and post-apply smoke
-       |    -> dedicated full-App transient execution bucket
+       |    -> TerraformPlan runs folded source gates, prepares execution and
+       |       current-App authority, and creates the saved plan
+       |    -> ManualApproval (proven-empty skip only for normal develop)
+       |    -> apply, static deploy, smoke
+       |    -> current-status publication from the accepted App history
        |    -> app Terraform state
        |       stark-ballot-simulator/<account-alias>/<environment>/
        |         app/terraform.tfstate
-       |    -> accepted App deployment in retained authority storage
-       |                         |
-       `- App static-fast lane <-'
-            -> validate the current accepted App deployment
-            -> dedicated static-fast transient execution bucket
+       |
+       `- App static-fast lane (develop only)
+            -> validate the current App acceptance projection
             -> frontend diff gate/build, static deploy, lightweight smoke
             -> no Terraform state mutation
 
 Successful Bootstrap / Foundation / App smoke
-  -> immutable accepted-Terraform-baseline evidence
+  -> isolated publication of content-addressed accepted reconstruction authority
        |- Bootstrap and Foundation -> root-specific current pointers
-       `- App -> selected through the accepted App execution and attempt
+       `- App -> one bounded-history current pointer
 
-Weekly EventBridge Scheduler
-  -> report-only Terraform drift coordinator
-       |- Bootstrap drift runner
-       |- Foundation drift runner
-       `- App drift runner
+Explicit on-demand drift request
+  -> bounded starter with both request guards
+       `- exactly one selected root runner
+            |- Bootstrap drift runner
+            |- Foundation drift runner
+            `- App drift runner
   -> accepted historical configuration + refresh plan with -lock=false
-  -> create-only redacted drift reports
-  `- failed schedule delivery -> missed-run SQS DLQ
-
-Separately authorized on-demand starts
-  |- rollback-readiness CodeBuild project
-  `- DynamoDB recovery-readiness CodeBuild project
-  -> create-only readiness evidence
+  `- create-only redacted drift report
 ```
 
-Full App and static-fast execution artifacts are isolated in separate private,
-versioned, encrypted transient buckets. The retained App bucket remains a
-different authority boundary for accepted deployments, deployables, approval
-and verifier evidence, and cache objects; neither transient lane gains general
-access to the other's storage.
+The full App sequence above shows normal deployment with accepted inputs:
+`ResolveRelease` selects current Foundation, Toolchain, and Prover authority
+once, and TerraformPlan
+separately selects current App authority. Rollback instead selects one reachable
+retained App acceptance other than the current head and uses its Foundation,
+image, verifier, and deployable authority without resolving current Foundation
+or image-release pointers.
 
-The accepted-baseline, drift, and readiness paths are evidence planes, not
-deployment lanes. Drift runners reconstruct the accepted historical source and
-can refresh and plan only; they cannot Apply, write Terraform state, move an
-accepted pointer, approve a saved plan, or remediate a result. The two readiness
-projects are distinct, on-demand, report-only identities and likewise cannot
-select or execute a rollback or recovery transition.
+Each target's full App execution artifacts use a private, versioned, encrypted
+transient bucket. Develop's static-fast lane has its own isolated transient
+bucket. The retained App bucket remains a different authority boundary for
+App acceptances, deployables, approval
+and verifier evidence, and cache objects. Develop's two execution lanes cannot
+access each other's transient storage.
 
-The current develop approval boundaries are:
+Frontend publishers use one target-specific conditional S3 lease; in develop,
+full App and static-fast share it. Each publisher verifies its exact ownership
+before every frontend-object mutation and around invalidation and evidence publication,
+then releases it conditionally. A competing publisher can take over only after
+an exact CodeBuild observation proves the holder's build complete with an
+admitted terminal status; elapsed time does not authorize takeover.
 
-| Lane                        | Develop approval behavior                                                                                                       |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Bootstrap saved plan        | Human approval of the reviewed saved plan                                                                                       |
-| Foundation saved plan       | Human approval of the reviewed saved plan                                                                                       |
-| Toolchain release           | Candidate-execution approval in both build and retained-artifact modes, followed by separate promotion approval                 |
-| Prover release              | Candidate-build approval, followed by separate promotion approval                                                               |
-| App full, normal deployment | Verifier state-refresh approval only when reconciliation is needed; verifier-preflight approval; main approval if plan nonempty |
-| App full, rollback          | Retained verifier authority is revalidated without preflight mutation; the main saved plan always requires approval             |
-| App static fast             | No Terraform plan/apply and no human approval                                                                                   |
+Frontend content identity binds sorted regular-file paths, byte lengths, and
+SHA-256 digests. Publication uploads every selected file with its exact checksum
+before deleting stale frontend keys. Rollback's deployable authority remains
+the selected acceptance's exact retained archive SHA-256 and S3 VersionId.
 
-Report-only drift and readiness executions are intentionally outside this
-approval table: starting or reviewing one does not authorize any deployment or
-mutation.
+Drift runners reconstruct the accepted historical source and can refresh and
+plan only; they cannot Apply, write Terraform state, move an accepted pointer,
+approve a saved plan, or remediate a result. Runs are explicitly requested per
+root through the guarded starter shown above, with no recurring drift schedule.
+Rollback and recovery have no report-only readiness project or report
+prerequisite: each real operation uses its separately authorized current lane
+or bounded recovery procedure, with a fresh plan and approval for every mutation.
 
-The `stark-prod/main` Terraform and pipeline shapes are repository contract
-evidence only. There is no authorized live production deployment path.
+The managed lanes enforce these approval boundaries:
+
+| Lane                              | Develop                                                                                                           | Main                                                                            |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Bootstrap / Foundation saved plan | Human approval of the reviewed saved plan, including semantic no-ops                                              | Same                                                                            |
+| Toolchain / Prover release        | Candidate-execution approval in both build and retained-candidate modes, then separate promotion approval         | Same                                                                            |
+| App full, normal deployment       | Mandatory verifier-preflight approval; full-plan `ManualApproval` may be skipped only for a proven semantic no-op | Mandatory verifier-preflight and full-plan approvals, including semantic no-ops |
+| App full, rollback                | Retained verifier authority is revalidated without preflight mutation; full-plan approval is always required      | Same                                                                            |
+| App static-fast                   | No Terraform plan/apply or human approval                                                                         | Absent                                                                          |
+
+Report-only drift executions are intentionally outside this approval table:
+starting or reviewing one does not authorize any deployment or mutation.
+
+### Exceptional Initialization
+
+Accepted deployments use the routine authority selection described above.
+Initialization requires explicit inputs and separate approvals; absence or a
+failed read never selects it implicitly. The following paths describe first
+construction when separately authorized, rather than outstanding production
+rollout work.
+
+Bootstrap first construction uses explicit initialization inputs. Its bounded
+initializer applies separately approved backend and control-plane seed plans, then hands an exact versioned manifest to the managed
+`BootstrapInputMode=initial` execution. The managed saved plan still requires
+review, approval, Apply, and successful Smoke before first acceptance publication.
+Ordinary Bootstrap executions select accepted authority.
+
+Foundation then uses its ordinary saved-plan lane. First main review admits
+uncreated state only from a complete create-only plan and version inventories
+proving no prior state or acceptance pointer; Terraform lock history is checked
+separately. Apply rechecks that absence before backend initialization, and owning
+Smoke must succeed before the first Foundation acceptance is published.
+
+After Foundation and image authority exist, App initialization uses two explicit
+executions of the existing full pipeline. `AppInputMode=verifier-prerequisite`
+creates the closed verifier dependency scope through its own saved-plan approval
+and skips the following App stages. `AppInputMode=initial` then observes the real
+verifier version and aliases, runs normal verifier reconciliation and preflight,
+and proceeds through the full saved-plan, approval, deployment, and smoke path.
+Successful initial smoke publishes the first App acceptance and generation-one
+history pointer by conditional first creation. Ordinary `AppInputMode=accepted`
+never infers initialization from missing authority or a failed read; later
+publications use the observed pointer for compare-and-swap.
 
 ## Cross-Cutting Boundaries
 
@@ -220,15 +310,13 @@ evidence only. There is no authorized live production deployment path.
   IAM Identity Center, billing, and guardrails. Workloads, state, artifacts,
   pipelines, and runtime resources belong in member accounts.
 - **State boundary:** Bootstrap owns the deployment control plane, backend
-  grants, accepted-Terraform-baseline authority, and report-only drift/readiness
-  resources; Foundation owns prerequisites and immutable handoffs; App owns
+  grants, accepted reconstruction authority, and report-only drift resources;
+  Foundation owns prerequisites and its acceptance; App owns
   frontend, API, data, asynchronous runtime, proof/report artifacts, and
   runtime observability resources.
-- **Admission boundary:** the current develop target is operator-gated.
-  CloudFront protects both the static site and `/api/*`, and injects the
-  origin-verification header expected by the API. This does not authorize
-  normal public admission. During the develop-only quiesced recovery posture,
-  even correctly gated requests cannot create new public sessions.
+- **Admission boundary:** the target-specific ingress, origin, and session
+  checks in [Ingress and Request Admission](#ingress-and-request-admission)
+  apply independently of session capabilities and proof verification.
 - **API boundary:** the Hono API is the browser/CLI authority for session state,
   mutations, verification runs, and capability-checked bundle/report delivery.
   Direct API Gateway or origin access is diagnostic evidence, not a public
@@ -238,10 +326,6 @@ evidence only. There is no authorized live production deployment path.
   `included-bitmap.json`, `seen-bitmap.json`, raw bitmap sidecars, vote
   openings, and private locators must not become public bundle members or
   static frontend artifacts.
-- **Deployment-storage boundary:** full App and static-fast transient execution
-  buckets are isolated from each other and from retained App authority. Their
-  temporary pipeline objects are not accepted-deployment records, deployables,
-  approvals, verifier evidence, or cache authority.
 - **Image boundary:** Foundation owns the Prover signing authority; release
   lanes establish the accepted Toolchain and Prover artifacts; App verifies the
   exact accepted Prover signature before deployment and again before each
@@ -255,8 +339,6 @@ evidence only. There is no authorized live production deployment path.
   the isolated invariant and ops-actionable notification routes are diagnostic
   evidence only. Telemetry must never alter the verification verdict or trigger
   automated remediation.
-- **Retired surfaces:** Amplify Hosting, Amplify Data/AppSync, and Next.js route
-  wrappers are historical and are not target runtime or deployment authority.
 
 ## Related Authorities
 

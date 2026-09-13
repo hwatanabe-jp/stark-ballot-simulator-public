@@ -1,7 +1,9 @@
 data "aws_iam_policy_document" "app_terraform_apply" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  source_policy_documents = [data.aws_iam_policy_document.app_terraform_plan[0].json]
+  source_policy_documents = [
+    data.aws_iam_policy_document.app_terraform_plan[0].json,
+  ]
 
   statement {
     sid    = "UseRetainedApprovalEvidenceForAppApply"
@@ -14,16 +16,11 @@ data "aws_iam_policy_document" "app_terraform_apply" {
     resources = [local.app_retained_approval_evidence_objects_arn]
   }
 
-  statement {
-    sid       = "ReadAppApprovalActionExecution"
-    effect    = "Allow"
-    actions   = ["codepipeline:ListActionExecutions"]
-    resources = [aws_codepipeline.development_app[0].arn]
-  }
 }
 
 data "aws_iam_policy_document" "app_terraform_apply_state_backend" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count                   = local.app_pipeline_enabled ? 1 : 0
+  source_policy_documents = [data.aws_iam_policy_document.saved_plan_approval_apply_read["app_terraform"].json]
 
   statement {
     sid    = "WriteAppStateBackend"
@@ -535,6 +532,11 @@ resource "aws_iam_role_policy_attachment" "app_terraform_apply_runtime_kms" {
 resource "aws_iam_role_policy" "app_terraform_apply" {
   count = local.app_pipeline_enabled ? 1 : 0
 
+  depends_on = [
+    aws_codepipeline.development_app,
+    aws_iam_role_policy_attachment.app_terraform_apply_state_backend,
+  ]
+
   name   = "${local.app_terraform_apply_role_name}-policy"
   role   = aws_iam_role.app_terraform_apply[0].id
   policy = data.aws_iam_policy_document.app_terraform_apply[0].json
@@ -555,6 +557,16 @@ resource "aws_iam_policy" "app_terraform_apply_state_backend" {
   name   = local.app_terraform_apply_state_backend_policy_name
   policy = data.aws_iam_policy_document.app_terraform_apply_state_backend[0].json
   tags   = local.common_tags
+}
+
+check "app_terraform_apply_state_backend_policy_size" {
+  assert {
+    condition = (
+      !local.app_pipeline_enabled
+      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.app_terraform_apply_state_backend[0].json))) <= 6144, false)
+    )
+    error_message = "The app Terraform Apply state and approval managed policy must remain within IAM's 6,144-character quota."
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "app_terraform_apply_state_backend" {

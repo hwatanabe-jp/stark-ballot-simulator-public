@@ -1,316 +1,131 @@
 # ホストと証明生成
 
-この章では、ホストプログラムが zkVM 入力を組み立て、同期モードまたは非同期モードで STARK 証明を生成する流れを扱います。
+ゲストが投票を検査するには、サーバーが保存した opening と、掲示板の記録を一つの入力にまとめる必要があります。ホストはその入力を読み、ゲストの実行と証明生成を行い、レシートと公開出力を書き出します。
 
-| モード | 実行形態                                                                                              |
-| ------ | ----------------------------------------------------------------------------------------------------- |
-| 同期   | ローカルにビルドされた `zkvm/target/release/host` をローカルプロセスとして起動                        |
-| 非同期 | production feature 有効のホストバイナリを組み込んだ Fargate 用コンテナを ECS Fargate タスクとして実行 |
-
-どちらのモードも同じ Rust ホスト CLI / 入出力契約を使用します。
-
-このページの構成:
-
-- [パイプライン全体像](#パイプライン全体像)
-- [入力構築](#入力構築)
-- [ホストプログラムの実行](#ホストプログラムの実行)
-- [同期モード](#同期モード)
-- [非同期モード](#非同期モード)
-- [開発モードの動作](#開発モードの動作)
+B の一票なら、位置 0、選択肢 B、投票時の乱数、コミットメント、**最終掲示板への**包含証明を渡します。投票時のレシートにある小さいツリーへの証明を、そのまま集計入力に流用するわけではありません。
 
 ## パイプライン全体像
 
-証明生成パイプラインは、入力構築、ホスト実行、出力処理の 3 フェーズで構成されます。
-
 ```mermaid
-flowchart TD
-  subgraph "第1フェーズ: 入力構築 (TypeScript)"
-    SD[セッションデータ] --> IB[入力ビルダー]
-    IB --> ZI[ZkVMInput]
-    ZI --> SER[シリアライズ<br/>JSON ファイル]
-  end
-
-  subgraph "第2フェーズ: ホスト実行 (Rust)"
-    SER --> HOST[ホストバイナリ]
-    HOST --> ENV[ExecutorEnv 構築]
-    ENV --> PROVER[デフォルトプローバー]
-    PROVER --> GUEST[ゲスト実行]
-    GUEST --> PROOF[STARK 証明生成]
-  end
-
-  subgraph "第3フェーズ: 出力処理"
-    PROOF --> RCP["レシートラッパー JSON<br/>(seal + journal)"]
-    PROOF --> OUT["出力 JSON<br/>(デコード済みジャーナル)"]
-  end
+flowchart TB
+  V[保存した投票と opening] --> I[TypeScript が入力を構築]
+  B[最終掲示板と包含証明] --> I
+  I --> H[Rust ホスト]
+  H --> G[ゲスト実行と証明生成]
+  G --> R[レシート]
+  G --> J[デコードした公開出力]
+  R --> A[配布用ファイルを構築・検査]
+  J --> A
 ```
+
+入力を作る TypeScript、計算を証明する Rust、配布用ファイルを作る処理は、それぞれ受け渡し先で内容を検査します。ホストの終了コードだけで集計を成功として扱わず、出力の形式と整合性も確認します。レシートの暗号学的検証は、さらに[検証サービス](verifier-service.md)が担当します。
 
 ## 入力構築
 
-### 現行 PoC の選挙 shape
+### 現行 PoC の選挙構成
 
-デモの session orchestration は、選択肢 `A`〜`E`、ユーザー 1 票、
-ボット 63 票、合計 64 slot、Merkle tree depth 6 に固定されています。
-default config の authority は
-`packages/zkvm-contract/src/zkvm/contract-constants.ts` と
-`packages/zkvm-contract/src/zkvm/election-config.ts` です。domain と verification
-package の公開定数は repository boundary test で同値性を確認します。
+デモのセッションは A〜E、ユーザー 1 票とボット 63 票、合計 64 スロットです。最終的な掲示板ツリーの深さは 6 になります。この構成は `contract-constants.ts` と `election-config.ts` に定義します。
 
-これは PoC の再現可能なデモ構成であり、zkVM guest や RFC 6962 Merkle
-実装を任意の session で常に 64 票に制限するプロトコル主張ではありません。
-host input は admitted election configuration の `totalExpected` と bulletin の
-`treeSize` を保持し、その一致は検証パイプラインで fail-closed に確認します。
+64 はデモの選挙設定であり、Merkle アルゴリズムやゲストの処理上限ではありません。入力は選挙設定の `totalExpected` と掲示板の `treeSize` を別々に持ち、検証側で一致を確認します。
 
 ### セッションデータからの抽出
 
-入力ビルダーは、投票セッションに蓄積されたデータから zkVM 入力を構築します。
+入力ビルダーは、掲示板の最新 STH スナップショットからルート、サイズ、時刻を取得します。選挙設定とそのハッシュの一致を確認し、保存した各票の選択肢を A=0〜E=4 に変換します。その票の元の掲示板インデックスを使って、最終状態への包含証明を取得します。
 
-```mermaid
-flowchart LR
-  subgraph セッションデータ
-    EID[選挙 ID]
-    ECFG[選挙設定<br/>+ 設定ハッシュ]
-    VOTES["投票データ<br/>(選択肢, 乱数, コミットメント)"]
-    BULL["掲示板<br/>(ルート履歴, 包含証明)"]
-    LID[ログ ID]
-  end
-
-  subgraph ZkVMInput
-    EID2[election_id]
-    ECFG2[election_config_hash]
-    BR[bulletin_root]
-    TS[tree_size]
-    TE[total_expected]
-    VWP["votes[]<br/>(VoteWithProof)"]
-    LID2[log_id]
-    TSTAMP[timestamp]
-  end
-
-  EID --> EID2
-  ECFG --> ECFG2
-  ECFG --> TE
-  BULL --> BR
-  BULL --> TS
-  VOTES --> VWP
-  LID --> LID2
-```
-
-入力構築の主な処理は次のとおりです。
-
-1. **掲示板の最新 STH スナップショット取得**: ルートハッシュ、ツリーサイズ、タイムスタンプを取得します。
-2. **選挙設定の整合性確認**: `electionConfig` と `electionConfigHash` が一致することを確認します。
-3. **投票データの変換**: 各投票の選択肢を整数に変換します（A=0, B=1, C=2, D=3, E=4）。
-4. **Merkle パスの解決**: 各投票について、掲示板から最新の包含証明を取得します。
-5. **総投票数の設定**: 選挙設定の `totalExpected` を設定します（デモ定数は
-   [現行 PoC の選挙 shape](#現行-poc-の選挙-shape) を参照）。
-
-通常のセッション入力では、投票インデックスが 0 から連続する canonical CT index であることを要求します。
-教育的な除外シナリオでは、元の掲示板インデックスを保つために sparse index を許可します。
-これにより、ゲスト側で `missingSlots` として観測できます。
+通常の入力ではインデックスが 0 から連続することを要求します。S1 の除外では、位置 0 を外しても残りを 0〜62 に振り直さず、1〜63 のまま渡します。掲示板は 64 スロットなので、ゲストは位置 0 が足りないと数えられます。
 
 ### Merkle パスの解決戦略
 
-各投票の Merkle パスは、session の canonical bulletin authority から解決します。
-保存済みの投票レコードは proof path を保持しないため、別の事前計算パスへの
-fallback はありません。
-
-```mermaid
-flowchart TD
-  START[Merkle パス解決] --> P1{掲示板から<br/>包含証明を取得可能?}
-  P1 -->|Yes| CHK{leaf index と<br/>treeSize が一致?}
-  CHK -->|Yes| USE1[掲示板の証明を使用]
-  CHK -->|No| ERR[エラー]
-  P1 -->|No| ERR
-```
+包含証明は、そのセッションの掲示板から取得します。リーフ位置とツリーサイズを照合し、取得できない証明や一致しない証明で入力構築を続けません。保存した投票レコードは、代わりに使う別のパスを持ちません。
 
 ## ホストプログラムの実行
 
-### ホストバイナリの役割
+TypeScript のアダプターは、UUID とハッシュの文字列をバイト配列へ変換し、Rust が読む JSON を作ります。ホストは固定長配列と現在の入力フィールドを検査し、`ExecutorEnv` へ直列化して、組み込まれたゲストを実行します。処理量の上限も[ゲストの境界条件](guest-program.md#入力の境界条件)に従います。
 
-ホストバイナリは Rust で記述された CLI プログラムです。
-証明モードでは次の処理を行います。
+正常に証明を生成すると、ホストはレシート内部のジャーナルをデコードして、出力 JSON を作ります。
 
-1. JSON 形式の入力ファイルを読み込みます。
-2. JSON のバイト配列表現を Rust の固定長配列型へ変換します（`Vec<u8>` → `[u8; 16/32]`）。
-3. `ExecutorEnv` に入力をシリアライズして設定します。
-4. デフォルトプローバーを使用して zkVM ゲストを実行します。
-5. レシート（STARK 証明 + ジャーナル）を取得します。
-6. ジャーナルをデコードし、出力ファイルに書き出します。
+| ファイル             | 内容                                                         |
+| -------------------- | ------------------------------------------------------------ |
+| `*-receipt.json`     | `{ "receipt": ..., "image_id": "0x..." }` のレシートラッパー |
+| `*-output.json`      | デコードしたジャーナルと Image ID                            |
+| `*-bitmap.json`      | 計上した位置の非公開ビットマップ                             |
+| `*-seen-bitmap.json` | 提示された位置の非公開ビットマップ                           |
 
-入力 JSON は TypeScript 側のエグゼキューターが事前に正規化して生成します（UUID/ハッシュ文字列をバイト配列へ変換）。
+ビットマップは入力から再構成し、ゲストの公開ルートとの一致を確認できた場合に書き出します。出力の UUID・ハッシュを配布用の文字列表現にする処理は、ホストの生出力を受け取ったアダプターや artifact 生成処理が行います。
 
-Image ID の確認だけを行う場合は `host --print-image-id [--json]` を使います。
-このモードでは入力ファイルを読まず、証明生成やアーティファクト出力も行いません。
-`--json` 付きでは `imageId` と `methodVersion` を含む JSON を stdout に出力します。
-
-境界に違反する入力が渡された場合、host run は fail-closed で停止し、receipt と journal を出力しません。
-境界条件の詳細は [処理パイプライン](guest-program.md#処理パイプライン) を参照してください。
-
-非同期モードで S3 に置かれる work input には、host CLI の証明入力に加えて
-`election_config` / `electionConfig` も含まれます。コンテナ entrypoint はこの設定を
-`election-manifest.json` の生成と入力の整合性検査に使います。退役済みの
-`contractGeneration` / `contract_generation` は work input に含めません。
-
-### 出力ファイル
-
-証明モードのホストバイナリは 2 つの JSON ファイルを出力します。
-ビットマップ整合性検査を通過した場合は、private bitmap artifact も追加で出力します。
-
-| ファイル              | 内容                                                           |
-| --------------------- | -------------------------------------------------------------- |
-| レシートラッパー JSON | `{ "receipt": ..., "image_id": "0x..." }` 形式のラッパー JSON  |
-| 出力 JSON             | デコード済みのジャーナル（集計結果、除外情報、各種ハッシュ値） |
-
-レシートラッパー JSON には top-level `image_id` フィールドも含まれます。
-検証サービスでの使われ方は [検証サービス](verifier-service.md#検証フロー) を参照してください。
-
-ホストはビットマップの整合性を確認し、一致した場合のみ次の非公開アーティファクトを出力します。
-
-| ファイル             | 内容                                                          |
-| -------------------- | ------------------------------------------------------------- |
-| `*-bitmap.json`      | counted bitmap の厳密 artifact（`includedBitmapRoot` と対応） |
-| `*-seen-bitmap.json` | presented bitmap の厳密 artifact（`seenBitmapRoot` と対応）   |
-
-非同期モードでの配置と非同梱の扱いは [配布対象アーカイブの構築](#配布対象アーカイブの構築) を参照してください。
+Image ID の確認だけなら `host --print-image-id --json` を使います。この場合は入力ファイルの読み取りも証明生成も行いません。
 
 ## 同期モード
 
-同期モードでは、TypeScript のサーバーサイドプロセスからホストバイナリを直接起動します。
+ローカルの実証明プロファイルでは、Node.js が `zkvm/target/release/host` を子プロセスとして起動し、終了を待ちます。shell を介さず引数を渡し、専用の POSIX プロセスグループで起動します。
 
-```mermaid
-sequenceDiagram
-  participant S as サーバー (TypeScript)
-  participant E as エグゼキューター
-  participant H as ホストバイナリ (Rust)
-  participant FS as ファイルシステム
+入力と出力は `.zkvm-temp/` に置きます。アダプターは出力の現在のフィールド集合を検査し、欠落や未知のフィールドを拒否してから、アプリ用の値へ変換します。UUID は文字列、ハッシュは `0x` 付き 16 進数へそろえます。
 
-  S->>E: executeZkVM(input)
-  E->>FS: 入力 JSON を一時ファイルに書き出し
-  E->>H: 子プロセスとして起動
-  Note over H: zkVM ゲスト実行<br/>+ STARK 証明生成
-  H->>FS: レシートラッパー JSON + 出力 JSON を書き出し
-  H-->>E: プロセス終了
-  E->>FS: 出力ファイルを読み取り
-  E->>FS: 一時ファイルを削除
-  E-->>S: ZkVMExecutionResult
-```
+### 終了と一時ファイル
 
-### 同期モードの特性
+証明の期限は 600 秒です。期限到達またはホスト終了時には、所有するプロセスグループへ SIGTERM を送り、最大 5 秒待ってから SIGKILL、さらに最大 1 秒待ちます。残ったプロセスの終了を確認できなければ成功にはしません。これは Linux、WSL、macOS の POSIX グループを対象にした後始末です。
 
-| 項目         | 値                                                                                                                                                                                           |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 起動方式     | Node.js `child_process.exec`                                                                                                                                                                 |
-| タイムアウト | 10 分（600 秒）                                                                                                                                                                              |
-| 一時ファイル | リポジトリ直下の `.zkvm-temp/` 配下                                                                                                                                                          |
-| 環境変数     | 基本は Node.js の `process.env` を引き継ぐ。`RUST_LOG` はログに影響するが、証明モードは resolved runtime profile が決定し、adapter が child process の `RISC0_DEV_MODE` を設定または除去する |
-| エラー処理   | 終了コード非ゼロ、タイムアウト、ファイル不在で失敗                                                                                                                                           |
-
-### 結果の変換
-
-エグゼキューターは出力 JSON のフィールドを TypeScript の命名規則へ正規化し、文字列だけでなくバイト配列形式の値も受理します。
-ハッシュ系フィールドは `0x` 付き 16 進文字列に、`election_id` は UUID 文字列に変換して `ZkVMExecutionResult` を構築します。
+成功・失敗のどちらでも、入力と四つの出力ファイルの削除を試みます。ファイルがすでに無い場合は問題とせず、それ以外の削除失敗は安全な警告として残します。起動失敗、非ゼロ終了、外部シグナル、期限切れ、サーバー停止、出力欠落を区別して扱います。
 
 ## 非同期モード
 
-AWS 環境では、証明生成を ECS Fargate タスクとして非同期に実行します。
-STARK 証明の生成に数分を要するため、Lambda のタイムアウト制限を回避し、専用のコンピューティングリソースを割り当てます。
+AWS では、時間のかかる証明生成を ECS Fargate の専用タスクへ渡します。API は完了まで接続を保持せず、ブラウザが現在の集計状態を問い合わせます。
 
 ```mermaid
 sequenceDiagram
-  participant S as サーバー
-  participant SQS as SQS
-  participant D as ディスパッチ Lambda
-  participant SFN as Step Functions
-  participant ECS as ECS Fargate
+  participant API as API
+  participant Q as キューと実行管理
+  participant H as Fargate のホスト
   participant S3 as S3
-  participant CB as コールバック Lambda
-
-  S->>S3: 入力 JSON アップロード
-  S->>SQS: finalization リクエスト<br/>(inputS3Key を含む)
-  SQS->>D: work message
-  D->>SFN: SFN 実行開始<br/>(inputS3Key を渡す)
-  Note over SFN: イメージ署名チェック
-  SFN->>ECS: プローバータスク起動
-  ECS->>S3: 入力 JSON ダウンロード
-  Note over ECS: ホストバイナリ実行<br/>+ STARK 証明生成
-  ECS->>S3: レシート・出力・公開アーティファクト・<br/>バンドルをアップロード
-  ECS-->>SFN: タスク完了
-  SFN->>CB: 成功コールバック
-  CB->>CB: セッションデータ更新
+  participant C as 完了処理
+  API->>S3: 非公開の入力を保存
+  API->>Q: 証明生成を依頼
+  Q->>Q: 実行条件とイメージ署名を確認
+  Q->>H: タスクを起動
+  H->>S3: 入力を取得
+  H->>H: ゲスト実行と証明生成
+  H->>S3: 検査済み成果物を保存
+  H-->>Q: タスク終了
+  Q->>C: 成功または失敗を通知
 ```
 
-### イメージ署名チェック
-
-Step Functions はプローバータスク起動前にコンテナイメージの署名を検証し、承認されたイメージ以外の実行を拒否します。
-署名と digest pin の運用は [イメージ署名](../aws/image-signing.md) を参照してください。
+ホストの入出力契約は同期実行と共通です。実行の重複・取消・再試行や結果の保存は、[非同期プローバー](../aws/async-prover.md)の処理が担います。
 
 ### 配布対象アーカイブの構築
 
-非同期モードでは、ホストバイナリの出力のうち秘密データを含まないファイルだけを `bundle.zip` に同梱し、`input.json` などの秘密入力は含めません。
-同梱対象の一覧、整合性検査ルール、取得経路は [バンドル構造](../verification/bundle-structure.md) を、`public-input.json` の項目と `inputCommitment` の関係は [入力コミットメント](../protocol/input-commitment.md) を参照してください。
+非同期の入力ファイルは、通常のゲスト入力に加えて `election_config` を含みます。ホスト CLI では省略可能ですが、非同期の公開ファイル生成には必要です。内側の設定キーは camelCase を使います。
 
-async Docker entrypoint は、`journal.json`、`public-input.json`、`election-manifest.json`、`close-statement.json` を生成する際に methodVersion（現行 14）と `inputCommitment` の整合性を検査し、契約と一致しない host artifact は fail-closed で停止します。
-非同期 S3 出力では、通常は次のオブジェクトが保存されます。
+コンテナの entrypoint は Rust の `prover-artifacts` を呼び、入力とホスト出力から `journal.json`、`public-input.json`、`election-manifest.json`、`close-statement.json` を作ります。現在の method version、入力コミットメント、正準ハッシュ、各値の対応を検査し、生成した四つのファイルを読み直して確認します。その後、許可されたファイルだけで ZIP を構築・検査し、S3 にアップロードします。
 
-- ホスト生出力の `*-output.json` と `*-receipt.json`
-- 生成済みの公開アーティファクト
-- private bitmap sibling（`included-bitmap.json` / `seen-bitmap.json`。非公開のまま `bundle.zip` には同梱しない）
-- `bundle.zip`
+非公開の入力と二つのビットマップは ZIP に含めません。S3 にはホストの `*-output.json`、`*-receipt.json`、公開ファイル、非公開ビットマップ、ZIP が保存されます。公開 `journal.json` は ZIP 内にあり、その固定名で ZIP の隣へ別オブジェクトを保存する方式ではありません。同梱ファイルの正確な一覧は[バンドル構造](../verification/bundle-structure.md)に定義します。
 
-`journal.json` は `bundle.zip` の中に生成される公開アーティファクトであり、固定名の standalone `journal.json` は sibling object として保存しません。
-
-entrypoint が非ゼロ終了した場合は、失敗分類だけを持つ private sibling artifact
-`failure-marker.json` を同じ finalization scope に best-effort で保存します。S3 object は
-`sessions/{sessionId}/{finalizationId}/failure-marker.json` という finalization identity に
-従います（分類の制限、create-only 保存、finalization writer による検証などの契約は
-[非同期プローバー](../aws/async-prover.md) を参照）。
+失敗時は分類だけを持つ非公開の `failure-marker.json` の保存を試み、実行管理から失敗の完了処理を呼びます。この記録も公開 ZIP には入りません。
 
 ### 非同期モードの特性
 
-| 項目                   | 値                                                                                                                          |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| ホスト実行タイムアウト | 15 分（900 秒）がデフォルト。entrypoint の `ZKVM_TIMEOUT_SECONDS` で変更可能                                                |
-| ECS タスクタイムアウト | 30 分（1800 秒）がデフォルト。Terraform の `prover_task_timeout_seconds` が Step Functions の `RunProver` に設定            |
-| リトライ               | S3 アップロードはデフォルトで最大 3 回の合計試行（初回 + 最大 2 回のリトライ）。再試行間隔は指数バックオフ                  |
-| エラー処理             | entrypoint が private failure marker を best-effort で保存し、Step Functions がタスク失敗を検出して failure callback を実行 |
-| ステータス確認         | クライアントは `/api/sessions/:sessionId/finalizations/current` で current finalization resource をポーリング               |
+| 項目                 | 既定値・動作                                                    |
+| -------------------- | --------------------------------------------------------------- |
+| ホストの期限         | 900 秒。entrypoint の `ZKVM_TIMEOUT_SECONDS` で設定             |
+| Fargate タスクの期限 | 1800 秒。Terraform の `prover_task_timeout_seconds` で設定      |
+| S3 アップロード      | 合計最大 3 回、再試行間隔は指数バックオフ                       |
+| ブラウザの進捗取得   | `/api/sessions/:sessionId/finalizations/current` を問い合わせる |
+
+証明生成が終わったことと、検証サービスがその証明を検証したことは別の状態です。AWS では検証の要求を受けた後、別のキューと worker がレシートを確認します。
 
 ## 開発モードの動作
 
-dev-mode build のホストで `RISC0_DEV_MODE=1` を設定すると、RISC Zero は STARK 証明を生成せず、フェイクレシートを返します。
-フェイクレシートを作れるのは `pnpm build:zkvm:dev-mode` など dev mode を許可するホストビルドだけです。
-production feature 有効のホスト（`pnpm build:zkvm` や Fargate prover image）は
-`RISC0_DEV_MODE=1` を受理しません。非同期 prover の entrypoint は production proof profile
-（S3-backed 実行では `RUNTIME_PROFILE=target-aws-async`）を要求し、退役済みの
-`RISC0_DEV_MODE` / `FORCE_DEV_MODE` を host process の環境から除去します。
+開発中に毎回 STARK 証明を作ると、入出力の修正を確認するにも時間がかかります。そこで、用途に応じて次の実行を使い分けます。
 
-| 項目         | 開発モード (`RISC0_DEV_MODE=1`) | 本番モード                     |
-| ------------ | ------------------------------- | ------------------------------ |
-| 証明の種類   | フェイクレシート                | 本物の STARK 証明              |
-| 実行時間     | 約 100 ミリ秒                   | 約 370 秒（64 票の場合）       |
-| 保証         | 暗号学的保証なし                | guest 実行に対する暗号学的証明 |
-| 検証サービス | Fake として検出                 | 完全な STARK 検証を実行        |
+| 実行するもの                          | 得られる証拠                        |
+| ------------------------------------- | ----------------------------------- |
+| Rust ホストを起動しない mock executor | 動作確認用の代替データ              |
+| 開発モードを許す Rust ホスト          | 暗号学的保証を持たない fake receipt |
+| production feature のホスト           | 実際の STARK レシート               |
 
-production receipt が証明するのは、対応する Image ID の guest が公開 journal を生成したことです。
-これだけで投票システム全体の安全性、運用者に対する ballot secrecy、または選挙運用の妥当性まで
-証明するものではありません。
+ホストと証拠の組は、[実行プロファイル](../aws/runtime-boundary.md#semantic-runtime-profiles)の選択で決まります。
 
-開発モードのレシートは内部的には `InnerReceipt::Fake` 型です。
-[検証サービス](verifier-service.md) では通常 `dev_mode` 扱いになります（`image_id` 不一致などの事前条件違反時のみ `Failed`）。
-**`dev_mode` は診断ステータスであり、本番モードの成功検証としては採用されません。**
+開発用ホストは `RISC0_DEV_MODE=1` で証明を作らずに fake receipt を返せます。production feature のビルドはこの開発モードを受け入れません。AWS entrypoint は対象の production プロファイルを要求し、ホストの環境から開発モード指定を除去します。
 
-開発モードは次の用途に限定されます。
+アプリでどの実行を使うかは、起動時に確定する runtime profile が決めます。fake receipt は入出力契約を試す材料ですが、計算の暗号学的証拠ではありません。検証サービスも成功へ昇格させず、開発用の診断結果として区別します。
 
-- host CLI や verifier 連携を含むローカルの高速フィードバック
-- TypeScript と Rust の契約を短時間で確認する smoke test
-- dev-mode receipt 分岐を明示的に通す CLI と E2E 検証
-
-アプリケーションの proof executor は immutable な runtime profile が選択します。
-mock 系 profile（`local-demo` / `static-mock-e2e`）の mock executor は、ホストバイナリも
-RISC Zero SDK も呼びません。profile ごとの proof evidence の対応は
-[AWS runtime 境界](../aws/runtime-boundary.md#semantic-runtime-profiles) を参照してください。
-`USE_MOCK_ZKVM` と server 設定としての `RISC0_DEV_MODE` は置換済み selector であり、
-runtime profile の入力に混在させると fail-closed で拒否されます。なお、dev-mode 対応 host
-CLI を直接診断するときの `RISC0_DEV_MODE=1` は、この application runtime selector とは
-異なる低レベルの host 設定です。
-
-<!-- source: packages/zkvm-contract/src/zkvm/contract-constants.ts, packages/zkvm-contract/src/zkvm/election-config.ts, scripts/__tests__/repository-boundaries.test.ts, packages/application/src/zkvm-input/input-builder.ts, packages/aws-adapters/src/finalize/async-prover-artifacts.ts, packages/aws-adapters/src/finalize/artifact-key-layout.ts, packages/node-adapters/src/zkvm/executor.ts, packages/runtime-config/src/env/runtimeProfile.ts, packages/api-contract/src/routes/inventory.ts, zkvm/host/src/main.rs, infra/docker/entrypoint.sh -->
+<!-- source: packages/zkvm-contract/src/zkvm/contract-constants.ts, packages/zkvm-contract/src/zkvm/election-config.ts, packages/zkvm-contract/src/zkvm/host-io.ts, tooling/repository/repository-boundaries.test.ts, packages/application/src/zkvm-input/input-builder.ts, packages/aws-adapters/src/finalize/async-prover-artifacts.ts, packages/aws-adapters/src/finalize/artifact-key-layout.ts, packages/node-adapters/src/zkvm/executor.ts, packages/node-adapters/src/zkvm/host-process.ts, packages/runtime-config/src/env/runtimeProfile.ts, packages/api-contract/src/routes/inventory.ts, zkvm/host/src/main.rs, zkvm/host/src/artifacts.rs, zkvm/host/src/bin/prover-artifacts.rs, infra/docker/entrypoint.sh -->

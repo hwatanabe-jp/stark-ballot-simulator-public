@@ -24,8 +24,11 @@ type CommandLike = {
 class FakeDynamoDocumentClient {
   private readonly events = new Map<string, Record<string, unknown>>();
   readonly queryInputs: Array<Record<string, unknown>> = [];
+  private readonly queryPageSize: number | undefined;
 
-  constructor(private readonly queryPageSize?: number) {}
+  constructor(queryPageSize?: number) {
+    this.queryPageSize = queryPageSize;
+  }
 
   send(command: CommandLike): Promise<Record<string, unknown>> {
     switch (command.constructor.name) {

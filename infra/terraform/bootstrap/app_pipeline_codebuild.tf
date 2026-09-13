@@ -1,8 +1,8 @@
-resource "aws_codebuild_project" "app_deployment_record" {
+resource "aws_codebuild_project" "app_execution_authority" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  name          = local.app_deployment_record_project_name
-  service_role  = aws_iam_role.app_deployment_record[0].arn
+  name          = local.app_execution_authority_project_name
+  service_role  = aws_iam_role.app_execution_authority[0].arn
   build_timeout = 15
 
   artifacts {
@@ -19,65 +19,23 @@ resource "aws_codebuild_project" "app_deployment_record" {
       name  = "APP_RELEASE_MANIFEST_BUCKET"
       value = local.app_release_manifest_bucket_name
     }
+
+    environment_variable {
+      name  = "APP_EXPECTED_AWS_ACCOUNT_ID"
+      value = var.aws_account_id
+    }
   }
 
   logs_config {
     cloudwatch_logs {
-      group_name  = module.app_pipeline_codebuild_log_groups.log_groups[local.app_deployment_record_project_name].name
-      stream_name = "app-deployment-record"
+      group_name  = module.app_pipeline_codebuild_log_groups.log_groups[local.app_execution_authority_project_name].name
+      stream_name = "release-resolution"
     }
   }
 
   source {
-    type = "CODEPIPELINE"
-    buildspec = templatefile("${path.module}/buildspec-app-deployment-record.yml.tftpl", {
-      entrypoint_sha256 = filesha256("${path.module}/app-pipeline-scripts/app-deployment-record-build.sh")
-    })
-  }
-
-  tags = merge(local.common_tags, {
-    StateScope = "app"
-  })
-}
-
-resource "aws_codebuild_project" "app_validate" {
-  count = local.app_pipeline_enabled ? 1 : 0
-
-  name          = local.app_validate_project_name
-  service_role  = aws_iam_role.app_terraform_plan[0].arn
-  build_timeout = 30
-
-  artifacts {
-    type = "CODEPIPELINE"
-  }
-
-  cache {
-    type     = "S3"
-    location = "${aws_s3_bucket.app_pipeline_artifacts[0].bucket}/codebuild-cache/${local.app_validate_project_name}"
-  }
-
-  environment {
-    compute_type                = "BUILD_GENERAL1_SMALL"
-    image                       = "aws/codebuild/standard:8.0"
-    type                        = "LINUX_CONTAINER"
-    image_pull_credentials_type = "CODEBUILD"
-  }
-
-  logs_config {
-    cloudwatch_logs {
-      group_name  = module.app_pipeline_codebuild_log_groups.log_groups[local.app_validate_project_name].name
-      stream_name = "validate"
-    }
-  }
-
-  source {
-    type = "CODEPIPELINE"
-    buildspec = templatefile("${path.module}/buildspec-app-validate.yml.tftpl", {
-      entrypoint_sha256          = filesha256("${path.module}/app-pipeline-scripts/app-validate.sh")
-      state_bucket_name          = aws_s3_bucket.state.bucket
-      state_kms_alias            = var.state_kms_alias
-      terraform_install_commands = jsonencode(local.terraform_install_commands)
-    })
+    type      = "CODEPIPELINE"
+    buildspec = "infra/terraform/bootstrap/buildspec-app-release-resolution.yml"
   }
 
   tags = merge(local.common_tags, {
@@ -90,7 +48,7 @@ resource "aws_codebuild_project" "app_terraform_plan" {
 
   name          = local.app_terraform_plan_project_name
   service_role  = aws_iam_role.app_terraform_plan[0].arn
-  build_timeout = 20
+  build_timeout = 50
 
   artifacts {
     type = "CODEPIPELINE"
@@ -162,15 +120,6 @@ resource "aws_codebuild_project" "app_terraform_plan" {
       value = var.aws_region
     }
 
-    environment_variable {
-      name  = "TERRAFORM_DISTRIBUTION_SHA256"
-      value = local.terraform_distribution_sha256
-    }
-
-    environment_variable {
-      name  = "TERRAFORM_VERSION"
-      value = var.terraform_version
-    }
   }
 
   logs_config {
@@ -205,6 +154,21 @@ resource "aws_codebuild_project" "app_terraform_apply" {
     image                       = "aws/codebuild/standard:8.0"
     type                        = "LINUX_CONTAINER"
     image_pull_credentials_type = "CODEBUILD"
+
+    environment_variable {
+      name  = "APP_BACKEND_CONFIG_BASE64"
+      value = base64encode(local.app_backend_config_content)
+    }
+
+    environment_variable {
+      name  = "TERRAFORM_APP_BACKEND_BUCKET"
+      value = aws_s3_bucket.state.bucket
+    }
+
+    environment_variable {
+      name  = "TERRAFORM_APP_BACKEND_KMS_KEY_ID"
+      value = var.state_kms_alias
+    }
   }
 
   logs_config {
@@ -215,14 +179,8 @@ resource "aws_codebuild_project" "app_terraform_apply" {
   }
 
   source {
-    type = "CODEPIPELINE"
-    buildspec = templatefile("${path.module}/buildspec-app-terraform-apply.yml.tftpl", {
-      app_backend_config_base64  = base64encode(local.app_backend_config_content)
-      entrypoint_sha256          = filesha256("${path.module}/app-pipeline-scripts/app-terraform-apply.sh")
-      state_bucket_name          = aws_s3_bucket.state.bucket
-      state_kms_alias            = var.state_kms_alias
-      terraform_install_commands = jsonencode(local.terraform_install_commands)
-    })
+    type      = "CODEPIPELINE"
+    buildspec = "infra/terraform/bootstrap/buildspec-app-terraform-apply.yml"
   }
 
   tags = merge(local.common_tags, {
@@ -278,19 +236,35 @@ resource "aws_codebuild_project" "app_smoke" {
     }
 
     environment_variable {
-      name  = "APP_ACCEPTED_MARKER_PATH"
-      value = local.app_accepted_marker_path
+      name  = "APP_ACCEPTANCE_PUBLISHER_ROLE_ARN"
+      value = local.app_acceptance_publisher_role_arn
     }
 
     environment_variable {
-      name  = "APP_ACCEPTED_DEPLOYMENT_RETENTION_COUNT"
-      value = tostring(local.app_accepted_deployment_retention_count)
+      name  = "APP_STATE_BUCKET_ARN"
+      value = aws_s3_bucket.state.arn
     }
 
     environment_variable {
-      name  = "APP_PIPELINE_ARTIFACT_RETENTION_DAYS"
-      value = tostring(local.storage_retention.app_accepted_authority_days)
+      name  = "APP_STATE_KMS_KEY_ARN"
+      value = aws_kms_key.state.arn
     }
+
+    environment_variable {
+      name  = "APP_TERRAFORM_SMOKE_ROLE_ARN"
+      value = aws_iam_role.app_terraform_smoke[0].arn
+    }
+
+    environment_variable {
+      name  = "TERRAFORM_APP_BACKEND_BUCKET"
+      value = aws_s3_bucket.state.bucket
+    }
+
+    environment_variable {
+      name  = "TERRAFORM_APP_BACKEND_KMS_KEY_ID"
+      value = var.state_kms_alias
+    }
+
   }
 
   logs_config {
@@ -301,17 +275,8 @@ resource "aws_codebuild_project" "app_smoke" {
   }
 
   source {
-    type = "CODEPIPELINE"
-    buildspec = templatefile("${path.module}/buildspec-app-smoke.yml.tftpl", {
-      accepted_marker_path       = local.app_accepted_marker_path
-      entrypoint_sha256          = filesha256("${path.module}/app-pipeline-scripts/app-smoke.sh")
-      state_bucket_arn           = aws_s3_bucket.state.arn
-      state_bucket_name          = aws_s3_bucket.state.bucket
-      state_kms_alias            = var.state_kms_alias
-      state_kms_key_arn          = aws_kms_key.state.arn
-      terraform_install_commands = jsonencode(local.terraform_install_commands)
-      terraform_smoke_role_arn   = aws_iam_role.app_terraform_smoke[0].arn
-    })
+    type      = "CODEPIPELINE"
+    buildspec = "infra/terraform/bootstrap/buildspec-app-smoke.yml"
   }
 
   tags = merge(local.common_tags, {
@@ -345,10 +310,8 @@ resource "aws_codebuild_project" "app_static_deploy" {
   }
 
   source {
-    type = "CODEPIPELINE"
-    buildspec = templatefile("${path.module}/buildspec-app-static-deploy.yml.tftpl", {
-      entrypoint_sha256 = filesha256("${path.module}/app-pipeline-scripts/app-static-deploy.sh")
-    })
+    type      = "CODEPIPELINE"
+    buildspec = "infra/terraform/bootstrap/buildspec-app-static-deploy.yml"
   }
 
   tags = merge(local.common_tags, {

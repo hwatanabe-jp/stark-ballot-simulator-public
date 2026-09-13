@@ -1,7 +1,61 @@
+data "aws_iam_policy_document" "foundation_initial_state_observation" {
+  count = local.foundation_pipeline_enabled && local.deployment_target.environmentId == "main" ? 1 : 0
+
+  statement {
+    sid       = "ReadInitialFoundationBucketVersioning"
+    effect    = "Allow"
+    actions   = ["s3:GetBucketVersioning"]
+    resources = ["arn:aws:s3:::${var.state_bucket_name}", local.terraform_authority_bucket_arn]
+  }
+
+  dynamic "statement" {
+    for_each = {
+      State = {
+        bucket_arn = "arn:aws:s3:::${var.state_bucket_name}"
+        key        = local.foundation_state_backend_key
+      }
+      Acceptance = {
+        bucket_arn = local.terraform_authority_bucket_arn
+        key        = trimprefix(local.terraform_foundation_acceptance_pointer_object_arn, "${local.terraform_authority_bucket_arn}/")
+      }
+    }
+    content {
+      sid       = "InspectInitialFoundation${statement.key}Versions"
+      effect    = "Allow"
+      actions   = ["s3:ListBucketVersions"]
+      resources = [statement.value.bucket_arn]
+
+      condition {
+        test     = "StringEquals"
+        variable = "s3:prefix"
+        values   = [statement.value.key]
+      }
+
+      condition {
+        test     = "NumericEquals"
+        variable = "s3:max-keys"
+        values   = ["1"]
+      }
+
+      dynamic "condition" {
+        for_each = statement.key == "State" ? [1] : []
+        content {
+          test     = "StringEquals"
+          variable = "s3:delimiter"
+          values   = ["."]
+        }
+      }
+    }
+  }
+}
+
 data "aws_iam_policy_document" "foundation_terraform_apply" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
-  source_policy_documents = [data.aws_iam_policy_document.foundation_terraform_plan[0].json]
+  source_policy_documents = concat([
+    data.aws_iam_policy_document.foundation_terraform_plan[0].json,
+    data.aws_iam_policy_document.saved_plan_approval_apply_read["foundation_terraform"].json,
+  ], data.aws_iam_policy_document.foundation_initial_state_observation[*].json)
 
   statement {
     sid       = "WriteFoundationStateBackend"
@@ -14,7 +68,7 @@ data "aws_iam_policy_document" "foundation_terraform_apply" {
     sid       = "ReadFoundationApprovalActionExecution"
     effect    = "Allow"
     actions   = ["codepipeline:ListActionExecutions"]
-    resources = [aws_codepipeline.development_foundation[0].arn]
+    resources = [local.foundation_pipeline_arn]
   }
 }
 
@@ -233,4 +287,11 @@ resource "aws_iam_role_policy" "foundation_terraform_apply" {
   name   = "${local.foundation_terraform_apply_role_name}-policy"
   role   = aws_iam_role.foundation_terraform_apply[0].id
   policy = data.aws_iam_policy_document.foundation_terraform_apply[0].json
+
+  lifecycle {
+    precondition {
+      condition     = length(jsonencode(jsondecode(data.aws_iam_policy_document.foundation_terraform_apply[0].json))) <= 10240
+      error_message = "The Foundation Terraform Apply inline policy must remain within IAM's 10,240-character role-policy quota."
+    }
+  }
 }

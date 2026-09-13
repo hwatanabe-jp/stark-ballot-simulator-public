@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Button } from '@stark-ballot/web/components/ui/Button';
 import { TurnstileWidget } from '@stark-ballot/web/components/security/TurnstileWidget';
 import { isBrowserTurnstileRequiredForAction } from '@stark-ballot/web/components/security/turnstilePolicy';
@@ -15,10 +15,12 @@ import {
 } from '@stark-ballot/web/session';
 import { saveKnowledgeData } from '@stark-ballot/web/knowledge';
 import type { VoteChoice } from '@stark-ballot/web/session/types';
+import { VOTE_CHOICES as VOTE_OPTIONS } from '@stark-ballot/verification/shared/constants';
 import { isValidVoteId } from '@stark-ballot/web/vote/voteIdValidation';
 import { isValidHexString } from '@stark-ballot/crypto-primitives';
 import { submitVote } from '@stark-ballot/web/api/votes';
 import { resolveApiClientErrorCode } from '@stark-ballot/web/api/client';
+import './Vote.css';
 
 interface VoteFormProps {
   /** Callback when vote is successfully submitted */
@@ -34,8 +36,6 @@ interface VoteResult {
   commitment: string;
 }
 
-const VOTE_OPTIONS: VoteChoice[] = ['A', 'B', 'C', 'D', 'E'];
-
 /**
  * Vote form component with option selection, Turnstile verification, and submission
  *
@@ -49,27 +49,21 @@ const VOTE_OPTIONS: VoteChoice[] = ['A', 'B', 'C', 'D', 'E'];
 export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.ReactElement {
   const { t } = useTranslation();
   const [mountedSessionIdentity] = useState(() => captureSessionIdentity());
-  const [selectedOption, setSelectedOption] = useState<VoteChoice | null>(null);
+  const [pendingOpening, setPendingOpening] = useState(() => {
+    const saved = mountedSessionIdentity ? getSessionDataForIdentity(mountedSessionIdentity) : null;
+    return saved?.myVote !== undefined
+      ? { vote: saved.myVote, commitment: saved.myCommit, randomValue: saved.myRand }
+      : null;
+  });
+  const [selectedOption, setSelectedOption] = useState<VoteChoice | null>(pendingOpening?.vote ?? null);
+  const [turnstileAttempt, setTurnstileAttempt] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const submissionControllerRef = useRef<AbortController | null>(null);
   const requireVoteTurnstile = isBrowserTurnstileRequiredForAction('vote');
 
-  const scrollToBottom = useCallback((): void => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    const prefersReducedMotion =
-      typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const behavior: ScrollBehavior = prefersReducedMotion ? 'auto' : 'smooth';
-    window.setTimeout(() => {
-      try {
-        window.scrollTo({ top: document.documentElement.scrollHeight, behavior });
-      } catch {
-        // no-op
-      }
-    }, 60);
-  }, []);
+  useEffect(() => () => submissionControllerRef.current?.abort(), []);
 
   const handleOptionChange = useCallback(
     (value: VoteChoice) => {
@@ -78,13 +72,12 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
       if (mountedSessionIdentity) {
         saveKnowledgeData({ 'user.choice': value }, { expectedSessionId: mountedSessionIdentity.sessionId });
       }
-      scrollToBottom();
     },
-    [mountedSessionIdentity, scrollToBottom],
+    [mountedSessionIdentity],
   );
 
   const handleSubmit = async () => {
-    if (!selectedOption) return;
+    if (!selectedOption || submissionControllerRef.current) return;
     if (requireVoteTurnstile && !turnstileToken) {
       const msg = t('errors.captchaFailed');
       setError(msg);
@@ -92,6 +85,8 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
       return;
     }
 
+    const controller = new AbortController();
+    submissionControllerRef.current = controller;
     setIsSubmitting(true);
     setError(null);
     let didSucceed = false;
@@ -109,8 +104,14 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
         throw new Error('Election ID missing');
       }
 
-      // Generate commitment
-      const { commitment, randomValue } = await generateCommitment(selectedOption, sessionData.electionId);
+      // An uncertain response must replay the exact opening, including after reload.
+      const opening =
+        pendingOpening ??
+        (sessionData.myVote !== undefined
+          ? { vote: sessionData.myVote, commitment: sessionData.myCommit, randomValue: sessionData.myRand }
+          : { vote: selectedOption, ...(await generateCommitment(selectedOption, sessionData.electionId)) });
+      const { commitment, randomValue } = opening;
+      if (controller.signal.aborted) return;
       const sessionDataBeforeSubmit = getSessionDataForIdentity(mountedSessionIdentity);
       if (!sessionDataBeforeSubmit) {
         throw new Error('Session not found');
@@ -118,24 +119,33 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
 
       // Save vote data to session
       saveSessionDataForIdentity(mountedSessionIdentity, {
-        myVote: selectedOption,
+        myVote: opening.vote,
         myCommit: commitment,
         myRand: randomValue,
       });
 
+      setPendingOpening(opening);
+      setSelectedOption(opening.vote);
+
       // Submit vote to API
       let result;
       try {
-        result = await submitVote(sessionDataBeforeSubmit, {
-          commitment,
-          vote: selectedOption,
-          rand: randomValue,
-          ...(turnstileToken ? { turnstileToken } : {}),
-        });
+        result = await submitVote(
+          sessionDataBeforeSubmit,
+          {
+            commitment,
+            vote: opening.vote,
+            rand: randomValue,
+            ...(turnstileToken ? { turnstileToken } : {}),
+          },
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
         if (!getSessionDataForIdentity(mountedSessionIdentity)) {
           throw new Error('Session not found');
         }
       } catch (requestError) {
+        if (controller.signal.aborted) return;
         if (resolveApiClientErrorCode(requestError) === 'CAPTCHA_FAILED') {
           const msg = t('errors.captchaFailed');
           setError(msg);
@@ -150,6 +160,7 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
 
       // Validate response
       if (
+        result.commitment !== commitment ||
         !voteId ||
         !isValidVoteId(voteId) ||
         bulletinIndex < 0 ||
@@ -169,7 +180,7 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
       // Update knowledge store with vote info (after API success)
       saveKnowledgeData(
         {
-          'user.choice': selectedOption,
+          'user.choice': opening.vote,
           'user.random': randomValue,
           'user.commitment': commitment,
           'user.voteId': voteId,
@@ -189,6 +200,7 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
       });
       didSucceed = true;
     } catch (err) {
+      if (controller.signal.aborted) return;
       let errorMessage: string;
       if (err instanceof Error && err.message === 'Network error') {
         errorMessage = t('errors.network');
@@ -200,8 +212,11 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
       setError(errorMessage);
       onError?.(errorMessage);
     } finally {
-      if (!didSucceed) {
+      if (submissionControllerRef.current === controller) submissionControllerRef.current = null;
+      if (!didSucceed && !controller.signal.aborted) {
         setIsSubmitting(false);
+        setTurnstileToken(null);
+        setTurnstileAttempt((attempt) => attempt + 1);
       }
     }
   };
@@ -211,7 +226,7 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
   };
 
   return (
-    <div className="space-y-6">
+    <div className="vote-form">
       {/* Vote options */}
       <RadioGroup
         name="vote-option"
@@ -222,13 +237,18 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
           testId: `vote-option-${option}`,
         }))}
         value={selectedOption ?? ''}
-        onChange={(value) => handleOptionChange(value as VoteChoice)}
-        disabled={isSubmitting}
+        onChange={handleOptionChange}
+        disabled={isSubmitting || pendingOpening !== null}
       />
 
       {requireVoteTurnstile && (
         <div className="flex justify-center">
-          <TurnstileWidget action="vote" onTokenChange={setTurnstileToken} disabled={isSubmitting} />
+          <TurnstileWidget
+            key={turnstileAttempt}
+            action="vote"
+            onTokenChange={setTurnstileToken}
+            disabled={isSubmitting}
+          />
         </div>
       )}
 
@@ -241,7 +261,7 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
         onClick={() => void handleSubmit()}
         disabled={!selectedOption || isSubmitting || (requireVoteTurnstile && !turnstileToken)}
         loading={isSubmitting}
-        fullWidth
+        className="vote-form__submit"
         data-testid="submit-vote"
       >
         {isSubmitting ? t('pages.vote.submitting') : t('pages.vote.submit')}

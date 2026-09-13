@@ -4,6 +4,9 @@ import { isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal
 import type { KnowledgeData, InclusionProof } from './types';
 import { KNOWLEDGE_KEYS } from './types';
 
+/** Normalized keys whose values still require the store's admission. */
+export type KnowledgeCandidate = Partial<Record<keyof KnowledgeData, unknown>>;
+
 /**
  * Field name mappings from API payloads to knowledge keys.
  */
@@ -52,7 +55,11 @@ function normalizeInclusionProof(proof: Record<string, unknown>): InclusionProof
 }
 
 const TALLY_KEYS = ['A', 'B', 'C', 'D', 'E'] as const;
-const KNOWLEDGE_KEY_SET = new Set(KNOWLEDGE_KEYS as readonly string[]);
+const KNOWLEDGE_KEY_SET = new Set<string>(KNOWLEDGE_KEYS);
+
+function isKnowledgeKey(value: string): value is keyof KnowledgeData {
+  return KNOWLEDGE_KEY_SET.has(value);
+}
 
 function normalizeTallyCounts(value: unknown): KnowledgeData['tally.counts'] | undefined {
   if (!isRecord(value)) {
@@ -126,14 +133,14 @@ function normalizeCanonicalJournalKnowledge(raw: Record<string, unknown>): Parti
 }
 
 /**
- * Normalize raw API data to canonical KnowledgeData structure
+ * Normalize raw API keys; the knowledge store admits the resulting values
  *
  * Handles:
  * - Field name mappings (API payload -> knowledge keys)
  * - Nested object flattening (userVote.proof -> user.merklePath)
  */
-export function normalizeKnowledgeData(raw: Record<string, unknown>): Partial<KnowledgeData> {
-  const normalized: Partial<KnowledgeData> = {};
+export function normalizeKnowledgeData(raw: Record<string, unknown>): KnowledgeCandidate {
+  const normalized: KnowledgeCandidate = {};
 
   for (const [key, value] of Object.entries(raw)) {
     if (value === undefined || value === null) {
@@ -151,13 +158,13 @@ export function normalizeKnowledgeData(raw: Record<string, unknown>): Partial<Kn
       for (const [nestedKey, targetKey] of Object.entries(nestedMappings)) {
         const nestedValue = nestedObj[nestedKey];
         if (nestedValue !== undefined && nestedValue !== null) {
-          (normalized as Record<string, unknown>)[targetKey] = nestedValue;
+          normalized[targetKey] = nestedValue;
         }
       }
 
       // Handle proof inside userVote
-      if (key === 'userVote' && nestedObj['proof']) {
-        const proof = nestedObj['proof'] as Record<string, unknown>;
+      if (key === 'userVote' && isRecord(nestedObj['proof'])) {
+        const proof = nestedObj['proof'];
         const normalizedProof = normalizeInclusionProof(proof);
         if (normalizedProof) {
           normalized['user.merklePath'] = normalizedProof;
@@ -187,17 +194,17 @@ export function normalizeKnowledgeData(raw: Record<string, unknown>): Partial<Kn
         normalized['tally.counts'] = counts;
       }
       if (tally['totalVotes'] !== undefined) {
-        normalized['tally.totalVotes'] = tally['totalVotes'] as number;
+        normalized['tally.totalVotes'] = tally['totalVotes'];
       }
       if (tally['tamperedCount'] !== undefined) {
-        normalized['tally.tamperedCount'] = tally['tamperedCount'] as number;
+        normalized['tally.tamperedCount'] = tally['tamperedCount'];
       }
       continue;
     }
 
     // Special handling for verificationSteps
     if (key === 'verificationSteps' && Array.isArray(value)) {
-      normalized['verification.steps'] = value as NonNullable<KnowledgeData['verification.steps']>;
+      normalized['verification.steps'] = value;
       continue;
     }
 
@@ -241,8 +248,8 @@ export function normalizeKnowledgeData(raw: Record<string, unknown>): Partial<Kn
     }
 
     // Apply mapping for primitive values
-    if (KNOWLEDGE_KEY_SET.has(canonicalKey)) {
-      (normalized as Record<string, unknown>)[canonicalKey] = value;
+    if (isKnowledgeKey(canonicalKey)) {
+      normalized[canonicalKey] = value;
     }
   }
 

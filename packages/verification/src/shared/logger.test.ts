@@ -16,7 +16,7 @@ describe('verification warning logger', () => {
       throw new Error('console unavailable');
     });
 
-    expect(() => logger.warn('legacy_image_id_override_ignored')).not.toThrow();
+    expect(() => logger.warn('ct_inclusion_failed')).not.toThrow();
     warnSpy.mockRestore();
   });
 });

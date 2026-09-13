@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   localRuntimeProfile,
   targetRuntimeProfile,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { _setStepFunctionsClient, describeFinalizationExecution } from './finalizationStepFunctions';
 
 describe('finalizationStepFunctions adapter', () => {

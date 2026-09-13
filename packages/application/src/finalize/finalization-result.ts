@@ -1,8 +1,9 @@
 import type {
-  FinalizationBitmapData,
+  FinalizationPublicAuditArtifactsState,
   FinalizationResultAuthority,
   FinalizationScenarioContext,
 } from '@stark-ballot/application/finalize/finalization-types';
+import { createUnavailableFinalizationArtifacts } from '@stark-ballot/application/finalize/finalization-types';
 import type { ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
 import type { CloseStatement, ElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
 import { isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
@@ -17,11 +18,15 @@ import {
   resolveConsistentPublicAuditArtifacts as resolveVerificationPublicAuditArtifacts,
   type PublicAuditArtifactConsistencyIssue,
 } from '@stark-ballot/verification/public-audit-artifact-consistency';
+import { admitFinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-storage';
 
 export type { PublicAuditArtifactConsistencyIssue };
 
 interface PublicAuditArtifactResolution {
-  publicInputArtifact?: FinalizationResultAuthority['publicInputArtifact'];
+  publicInputArtifact?: Extract<
+    FinalizationPublicAuditArtifactsState,
+    { availability: 'available' }
+  >['publicInputArtifact'];
   electionManifest?: ElectionManifest;
   closeStatement?: CloseStatement;
   issues: PublicAuditArtifactConsistencyIssue[];
@@ -34,21 +39,6 @@ function buildCountsRecord(verifiedTally: number[]): Record<(typeof VOTE_CHOICES
     record[choice] = Number.isFinite(value) ? (value ?? 0) : 0;
   }
   return record;
-}
-
-export function updateFinalizationResultBitmapData(
-  result: FinalizationResultAuthority,
-  bitmapData: FinalizationBitmapData,
-): FinalizationResultAuthority {
-  return {
-    ...result,
-    bitmapData: {
-      ...bitmapData,
-      includedBitmap: [...bitmapData.includedBitmap],
-      ...(bitmapData.seenBitmap ? { seenBitmap: [...bitmapData.seenBitmap] } : {}),
-    },
-    bitmapProofSource: result.bitmapProofSource ?? 'real',
-  };
 }
 
 function resolveUsableTally(
@@ -142,8 +132,7 @@ export function buildFinalizationResultFromJournal(options: {
   journal: ZkVMJournal;
   imageId?: string;
   scenarioContext?: FinalizationScenarioContext | null;
-  electionManifest?: ElectionManifest;
-  closeStatement?: CloseStatement;
+  publicAuditArtifacts?: Extract<FinalizationPublicAuditArtifactsState, { availability: 'available' }>;
 }): FinalizationResultAuthority {
   const { scenarioContext } = options;
   const journal = toPublicZkvmJournal(options.journal);
@@ -164,9 +153,12 @@ export function buildFinalizationResultFromJournal(options: {
     },
     imageId,
     tamperDetected,
-    electionManifest: options.electionManifest,
-    closeStatement: options.closeStatement,
+    scenarios: [],
     journal,
+    artifacts: {
+      ...createUnavailableFinalizationArtifacts(),
+      ...(options.publicAuditArtifacts ? { publicAudit: options.publicAuditArtifacts } : {}),
+    },
   });
 
   return applyScenarioContext(baseResult, scenarioContext);
@@ -176,22 +168,20 @@ export function canonicalizeFinalizationResult(
   result: unknown,
   scenarioContext?: FinalizationScenarioContext | null,
 ): FinalizationResultAuthority | undefined {
-  if (!result || typeof result !== 'object') {
-    return undefined;
-  }
-  const candidate = result as FinalizationResultAuthority;
-
-  if (!isSupportedZkVMJournal(candidate.journal)) {
+  const candidate = admitFinalizationResultAuthority(result);
+  if (!candidate || !isSupportedZkVMJournal(candidate.journal)) {
     return undefined;
   }
 
   const journal = toPublicZkvmJournal(candidate.journal);
+  const storedPublicAudit = candidate.artifacts.publicAudit;
   const artifactResolution = resolveConsistentPublicAuditArtifacts(
     omitUndefinedProperties({
       journal,
-      publicInputArtifact: candidate.publicInputArtifact,
-      electionManifest: candidate.electionManifest,
-      closeStatement: candidate.closeStatement,
+      publicInputArtifact:
+        storedPublicAudit.availability === 'available' ? storedPublicAudit.publicInputArtifact : undefined,
+      electionManifest: storedPublicAudit.availability === 'available' ? storedPublicAudit.electionManifest : undefined,
+      closeStatement: storedPublicAudit.availability === 'available' ? storedPublicAudit.closeStatement : undefined,
       hasLocalPublicInputAuthority: true,
     }),
   );
@@ -205,16 +195,21 @@ export function canonicalizeFinalizationResult(
       journal,
       imageId: candidate.imageId,
       scenarioContext,
-      electionManifest,
-      closeStatement,
+      publicAuditArtifacts:
+        publicInputArtifact && electionManifest && closeStatement
+          ? {
+              availability: 'available' as const,
+              publicInputArtifact,
+              electionManifest,
+              closeStatement,
+            }
+          : undefined,
     }),
   );
   const storedScenarioTamperCount = resolveScenarioTamperCount(candidate.tamperSummary);
 
   const canonical: FinalizationResultAuthority = omitUndefinedProperties({
     tally: resolveUsableTally(candidate.tally, derived.tally),
-    receipt: candidate.receipt,
-    receiptPublication: candidate.receiptPublication,
     imageId: candidate.imageId,
     tamperDetected:
       Boolean(candidate.tamperDetected) ||
@@ -225,11 +220,12 @@ export function canonicalizeFinalizationResult(
       }),
     scenarios: candidate.scenarios,
     journal,
-    publicInputArtifact,
-    electionManifest,
-    closeStatement,
-    bitmapProofSource: candidate.bitmapProofSource,
-    bitmapData: candidate.bitmapData,
+    artifacts: {
+      publicAudit: derived.artifacts.publicAudit,
+      receipt: candidate.artifacts.receipt,
+      receiptPublication: candidate.artifacts.receiptPublication,
+      bitmap: candidate.artifacts.bitmap,
+    },
     ...omitUndefinedProperties({ tamperSummary: candidate.tamperSummary }),
   });
 
@@ -237,28 +233,30 @@ export function canonicalizeFinalizationResult(
 }
 
 export function hydrateFinalizationResultFromJournal(
-  result: FinalizationResultAuthority | undefined,
+  result: unknown,
   scenarioContext?: FinalizationScenarioContext | null,
 ): FinalizationResultAuthority | undefined {
   return canonicalizeFinalizationResult(result, scenarioContext);
 }
 
 export function hasConsistentPublicAuditArtifacts(
-  result:
-    | Pick<FinalizationResultAuthority, 'journal' | 'publicInputArtifact' | 'electionManifest' | 'closeStatement'>
-    | undefined,
+  result: Pick<FinalizationResultAuthority, 'journal' | 'artifacts'> | undefined,
 ): boolean {
   if (!result || !isSupportedZkVMJournal(result.journal)) {
     return false;
   }
 
   const journal = toPublicZkvmJournal(result.journal);
+  const publicAudit = result.artifacts.publicAudit;
+  if (publicAudit.availability !== 'available') {
+    return false;
+  }
   const artifactResolution = resolveConsistentPublicAuditArtifacts(
     omitUndefinedProperties({
       journal,
-      publicInputArtifact: result.publicInputArtifact,
-      electionManifest: result.electionManifest,
-      closeStatement: result.closeStatement,
+      publicInputArtifact: publicAudit.publicInputArtifact,
+      electionManifest: publicAudit.electionManifest,
+      closeStatement: publicAudit.closeStatement,
       hasLocalPublicInputAuthority: true,
     }),
   );
@@ -273,7 +271,10 @@ export function hasConsistentPublicAuditArtifacts(
 
 export function resolveConsistentPublicAuditArtifacts(input: {
   journal: ZkVMJournal;
-  publicInputArtifact?: FinalizationResultAuthority['publicInputArtifact'];
+  publicInputArtifact?: Extract<
+    FinalizationPublicAuditArtifactsState,
+    { availability: 'available' }
+  >['publicInputArtifact'];
   electionManifest?: ElectionManifest;
   closeStatement?: CloseStatement;
   hasLocalPublicInputAuthority?: boolean;

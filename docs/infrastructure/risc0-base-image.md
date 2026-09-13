@@ -1,17 +1,18 @@
 # RISC Zero Toolchain Image - ARM64
 
 > **Status:** current technical and release-lane guide for the target AWS ARM64
-> Toolchain image. Repository procedure updated: 2026-08-09. Live evidence
+> Toolchain image. Repository procedure updated: 2026-09-06. Live evidence
 > last reconciled: 2026-07-24.
 
 The RISC Zero toolchain image prebuilds the large Rust/RISC Zero toolchain used
-by Prover image builds. A normal full App deployment uses one control source
-SHA for its same-source Foundation and App lanes, but it may reuse a compatible
-retained Prover built from another source when the recorded zkVM contract hash
-matches exactly. Each Prover record exact-links one immutable Toolchain
-artifact, which may itself have been built from an earlier source SHA. If the
-accepted Toolchain pointer already names the intended artifact, do not run the
-Toolchain lane.
+by Prover image builds. A normal App or Prover execution resolves the current
+Foundation acceptance and requires the selected source's recomputed Foundation
+contract hash to match; source equality is neither required nor sufficient. App
+may reuse a compatible retained Prover built from another source when the
+recorded zkVM contract hash matches exactly. Each Prover record exact-links one
+immutable Toolchain ledger release, whose candidate may itself have been built
+from an earlier source SHA. If the key-only accepted Toolchain pointer already
+names the intended release, do not run the Toolchain lane.
 
 ## Sources of truth
 
@@ -23,7 +24,8 @@ Toolchain lane.
 | Release pipeline                  | `infra/terraform/bootstrap/foundation_pipeline_toolchain_release_*` |
 | ECR repository                    | `infra/terraform/foundation/ecr.tf`                                 |
 | Operator procedure                | Private deployment and operator documentation                       |
-| Release record and pointer        | Versioned foundation manifest storage                               |
+| Candidate/release ledger          | `packages/deployment-authority/src/release-ledger.js`               |
+| Release storage and pointer       | Versioned Foundation manifest storage                               |
 
 The amd64 GHCR image built by
 `.github/workflows/risc0-toolchain-image-amd64.yml` is for CI. It is not the
@@ -51,13 +53,13 @@ that differ from these reviewed pins. Before push, it also checks the installed
 host and guest `rustc` versions and commits, `cargo-risczero` and `r0vm`
 versions, and the corresponding image labels. `existing` deliberately does
 not impose current-version pins: historical selection remains available for
-current semantic records identified by exact immutable coordinates.
+admitted candidates identified by one content-addressed ledger key.
 
 The build path uses the Amazon ECR credential helper already supplied by the
 managed ARM CodeBuild image. Its temporary Docker configuration admits only
 the exact target private registry and `public.ecr.aws`, disables the helper's
 token cache, and probes both registries before starting the long image build.
-Retained-artifact selection skips this Docker/ECR authentication path.
+Retained-candidate selection skips this Docker/ECR authentication path.
 
 ## When image contents change
 
@@ -69,25 +71,21 @@ Retained-artifact selection skips this Docker/ECR authentication path.
 - The accepted toolchain image itself needs a security fix.
 
 These conditions describe when `build` mode is required. To select a different
-already retained semantic artifact, use `existing` mode with its exact key, S3
-`VersionId`, and canonical body SHA-256. That mode revalidates the record and
-ECR digest without rebuilding the image, then publishes a current semantic
-record that preserves the original build provenance. Direct publication,
-manual record reissue, digest-only selection, and mutable tags remain
-unsupported.
+already retained candidate, use `existing` mode with its exact
+content-addressed ledger key. That mode revalidates the candidate and ECR
+digest without rebuilding the image, then publishes a content-addressed
+release that preserves original build provenance.
 
 ## Current release flow
 
-Build or select the target Toolchain authority in its dedicated release lane,
-never through a direct Docker push, direct CodeBuild start, or legacy Terraform
-path.
+Build or select the target Toolchain authority in its dedicated release lane.
 
 ```text
 Source
   -> CandidateApproval / ApproveToolchainCandidateExecution
   -> PrepareToolchainCandidate
      -> render and validate the canonical, hash-bound Toolchain context
-     -> build a new candidate or resolve one exact retained artifact
+     -> build/publish a new candidate or resolve one exact candidate key
   -> PromotionApproval / ApproveToolchainPromotion
   -> UpdateAcceptedPointer
      (revalidate the same context for the pointer role and project)
@@ -101,17 +99,28 @@ It retains the canonical context and its SHA-256 beside `image-info.json`.
 Context loading verifies the full target-configuration hash, lane, account,
 region, resolved source, and exact CodeBuild role and project. Pointer promotion
 loads that same retained context against its own exact role and project before
-publishing authority.
+publishing a content-addressed release and conditionally moving the key-only
+accepted pointer.
+
+Normal Prover input observes that pointer once, or accepts one explicitly
+pinned content-addressed Toolchain release key, and binds the resulting release
+and candidate to its candidate action. Prover itself uses content-addressed
+candidate/release records and a key-only accepted pointer. Its `existing` mode
+selects one Prover candidate key and revalidates that candidate against the
+same Toolchain release without rebuilding either image. Normal App selection
+and ECR retention resolve both ledgers. Retained App history uses embedded
+admitted image facts and does not fetch predecessor ledger bodies.
 
 Do not start this lane until the user explicitly authorizes the intended build
 or retained selection. Follow the private deployment and operator
 documentation for the exact dry-run and execution commands. Every selection
-must bind a full control source SHA. Retained-artifact selection must also bind
-the exact artifact key, S3 `VersionId`, and body SHA-256.
+must bind a full control source SHA. Retained-candidate selection also binds
+its one exact `artifacts/toolchain/candidates/<sha256>.json` ledger key; there
+is no operator S3 `VersionId`/body-hash group.
 
 Before execution, review the exact configured account, pipeline, Source action,
-region, fixed `stark-dev-operator` profile, control SHA, mode, and exact retained
-coordinates when applicable. The private starter derives the target values
+region, fixed `stark-dev-operator` profile, control SHA, mode, and exact
+candidate key when applicable. The private starter derives the target values
 from deployment authority and rejects account, pipeline, Source-action, region,
 or profile alternatives. It passes the selected commit as both the CodePipeline
 Source `COMMIT_ID` and `RequestedSourceSha`, requires an explicit execution
@@ -123,25 +132,19 @@ starts CodePipeline.
 
 `ApproveToolchainCandidateExecution` is required before the shared privileged
 candidate project runs in either mode. In `build`, it authorizes the reviewed
-ARM64 build, push, scan, and immutable record write. In `existing`, the same
-gate authorizes only exact read and validation of the reviewed retained
-coordinates; that path performs no Docker build, ECR mutation, or new scan.
-After the separate promotion approval, it writes a current semantic record for
-the selected image without changing the selected immutable record. Requiring
-the gate in both modes prevents the shared project's build-capable role from
-running before human approval.
-`ApproveToolchainPromotion` separately authorizes promoting the prepared
-candidate into the accepted channel and is also required in both modes.
+ARM64 build, push, scan, and create-only candidate publication. In `existing`,
+the same gate authorizes only exact read and validation of the reviewed
+candidate key; that path performs no Docker build, ECR mutation, or new scan.
+Requiring the gate in both modes prevents the shared project's build-capable
+role from running before human approval.
 
-Before promotion, verify:
+Before approving `ApproveToolchainPromotion`, verify:
 
 - the current control source SHA and selection mode;
-- the new candidate source/build evidence, or the retained artifact's original
-  source and exact key, VersionId, and body SHA-256;
+- the candidate's exact content-addressed ledger key and original source/build
+  evidence, whether newly built or retained;
 - the digest-pinned ECR URI;
-- the digest-bound scan summary and repository-policy disposition;
-- immutable artifact-record key, VersionId, and body checksum; and
-- accepted-pointer first-create or compare-and-swap evidence.
+- the digest-bound scan summary and repository-policy disposition.
 
 The toolchain scan is warn-only. HIGH or CRITICAL findings are accepted and
 non-blocking for this PoC under the repository policy; the semantic record
@@ -149,13 +152,26 @@ retains the digest-bound `scanStatus` and HIGH/CRITICAL count. No waiver input,
 per-finding review, or remediation is required. Toolchain images are neither
 signed nor cryptographically verified.
 
+`ApproveToolchainPromotion` is required in both modes. It authorizes the
+subsequent `UpdateAcceptedPointer` action to publish a content-addressed
+release for the selected image without changing the candidate, then
+conditionally move the accepted pointer. After that action succeeds, verify:
+
+- the published release key and its binding to the reviewed candidate,
+  control source, and promotion execution;
+- the accepted-pointer first-create or compare-and-swap evidence and its
+  binding to that release.
+
 ## Required follow-up
 
 Updating the accepted toolchain pointer does not change the existing prover or
 ECS task.
 
-1. Run a new prover release that selects the accepted toolchain.
-2. Verify and promote the prover candidate's ImageID/method version, scan, and
+1. Run a Prover release that selects the accepted Toolchain. Build a new
+   candidate when the new Toolchain release key changes its input; use Prover
+   `existing` only when one retained candidate already exact-links the selected
+   release.
+2. Verify and promote the Prover candidate's ImageID/method version, scan, and
    managed-signing readiness.
 3. Run the app full lane so its preflight cryptographically verifies the
    selected Prover digest before the accepted record reaches runtime.
@@ -175,26 +191,25 @@ pnpm public-safety:scan
 ```
 
 Run the affected Dockerfile/buildspec contract tests and format checks as well.
-A local image or mutable tag is never release evidence.
 
 ## Live status and troubleshooting
 
-The dedicated Toolchain lane supports both build and exact retained-artifact
-selection. Consult the private current-AWS inventory for the latest execution
-and accepted-pointer evidence. Before retrying a failed or stopped execution,
-inspect that execution's CodeBuild log and retained artifact instead of
-repeatedly changing inputs.
+Consult the private current-AWS inventory for the latest execution and
+accepted-pointer evidence, and the private operator script guide for helper
+arguments and artifact contracts. Before retrying a failed or stopped
+execution, inspect that execution's CodeBuild log and retained candidate
+record.
 
-See the private current-AWS inventory for live status and the private operator
-script guide for helper arguments and artifact contracts.
-
-## Forbidden legacy paths
+## Unsupported release paths
 
 - Do not use `infra/terraform/legacy/` CodeBuild/ECR resources for a target
   release.
-- Do not accept a local `docker buildx ... --push` as image authority.
+- Do not use a direct Docker push or local Toolchain generation as image
+  authority.
 - Do not start CodeBuild directly with `aws codebuild start-build`.
 - Do not supply `latest` or another mutable tag to the app.
 - Do not transcribe a digest into Terraform or a manifest and call it accepted
   evidence.
+- Do not manually reissue candidate or release records or select an image by
+  digest alone.
 - Do not overwrite an accepted-pointer object with an ad hoc S3 write.

@@ -68,3 +68,13 @@ resource "aws_iam_role_policy" "foundation_pipeline" {
   role   = aws_iam_role.foundation_pipeline[0].id
   policy = data.aws_iam_policy_document.foundation_pipeline[0].json
 }
+
+check "foundation_pipeline_inline_policy_size" {
+  assert {
+    condition = (
+      !local.foundation_pipeline_enabled
+      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.foundation_pipeline[0].json))) <= 10240, false)
+    )
+    error_message = "The Foundation pipeline inline policy must remain within IAM's 10,240-character role-policy quota."
+  }
+}

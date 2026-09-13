@@ -6,10 +6,11 @@ use std::{
     time::Instant,
 };
 
+use contract_core::{VerificationOutput, CURRENT_METHOD_VERSION};
 use hex::FromHex;
 use risc0_zkp::{core::digest::Digest, verify::VerificationError as Risc0VerificationError};
 use risc0_zkvm::{InnerReceipt, Receipt};
-use serde::Serialize;
+use serde::{ser::SerializeStruct, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
@@ -19,20 +20,35 @@ use zip::ZipArchive;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedImageId {
-    pub normalized: String,
-    pub digest: Digest,
+/// An expected ImageID whose text and digest are constructed together.
+///
+/// ```compile_fail
+/// let mut image_id = verifier_service::ImageId::parse(&"0".repeat(64)).unwrap();
+/// image_id.normalized = "different image".to_owned();
+/// ```
+pub struct ImageId {
+    normalized: String,
+    digest: Digest,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Verify(VerifyCommand),
+    DecodeJournal(DecodeJournalCommand),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct VerifyCommand {
     pub bundle_path: PathBuf,
-    pub image_id: ParsedImageId,
+    pub image_id: ImageId,
+    pub output_path: Option<PathBuf>,
+    pub quiet: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DecodeJournalCommand {
+    pub bundle_path: PathBuf,
+    pub image_id: ImageId,
     pub output_path: Option<PathBuf>,
     pub quiet: bool,
 }
@@ -71,9 +87,17 @@ pub enum ServiceError {
     VerificationDidNotSucceed(Box<VerificationReport>),
     #[error("failed to serialize verification report: {0}")]
     ReportSerialize(serde_json::Error),
+    #[error("invalid verification report: {0}")]
+    ReportInvariant(&'static str),
+    #[error("failed to serialize decoded journal: {0}")]
+    JournalSerialize(serde_json::Error),
+    #[error("receipt metadata is missing the image_id required by host JSON admission")]
+    ReceiptImageIdMissing,
+    #[error("failed to decode the RISC Zero receipt journal: {0}")]
+    JournalDecode(String),
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationStatus {
     Success,
@@ -81,19 +105,228 @@ pub enum VerificationStatus {
     DevMode,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VerificationReportCommon {
+    verifier_version: String,
+    verified_at: String,
+    duration_ms: u128,
+    expected_image_id: String,
+    bundle_path: String,
+    receipt_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VerificationReportOutcome {
+    Success {
+        receipt_image_id: String,
+    },
+    DevMode {
+        receipt_image_id: Option<String>,
+        errors: Vec<String>,
+    },
+    Failed {
+        receipt_image_id: Option<String>,
+        dev_mode_receipt: bool,
+        errors: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerificationReport {
-    pub status: VerificationStatus,
-    pub verifier_version: String,
-    pub verified_at: String,
-    pub duration_ms: u128,
-    pub expected_image_id: String,
-    pub receipt_image_id: Option<String>,
-    pub bundle_path: String,
-    pub receipt_path: String,
-    pub dev_mode_receipt: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub errors: Vec<String>,
+    common: VerificationReportCommon,
+    outcome: VerificationReportOutcome,
+}
+
+impl VerificationReport {
+    fn success(
+        common: VerificationReportCommon,
+        receipt_image_id: String,
+    ) -> Result<Self, ServiceError> {
+        if receipt_image_id != common.expected_image_id {
+            return Err(ServiceError::ReportInvariant(
+                "success receipt_image_id must match expected_image_id",
+            ));
+        }
+        Ok(Self {
+            common,
+            outcome: VerificationReportOutcome::Success { receipt_image_id },
+        })
+    }
+
+    fn dev_mode(
+        common: VerificationReportCommon,
+        receipt_image_id: Option<String>,
+        errors: Vec<String>,
+    ) -> Result<Self, ServiceError> {
+        if receipt_image_id
+            .as_ref()
+            .is_some_and(|receipt_image_id| receipt_image_id != &common.expected_image_id)
+        {
+            return Err(ServiceError::ReportInvariant(
+                "dev_mode receipt_image_id must match expected_image_id when present",
+            ));
+        }
+        validate_report_errors(&errors, true)?;
+        Ok(Self {
+            common,
+            outcome: VerificationReportOutcome::DevMode {
+                receipt_image_id,
+                errors,
+            },
+        })
+    }
+
+    fn failed(
+        common: VerificationReportCommon,
+        receipt_image_id: Option<String>,
+        dev_mode_receipt: bool,
+        errors: Vec<String>,
+    ) -> Result<Self, ServiceError> {
+        validate_report_errors(&errors, false)?;
+        Ok(Self {
+            common,
+            outcome: VerificationReportOutcome::Failed {
+                receipt_image_id,
+                dev_mode_receipt,
+                errors,
+            },
+        })
+    }
+
+    pub fn status(&self) -> VerificationStatus {
+        match &self.outcome {
+            VerificationReportOutcome::Success { .. } => VerificationStatus::Success,
+            VerificationReportOutcome::DevMode { .. } => VerificationStatus::DevMode,
+            VerificationReportOutcome::Failed { .. } => VerificationStatus::Failed,
+        }
+    }
+
+    pub fn errors(&self) -> &[String] {
+        match &self.outcome {
+            VerificationReportOutcome::Success { .. } => &[],
+            VerificationReportOutcome::DevMode { errors, .. }
+            | VerificationReportOutcome::Failed { errors, .. } => errors,
+        }
+    }
+
+    pub fn expected_image_id(&self) -> &str {
+        &self.common.expected_image_id
+    }
+
+    pub fn receipt_image_id(&self) -> Option<&str> {
+        match &self.outcome {
+            VerificationReportOutcome::Success { receipt_image_id } => Some(receipt_image_id),
+            VerificationReportOutcome::DevMode {
+                receipt_image_id, ..
+            }
+            | VerificationReportOutcome::Failed {
+                receipt_image_id, ..
+            } => receipt_image_id.as_deref(),
+        }
+    }
+
+    pub fn bundle_path(&self) -> &str {
+        &self.common.bundle_path
+    }
+
+    pub fn receipt_path(&self) -> &str {
+        &self.common.receipt_path
+    }
+
+    pub fn dev_mode_receipt(&self) -> bool {
+        match &self.outcome {
+            VerificationReportOutcome::Success { .. } => false,
+            VerificationReportOutcome::DevMode { .. } => true,
+            VerificationReportOutcome::Failed {
+                dev_mode_receipt, ..
+            } => *dev_mode_receipt,
+        }
+    }
+}
+
+impl Serialize for VerificationReport {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let errors = self.errors();
+        let mut report = serializer
+            .serialize_struct("VerificationReport", if errors.is_empty() { 9 } else { 10 })?;
+        report.serialize_field("status", &self.status())?;
+        report.serialize_field("verifier_version", &self.common.verifier_version)?;
+        report.serialize_field("verified_at", &self.common.verified_at)?;
+        report.serialize_field("duration_ms", &self.common.duration_ms)?;
+        report.serialize_field("expected_image_id", &self.common.expected_image_id)?;
+        report.serialize_field("receipt_image_id", &self.receipt_image_id())?;
+        report.serialize_field("bundle_path", &self.common.bundle_path)?;
+        report.serialize_field("receipt_path", &self.common.receipt_path)?;
+        report.serialize_field("dev_mode_receipt", &self.dev_mode_receipt())?;
+        if !errors.is_empty() {
+            report.serialize_field("errors", errors)?;
+        }
+        report.end()
+    }
+}
+
+fn validate_report_errors(errors: &[String], allow_empty: bool) -> Result<(), ServiceError> {
+    if (!allow_empty && errors.is_empty()) || errors.iter().any(String::is_empty) {
+        return Err(ServiceError::ReportInvariant(
+            "errors must contain one or more nonempty strings for failed reports",
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DecodedJournal {
+    pub election_id: [u8; 16],
+    pub election_config_hash: [u8; 32],
+    pub bulletin_root: [u8; 32],
+    pub tree_size: u32,
+    pub total_expected: u32,
+    pub sth_digest: [u8; 32],
+    pub verified_tally: [u32; 5],
+    pub total_votes: u32,
+    pub valid_votes: u32,
+    pub invalid_votes: u32,
+    pub seen_indices_count: u32,
+    pub missing_slots: u32,
+    pub invalid_presented_slots: u32,
+    pub rejected_records: u32,
+    pub seen_bitmap_root: [u8; 32],
+    pub included_bitmap_root: [u8; 32],
+    pub excluded_slots: u32,
+    pub input_commitment: [u8; 32],
+    pub method_version: u32,
+    pub image_id: String,
+}
+
+impl DecodedJournal {
+    fn from_verification_output(output: VerificationOutput, image_id: String) -> Self {
+        Self {
+            election_id: output.election_id,
+            election_config_hash: output.election_config_hash,
+            bulletin_root: output.bulletin_root,
+            tree_size: output.tree_size,
+            total_expected: output.total_expected,
+            sth_digest: output.sth_digest,
+            verified_tally: output.verified_tally,
+            total_votes: output.total_votes,
+            valid_votes: output.valid_votes,
+            invalid_votes: output.invalid_votes,
+            seen_indices_count: output.seen_indices_count,
+            missing_slots: output.missing_slots,
+            invalid_presented_slots: output.invalid_presented_slots,
+            rejected_records: output.rejected_records,
+            seen_bitmap_root: output.seen_bitmap_root,
+            included_bitmap_root: output.included_bitmap_root,
+            excluded_slots: output.excluded_slots,
+            input_commitment: output.input_commitment,
+            method_version: output.method_version,
+            image_id,
+        }
+    }
 }
 
 pub fn parse_args(args: &[&str]) -> Result<Command, String> {
@@ -103,13 +336,14 @@ pub fn parse_args(args: &[&str]) -> Result<Command, String> {
     iter.next();
 
     let command = iter.next().ok_or_else(|| {
-        "no command provided; usage: verifier-service verify [options]".to_string()
+        "no command provided; supported commands: verify, decode-journal".to_string()
     })?;
 
     match command {
         "verify" => parse_verify_command(iter),
+        "decode-journal" => parse_decode_journal_command(iter),
         other => Err(format!(
-            "unknown command `{other}`; supported commands: verify"
+            "unknown command `{other}`; supported commands: verify, decode-journal"
         )),
     }
 }
@@ -120,6 +354,7 @@ fn print_help() {
 
 USAGE:
     verifier-service verify [OPTIONS] <BUNDLE_PATH> [IMAGE_ID]
+    verifier-service decode-journal [OPTIONS] <BUNDLE_PATH>
 
 ARGS:
     <BUNDLE_PATH>    Path to receipt bundle (file, directory, or zip archive)
@@ -128,7 +363,7 @@ ARGS:
 OPTIONS:
     -b, --bundle <PATH>      Path to receipt bundle (alternative to positional arg)
     -i, --image-id <ID>      Expected ImageID (alternative to positional arg)
-    -o, --output <PATH>      Write verification report to file
+    -o, --output <PATH>      Write the command's JSON result to file
     -q, --quiet              Suppress stdout output
     -h, --help               Print this help message
 
@@ -149,6 +384,9 @@ EXAMPLES:
     export EXPECTED_IMAGE_ID=0x5042...4108
     verifier-service verify /path/to/receipt.json
 
+    # Decode the verified receipt journal through RISC Zero serde
+    verifier-service decode-journal --bundle /path/to/bundle.zip --image-id 0x5042...4108 --output journal.json
+
 EXIT CODES:
     0    Verification succeeded
     1    General error (invalid arguments, I/O error, etc.)
@@ -158,12 +396,12 @@ EXIT CODES:
     );
 }
 
-fn parse_verify_command<'a, I>(mut iter: I) -> Result<Command, String>
+fn parse_decode_journal_command<'a, I>(mut iter: I) -> Result<Command, String>
 where
     I: Iterator<Item = &'a str>,
 {
     let mut bundle: Option<PathBuf> = None;
-    let mut image_id: Option<ParsedImageId> = None;
+    let mut image_id: Option<ImageId> = None;
     let mut output: Option<PathBuf> = None;
     let mut quiet = false;
 
@@ -184,8 +422,85 @@ where
                     .next()
                     .ok_or_else(|| "--image-id requires a value".to_string())?;
                 image_id = Some(
-                    parse_image_id_from_str(value)
-                        .map_err(|msg| format!("invalid --image-id: {msg}"))?,
+                    ImageId::parse(value)
+                        .map_err(|message| format!("invalid --image-id: {message}"))?,
+                );
+            }
+            "--output" | "-o" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "--output requires a path argument".to_string())?;
+                output = Some(PathBuf::from(value));
+            }
+            "--quiet" | "-q" => quiet = true,
+            value if value.starts_with('-') => {
+                return Err(format!("unknown decode-journal option `{value}`"));
+            }
+            value => {
+                if bundle.is_none() {
+                    bundle = Some(PathBuf::from(value));
+                } else if image_id.is_none() {
+                    image_id = Some(
+                        ImageId::parse(value)
+                            .map_err(|message| format!("invalid image ID: {message}"))?,
+                    );
+                } else {
+                    return Err(format!("unexpected decode-journal argument `{value}`"));
+                }
+            }
+        }
+    }
+
+    Ok(Command::DecodeJournal(DecodeJournalCommand {
+        bundle_path: bundle.ok_or_else(|| {
+            "missing bundle path; pass --bundle <path> or provide it positionally".to_string()
+        })?,
+        image_id: resolve_expected_image_id(image_id)?,
+        output_path: output,
+        quiet,
+    }))
+}
+
+fn resolve_expected_image_id(image_id: Option<ImageId>) -> Result<ImageId, String> {
+    match image_id {
+        Some(image_id) => Ok(image_id),
+        None => {
+            let environment_value = std::env::var("EXPECTED_IMAGE_ID").map_err(|_| {
+                "missing expected image ID; pass --image-id or set EXPECTED_IMAGE_ID".to_string()
+            })?;
+            ImageId::parse(&environment_value)
+                .map_err(|message| format!("invalid expected image ID from environment: {message}"))
+        }
+    }
+}
+
+fn parse_verify_command<'a, I>(mut iter: I) -> Result<Command, String>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let mut bundle: Option<PathBuf> = None;
+    let mut image_id: Option<ImageId> = None;
+    let mut output: Option<PathBuf> = None;
+    let mut quiet = false;
+
+    while let Some(token) = iter.next() {
+        match token {
+            "--help" | "-h" => {
+                print_help();
+                std::process::exit(0);
+            }
+            "--bundle" | "-b" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "--bundle requires a path argument".to_string())?;
+                bundle = Some(PathBuf::from(value));
+            }
+            "--image-id" | "-i" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "--image-id requires a value".to_string())?;
+                image_id = Some(
+                    ImageId::parse(value).map_err(|msg| format!("invalid --image-id: {msg}"))?,
                 );
             }
             "--output" | "-o" => {
@@ -205,8 +520,7 @@ where
                     bundle = Some(PathBuf::from(value));
                 } else if image_id.is_none() {
                     image_id = Some(
-                        parse_image_id_from_str(value)
-                            .map_err(|msg| format!("invalid image ID: {msg}"))?,
+                        ImageId::parse(value).map_err(|msg| format!("invalid image ID: {msg}"))?,
                     );
                 } else {
                     return Err(format!("unexpected argument `{value}`"));
@@ -220,16 +534,7 @@ where
             .to_string()
     })?;
 
-    let image_id = match image_id {
-        Some(id) => id,
-        None => {
-            let env_value = std::env::var("EXPECTED_IMAGE_ID").map_err(|_| {
-                "missing expected image ID; pass --image-id or set EXPECTED_IMAGE_ID".to_string()
-            })?;
-            parse_image_id_from_str(&env_value)
-                .map_err(|msg| format!("invalid expected image ID from environment: {msg}"))?
-        }
-    };
+    let image_id = resolve_expected_image_id(image_id)?;
 
     Ok(Command::Verify(VerifyCommand {
         bundle_path,
@@ -239,12 +544,9 @@ where
     }))
 }
 
-pub fn verify_receipt(
-    receipt: &Receipt,
-    image_id: &ParsedImageId,
-) -> Result<(), ProofVerificationError> {
+pub fn verify_receipt(receipt: &Receipt, image_id: &ImageId) -> Result<(), ProofVerificationError> {
     receipt
-        .verify(image_id.digest)
+        .verify(image_id.digest())
         .map_err(ProofVerificationError::from)
 }
 
@@ -252,6 +554,13 @@ pub fn verify_bundle(command: &VerifyCommand) -> Result<VerificationReport, Serv
     let receipt_path = resolve_receipt_path(&command.bundle_path)?;
     let loaded = load_receipt_from_file(&receipt_path)?;
 
+    verify_loaded_receipt(command, &loaded)
+}
+
+fn verify_loaded_receipt(
+    command: &VerifyCommand,
+    loaded: &LoadedReceipt,
+) -> Result<VerificationReport, ServiceError> {
     let dev_mode = matches!(loaded.receipt.inner, InnerReceipt::Fake(_));
     let started = Instant::now();
 
@@ -303,13 +612,11 @@ pub fn verify_bundle(command: &VerifyCommand) -> Result<VerificationReport, Serv
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
     let duration_ms = started.elapsed().as_millis();
 
-    let report = VerificationReport {
-        status,
+    let common = VerificationReportCommon {
         verifier_version: VERSION.to_string(),
         verified_at: timestamp,
         duration_ms,
         expected_image_id: command.image_id.normalized.clone(),
-        receipt_image_id: loaded.image_id,
         // Use filename only to avoid leaking internal paths (Priority 2 security fix)
         bundle_path: command
             .bundle_path
@@ -323,11 +630,77 @@ pub fn verify_bundle(command: &VerifyCommand) -> Result<VerificationReport, Serv
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string(),
-        dev_mode_receipt: dev_mode,
-        errors,
     };
 
-    Ok(report)
+    match status {
+        VerificationStatus::Success => {
+            let receipt_image_id = loaded
+                .image_id
+                .clone()
+                .ok_or(ServiceError::ReportInvariant(
+                    "success reports require receipt_image_id",
+                ))?;
+            VerificationReport::success(common, receipt_image_id)
+        }
+        VerificationStatus::DevMode => {
+            VerificationReport::dev_mode(common, loaded.image_id.clone(), errors)
+        }
+        VerificationStatus::Failed => {
+            VerificationReport::failed(common, loaded.image_id.clone(), dev_mode, errors)
+        }
+    }
+}
+
+pub fn decode_bundle_journal(
+    command: &DecodeJournalCommand,
+) -> Result<DecodedJournal, ServiceError> {
+    let receipt_path = resolve_receipt_path(&command.bundle_path)?;
+    let loaded = load_receipt_from_file(&receipt_path)?;
+    let report = verify_loaded_receipt(
+        &VerifyCommand {
+            bundle_path: command.bundle_path.clone(),
+            image_id: command.image_id.clone(),
+            output_path: None,
+            quiet: true,
+        },
+        &loaded,
+    )?;
+    if report.status() != VerificationStatus::Success {
+        return Err(ServiceError::VerificationDidNotSucceed(Box::new(report)));
+    }
+
+    decode_loaded_journal(&loaded)
+}
+
+fn decode_loaded_journal(loaded: &LoadedReceipt) -> Result<DecodedJournal, ServiceError> {
+    let image_id = loaded
+        .image_id
+        .clone()
+        .ok_or(ServiceError::ReceiptImageIdMissing)?;
+    let output: VerificationOutput = loaded
+        .receipt
+        .journal
+        .decode()
+        .map_err(|error| ServiceError::JournalDecode(error.to_string()))?;
+    if output.method_version != CURRENT_METHOD_VERSION {
+        return Err(ServiceError::JournalDecode(format!(
+            "unsupported method version: expected {CURRENT_METHOD_VERSION}, got {}",
+            output.method_version
+        )));
+    }
+    Ok(DecodedJournal::from_verification_output(output, image_id))
+}
+
+pub fn serialize_decoded_journal(journal: &DecodedJournal) -> Result<String, ServiceError> {
+    serde_json::to_string_pretty(journal).map_err(ServiceError::JournalSerialize)
+}
+
+pub fn write_decoded_journal(path: &Path, journal: &DecodedJournal) -> Result<(), ServiceError> {
+    let mut file = File::create(path)?;
+    let json = serialize_decoded_journal(journal)?;
+    file.write_all(json.as_bytes())?;
+    file.write_all(b"\n")?;
+    Ok(())
 }
 
 pub fn write_report(path: &Path, report: &VerificationReport) -> Result<(), ServiceError> {
@@ -492,23 +865,33 @@ fn parse_loaded_receipt(raw: Value, source_path: PathBuf) -> Result<LoadedReceip
     Err(ServiceError::ReceiptMissing(source_path))
 }
 
-fn parse_image_id_from_str(raw: &str) -> Result<ParsedImageId, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err("expected non-empty value".to_string());
+impl ImageId {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err("expected non-empty value".to_string());
+        }
+
+        let hex = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+
+        if hex.len() != 64 {
+            return Err(format!("expected 64 hex characters, got {}", hex.len()));
+        }
+
+        let digest = Digest::from_hex(hex).map_err(|err| err.to_string())?;
+        Ok(Self {
+            normalized: format!("0x{}", hex.to_lowercase()),
+            digest,
+        })
     }
 
-    let hex = trimmed.strip_prefix("0x").unwrap_or(trimmed);
-
-    if hex.len() != 64 {
-        return Err(format!("expected 64 hex characters, got {}", hex.len()));
+    pub fn as_str(&self) -> &str {
+        &self.normalized
     }
 
-    let digest = Digest::from_hex(hex).map_err(|err| err.to_string())?;
-    Ok(ParsedImageId {
-        normalized: format!("0x{}", hex.to_lowercase()),
-        digest,
-    })
+    pub fn digest(&self) -> Digest {
+        self.digest
+    }
 }
 
 fn normalize_hex_string(value: &str) -> String {
@@ -569,6 +952,7 @@ mod tests {
                 assert_eq!(cmd.bundle_path, PathBuf::from("/tmp/bundle.json"));
                 assert_eq!(cmd.image_id.normalized, SAMPLE_IMAGE_ID);
             }
+            Command::DecodeJournal(_) => panic!("expected verify command"),
         }
     }
 
@@ -595,7 +979,99 @@ mod tests {
                 assert_eq!(cmd.output_path, Some(PathBuf::from("/tmp/report.json")));
                 assert!(cmd.quiet);
             }
+            Command::DecodeJournal(_) => panic!("expected verify command"),
         }
+    }
+
+    #[test]
+    fn parse_decode_journal_command_supports_bounded_output() {
+        let args = [
+            "verifier-service",
+            "decode-journal",
+            "--bundle",
+            "/tmp/bundle.zip",
+            "--image-id",
+            SAMPLE_IMAGE_ID,
+            "--output",
+            "/tmp/journal.json",
+            "--quiet",
+        ];
+
+        let command = parse_args(&args).expect("decode-journal command should parse");
+
+        match command {
+            Command::DecodeJournal(command) => {
+                assert_eq!(command.bundle_path, PathBuf::from("/tmp/bundle.zip"));
+                assert_eq!(command.image_id.normalized, SAMPLE_IMAGE_ID);
+                assert_eq!(
+                    command.output_path,
+                    Some(PathBuf::from("/tmp/journal.json"))
+                );
+                assert!(command.quiet);
+            }
+            Command::Verify(_) => panic!("expected decode-journal command"),
+        }
+    }
+
+    #[test]
+    fn decode_bundle_journal_projects_actual_risc0_serde() {
+        let dir = tempdir().expect("temp dir");
+        let target = dir.path().join("receipt.json");
+        let expected = current_verification_output();
+        let receipt_json = build_fake_receipt_json_with_output(SAMPLE_IMAGE_ID, &expected);
+        write_receipt_json(&target, &receipt_json);
+
+        let loaded = load_receipt_from_file(&target).expect("fake receipt should load");
+        let decoded =
+            decode_loaded_journal(&loaded).expect("current receipt journal should decode");
+
+        assert_eq!(decoded.election_id, expected.election_id);
+        assert_eq!(decoded.verified_tally, expected.verified_tally);
+        assert_eq!(decoded.method_version, CURRENT_METHOD_VERSION);
+        assert_eq!(decoded.image_id, SAMPLE_IMAGE_ID);
+    }
+
+    #[test]
+    fn decode_bundle_journal_refuses_a_non_current_method() {
+        let dir = tempdir().expect("temp dir");
+        let target = dir.path().join("receipt.json");
+        let mut output = current_verification_output();
+        output.method_version = CURRENT_METHOD_VERSION - 1;
+        write_receipt_json(
+            &target,
+            &build_fake_receipt_json_with_output(SAMPLE_IMAGE_ID, &output),
+        );
+
+        let loaded = load_receipt_from_file(&target).expect("fake receipt should load");
+        let result = decode_loaded_journal(&loaded);
+
+        assert!(matches!(
+            result,
+            Err(ServiceError::JournalDecode(message))
+                if message.contains("unsupported method version")
+        ));
+    }
+
+    #[test]
+    fn decode_bundle_journal_refuses_an_unverified_receipt() {
+        let dir = tempdir().expect("temp dir");
+        let target = dir.path().join("receipt.json");
+        let receipt_json =
+            build_fake_receipt_json_with_output(SAMPLE_IMAGE_ID, &current_verification_output());
+        write_receipt_json(&target, &receipt_json);
+
+        let result = decode_bundle_journal(&DecodeJournalCommand {
+            bundle_path: target,
+            image_id: ImageId::parse(SAMPLE_IMAGE_ID).expect("valid ImageID"),
+            output_path: None,
+            quiet: true,
+        });
+
+        assert!(matches!(
+            result,
+            Err(ServiceError::VerificationDidNotSucceed(report))
+                if report.status() == VerificationStatus::DevMode
+        ));
     }
 
     #[test]
@@ -607,7 +1083,7 @@ mod tests {
         let fake = FakeReceipt::new(MaybePruned::Value(claim));
         let receipt = ZkReceipt::new(InnerReceipt::Fake(fake), vec![]);
 
-        let image_id = parse_image_id_from_str(SAMPLE_IMAGE_ID).expect("valid image id");
+        let image_id = ImageId::parse(SAMPLE_IMAGE_ID).expect("valid image id");
         let result = verify_receipt(&receipt, &image_id);
 
         assert!(
@@ -650,24 +1126,24 @@ mod tests {
 
         let command = VerifyCommand {
             bundle_path: dir.path().to_path_buf(),
-            image_id: parse_image_id_from_str(SAMPLE_IMAGE_ID).expect("image"),
+            image_id: ImageId::parse(SAMPLE_IMAGE_ID).expect("image"),
             output_path: None,
             quiet: true,
         };
 
         let report = verify_bundle(&command).expect("verification should succeed");
-        assert_eq!(report.status, VerificationStatus::DevMode);
-        assert_eq!(report.expected_image_id, SAMPLE_IMAGE_ID);
+        assert_eq!(report.status(), VerificationStatus::DevMode);
+        assert_eq!(report.expected_image_id(), SAMPLE_IMAGE_ID);
         assert!(
             report
-                .errors
+                .errors()
                 .iter()
                 .any(|e| e.to_lowercase().contains("proof")),
             "expected proof error in dev mode, got: {:?}",
-            report.errors
+            report.errors()
         );
-        assert_eq!(report.receipt_image_id.as_deref(), Some(SAMPLE_IMAGE_ID));
-        assert!(report.dev_mode_receipt);
+        assert_eq!(report.receipt_image_id(), Some(SAMPLE_IMAGE_ID));
+        assert!(report.dev_mode_receipt());
     }
 
     #[test]
@@ -692,23 +1168,23 @@ mod tests {
 
         let command = VerifyCommand {
             bundle_path: zip_path,
-            image_id: parse_image_id_from_str(SAMPLE_IMAGE_ID).expect("image"),
+            image_id: ImageId::parse(SAMPLE_IMAGE_ID).expect("image"),
             output_path: None,
             quiet: true,
         };
 
         let report = verify_bundle(&command).expect("verification should succeed");
-        assert_eq!(report.status, VerificationStatus::DevMode);
-        assert_eq!(report.receipt_path, "receipt.json");
+        assert_eq!(report.status(), VerificationStatus::DevMode);
+        assert_eq!(report.receipt_path(), "receipt.json");
         assert!(
             report
-                .errors
+                .errors()
                 .iter()
                 .any(|e| e.to_lowercase().contains("proof")),
             "expected proof error in dev mode, got: {:?}",
-            report.errors
+            report.errors()
         );
-        assert!(report.dev_mode_receipt);
+        assert!(report.dev_mode_receipt());
     }
 
     #[test]
@@ -723,23 +1199,23 @@ mod tests {
 
         let command = VerifyCommand {
             bundle_path: dir.path().to_path_buf(),
-            image_id: parse_image_id_from_str(SAMPLE_IMAGE_ID).expect("image"),
+            image_id: ImageId::parse(SAMPLE_IMAGE_ID).expect("image"),
             output_path: None,
             quiet: true,
         };
 
         let report = verify_bundle(&command).expect("verification should complete");
 
-        assert_eq!(report.status, VerificationStatus::DevMode);
+        assert_eq!(report.status(), VerificationStatus::DevMode);
         assert!(
             report
-                .errors
+                .errors()
                 .iter()
                 .any(|e| e.to_lowercase().contains("proof")),
             "expected proof error in dev mode, got: {:?}",
-            report.errors
+            report.errors()
         );
-        assert!(report.dev_mode_receipt);
+        assert!(report.dev_mode_receipt());
     }
 
     #[test]
@@ -756,23 +1232,23 @@ mod tests {
 
         let command = VerifyCommand {
             bundle_path: dir.path().to_path_buf(),
-            image_id: parse_image_id_from_str(SAMPLE_IMAGE_ID).expect("image"),
+            image_id: ImageId::parse(SAMPLE_IMAGE_ID).expect("image"),
             output_path: None,
             quiet: true,
         };
 
         let report = verify_bundle(&command).expect("verification should complete");
 
-        assert_eq!(report.status, VerificationStatus::Failed);
+        assert_eq!(report.status(), VerificationStatus::Failed);
         assert!(
             report
-                .errors
+                .errors()
                 .iter()
                 .any(|e| e.contains("image_id mismatch")),
             "expected image_id mismatch error, got: {:?}",
-            report.errors
+            report.errors()
         );
-        assert_eq!(report.receipt_image_id.as_deref(), Some(wrong_image_id));
+        assert_eq!(report.receipt_image_id(), Some(wrong_image_id));
     }
 
     #[test]
@@ -788,21 +1264,99 @@ mod tests {
 
         let command = VerifyCommand {
             bundle_path: dir.path().to_path_buf(),
-            image_id: parse_image_id_from_str(SAMPLE_IMAGE_ID).expect("image"),
+            image_id: ImageId::parse(SAMPLE_IMAGE_ID).expect("image"),
             output_path: None,
             quiet: true,
         };
 
         let report = verify_bundle(&command).expect("verification should complete");
 
-        assert_eq!(report.status, VerificationStatus::DevMode);
+        assert_eq!(report.status(), VerificationStatus::DevMode);
         assert!(
-            report.errors.iter().any(|e| e.contains("missing image_id")),
+            report
+                .errors()
+                .iter()
+                .any(|e| e.contains("missing image_id")),
             "expected missing image_id error, got: {:?}",
-            report.errors
+            report.errors()
         );
-        assert_eq!(report.receipt_image_id, None);
-        assert!(report.dev_mode_receipt);
+        assert_eq!(report.receipt_image_id(), None);
+        assert!(report.dev_mode_receipt());
+    }
+
+    #[test]
+    fn failed_report_requires_nonempty_errors() {
+        let report = VerificationReport::failed(
+            sentinel_report_common(),
+            Some(SAMPLE_IMAGE_ID.to_string()),
+            false,
+            Vec::new(),
+        );
+
+        assert!(
+            report.is_err(),
+            "failed reports must carry at least one error"
+        );
+    }
+
+    #[test]
+    fn deterministic_report_sentinels_match_current_json() {
+        let reports = [
+            (
+                "current-verifier-report-success.json",
+                VerificationReport::success(sentinel_report_common(), SAMPLE_IMAGE_ID.to_string())
+                    .expect("coherent success sentinel"),
+            ),
+            (
+                "current-verifier-report-dev-mode.json",
+                VerificationReport::dev_mode(
+                    sentinel_report_common(),
+                    Some(SAMPLE_IMAGE_ID.to_string()),
+                    vec!["development receipt rejected".to_string()],
+                )
+                .expect("coherent dev-mode sentinel"),
+            ),
+            (
+                "current-verifier-report-failed.json",
+                VerificationReport::failed(
+                    sentinel_report_common(),
+                    Some(
+                        "0x0000000000000000000000000000000000000000000000000000000000000000"
+                            .to_string(),
+                    ),
+                    false,
+                    vec!["receipt metadata image_id mismatch".to_string()],
+                )
+                .expect("coherent failed sentinel"),
+            ),
+        ];
+        let testdata = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
+
+        for (file_name, report) in reports {
+            let expected_json = fs::read_to_string(testdata.join(file_name))
+                .unwrap_or_else(|error| panic!("read {file_name}: {error}"));
+            let expected: Value = serde_json::from_str(&expected_json)
+                .unwrap_or_else(|error| panic!("parse {file_name}: {error}"));
+            let actual: Value = serde_json::from_str(
+                &serialize_report(&report).expect("serialize report sentinel"),
+            )
+            .expect("parse emitted report sentinel");
+            assert_eq!(
+                actual, expected,
+                "stale verifier report sentinel: {file_name}"
+            );
+        }
+    }
+
+    fn sentinel_report_common() -> VerificationReportCommon {
+        VerificationReportCommon {
+            verifier_version: VERSION.to_string(),
+            verified_at: "2026-08-11T09:10:11.123456789Z".to_string(),
+            duration_ms: 42,
+            expected_image_id: SAMPLE_IMAGE_ID.to_string(),
+            bundle_path: "bundle.zip".to_string(),
+            receipt_path: "receipt.json".to_string(),
+        }
     }
 
     const SAMPLE_IMAGE_ID: &str =
@@ -810,6 +1364,48 @@ mod tests {
 
     fn build_fake_receipt_json(image_id: &str) -> Value {
         let journal = vec![1, 2, 3];
+        let claim = ReceiptClaim::ok(ShaDigest::ZERO, journal.clone());
+        let fake = FakeReceipt::new(MaybePruned::Value(claim));
+        let receipt = ZkReceipt::new(InnerReceipt::Fake(fake), journal);
+        json!({
+            "receipt": receipt,
+            "image_id": image_id,
+        })
+    }
+
+    fn current_verification_output() -> contract_core::VerificationOutput {
+        contract_core::VerificationOutput {
+            election_id: [1; 16],
+            election_config_hash: [2; 32],
+            bulletin_root: [3; 32],
+            tree_size: 5,
+            total_expected: 5,
+            sth_digest: [4; 32],
+            verified_tally: [1, 1, 1, 1, 1],
+            total_votes: 5,
+            valid_votes: 5,
+            invalid_votes: 0,
+            seen_indices_count: 5,
+            missing_slots: 0,
+            invalid_presented_slots: 0,
+            rejected_records: 0,
+            seen_bitmap_root: [5; 32],
+            included_bitmap_root: [6; 32],
+            excluded_slots: 0,
+            input_commitment: [7; 32],
+            method_version: contract_core::CURRENT_METHOD_VERSION,
+        }
+    }
+
+    fn build_fake_receipt_json_with_output(
+        image_id: &str,
+        output: &contract_core::VerificationOutput,
+    ) -> Value {
+        let encoded_words = risc0_zkvm::serde::to_vec(output).expect("encode current journal");
+        let journal = encoded_words
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect::<Vec<_>>();
         let claim = ReceiptClaim::ok(ShaDigest::ZERO, journal.clone());
         let fake = FakeReceipt::new(MaybePruned::Value(claim));
         let receipt = ZkReceipt::new(InnerReceipt::Fake(fake), journal);

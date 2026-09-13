@@ -5,13 +5,10 @@ export const ja = {
   },
   pages: {
     home: {
-      welcome: 'STARK Ballot Simulatorへようこそ',
       description: 'STARK証明による検証可能投票の教育デモ',
     },
     vote: {
       title: '投票画面',
-      overview:
-        '以下の選択肢からお好みのオプションを選択してください。あなたの投票は暗号化され、投票プールに追加されます。',
       selectionTitle: '選択肢を選んでください',
       selectionLabel: '投票選択',
       optionLabel: '選択肢 {{option}}',
@@ -101,8 +98,6 @@ export const ja = {
       },
       stepsCard: {
         preparing: '検証準備中...',
-        footnoteStarkLast: '※ STARK検証は最後に実行されます',
-        footnoteClickable: '小項目をクリックすると知識パネルがハイライトされます。',
         evidence: {
           local: 'Local',
           public: 'Public',

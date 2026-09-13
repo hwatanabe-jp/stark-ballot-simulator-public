@@ -1,7 +1,7 @@
 {
   "capturedAt": "1970-01-01T00:00:00.000Z",
   "comparatorType": "public-contract-baseline",
-  "contractHash": "5f84f2b028efc2e9d5ccd8407cee4eeddbfbff72739907d6210567b1693c06a7",
+  "contractHash": "6e975258e1d68d1fdbd20517426fabf4acb818b9306906cbe93952c6d9333e81",
   "dirtyStatus": "dirty",
   "mountedBehavior": [
     {
@@ -272,10 +272,10 @@
     },
     {
       "body": {
-        "bytes": 2127,
+        "bytes": 2165,
         "jsonKeys": ["data", "meta"],
         "jsonRequestId": "public-contract-baseline:lambda.current-finalization.succeeded.no-store",
-        "sha256": "c7e253e922c4c73e98c457b230dab8d10c37581e21fd4bae0b63a26fbd85d274"
+        "sha256": "5db370d95dbc63dc9d3bc1dd52597ba513c9e093ed64e258274b586024f063ea"
       },
       "headers": {
         "accept-ranges": null,
@@ -444,7 +444,7 @@
     },
     {
       "caseId": "private-artifact-boundary",
-      "exemption": "Mounted probes record only response shape and hashes; public/private archive membership is covered by `packages/verification/src/verification/__tests__/verification-bundle.test.ts`, `scripts/tests/entrypoint-bundle.test.sh`, and `scripts/security/scan-public-safety.sh`.",
+      "exemption": "Mounted probes record only response shape and hashes; public/private archive membership is covered by `packages/node-adapters/src/verification-bundle.test.ts`, `scripts/tests/entrypoint-bundle.test.sh`, and `scripts/security/scan-public-safety.sh`.",
       "status": "exempt"
     },
     {
@@ -1108,7 +1108,7 @@
         },
         "query": {
           "algorithm": "json-wire-admission",
-          "fingerprint": "0550ea64c617578e7f6828bc76f7523be7b0d32f6f7d4217de9a23d816d3a70d"
+          "fingerprint": "8713485cbf5333b8a6a104a13ac3bebf531da0ccc73c3b6d4c59348dde0b6afa"
         }
       },
       "responses": [
@@ -1218,7 +1218,7 @@
         },
         "query": {
           "algorithm": "json-wire-admission",
-          "fingerprint": "d06196c469b4b9dab3b599c7be035c06a3cc2fe5851152731b0f0a42cc3b54ad"
+          "fingerprint": "2ae4df8f5c28d6434b6df71eb492aa6d9b759b077604485aff6647597810d5e4"
         }
       },
       "responses": [
@@ -1704,7 +1704,7 @@
           "content": "json",
           "schema": {
             "algorithm": "json-wire-admission",
-            "fingerprint": "966918ea8e62a8c3fcc33a0baf2a4b041f76d16c0813f055882efa7523b70cb9"
+            "fingerprint": "a99fd92375709fcd10e877bbdeb1908d216fbf8099facde16de3a34cde49c49e"
           },
           "status": 200
         }
@@ -1816,7 +1816,7 @@
           "content": "json",
           "schema": {
             "algorithm": "json-wire-admission",
-            "fingerprint": "c39251cfa514c5d94888dc4f7df5598bf96ded4bcd7dd80a7b57ec51f654840d"
+            "fingerprint": "affb9a775bbbff0c5721edf4f489a981acd77841db71dce620e22456f2195623"
           },
           "status": 200
         }
@@ -1926,7 +1926,7 @@
         },
         "params": {
           "algorithm": "json-wire-admission",
-          "fingerprint": "85c3baf66a9f38bb81b8bca168ee12554a608774ccec6ebcbf4834619643ee57"
+          "fingerprint": "7f8e8d253d9640a9629169d96e27c0fc3e886f83bd540252ff95bf23efa39c0b"
         }
       },
       "responses": [
@@ -2158,7 +2158,7 @@
           "content": "json",
           "schema": {
             "algorithm": "json-wire-admission",
-            "fingerprint": "32e16cbf21bf3c8fa287a48c508c8581d1b847a50d4687bd346c6c2338ca3fd0"
+            "fingerprint": "8b7068fb3da81775889ffa79bacedee5f507921ce7cb216b8abcc6e8e780cf29"
           },
           "status": 200
         }
@@ -2424,12 +2424,12 @@
       "routeId": "session.post",
       "sourceIp": {
         "dependency": "trusted-proxy-required-for-target-runtime",
-        "runtimeEnforcementHandoff": "plans-07-and-11"
+        "runtimeEnforcementHandoff": "trusted-proxy-and-public-admission"
       },
       "targetAdmission": {
         "nonOperatorDevelop": "blocked-by-outer-operator-gate",
         "operatorGatedDevelop": "enabled-for-production-equivalent-smoke",
-        "runtimeEnforcementHandoff": "plans-07-and-11",
+        "runtimeEnforcementHandoff": "trusted-proxy-and-public-admission",
         "ungatedPublic": "requires-explicit-public-enable-and-server-turnstile"
       },
       "turnstile": {
@@ -2594,7 +2594,7 @@
       },
       "rateLimit": {
         "required": true,
-        "scope": "session-and-client-ip",
+        "scope": "client-ip-and-global",
         "sourceIpDependency": "trusted-proxy-required-for-target-runtime"
       },
       "request": {
@@ -2616,7 +2616,7 @@
           "content": "json",
           "schema": {
             "algorithm": "json-wire-admission",
-            "fingerprint": "27a429b2cad3c7cd74a1481d80cf800a1dfcd7df851d1935f1dc97d4bbfd1db9"
+            "fingerprint": "d45e7f8b05a2bbc0621cb8c11be5f1f110c194ed73f094d38e170d709305f886"
           },
           "status": 200
         },
@@ -2624,7 +2624,7 @@
           "content": "json",
           "schema": {
             "algorithm": "json-wire-admission",
-            "fingerprint": "27a429b2cad3c7cd74a1481d80cf800a1dfcd7df851d1935f1dc97d4bbfd1db9"
+            "fingerprint": "d45e7f8b05a2bbc0621cb8c11be5f1f110c194ed73f094d38e170d709305f886"
           },
           "status": 202
         }
@@ -2632,7 +2632,7 @@
       "routeId": "sessions.finalizations.post",
       "sourceIp": {
         "dependency": "trusted-proxy-required-for-target-runtime",
-        "runtimeEnforcementHandoff": "plans-07-and-11"
+        "runtimeEnforcementHandoff": "trusted-proxy-and-public-admission"
       },
       "turnstile": {
         "action": "finalize",
@@ -2668,7 +2668,6 @@
           "PAYLOAD_TOO_LARGE",
           "GLOBAL_LIMIT_EXCEEDED",
           "ASYNC_FINALIZATION_DISABLED",
-          "CANCELLATION_UNSUPPORTED",
           "FINALIZATION_NOT_CANCELLABLE"
         ],
         "envelope": "standard-error-envelope",
@@ -2731,12 +2730,6 @@
             "status": 404
           },
           {
-            "code": "CANCELLATION_UNSUPPORTED",
-            "contentType": "application/json",
-            "envelope": "standard-error-envelope",
-            "status": 501
-          },
-          {
             "code": "FINALIZATION_NOT_CANCELLABLE",
             "contentType": "application/json",
             "envelope": "standard-error-envelope",
@@ -2746,7 +2739,7 @@
       },
       "rateLimit": {
         "required": true,
-        "scope": "session-and-client-ip",
+        "scope": "client-ip",
         "sourceIpDependency": "trusted-proxy-required-for-target-runtime"
       },
       "request": {
@@ -2768,7 +2761,7 @@
           "content": "json",
           "schema": {
             "algorithm": "json-wire-admission",
-            "fingerprint": "27a429b2cad3c7cd74a1481d80cf800a1dfcd7df851d1935f1dc97d4bbfd1db9"
+            "fingerprint": "d45e7f8b05a2bbc0621cb8c11be5f1f110c194ed73f094d38e170d709305f886"
           },
           "status": 200
         }
@@ -2776,7 +2769,7 @@
       "routeId": "sessions.finalizations.cancel.post",
       "sourceIp": {
         "dependency": "trusted-proxy-required-for-target-runtime",
-        "runtimeEnforcementHandoff": "plans-07-and-11"
+        "runtimeEnforcementHandoff": "trusted-proxy-and-public-admission"
       },
       "turnstile": {
         "productionBypass": "not-applicable",
@@ -2896,7 +2889,7 @@
       },
       "rateLimit": {
         "required": true,
-        "scope": "session-and-client-ip",
+        "scope": "client-ip-and-global",
         "sourceIpDependency": "trusted-proxy-required-for-target-runtime"
       },
       "request": {
@@ -2926,7 +2919,7 @@
       "routeId": "sessions.finalizations.verification.post",
       "sourceIp": {
         "dependency": "trusted-proxy-required-for-target-runtime",
-        "runtimeEnforcementHandoff": "plans-07-and-11"
+        "runtimeEnforcementHandoff": "trusted-proxy-and-public-admission"
       },
       "turnstile": {
         "productionBypass": "not-applicable",
@@ -3223,7 +3216,7 @@
       },
       "rateLimit": {
         "required": true,
-        "scope": "session-and-client-ip",
+        "scope": "client-ip",
         "sourceIpDependency": "trusted-proxy-required-for-target-runtime"
       },
       "request": {
@@ -3253,7 +3246,7 @@
       "routeId": "vote.post",
       "sourceIp": {
         "dependency": "trusted-proxy-required-for-target-runtime",
-        "runtimeEnforcementHandoff": "plans-07-and-11"
+        "runtimeEnforcementHandoff": "trusted-proxy-and-public-admission"
       },
       "turnstile": {
         "action": "vote",
@@ -3267,27 +3260,67 @@
   "schemaAuthorityFingerprints": {
     "packages/api-contract/src/schemas/artifacts.ts": "8d7a80e18e7ee0fe11d54f1ec62fa78a4190e95b741146e350f8015551a0afb6",
     "packages/api-contract/src/schemas/bulletin.ts": "aa6aa89801954c14df9b04f5c6b30d667f64fd74c95b7fd6b6b31b179c4dd2ba",
-    "packages/api-contract/src/schemas/errors.ts": "9d5ddc792757bc46611c8b9cdaea860fe8832d4a4cc3ce72324d40dda307e81c",
-    "packages/api-contract/src/schemas/finalizations.ts": "c4f46835ba647758217107f15c9a965d954c70f83ef2c061102f5c7e294f2c78",
+    "packages/api-contract/src/schemas/errors.ts": "ca67e08866138b17902343b9f522b85e3558eb23fb8f57fd8c38a1bde11a7a57",
+    "packages/api-contract/src/schemas/finalizations.ts": "76c0da75c2ad1257f3b5e6ed4cb2be135e12e802c79a60cbe15684cef6252dd1",
     "packages/api-contract/src/schemas/index.ts": "2f657f8833eb661006e944aa86e84c3750af2eda67ff42200560a58762e39f09",
-    "packages/api-contract/src/schemas/primitives.ts": "2338b0bf13baafd954593d289cb7712df98b3153415e4508d2957d8c0cdd1abb",
+    "packages/api-contract/src/schemas/primitives.ts": "367a4090558e6ad44a16b67289e446cee4b735486e1a7a1e15eaee58dd7a8121",
     "packages/api-contract/src/schemas/progress.ts": "24e51b84f7253ec688e174c867dde32fbf8b5a70e95acc850990bc3c6ab3c619",
     "packages/api-contract/src/schemas/sessions.ts": "d9f99879d0459e1a0886d4a1ce54689ac2e1a74bb4c5a716e5b64250eec68adb",
-    "packages/api-contract/src/schemas/verification.ts": "7c4d8664cc99a8a94311f41c35c4eda1f7df72791dfb484ee4e53426c3b8587f",
+    "packages/api-contract/src/schemas/verification.ts": "beefca6840488422b7627b3d9fb94a6ce73f0533684e77697c5768547b2aaf78",
     "packages/api-contract/src/schemas/votes.ts": "120d5e7f78e060aedea9f39a227ca1d7b5aa52ad99bbcbddfa68ce9422ccb5ab",
+    "packages/crypto-primitives/src/hex.ts": "cce214a2eb93b6502f1784f10df30ab573907f1ae256eea781dd457d19d357c7",
+    "packages/crypto-primitives/src/index.ts": "6207df5cfc5d1070acfec43695581cf41157d207a8e149817f41d5e1a633297a",
+    "packages/crypto-primitives/src/sha256.ts": "5ebac6059ee777e7999930de856d9f6bcfc244963b69b36df9ed8c9d0c0d2de1",
+    "packages/crypto-primitives/src/vote-commitment-domain.generated.ts": "3a4c2f326e671c0e5e1149aaf141085a8a9270883385ec9616ed1a2aa92f9db7",
+    "packages/merkle/src/consistency-proof.ts": "701c8e8d22e6bbc0f71d4ee538c6ed34906736fa102ba529c501988eae455cc0",
+    "packages/merkle/src/rfc6962-merkle-tree.ts": "e710d54d544a89b804c1403b5b9415d839d1beccc1cfa0f697d15f65f9c9a2d0",
+    "packages/merkle/src/rfc6962-proof.ts": "60d37e3bf2155e927261fbb4c5ce7fc837262779fdb4f0cf126f1a42579bb9ad",
     "packages/validation/src/definedProperties.ts": "f77755491daa420490ad06270bd55f86c2ff176082e18a09da2f33d552e0ccae",
     "packages/validation/src/safe-verifier-segment.ts": "9484a08bad254c0e0907f1b6d3fca3b25c2c62361d468271ae4a1d8b4fe3f91d",
-    "packages/validation/src/schema.ts": "6b607de04abec29fedbc9994cd8f2f68892ed59fbbe4591c1c85b69ca387362d",
-    "packages/verification/src/shared/types.ts": "283de9ae9a18bb726908d931a1e1486ef407067e50a81d7d061fd3bea56f5ea7",
+    "packages/validation/src/schema.ts": "d64a0dec39ddc98932ce0303d87141943e3d18f454bc999733a8abb10506177a",
+    "packages/validation/src/unknown-value-guards.ts": "0a5bbc19aedb54fad8ba2be73b7487e936086fb970cb0f1c7e8ecd2395d25b14",
+    "packages/verification/src/merkle/bitmap-merkle-tree.ts": "6e7b0fefc22d2844d9f905573070f97b2a6c79fe3f0354a4a7f18c47218e21a2",
+    "packages/verification/src/shared/constants.ts": "dd92f092bb2d3da9cec46ef40558dde74e7cdcbbc7fa7fa5f4bbf9e24ae5bd48",
+    "packages/verification/src/shared/types.ts": "80977c80ae0d5c4877bc70b47849a62d09c17605127cd87b7b9097c0238283b4",
+    "packages/verification/src/verification/bitmap-proof-types.ts": "758fa5f7d76cf5863a784b3af7ff4923ba84cb58064adbc5694241cdbf2b54c0",
+    "packages/verification/src/verification/bitmap-verifier.ts": "a51198db30d7a6e6530854462b425794d8cb972f65df0f865a2959b8f3dd5233",
+    "packages/verification/src/verification/build-verification-checks.ts": "f9f23804b6e86c4826a9e0181bbfe0726ec7d8b68969338dd1e35cdd01634787",
+    "packages/verification/src/verification/build-verification-steps.ts": "7e265c74bf85cadb11da413b0d5c943990dd837f0428e5707c7c2cf2d29470a0",
+    "packages/verification/src/verification/consistency-proof-types.ts": "3ca5ea1e8076f85478fcbefe1a6eba2fede790b5cac692455fe180a65fbf0e6a",
+    "packages/verification/src/verification/consistency-verifier.ts": "b27f4ea0ea129068d8dec868227511cd8cd84b44b8972317f996fca92f5e9478",
+    "packages/verification/src/verification/engine/admit-evidence.ts": "e99315e30c4ae9e406334bc11437de348759f180f94b5aacbd05076036328c12",
     "packages/verification/src/verification/engine/derive-stages.ts": "892dd945e34a84705b32632d82c9bdb6e8007e9a35ff2a5587e1c875698219b0",
-    "packages/verification/src/verification/public-verification-result.ts": "f25481aff209412bf4fbe045ea9f372747d2b88ff42e62bcbb766e347c71c843",
+    "packages/verification/src/verification/engine/evaluate-checks.ts": "2be7fbaff670fdbdc029a42fe15fc23d2c832a3fe28a98edf3532683573d54a5",
+    "packages/verification/src/verification/engine/types.ts": "fe157129b05f3b4774c0e792b32b5c83c4f651d4280cdd6cf6988fd4017689a5",
+    "packages/verification/src/verification/evidence-acquisition.ts": "98706974833100026b24436c080469bcfca736513e31059964744ee722d77e65",
+    "packages/verification/src/verification/excluded-count.ts": "bf8840f408a2f9f90b3d67e0c67aa5c610cdeda45c6301745cd0ae4c790301ab",
+    "packages/verification/src/verification/fail-closed-status.ts": "687a7d6229f4466e02c9b86f71dc100b02d8ed387dbebaf51c3abc4da51d492f",
+    "packages/verification/src/verification/finalization-tamper.ts": "ff20eb0a7772081f9c00ae5b470aad892e995c358ef3fc557bad86c23254e859",
+    "packages/verification/src/verification/index-identifiers.ts": "e0115f06a30571ba5c8dbef160fd82ea39502ef0dc63fc9c5c67961f0038179f",
+    "packages/verification/src/verification/local-cast-checks.ts": "12363b8123451b69f8ef5cae27e1f0d25c92ce6ba1a092e975439ce98aa72bc0",
+    "packages/verification/src/verification/merkle.ts": "e36983192593aab806e5cc3048c224b45a4d0796ddc70a23a233ff1c054ef2d8",
+    "packages/verification/src/verification/public-audit-artifact-consistency.ts": "653ab966d52fab986f3e4d9c5635622e0058c3ce4beeb773879a51a3169321c8",
+    "packages/verification/src/verification/public-audit-artifacts.ts": "3f9eed99a39a0c084b415cca527196bb7a10acea96184ff1452ea7f6162161ae",
+    "packages/verification/src/verification/public-input-contract.ts": "46459ddbc571116aa0bae9c0f97a66fd8f5404c8f24d5d75ece2d21ef108fefc",
+    "packages/verification/src/verification/public-verification-result.ts": "a3f1d8833f75212d28df45ca6ccda5bb19fa5aa3881a852a024e3f279d5e8618",
+    "packages/verification/src/verification/scenario-projection.ts": "3e50ddba923bc302c7dbe3d113e935dade0913830397399738a54a9851573825",
     "packages/verification/src/verification/step-types.ts": "a4fb32a09301c42791c132ca8b05a6521f3cbf98b625fa46b206204d3a534382",
-    "packages/verification/src/verification/verification-checks.ts": "3abd7d3e313df8f2461a3757e7f30ff1f304b7c4f364a8b7c110b8ecd65e28a1",
-    "packages/verification/src/verification/verification-presentation-policy.ts": "f86369f80316e44618f9b58f58c6bf4a386e1330aa5a1447fbab1ed38e8d2638",
+    "packages/verification/src/verification/sth-verifier.ts": "29c93f8c1644699d770b860a8cf0b58a19f434e46be6c2f6bdc9d6722e28afd9",
+    "packages/verification/src/verification/verification-checks.ts": "0d7048d08bf856e8e1c7e49c83274e5f595c0998d7fbc00deb24ec0b2ebffba5",
+    "packages/verification/src/verification/verification-presentation-policy.ts": "4d32de654030cdb73a3a0057937894e7fba7d7366566a6337b4ca30fb8d86a91",
     "packages/verification/src/verification/verification-summary.ts": "8707e018d63499ca831688c5bcd6d5b2975866e3f5c081083981be307c729c2c",
+    "packages/verification/src/verification/verifier-service-report.ts": "a4958e38023a567e831b2afd4750ce89d6580fdeccc46bef0f076c2062e6a5bb",
+    "packages/zkvm-contract/src/zkvm/bitmap-core.ts": "4df2c0ca2c1a72041f5c677571832c7ad131fecf501c3d7c4a7751d724c261e4",
+    "packages/zkvm-contract/src/zkvm/contract-constants.ts": "dd92f092bb2d3da9cec46ef40558dde74e7cdcbbc7fa7fa5f4bbf9e24ae5bd48",
+    "packages/zkvm-contract/src/zkvm/election-config.ts": "69f007330722d5aedf2f36e1b5e8facdcb6c50825958972991b427386ae8539d",
+    "packages/zkvm-contract/src/zkvm/guards.ts": "46cb33c3acacdfd7dd1a954cb587c6a7152f81854d0362ff56e9d05b30a25244",
     "packages/zkvm-contract/src/zkvm/hex.ts": "736d2ff002d2b29e46261bed142a90a98f8a07982046a527342a0c2f4d7fa261",
     "packages/zkvm-contract/src/zkvm/identifiers.ts": "6d15a401bea5b05868c0d1dead32a4fb3e336ee441dbedfa14d2b18b1ea5e3f7",
-    "packages/zkvm-contract/src/zkvm/types.ts": "2e39ff157608bee18393415df2b678dbef7a469904db20688353f9ee3b4440b5"
+    "packages/zkvm-contract/src/zkvm/journal-guards.ts": "b7a431d23868199105f225e7360c765f50ff8beb78ec49340b5757e7875d764d",
+    "packages/zkvm-contract/src/zkvm/semantic-contract.generated.ts": "6b31fcd000b30429869e15f8be93147784cf76e0735a67a6d7118dd48fd810d1",
+    "packages/zkvm-contract/src/zkvm/semantic-contract.ts": "cba14ccf2c31d4b5b27a7884a42e4c1d2034baa7d5f14b3df95d62b7f98293ba",
+    "packages/zkvm-contract/src/zkvm/types.ts": "26bf39a86d66d8529c2421383650846ad616d2c88eeae7f8d09a54e00fcde1e5",
+    "zkvm/contract-core/src/current-zkvm-semantic-contract.json": "2ef6fc2e01557ab0d5674586c3d45ca674d2a3c66aa4930511496fe2084a0887"
   },
   "schemaExports": [
     "BitmapProofResponseSchema",
@@ -3372,24 +3405,24 @@
     "fingerprints": {
       "BitmapProofResponseSchema": "9c4c52d5e29b4197c56082ad66d6f4ac4d8ecec8723a68aecc7c43fb4c478de7",
       "BulletinProofResponseSchema": "6cec480bcdb4ed09e1e1f4b182c26624b9d7a6411ce2c27b4fec63b3edad62aa",
-      "BulletinQuerySchema": "0550ea64c617578e7f6828bc76f7523be7b0d32f6f7d4217de9a23d816d3a70d",
+      "BulletinQuerySchema": "8713485cbf5333b8a6a104a13ac3bebf531da0ccc73c3b6d4c59348dde0b6afa",
       "BulletinResponseSchema": "7af86e25978fd8981fc3b87d8ca257d7d5b1caac69ba19fa99d97b6f19a17982",
-      "ConsistencyProofQuerySchema": "d06196c469b4b9dab3b599c7be035c06a3cc2fe5851152731b0f0a42cc3b54ad",
+      "ConsistencyProofQuerySchema": "2ae4df8f5c28d6434b6df71eb492aa6d9b759b077604485aff6647597810d5e4",
       "ConsistencyProofResponseSchema": "76560716791dc7c9527a4d2375fe912ed89297a4d2ea77af8e35ce215879db3a",
-      "CurrentFinalizationBitmapProofParamsSchema": "85c3baf66a9f38bb81b8bca168ee12554a608774ccec6ebcbf4834619643ee57",
+      "CurrentFinalizationBitmapProofParamsSchema": "7f8e8d253d9640a9629169d96e27c0fc3e886f83bd540252ff95bf23efa39c0b",
       "CurrentFinalizationInputCommitmentParamsSchema": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb",
       "CurrentFinalizationParamsSchema": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb",
-      "CurrentFinalizationResponseSchema": "c39251cfa514c5d94888dc4f7df5598bf96ded4bcd7dd80a7b57ec51f654840d",
+      "CurrentFinalizationResponseSchema": "affb9a775bbbff0c5721edf4f489a981acd77841db71dce620e22456f2195623",
       "FinalizationArtifactParamsSchema": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e",
       "FinalizationCancelParamsSchema": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e",
       "FinalizationCancelRequestSchema": "db1d6093683e846264c00a6fc3d7b6cc5c244ff51d15e0aec88542d384f57b0b",
       "FinalizationCreateParamsSchema": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb",
       "FinalizationCreateRequestSchema": "6fdf9db4ebd2eac6eae2785b5624c93da1f95d10aa7652600e63fd210eb0b705",
-      "FinalizationResourceSchema": "32a30bb11e79dbb409f9c166a6f10d644a864f2627071d3e40b84f40cac37723",
-      "FinalizationResponseSchema": "27a429b2cad3c7cd74a1481d80cf800a1dfcd7df851d1935f1dc97d4bbfd1db9",
+      "FinalizationResourceSchema": "33a7624c6bb5c5409984657c43310c3fbf8dd9276046fabd51e0f0cacb457856",
+      "FinalizationResponseSchema": "d45e7f8b05a2bbc0621cb8c11be5f1f110c194ed73f094d38e170d709305f886",
       "InputCommitmentResponseSchema": "ca87e702865a8f6c353e11d584548894b0f6ace462e5ef7d7beeb7f52c13fdaf",
       "PathSessionCapabilityHeadersSchema": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905",
-      "ProgressResponseSchema": "32e16cbf21bf3c8fa287a48c508c8581d1b847a50d4687bd346c6c2338ca3fd0",
+      "ProgressResponseSchema": "8b7068fb3da81775889ffa79bacedee5f507921ce7cb216b8abcc6e8e780cf29",
       "SessionBulletinParamsSchema": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb",
       "SessionCreateRequestSchema": "d0b040d06774086ae712bf2077c8e94ae0f4dad345a78291f417b844eedb5426",
       "SessionParamsSchema": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb",
@@ -3402,7 +3435,7 @@
       "VerificationObservationResponseSchema": "7bc03784f5d859185422653eec36c3445ff99b364b431b44c90ab69c2015ee9f",
       "VerificationResourceParamsSchema": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e",
       "VerificationResourceQuerySchema": "e0db6efa48f4ec4758710478f13aa52834b72d4d7ce0c5a2f6712f91200021a5",
-      "VerificationResourceResponseSchema": "966918ea8e62a8c3fcc33a0baf2a4b041f76d16c0813f055882efa7523b70cb9",
+      "VerificationResourceResponseSchema": "a99fd92375709fcd10e877bbdeb1908d216fbf8099facde16de3a34cde49c49e",
       "VerificationRunRequestSchema": "a938defadb96a2bc30689c232ce4a323a401d5cace6e119f636275bf4f863759",
       "VerificationRunResponseSchema": "e00b1786887e117c0415ed00ad84300243774a850db933aaa8425b1508b67fb2",
       "VoteRequestSchema": "5114a3e91c7d2642aa127fa9ee8c981e06ed7d3eab0992526fc7f7205a6d8973",
@@ -3410,5 +3443,5 @@
     }
   },
   "sourceRef": "HEAD",
-  "sourceSha": "ecaf7bcebe4d"
+  "sourceSha": "b1526c7e1bc6"
 }

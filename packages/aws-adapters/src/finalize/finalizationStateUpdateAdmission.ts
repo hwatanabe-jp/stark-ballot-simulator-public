@@ -1,5 +1,5 @@
 import type { FinalizationStateUpdatePayload } from '@stark-ballot/application/finalize/finalization-state-update';
-import { parseFinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-storage';
+import { admitFinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-storage';
 import {
   PROVER_FAILURE_CATEGORY_VALUES,
   type FinalizationFailureCategory,
@@ -9,6 +9,8 @@ import { parseRequiredAwsFinalizationBundleMetadata } from '@stark-ballot/aws-ad
 import type { AwsFinalizationBundleMetadata } from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
 import { getStringProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { parseFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 
 const FINALIZATION_ERROR_KEYS = new Set(['code', 'message', 'category', 'details']);
 const FINALIZATION_FAILURES = {
@@ -165,8 +167,8 @@ export function parseFinalizationStateUpdatePayload(value: unknown): AwsFinaliza
     return undefined;
   }
 
-  const sessionId = getStringProperty(value, 'sessionId');
-  const finalizationId = getStringProperty(value, 'finalizationId');
+  const rawSessionId = getStringProperty(value, 'sessionId');
+  const finalizationId = parseFinalizationId(value['finalizationId']);
   const stepFunctionsArn = getStringProperty(value, 'stepFunctionsArn');
   const status = getStringProperty(value, 'status');
   const queuedAtMs = value['queuedAtMs'];
@@ -176,11 +178,10 @@ export function parseFinalizationStateUpdatePayload(value: unknown): AwsFinaliza
   const timeoutAtMs = value['timeoutAtMs'];
 
   if (
-    !sessionId ||
+    !rawSessionId ||
     !finalizationId ||
     (status !== 'RUNNING' && status !== 'SUCCEEDED' && status !== 'FAILED' && status !== 'TIMED_OUT') ||
-    !isSafeVerifierSegment(sessionId) ||
-    !isSafeVerifierSegment(finalizationId) ||
+    !isSafeVerifierSegment(rawSessionId) ||
     !isNonNegativeInteger(queuedAtMs) ||
     (hasOwn(value, 'stepFunctionsArn') && typeof stepFunctionsArn !== 'string')
   ) {
@@ -200,7 +201,7 @@ export function parseFinalizationStateUpdatePayload(value: unknown): AwsFinaliza
   }
 
   const common = {
-    sessionId,
+    sessionId: asSessionId(rawSessionId),
     finalizationId,
     queuedAtMs,
   };
@@ -239,7 +240,7 @@ export function parseFinalizationStateUpdatePayload(value: unknown): AwsFinaliza
     ) {
       return undefined;
     }
-    const finalizationResult = parseFinalizationResultAuthority(value['finalizationResult']);
+    const finalizationResult = admitFinalizationResultAuthority(value['finalizationResult']);
     if (!finalizationResult) {
       return undefined;
     }

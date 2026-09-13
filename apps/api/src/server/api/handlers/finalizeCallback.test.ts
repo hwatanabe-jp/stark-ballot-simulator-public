@@ -1,7 +1,7 @@
 import { createHmac } from 'crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
-import { createMockVoteStore } from '../../__tests__/support/mockVoteStore';
+import { createMockVoteStore } from '../../test-support/mockVoteStore';
 import { parseFinalizationStateUpdatePayload } from '@stark-ballot/aws-adapters/finalize/finalizationStateUpdateAdmission';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 
@@ -376,7 +376,7 @@ describe('finalizeCallbackHandler', () => {
           'x-finalization-writer-timestamp': timestamp,
           'x-finalization-writer-signature': '0'.repeat(64),
         },
-      } as RequestInit & { duplex: 'half' },
+      },
     );
 
     const response = await finalizeCallbackHandler({

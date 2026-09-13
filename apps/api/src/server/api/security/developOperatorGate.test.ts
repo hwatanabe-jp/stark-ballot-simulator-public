@@ -4,7 +4,7 @@ import { isOperatorGatedDevelopRequest, ORIGIN_VERIFY_HEADER } from './developOp
 import {
   localRuntimeProfile,
   targetRuntimeProfile,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 
 const originVerifyHeader = 'origin-header-secret-0123456789abcdef';
 

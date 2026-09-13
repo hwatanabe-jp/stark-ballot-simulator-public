@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { s } from '@stark-ballot/validation/schema';
 import {
-  bindRoute,
   buildRoutePath,
   buildRouteUrl,
   createQuerySerializer,
@@ -91,12 +90,5 @@ describe('typed route primitives', () => {
       'Route items.get does not declare response status 201',
     );
     expect(() => declaredResponse(itemRoute, 200, { itemId: '' })).toThrow();
-  });
-
-  it('binds a handler to the canonical route object without copying method or path', () => {
-    const handler = () => declaredResponse(itemRoute, 200, { itemId: 'item-1' });
-    const binding = bindRoute(itemRoute, handler);
-
-    expect(binding).toEqual({ route: itemRoute, handler });
   });
 });

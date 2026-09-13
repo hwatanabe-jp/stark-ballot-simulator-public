@@ -13,7 +13,7 @@ if [ -z "${EXPECTED_IMAGE_ID_VARIANT:-}" ]; then
   export EXPECTED_IMAGE_ID_VARIANT=x86_64
 fi
 if [ -z "${VERIFIER_PUBLIC_BASE_URL:-}" ]; then
-  export VERIFIER_PUBLIC_BASE_URL="http://localhost:3000"
+  export VERIFIER_PUBLIC_BASE_URL="http://localhost:${PORT:-3000}"
 fi
 if [ -z "${VITE_STH_SOURCES:-}" ]; then
   export VITE_STH_SOURCES="/api/sessions/:sessionId/bulletin/sth,/api/sessions/:sessionId/bulletin/sth?auditorId=b"

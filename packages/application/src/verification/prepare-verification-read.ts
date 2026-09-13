@@ -1,5 +1,6 @@
-import type { FinalizationResultAuthority } from '../finalize/finalization-types';
+import type { FinalizationId, FinalizationResultAuthority } from '../finalize/finalization-types';
 import { isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 
 export type VerificationReadFailure =
   | {
@@ -9,11 +10,14 @@ export type VerificationReadFailure =
   | {
       availability: 'corrupt';
       reason:
-        'invalid_artifact' | 'incomplete_session_authority' | 'session_identity_mismatch' | 'voter_evidence_mismatch';
+        | 'invalid_artifact'
+        | 'incomplete_session_authority'
+        | 'session_identity_mismatch'
+        | 'voter_evidence_mismatch';
     };
 
 export interface VerificationReadSource {
-  sessionId: string;
+  sessionId: SessionId;
   electionId?: string;
   electionConfigHash?: string;
   logId?: string;
@@ -25,7 +29,7 @@ export interface VerificationReadSource {
     commitment: string;
   };
   finalization: {
-    finalizationId: string;
+    finalizationId: FinalizationId;
     authority: FinalizationResultAuthority;
   };
 }
@@ -81,9 +85,9 @@ export type ExactVoterEvidenceReadResult =
   | Extract<VerificationReadFailure, { availability: 'corrupt' }>;
 
 export interface VerificationReadPort {
-  readCurrent: (sessionId: string) => Promise<VerificationReadSourceResult>;
+  readCurrent: (sessionId: SessionId) => Promise<VerificationReadSourceResult>;
   readExactVoterEvidence: (input: {
-    sessionId: string;
+    sessionId: SessionId;
     voteId: string;
     voteIndex: number;
     expectedCommitment: string;
@@ -152,8 +156,8 @@ function hasMatchingExactVoterEvidence(
 
 export async function prepareVerificationRead(
   input: {
-    sessionId: string;
-    finalizationId: string;
+    sessionId: SessionId;
+    finalizationId: FinalizationId;
   },
   port: VerificationReadPort,
 ): Promise<PreparedVerificationRead> {

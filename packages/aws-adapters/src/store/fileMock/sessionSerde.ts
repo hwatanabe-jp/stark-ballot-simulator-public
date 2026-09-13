@@ -1,6 +1,9 @@
-import type { FinalizationBitmapData } from '@stark-ballot/application/finalize/finalization-store';
+import type { FinalizationBitmapRecord } from '@stark-ballot/application/finalize/finalization-store';
+import { finalizationBitmapDataCodec } from '@stark-ballot/application/finalize/finalization-storage';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
+import { parseFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import {
-  parseFinalizationRecord,
+  finalizationRecordCodec,
   type FinalizationRecord,
 } from '@stark-ballot/application/finalize/finalization-record';
 import { admitSuccessfulFinalizationReceipt } from '@stark-ballot/application/finalize/successful-finalization-commit-admission';
@@ -19,6 +22,7 @@ import type {
   UserParticipation,
 } from '@stark-ballot/domain/types/sessionRecords';
 import { parseSessionIdentityRecord } from '@stark-ballot/domain/types/sessionRecords';
+import { parseSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 import {
   parseVerificationObservation,
   type VerificationObservation,
@@ -38,11 +42,11 @@ export interface FileStoreState {
   identityRecords: Map<string, SessionIdentityRecord>;
   votingRecords: Map<string, SessionVotingRecord>;
   finalizationRecords: Map<string, FinalizationRecord>;
-  currentFinalizationIdBySession: Map<string, string>;
+  currentFinalizationIdBySession: Map<string, FinalizationId>;
   verificationResultRecords: Map<string, VerificationResultRecord>;
   verificationObservationRecords: Map<string, VerificationObservation>;
-  bitmapRecords: Map<string, FinalizationBitmapData>;
-  voteIdIndex: Map<string, { sessionId: string; index: number }>;
+  bitmapRecords: Map<string, FinalizationBitmapRecord>;
+  voteIdIndex: Map<string, { sessionId: SessionId; index: number }>;
   runtimeMetadataRecords: Map<string, AwsFinalizationRuntimeMetadata>;
   deliveryMetadataRecords: Map<string, AwsVerificationDeliveryMetadataInput>;
   receiptRecords: Map<string, ReceiptRecord>;
@@ -76,15 +80,6 @@ const NOT_CAST_KEYS = new Set(['status']);
 const CAST_KEYS = new Set(['status', 'voteIndex']);
 const ROOT_SNAPSHOT_KEYS = new Set(['timestamp', 'root', 'treeSize']);
 const SIGNED_ROOT_SNAPSHOT_KEYS = new Set(['timestamp', 'root', 'treeSize', 'signature']);
-const BITMAP_KEYS = new Set([
-  'sessionId',
-  'finalizationId',
-  'includedBitmap',
-  'includedBitmapRoot',
-  'treeSize',
-  'finalizedAtMs',
-]);
-const BITMAP_WITH_SEEN_KEYS = new Set([...BITMAP_KEYS, 'seenBitmap', 'seenBitmapRoot']);
 const RUNTIME_METADATA_KEYS = new Set(['sessionId', 'finalizationId', 'stepFunctionsArn', 'bundleMetadata']);
 const BUNDLE_METADATA_KEYS = new Set(['s3BundleKey', 's3UploadedAtMs']);
 const DELIVERY_METADATA_KEYS = new Set([
@@ -274,46 +269,23 @@ function parseVotingRecord(value: unknown, identity: SessionIdentityRecord): Ses
   };
 }
 
-function parseBitmap(value: unknown): FinalizationBitmapData | undefined {
-  if (!isRecord(value) || (!hasExactKeys(value, BITMAP_KEYS) && !hasExactKeys(value, BITMAP_WITH_SEEN_KEYS))) {
+function parseBitmap(value: unknown): FinalizationBitmapRecord | undefined {
+  if (!isRecord(value)) {
     return undefined;
   }
-  const sessionId = value['sessionId'];
-  const finalizationId = value['finalizationId'];
-  const includedBitmap = value['includedBitmap'];
-  const includedBitmapRoot = value['includedBitmapRoot'];
-  const seenBitmap = value['seenBitmap'];
-  const seenBitmapRoot = value['seenBitmapRoot'];
-  const treeSize = value['treeSize'];
-  const finalizedAtMs = value['finalizedAtMs'];
-  if (
-    typeof sessionId !== 'string' ||
-    typeof finalizationId !== 'string' ||
-    !Array.isArray(includedBitmap) ||
-    !includedBitmap.every((bit) => typeof bit === 'boolean') ||
-    typeof includedBitmapRoot !== 'string' ||
-    !SHA256_PATTERN.test(includedBitmapRoot) ||
-    !isNonNegativeSafeInteger(treeSize) ||
-    !isNonNegativeSafeInteger(finalizedAtMs) ||
-    (seenBitmap !== undefined &&
-      (!Array.isArray(seenBitmap) ||
-        !seenBitmap.every((bit) => typeof bit === 'boolean') ||
-        typeof seenBitmapRoot !== 'string' ||
-        !SHA256_PATTERN.test(seenBitmapRoot))) ||
-    (seenBitmap === undefined && seenBitmapRoot !== undefined)
-  ) {
+  const sessionId = parseSessionId(value['sessionId']);
+  const finalizationId = parseFinalizationId(value['finalizationId']);
+  const { sessionId: _sessionId, finalizationId: _finalizationId, ...bitmapValue } = value;
+  void _sessionId;
+  void _finalizationId;
+  const bitmap = finalizationBitmapDataCodec.decode(bitmapValue);
+  if (!sessionId || !finalizationId || !bitmap) {
     return undefined;
   }
   return {
     sessionId,
     finalizationId,
-    includedBitmap: [...includedBitmap],
-    includedBitmapRoot,
-    ...(Array.isArray(seenBitmap) && typeof seenBitmapRoot === 'string'
-      ? { seenBitmap: [...seenBitmap] as boolean[], seenBitmapRoot }
-      : {}),
-    treeSize,
-    finalizedAtMs,
+    ...bitmap,
   };
 }
 
@@ -525,7 +497,7 @@ export function parseFileStoreSnapshot(value: unknown): FileStoreState | undefin
   }
 
   for (const rawFinalization of finalizations) {
-    const record = parseFinalizationRecord(rawFinalization);
+    const record = finalizationRecordCodec.decode(rawFinalization);
     if (
       !record ||
       !state.identityRecords.has(record.sessionId) ||
@@ -545,7 +517,12 @@ export function parseFileStoreSnapshot(value: unknown): FileStoreState | undefin
     ) {
       return undefined;
     }
-    state.currentFinalizationIdBySession.set(entry[0], entry[1]);
+    const identity = state.identityRecords.get(entry[0]);
+    const finalizationId = parseFinalizationId(entry[1]);
+    if (!identity || !finalizationId) {
+      return undefined;
+    }
+    state.currentFinalizationIdBySession.set(identity.sessionId, finalizationId);
   }
 
   for (const rawVerification of verificationResults) {
@@ -589,7 +566,7 @@ export function parseFileStoreSnapshot(value: unknown): FileStoreState | undefin
     }
   }
 
-  const derivedVoteIdIndex = new Map<string, { sessionId: string; index: number }>();
+  const derivedVoteIdIndex = new Map<string, { sessionId: SessionId; index: number }>();
   for (const [sessionId, record] of state.votingRecords) {
     for (const [index, vote] of record.votes) {
       if (!addUnique(derivedVoteIdIndex, vote.voteId, { sessionId, index })) {
@@ -615,7 +592,7 @@ export function parseFileStoreSnapshot(value: unknown): FileStoreState | undefin
       expected.sessionId !== entry[1]['sessionId'] ||
       expected.index !== entry[1]['index'] ||
       !addUnique(state.voteIdIndex, entry[0], {
-        sessionId: entry[1]['sessionId'],
+        sessionId: expected.sessionId,
         index: entry[1]['index'],
       })
     ) {
@@ -662,10 +639,11 @@ export function parseFileStoreSnapshot(value: unknown): FileStoreState | undefin
     const finalization = record
       ? state.finalizationRecords.get(scopedKey(record.sessionId, record.finalizationId))
       : undefined;
-    const publication =
+    const publicationState =
       finalization && finalization.state.status === 'succeeded' && finalization.finalizationResult
-        ? finalization.finalizationResult.receiptPublication
+        ? finalization.finalizationResult.artifacts.receiptPublication
         : undefined;
+    const publication = publicationState?.availability === 'available' ? publicationState.publication : undefined;
     if (
       !record ||
       !publication ||
@@ -713,7 +691,7 @@ export function serializeFileStoreState(state: FileStoreState): FileStoreSnapsho
       },
     })),
     voting: sortedValues(state.votingRecords).map(serializeVotingRecord),
-    finalizations: sortedValues(state.finalizationRecords),
+    finalizations: sortedValues(state.finalizationRecords).map((record) => finalizationRecordCodec.encode(record)),
     currentFinalizationIds: Array.from(state.currentFinalizationIdBySession.entries()).sort(([left], [right]) =>
       left.localeCompare(right),
     ),
@@ -728,9 +706,9 @@ export function serializeFileStoreState(state: FileStoreState): FileStoreSnapsho
         };
       }),
     bitmaps: sortedValues(state.bitmapRecords).map((bitmap) => ({
-      ...bitmap,
-      includedBitmap: [...bitmap.includedBitmap],
-      ...(bitmap.seenBitmap ? { seenBitmap: [...bitmap.seenBitmap] } : {}),
+      sessionId: bitmap.sessionId,
+      finalizationId: bitmap.finalizationId,
+      ...finalizationBitmapDataCodec.encode(bitmap),
     })),
     voteIdIndex: Array.from(state.voteIdIndex.entries()).sort(([left], [right]) => left.localeCompare(right)),
     runtimeMetadata: Array.from(state.runtimeMetadataRecords.entries())

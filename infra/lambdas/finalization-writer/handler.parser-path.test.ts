@@ -9,6 +9,7 @@ import type {
   FinalizationSucceededPayload,
 } from '@stark-ballot/application/finalize/finalization-store';
 import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type { FinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-types';
 import type {
   AwsFinalizationFailedPayload,
@@ -24,8 +25,9 @@ import { createTestPublicInputArtifact } from '@stark-ballot/test-support/testin
 import { buildCloseStatement, buildElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
 import { buildDefaultElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
-import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 
 interface RestoreBundleInput {
   profile: ResolvedRuntimeProfile;
@@ -38,7 +40,8 @@ const mocks = vi.hoisted(() => {
   const state = {
     restoredResult: undefined as FinalizationResultAuthority | undefined,
     store: undefined as
-      (FinalizationLifecycleStore & AwsFinalizationRuntimeTransitionStore & FinalizationBitmapStore) | undefined,
+      | (FinalizationLifecycleStore & AwsFinalizationRuntimeTransitionStore & FinalizationBitmapStore)
+      | undefined,
   };
 
   return {
@@ -73,7 +76,6 @@ vi.mock('@stark-ballot/runtime-config/env/validate', () => ({
 }));
 
 vi.mock('@stark-ballot/runtime-config/env/observability', () => ({
-  collectInvalidTargetObservabilityEnvNames: vi.fn(() => []),
   validateTargetObservabilityEnv: vi.fn(),
 }));
 
@@ -89,8 +91,8 @@ vi.mock('@stark-ballot/aws-adapters/finalize/async-prover-artifacts', () => ({
 
 const { handler } = await import('./handler');
 
-const sessionId = '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b';
-const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
+const sessionId = asSessionId('2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b');
+const finalizationId = asFinalizationId('01HVN5WA1CEH94868G90QGJ7HX');
 const queuedAtMs = 1_700_000_000_000;
 const startedAtMs = 1_700_000_001_000;
 const executionArn = 'arn:aws:states:ap-northeast-1:123456789012:execution:machine:exec-1';
@@ -169,7 +171,7 @@ function getStepFunctionsArn(payload: object): string | undefined {
 
 function createRestoredFinalizationResult(): FinalizationResultAuthority {
   const baseJournal = createTestJournal();
-  const includedBitmap = Array.from({ length: baseJournal.treeSize }, (_, index) => index % 2 === 0);
+  const includedBitmap = Array.from({ length: baseJournal.treeSize }, () => true);
   const seenBitmap = Array.from({ length: baseJournal.treeSize }, () => true);
   const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
   const seenBitmapRoot = computeIncludedBitmapRoot(seenBitmap);
@@ -209,19 +211,35 @@ function createRestoredFinalizationResult(): FinalizationResultAuthority {
     ...buildFinalizationResultFromJournal({
       journal,
       imageId: `0x${'2'.repeat(64)}`,
-      electionManifest,
-      closeStatement,
+      publicAuditArtifacts: {
+        availability: 'available',
+        publicInputArtifact,
+        electionManifest,
+        closeStatement,
+      },
     }),
-    publicInputArtifact,
-    bitmapData: {
-      includedBitmap,
-      includedBitmapRoot,
-      seenBitmap,
-      seenBitmapRoot,
-      treeSize: journal.treeSize,
-      finalizedAtMs: Date.parse('2026-06-17T00:00:05.000Z'),
+    artifacts: {
+      publicAudit: {
+        availability: 'available',
+        publicInputArtifact,
+        electionManifest,
+        closeStatement,
+      },
+      receipt: { availability: 'unavailable' },
+      receiptPublication: { availability: 'unavailable' },
+      bitmap: {
+        availability: 'available',
+        proofSource: 'real',
+        data: {
+          includedBitmap,
+          includedBitmapRoot,
+          seenBitmap,
+          seenBitmapRoot,
+          treeSize: journal.treeSize,
+          finalizedAtMs: Date.parse('2026-06-17T00:00:05.000Z'),
+        },
+      },
     },
-    bitmapProofSource: 'real',
   };
 }
 
@@ -333,7 +351,7 @@ function createStore(): {
       return Promise.resolve(setCurrentRecord(state));
     },
   );
-  const storeMarkAwsFinalizationRunning = vi.fn((_sessionId: string, payload: AwsFinalizationRunningPayload) => {
+  const storeMarkAwsFinalizationRunning = vi.fn((_sessionId: SessionId, payload: AwsFinalizationRunningPayload) => {
     const stepFunctionsArn = getStepFunctionsArn(payload);
     const state: AwsFinalizationRuntimeState = {
       status: 'running',
@@ -349,7 +367,7 @@ function createStore(): {
     });
     return Promise.resolve(state);
   });
-  const storeMarkAwsFinalizationSucceeded = vi.fn((_sessionId: string, payload: AwsFinalizationSucceededPayload) => {
+  const storeMarkAwsFinalizationSucceeded = vi.fn((_sessionId: SessionId, payload: AwsFinalizationSucceededPayload) => {
     const stepFunctionsArn = getStepFunctionsArn(payload);
     const state: AwsFinalizationRuntimeState = {
       status: 'succeeded',
@@ -369,7 +387,7 @@ function createStore(): {
     });
     return Promise.resolve(state);
   });
-  const storeMarkAwsFinalizationFailed = vi.fn((_sessionId: string, payload: AwsFinalizationFailedPayload) => {
+  const storeMarkAwsFinalizationFailed = vi.fn((_sessionId: SessionId, payload: AwsFinalizationFailedPayload) => {
     const stepFunctionsArn = getStepFunctionsArn(payload);
     const state: AwsFinalizationRuntimeState = {
       status: 'failed',
@@ -389,7 +407,7 @@ function createStore(): {
     });
     return Promise.resolve(state);
   });
-  const storeMarkAwsFinalizationTimedOut = vi.fn((_sessionId: string, payload: AwsFinalizationTimedOutPayload) => {
+  const storeMarkAwsFinalizationTimedOut = vi.fn((_sessionId: SessionId, payload: AwsFinalizationTimedOutPayload) => {
     const stepFunctionsArn = getStepFunctionsArn(payload);
     const state: AwsFinalizationRuntimeState = {
       status: 'timeout',
@@ -410,10 +428,10 @@ function createStore(): {
   return {
     store: {
       getCurrentFinalizationRecord: vi.fn(() => Promise.resolve(currentRecord)),
-      getFinalizationRecord: vi.fn((_sessionId: string, requestedFinalizationId: string) =>
+      getFinalizationRecord: vi.fn((_sessionId: SessionId, requestedFinalizationId) =>
         Promise.resolve(currentRecord.finalizationId === requestedFinalizationId ? currentRecord : null),
       ),
-      markFinalizationQueued: vi.fn((_sessionId: string, payload: FinalizationQueuedPayload) => {
+      markFinalizationQueued: vi.fn((_sessionId: SessionId, payload: FinalizationQueuedPayload) => {
         currentRecord = {
           sessionId,
           finalizationId: payload.finalizationId,
@@ -516,8 +534,8 @@ describe('target finalization-writer real parser admission', () => {
     expect(succeededPayload).not.toHaveProperty('bundleMetadata');
     expectNoProverWorkFields(succeededPayload);
     expect(markAwsFinalizationSucceeded).toHaveBeenCalledOnce();
-    expect(markAwsFinalizationSucceeded.mock.calls[0]?.[1].finalizationResult.bitmapData).toEqual(
-      mocks.state.restoredResult?.bitmapData,
+    expect(markAwsFinalizationSucceeded.mock.calls[0]?.[1].finalizationResult.artifacts.bitmap).toEqual(
+      mocks.state.restoredResult?.artifacts.bitmap,
     );
     expectLifecycleOutput('succeeded', 'RUNTIME_UPDATE_RECEIVED');
   });
@@ -526,8 +544,7 @@ describe('target finalization-writer real parser admission', () => {
     const { store } = createStore();
     mocks.state.store = store;
     const restoredResult = createRestoredFinalizationResult();
-    delete restoredResult.bitmapData;
-    delete restoredResult.bitmapProofSource;
+    restoredResult.artifacts.bitmap = { availability: 'unavailable' };
     mocks.state.restoredResult = restoredResult;
 
     await expect(
@@ -608,7 +625,8 @@ describe('target finalization-writer real parser admission', () => {
     expect(mocks.buildFinalizationResultFromS3Bundle).not.toHaveBeenCalled();
     expect(markFinalizationFailed).toHaveBeenCalledTimes(1);
     const failedCall = markFinalizationFailed.mock.calls[0] as
-      [sessionId: string, payload: FinalizationFailedPayload] | undefined;
+      | [sessionId: string, payload: FinalizationFailedPayload]
+      | undefined;
     expect(failedCall?.[0]).toBe(sessionId);
     expect(failedCall?.[1].finalizationId).toBe(finalizationId);
     expect(failedCall?.[1].error.code).toBe('FINALIZATION_BUNDLE_KEY_MISSING');

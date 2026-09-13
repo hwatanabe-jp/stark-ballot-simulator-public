@@ -9,6 +9,7 @@
 
 import { parseImageIdMapping, resolveConfirmedImageIdVariant } from './image-id-mapping.js';
 
+/** @typedef {import('./image-id-mapping.js').ImageIdMapping} ImageIdMapping */
 /** @typedef {import('./image-id-mapping.js').ImageIdVariant} ImageIdVariant */
 
 /** @type {readonly ImageIdVariant[]} */
@@ -28,11 +29,19 @@ export function isImageIdVariant(value) {
  * @returns {ImageIdVariant}
  */
 export function resolveConfiguredImageIdVariant(value, fallback = 'default') {
-  if (value === undefined || value === null || `${value}`.trim().length === 0) {
+  if (value === undefined || value === null) {
     return fallback;
   }
 
-  const trimmed = `${value}`.trim();
+  if (typeof value !== 'string') {
+    throw new Error('Unsupported ImageID variant value');
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return fallback;
+  }
+
   if (!isImageIdVariant(trimmed)) {
     throw new Error(`Unsupported ImageID variant: ${trimmed}`);
   }

@@ -35,12 +35,12 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_pipeline_management" {
       "codepipeline:UntagResource",
       "codepipeline:UpdatePipeline",
     ]
-    resources = [
+    resources = compact([
       local.app_pipeline_arn,
       local.app_pipeline_action_arn_pattern,
-      local.app_static_fast_pipeline_arn,
-      local.app_static_fast_action_arn_pattern,
-    ]
+      local.app_static_fast_enabled ? local.app_static_fast_pipeline_arn : null,
+      local.app_static_fast_enabled ? local.app_static_fast_action_arn_pattern : null,
+    ])
   }
 
   statement {
@@ -78,6 +78,26 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_pipeline_management" {
       aws_codeconnections_connection.source[0].arn,
       aws_iam_openid_connect_provider.github[0].arn,
     ]
+  }
+
+  statement {
+    sid    = "AttachAppCodeBuildCommon"
+    effect = "Allow"
+
+    actions = [
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+    ]
+    resources = [
+      local.app_terraform_smoke_role_arn,
+      "arn:aws:iam::${var.aws_account_id}:role/${local.app_signature_preflight_apply_role_name}",
+    ]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "iam:PolicyARN"
+      values   = [local.app_codebuild_common_policy_arn]
+    }
   }
 }
 
@@ -243,7 +263,7 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_managem
   count = local.app_pipeline_enabled ? 1 : 0
 
   statement {
-    sid    = "AttachAppLanePolicies"
+    sid    = "AttachAppLane"
     effect = "Allow"
 
     actions = [
@@ -260,7 +280,7 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_managem
   }
 
   statement {
-    sid    = "AttachAppPlanManagedPolicies"
+    sid    = "AttachAppPlan"
     effect = "Allow"
 
     actions = [
@@ -277,7 +297,7 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_managem
   }
 
   statement {
-    sid    = "AttachAppDeploymentManagedPolicies"
+    sid    = "AttachAppDeploy"
     effect = "Allow"
 
     actions = [
@@ -294,7 +314,7 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_managem
   }
 
   dynamic "statement" {
-    for_each = local.terraform_drift_managed_policy_role_attachment_groups
+    for_each = local.terraform_drift_app_managed_policy_role_attachment_groups
 
     content {
       sid    = statement.value.sid
@@ -315,20 +335,19 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_managem
   }
 
   statement {
-    sid     = "ListManagedPolicyAttachments"
+    sid     = "ListAppAttachments"
     effect  = "Allow"
     actions = ["iam:ListAttachedRolePolicies"]
     resources = distinct(concat(
       [aws_iam_role.terraform_apply[0].arn],
-      local.app_pipeline_role_arn_patterns,
       [
-        for attachment in values(local.terraform_drift_managed_policy_role_attachments) : attachment.roleArn
+        for attachment in values(local.terraform_drift_app_managed_policy_role_attachment_groups) : attachment.roleArn
       ],
     ))
   }
 
   statement {
-    sid    = "CreateOrAttachAppPipelineRoleBoundary"
+    sid    = "CreateAppRoles"
     effect = "Allow"
 
     actions = [
@@ -344,12 +363,15 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_managem
         local.app_deploy_permissions_boundary_policy_arn,
         local.app_apply_deploy_permissions_boundary_policy_arn,
         local.app_smoke_deploy_permissions_boundary_policy_arn,
+        local.app_acceptance_publisher_boundary_policy_arn,
       ]
     }
   }
 
+  # ListAttachedRolePolicies stays here so the exact App role inventory renders
+  # once; ListAppAttachments is limited to the Apply and App drift-runner roles.
   statement {
-    sid    = "ManageAppPipelineRoles"
+    sid    = "ManageAppRoles"
     effect = "Allow"
 
     actions = [
@@ -357,6 +379,8 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_managem
       "iam:DeleteRolePolicy",
       "iam:GetRole",
       "iam:GetRolePolicy",
+      "iam:ListInstanceProfilesForRole",
+      "iam:ListAttachedRolePolicies",
       "iam:ListRolePolicies",
       "iam:ListRoleTags",
       "iam:PutRolePolicy",
@@ -368,7 +392,7 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_role_attachment_managem
   }
 
   statement {
-    sid    = "PassAppPipelineRoles"
+    sid    = "PassAppRoles"
     effect = "Allow"
 
     actions   = ["iam:PassRole"]
@@ -476,11 +500,11 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_artifacts_management" {
       "s3:PutBucketVersioning",
       "s3:PutLifecycleConfiguration",
     ]
-    resources = [
+    resources = compact([
       local.app_retained_artifact_bucket_arn,
       local.app_pipeline_execution_artifact_bucket_arn,
-      local.app_static_fast_execution_artifact_bucket_arn,
-    ]
+      local.app_static_fast_enabled ? local.app_static_fast_execution_artifact_bucket_arn : null,
+    ])
   }
 
   statement {
@@ -544,12 +568,16 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_artifacts_management" {
     effect = "Allow"
 
     actions = [
+      "kms:CreateAlias",
       "kms:DescribeKey",
       "kms:GetKeyPolicy",
+      "kms:GetKeyRotationStatus",
+      "kms:ListResourceTags",
       "kms:PutKeyPolicy",
       "kms:ScheduleKeyDeletion",
       "kms:TagResource",
       "kms:UntagResource",
+      "kms:UpdateAlias",
     ]
     resources = ["*"]
 
@@ -586,13 +614,7 @@ data "aws_iam_policy_document" "bootstrap_apply_app_lane_artifacts_management" {
       "kms:CreateAlias",
       "kms:UpdateAlias",
     ]
-    resources = ["*"]
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:RequestAlias"
-      values   = [local.app_artifact_kms_alias]
-    }
+    resources = [local.app_artifact_kms_alias_arn]
   }
 
   statement {

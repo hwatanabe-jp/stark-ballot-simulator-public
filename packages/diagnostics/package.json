@@ -2,11 +2,6 @@
   "name": "@stark-ballot/diagnostics",
   "private": true,
   "type": "module",
-  "scripts": {
-    "lint": "pnpm --dir ../.. exec eslint packages/diagnostics",
-    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/diagnostics",
-    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
-  },
   "exports": {
     ".": "./src/index.ts",
     "./canonicalEvents": "./src/canonicalEvents.ts",
@@ -14,6 +9,11 @@
     "./loggerTypes": "./src/loggerTypes.ts",
     "./logging": "./src/logging.ts",
     "./requestLogContext": "./src/requestLogContext.ts"
+  },
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec oxlint packages/diagnostics",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/diagnostics",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@stark-ballot/validation": "workspace:*"

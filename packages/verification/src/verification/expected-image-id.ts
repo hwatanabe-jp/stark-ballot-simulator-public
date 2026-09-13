@@ -1,9 +1,6 @@
 import { resolveConfiguredImageIdVariant, type ImageIdMapping } from '@stark-ballot/validation/image-id-policy';
 import { getExpectedImageId } from './image-id-verifier';
-import { logger } from '@stark-ballot/verification/shared/logger';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
-
-export const DEFAULT_POC_IMAGE_ID = '0x08aa256ee9120045bbdbe2152723ff657cf1cd7329cba46715954d183caa84de';
 
 export type ImageIdMappingLoader = () => ImageIdMapping | Promise<ImageIdMapping>;
 
@@ -11,7 +8,6 @@ export async function resolveExpectedImageId(
   methodVersion?: number,
   options: {
     explicitImageId?: string;
-    legacyExpectedImageIdPoc?: string;
     variant?: unknown;
     loadImageIdMapping?: ImageIdMappingLoader;
   } = {},
@@ -19,10 +15,6 @@ export async function resolveExpectedImageId(
   const explicit = options.explicitImageId;
   if (explicit && explicit.length > 0) {
     return explicit;
-  }
-
-  if (options.legacyExpectedImageIdPoc && options.legacyExpectedImageIdPoc.length > 0) {
-    logger.warn('legacy_image_id_override_ignored');
   }
 
   if (methodVersion !== undefined && methodVersion !== CURRENT_METHOD_VERSION) {

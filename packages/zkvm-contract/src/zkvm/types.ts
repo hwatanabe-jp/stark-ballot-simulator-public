@@ -1,12 +1,13 @@
 /**
- * zkVM v2 type definitions following final-design.md v1.0
- * These types implement the new structure without claimedTally/tamperDetected
+ * Current zkVM contract types.
+ * These types omit unbound claimed-tally and tamper flags.
  */
 
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { asElectionId, asInputCommitment, type ElectionId, type InputCommitment } from './identifiers';
 import { hexToBytesStrict } from './hex';
+import { CURRENT_ZKVM_BROWSER_SEMANTIC_BINDINGS } from './semantic-contract.generated';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -15,9 +16,9 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   return value;
 }
 
-export const CURRENT_METHOD_VERSION = 14;
-export const LEGACY_METHOD_VERSION = 12;
-export const INPUT_COMMITMENT_FORMAT_VERSION = 10;
+export const CURRENT_METHOD_VERSION = CURRENT_ZKVM_BROWSER_SEMANTIC_BINDINGS.methodVersion;
+export const INPUT_COMMITMENT_FORMAT_VERSION = CURRENT_ZKVM_BROWSER_SEMANTIC_BINDINGS.inputCommitmentFormatVersion;
+export const VERIFIED_TALLY_WIDTH = CURRENT_ZKVM_BROWSER_SEMANTIC_BINDINGS.tallyWidth;
 export const UINT16_MAX = 0xffff;
 export const UINT8_MAX = 0xff;
 export const UINT32_MAX = 0xffffffff;
@@ -35,6 +36,7 @@ export type UnixTimestampMillis = ZkvmUnsignedInteger<'UnixTimestampMillis'>;
 export type VoteCount = ZkvmUnsignedInteger<'VoteCount'>;
 export type BulletinIndex = ZkvmUnsignedInteger<'BulletinIndex'>;
 export type VoteChoiceByte = ZkvmUnsignedInteger<'VoteChoiceByte'>;
+export type VerifiedTally<TCount = number> = [TCount, TCount, TCount, TCount, TCount];
 
 /**
  * Vote with inclusion proof for zkVM processing
@@ -99,7 +101,7 @@ export interface ZkVMJournal {
   sthDigest: string; // SHA256(logId || treeSize || timestamp || bulletinRoot)
 
   /** Verified aggregation results */
-  verifiedTally: number[]; // [A, B, C, D, E]
+  verifiedTally: VerifiedTally; // [A, B, C, D, E]
 
   /** Verification statistics */
   totalVotes: number; // Total votes processed
@@ -135,7 +137,7 @@ export interface ZkVMJournal {
 }
 
 /**
- * Current zkVM journal contract (methodVersion 14).
+ * Current zkVM journal contract.
  * This narrows the generic journal shape for helpers that only target the
  * active journal layout and therefore always require seenBitmapRoot.
  */
@@ -144,8 +146,8 @@ export interface CurrentZkVMJournal extends ZkVMJournal {
   methodVersion: typeof CURRENT_METHOD_VERSION;
 }
 
-const COMMIT_DOMAIN_TAG = utf8ToBytes('stark-ballot:commit|v1.0');
-const INPUT_DOMAIN_TAG = utf8ToBytes('stark-ballot:input|v1.0');
+const COMMIT_DOMAIN_TAG = utf8ToBytes(CURRENT_ZKVM_BROWSER_SEMANTIC_BINDINGS.domainTags.voteCommitment);
+const INPUT_DOMAIN_TAG = utf8ToBytes(CURRENT_ZKVM_BROWSER_SEMANTIC_BINDINGS.domainTags.inputCommitment);
 
 export type InputCommitmentVote = {
   index: number;

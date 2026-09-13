@@ -1,6 +1,10 @@
 import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { computeInputCommitmentFromPublicInput } from '@stark-ballot/zkvm-contract/zkvm/types';
 import {
+  PUBLIC_INPUT_ARTIFACT_SCHEMA,
+  PUBLIC_INPUT_ARTIFACT_VERSION,
+} from '@stark-ballot/zkvm-contract/zkvm/semantic-contract';
+import {
   getArrayProperty,
   getNumberProperty,
   getRecordProperty,
@@ -10,13 +14,13 @@ import {
 import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
-export const PUBLIC_INPUT_SCHEMA = 'stark-ballot.public_input';
-export const PUBLIC_INPUT_VERSION = '1.1';
+export const PUBLIC_INPUT_SCHEMA = PUBLIC_INPUT_ARTIFACT_SCHEMA;
+export const PUBLIC_INPUT_VERSION = PUBLIC_INPUT_ARTIFACT_VERSION;
 
 export type PublicInputArtifactSource = 'bundle' | 'generated';
 
 export interface PublicInputArtifactProvenance {
-  source?: PublicInputArtifactSource;
+  source: PublicInputArtifactSource;
   finalizationId?: string;
   bundleKey?: string;
 }
@@ -61,7 +65,7 @@ export interface PublicInputObservedFields {
   recomputedInputCommitment?: string;
 }
 
-export interface PublicInputTypedAuthority {
+export interface PublicInputAuthority {
   electionId: string;
   electionConfigHash: string;
   methodVersion: number;
@@ -82,14 +86,14 @@ export interface SupportedPublicInputArtifact {
     version: typeof PUBLIC_INPUT_VERSION;
   };
   provenance: PublicInputArtifactProvenance;
-  typedAuthority: PublicInputTypedAuthority;
+  typedAuthority: PublicInputAuthority;
 }
 
 export interface ParsedPublicInputArtifact {
   format: PublicInputArtifactFormat;
-  provenance: PublicInputArtifactProvenance;
+  provenance: Partial<PublicInputArtifactProvenance>;
   observed: PublicInputObservedFields;
-  typedAuthority?: PublicInputTypedAuthority;
+  typedAuthority?: PublicInputAuthority;
   valid: boolean;
   errors: string[];
 }
@@ -158,7 +162,7 @@ export function buildPublicInputArtifactFromZkvmInput(
 
 export function parsePublicInputArtifact(
   raw: unknown,
-  options: PublicInputArtifactProvenance = {},
+  options: Partial<PublicInputArtifactProvenance> = {},
 ): ParsedPublicInputArtifact {
   const errors: string[] = [];
   const format: PublicInputArtifactFormat = {};
@@ -381,11 +385,13 @@ function finalizeParsedPublicInput(input: Omit<ParsedPublicInputArtifact, 'valid
 export function toSupportedPublicInputArtifact(
   parsed: ParsedPublicInputArtifact,
 ): SupportedPublicInputArtifact | undefined {
+  const source = parsed.provenance.source;
   if (
     !parsed.valid ||
     !parsed.typedAuthority ||
     parsed.format.schema !== PUBLIC_INPUT_SCHEMA ||
-    parsed.format.version !== PUBLIC_INPUT_VERSION
+    parsed.format.version !== PUBLIC_INPUT_VERSION ||
+    (source !== 'bundle' && source !== 'generated')
   ) {
     return undefined;
   }
@@ -395,17 +401,20 @@ export function toSupportedPublicInputArtifact(
       schema: PUBLIC_INPUT_SCHEMA,
       version: PUBLIC_INPUT_VERSION,
     },
-    provenance: { ...parsed.provenance },
-    ...omitUndefinedProperties({ typedAuthority: { ...parsed.typedAuthority } }),
+    provenance: { ...parsed.provenance, source },
+    typedAuthority: { ...parsed.typedAuthority },
   };
 }
 
 export function buildSupportedPublicInputArtifactFromZkvmInput(
   input: ZkVMInput,
   methodVersion: number,
-  options: PublicInputArtifactProvenance = {},
+  options: Omit<PublicInputArtifactProvenance, 'source'> = {},
 ): SupportedPublicInputArtifact {
-  const parsed = parsePublicInputArtifact(buildPublicInputArtifactFromZkvmInput(input, methodVersion), options);
+  const parsed = parsePublicInputArtifact(buildPublicInputArtifactFromZkvmInput(input, methodVersion), {
+    ...options,
+    source: 'generated',
+  });
   const supported = toSupportedPublicInputArtifact(parsed);
 
   if (!supported) {
@@ -417,7 +426,7 @@ export function buildSupportedPublicInputArtifactFromZkvmInput(
 
 export function parseSupportedPublicInputArtifact(
   raw: unknown,
-  options: PublicInputArtifactProvenance = {},
+  options: PublicInputArtifactProvenance,
 ): SupportedPublicInputArtifact | undefined {
   return toSupportedPublicInputArtifact(parsePublicInputArtifact(raw, options));
 }

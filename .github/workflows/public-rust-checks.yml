@@ -7,6 +7,8 @@ on:
       - 'verifier-service/**'
       - 'zkvm/contract-core/**'
       - 'zkvm/methods/guest/**'
+      - 'infra/terraform/bootstrap/app-pipeline-scripts/current-zkvm-semantic-interface.generated.mjs'
+      - 'packages/crypto-primitives/src/vote-commitment-domain.generated.ts'
       - 'docs/formal/generated-vectors/**'
       - '**/Cargo.toml'
       - '**/Cargo.lock'
@@ -36,16 +38,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master @ 2026-09-12
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          prefix-key: cargo-targets
           workspaces: |
-            verifier-service -> verifier-service/target
+            verifier-service -> target
 
       - name: Format check
         run: cargo fmt --all --manifest-path verifier-service/Cargo.toml --check
@@ -64,16 +67,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master @ 2026-09-12
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          prefix-key: cargo-targets
           workspaces: |
-            zkvm -> zkvm/target
+            zkvm -> target
 
       - name: Format check
         run: cargo fmt --all --manifest-path zkvm/contract-core/Cargo.toml --check
@@ -83,24 +87,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --manifest-path zkvm/contract-core/Cargo.toml
-
-  guest:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2026-07-16
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
-        with:
-          workspaces: |
-            zkvm -> zkvm/target
 
       - name: Run guest model vector tests
         run: cargo test --manifest-path zkvm/Cargo.toml -p guest test_formal_guest_model_vectors

@@ -1,151 +1,103 @@
-# ゲーティングロジック
+# Verified の表示条件
 
-この章は、「Verified」を表示してよい条件と、表示を必ず阻止する不変条件を定義します。
+全 64 票について正しい計算の証明があり、表示された得票数も同じだったとしても、投票時の手元データを失っていれば「自分が選んだ B と一致するか」は確認できません。反対に、自票が正しく数えられていても、別の一票が除外されていれば、集計全体の検証は失敗です。
 
-「必要な検証が未実行または失敗なら Verified を表示しない」という原則のもと、各チェックの結果がどう最終判定に集約されるかを定式化します。
-
-この章での Verified は、UI の最終表示が緑色の `Verified` になってよいかだけを指します。
-`verificationStatus='success'` や `stark_receipt_verify=success` は STARK receipt 検証成功の信号にすぎず、単独で overall verification の成功を意味しません。
+**Verified は、必要な確認がすべて終わり、その結果が矛盾なく揃ったときだけ表示します。** STARK レシートの検証成功は、その条件の一つです。
 
 ## 最終判定の種類
 
-検証パイプラインの最終表示は shared
-`deriveVerificationPresentationPolicy` が一元的に決定します。この policy は
-`deriveVerificationSummary` の集約結果に、evidence availability、hard failure、
-明示的な server failure、表示 sequence の readiness を合わせ、UI 上の次の
-ステータスと「Verified」表示資格を返します。API と browser は同じ policy を使い、
-UI は policy が許可した最終表示だけを描画します。
+| 表示                          | 意味                                                                                      |
+| ----------------------------- | ----------------------------------------------------------------------------------------- |
+| **Verified**（緑）            | 必須確認がすべて成功し、補助確認にも不足・失敗がなく、本番用 STARK 証明で裏付けられている |
+| **Verification Failed**（赤） | 証明、投票記録、集計の完全性、表示値などに失敗や不一致を検出した                          |
+| **Warning**（黄）             | まだ検証中、必要な証拠が不足、または補助確認に制限がある                                  |
+| **Demo Only**（黄）           | 必須条件は満たすが、開発モードのフェイクレシートを使っている                              |
 
-| 表示ステータス      | 主な条件                                                                                                    | UI 表示 |
-| ------------------- | ----------------------------------------------------------------------------------------------------------- | ------- |
-| Verified            | required 条件が満たされ、optional チェックの劣化もない（`fully_verified`）                                  | 緑色    |
-| Verification Failed | 証明失敗、票除外、Recorded/Counted/Cast の必須失敗、または公開集計値と検証済み tally の不一致が確定した場合 | 赤色    |
-| Warning             | required チェックが進行中、証拠不足がある、または optional チェックのみ劣化している場合                     | 黄色    |
-| Demo Only           | required 条件は満たしたが dev-mode receipt を含む場合（`demo_only`）                                        | 黄色    |
+「不明」と「不正を検出した」は分けます。どちらも緑にはなりませんが、Warning を改ざんの証明として説明することもありません。
 
-Verified の必要条件は [不変条件のまとめ](#不変条件のまとめ) に集約しています。
-要点は、既知の required check がすべて存在してすべて `success` であること、票除外（`excludedSlots > 0`）がないこと、dev-mode receipt を production STARK proof として扱っていないことです。
+### 必須確認と補助確認
+
+[チェック一覧](checks-catalog.md)の `required` は必須確認です。既知の必須チェックが一件でも欠けている、`not_run`、`pending`、`running`、`failed` のいずれかなら、Verified にはなりません。
+
+`optional` は補助確認です。失敗や未実行だけで必須確認の失敗にはしませんが、`verified_with_limitations` として Warning を表示します。たとえば STH ソースが未設定なら、そのチェックは未実行の補助確認になります。STH ソースを設定した場合は必須へ昇格し、取得・照合に成功することが必要です。補助確認でも `pending` / `running` が残る間は、最終ラベルの表示を待ちます。
+
+チェックが空、または未知のチェックしかない場合は、集約結果を作れません。既知チェックと未知チェックが混在する場合も、その未知部分を成功と解釈せず、失敗や進行中の判定がなければ証拠不足とします。API から受け取る正式なリソースでは、そもそも定義外・重複・不正なチェック構成を拒否します。
 
 ### ステータスの判定順序
 
-| 優先順 | 判定条件                                                                                                                       | 最終ステータス                                     |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- |
-| 1      | required チェックに `pending` / `running` がある                                                                               | `Warning` (`in_progress`)                          |
-| 2      | STARK 証明系ロールが `failed`                                                                                                  | `Verification Failed`                              |
-| 3      | completeness ロールが `failed`（`user_vote_excluded` / `votes_excluded` / `votes_excluded_unknown`）                           | `Verification Failed`                              |
-| 4      | Recorded-as-Cast の required チェックが `failed`                                                                               | `Verification Failed`                              |
-| 5      | tally consistency だけが失敗し、proof / completeness / user inclusion / input integrity / Recorded required が成功             | `Verification Failed` (`published_tally_mismatch`) |
-| 6      | Counted-as-Recorded または Cast-as-Intended の required チェックが `failed`                                                    | `Verification Failed`                              |
-| 7      | (a) required に `not_run` がある (b) 必須ロール不足 (c) 既知チェックと混在する未知チェック (d) required 定義の未解決のいずれか | `Warning` (`missing_evidence`)                     |
-| 8      | dev-mode evidence がある、または check evidence に `demo` がある                                                               | `Demo Only` (`demo_only`)                          |
-| 9      | optional チェックに `failed` / `not_run` がある                                                                                | `Warning` (`verified_with_limitations`)            |
-| 10     | 上記いずれにも該当しない                                                                                                       | `Verified`                                         |
+まず、チェック結果を集約して「どの理由を伝えるか」を決めます。次に、その集約結果だけでなく証拠と表示準備も調べ、「そのラベルを表示してよいか」を決めます。集約値の `summary` が `fully_verified` でも、後者の条件を満たさなければ Verified は表示しません。
 
-この表は `deriveVerificationSummary` の集約結果です。
-チェックが空、または未知チェックだけで既知チェックが 1 件も解決できない場合、summary は `null` になり、Verified ではなく最終サマリー未表示として扱われます。
+複数の状態が同時に現れたとき、集約は次の順で理由を選びます。
 
-未知チェックが既知チェックと混在する場合も、summary は `missing_evidence` になります。
-これは将来のチェック追加や API drift を成功として解釈しないための fail-closed ルールです。
+| 優先順 | 条件                                                                                                                  | 集約結果                                                                                                                  |
+| ------ | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 1      | 必須チェックが `pending` / `running`                                                                                  | `in_progress`                                                                                                             |
+| 2      | 証明の検証に失敗                                                                                                      | `proof_verification_failed`                                                                                               |
+| 3      | 集計の完全性に失敗                                                                                                    | 自票も除外なら `user_vote_excluded`、自票は含まれるなら `votes_excluded`、自票の状態が未確認なら `votes_excluded_unknown` |
+| 4      | Recorded の必須チェックに失敗                                                                                         | `recorded_integrity_failed`                                                                                               |
+| 5      | 表示集計が不一致で、証明・完全性・自票包含・入力整合性・Recorded の必要条件が成功し、必須証拠不足や未知チェックもない | `published_tally_mismatch`                                                                                                |
+| 6      | Counted または Cast の必須チェックに失敗                                                                              | `counted_integrity_failed` または `cast_integrity_failed`                                                                 |
+| 7      | 必須チェックの未実行・欠落、必要な役割の不足、未知チェックの混在                                                      | `missing_evidence`                                                                                                        |
+| 8      | 開発モードまたは `demo` の証拠がある                                                                                  | `demo_only`                                                                                                               |
+| 9      | 補助チェックが失敗または未実行                                                                                        | `verified_with_limitations`                                                                                               |
+| 10     | 以上のどれにも当たらない                                                                                              | `fully_verified`                                                                                                          |
 
-shared policy の readiness は、検証開始済み、表示 sequence 完了、check の
-`pending` / `running` 解消がそろうまで `renderedStatus` を返しません。表示 source
-は (1) 明示的な server failure、(2) hard-failure fallback、(3) summary、
-(4) pending warning の順で policy 内で解決されます。`/verify` ページは timeout
-や sequence failure を明示的な server failure input として渡し、独自の
-「Verified」override は持ちません。
+### 画面へ表示する条件
+
+API とブラウザは共通の `deriveVerificationPresentationPolicy` を使います。ブラウザは Cast を手元で再計算したあと、この規則を適用します。
+
+最終ラベルは、検証開始済み、段階表示の完了、全チェックの `pending` / `running` の解消を待って表示します。表示内容は、明示的な実行失敗、証拠から分かる重大な失敗、上表の集約結果、進行中の警告の順に選びます。タイムアウトや検証シーケンスの失敗も、明示的な実行失敗です。
+
+票の除外は、集約結果だけに頼らず確認します。`missingSlots`、`invalidPresentedSlots`、`excludedSlots` のいずれかが正数、不正な数値、または三値の関係が矛盾する場合は、重大な失敗とします。整合性証明、完全性、期待票数、選挙マニフェスト、締切ステートメント、STARK レシートの失敗と、設定済み STH の失敗もこの経路で確認します。Image ID とレシートの失敗は、明示的な証明失敗としても扱います。
+
+したがって `summary = fully_verified` という値だけを書き換えても、Verified を許可しません。四段階がすべて成功し、開発用の証拠がなく、失敗信号もなく、表示準備が完了している必要があります。
+
+<a id="公開-resource-の整合性"></a>
+
+### 公開 API 応答の整合性
+
+API 応答の成功フラグも検査対象です。チェック定義と状態、段階の状態、投票者の証拠、レポート、付属ジャーナル、改ざん情報が互いに矛盾しないことを確認し、同じ規則で表示資格を再計算します。
+
+Verified を主張するリソースには、特に次の事実を要求します。
+
+- シナリオは S0、STARK は本番用の `success`、改ざん検出はなく、改ざん数はゼロ。
+- 投票者の証拠が利用でき、票の ID、コミットメント、投票時の位置とツリーサイズが集計側の値と整合する。
+- `missingSlots = invalidPresentedSlots = rejectedRecords = excludedSlots = 0`。
+- `seenIndicesCount = treeSize = totalExpected` で、seen / included のビットマップルートが一致する。
+- 表示集計と検証済み集計が候補ごとに一致し、その合計も `totalExpected` と一致する。
+- 必須チェック、四段階、表示資格と準備状態が整合する。
+
+レポートがある場合は、その状態と期待 Image ID・レシートの Image ID も照合します。STARK の `success` という状態だけでは、Image ID の確認成功は満たせません。
+
+`rejectedRecords` は「何スロットが除外されたか」を数える値とは異なりますが、上記の成功条件ではゼロを要求します。[ゲストのスロットとレコード](../zkvm/guest-program.md#スロット--レコード分離モデル)の区別を、成功条件からこの値を外してよい理由にはしません。
 
 ## STARK 検証のゲーティング
 
-STARK 検証は整合性検証とは独立に評価されます。
+STARK の検証状態に応じて、ジャーナルを使うチェックを待機させます。これを実装では `zkGate` と呼びます。
 
-| STARK ステータス | 説明                         | 最終判定への影響                                                                         |
-| ---------------- | ---------------------------- | ---------------------------------------------------------------------------------------- |
-| `success`        | 暗号学的に検証成功           | 他の必須チェックも `success` なら Verified 可能                                          |
-| `failed`         | 検証失敗                     | Verified をブロック                                                                      |
-| `dev_mode`       | 開発モードのフェイクレシート | core evaluator では `allowDevModeVerification=true` なら `success`、それ以外は `not_run` |
-| `not_run`        | 未実行                       | `missing_evidence`（Warning）扱い。Verified をブロック                                   |
-| `running`        | 実行中                       | `in_progress`（Warning）扱い。Verified をブロック                                        |
+| STARK の状態 | 依存するチェックの扱い         |
+| ------------ | ------------------------------ |
+| `not_run`    | `not_run`                      |
+| `running`    | `pending`                      |
+| `failed`     | `failed`                       |
+| `success`    | 証拠を使って通常どおり評価する |
 
-`stark_receipt_verify=success` でも、他の required checks のいずれかが失敗、未実行、または進行中なら fully verified にはなりません（[不変条件のまとめ](#不変条件のまとめ)を参照）。
+公開入力の形式と二つの重複確認は、STARK の完了前にも評価できます。また、すでに除外や異常なカウントが見えている場合、その失敗は待機状態で隠しません。対象のチェック ID と例外は [チェック一覧](checks-catalog.md#stark-結果への依存)にまとめています。
 
-### zkGate: STARK 結果に基づく Counted チェックの制御
-
-STARK 検証の結果は、Counted-as-Recorded 段階のチェック評価にも影響します。
-これを zkGate と呼びます。
-
-| STARK 解決後ステータス | Counted チェックへの反映 |
-| ---------------------- | ------------------------ |
-| `running`              | `pending`                |
-| `not_run`              | `not_run`                |
-| `failed`               | `failed`                 |
-| `success`              | ゲートなしで通常評価     |
-
-core evaluator では、`dev_mode` は事前に `success` または `not_run` に正規化されてから zkGate に入力されます。
-一方、現行の `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` の表示用ステータス組み立てでは、dev mode が許可されていない場合は [fail-closed](../appendix/glossary.md#fail-closed) の `failed` として反映されます。
+開発用の `dev_mode` は、core evaluator で明示的に許可された場合に `success`、それ以外は `not_run` に正規化して扱います。現在の GET の表示用組み立てでは、許可されない開発モードは `failed` として扱います。許可した場合も証拠には開発用であることが残り、最終表示は Verified にはなりません。
 
 ## ステップとチェックの対応関係
 
-UI に表示される 4 つのステップは、現行実装では 22 個のチェック定義から派生します。
+四つのステップは、それぞれに属する必須チェックから状態を導きます。Cast は 4 件、Counted は 10 件、STARK は 2 件です。Recorded は包含・位置・整合性の 3 件が基本で、STH ソースの設定時は STH も加わります。包含と整合性から派生する二つの補助チェックは、単独でステップの状態を決めません。
 
-ただし、`verificationSteps[].status` は「その stage で required 扱いになるチェック群」から導出されます。
-`verificationSteps[].inputs` は stage 内の **全チェック定義** から集約されます。
+集約の優先順は `failed`、`running`、`pending`、全件成功の `success`、それ以外の `not_run` です。表示上の入力ハイライトは、必須に限らず、その段階の全チェック定義から導きます。
 
-| ステップ            | required として集約されるチェック ID                                                                                                                                                                                                                                                                                    |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cast-as-Intended    | `cast_receipt_present`, `cast_choice_range`, `cast_random_format`, `cast_commitment_match`                                                                                                                                                                                                                              |
-| Recorded-as-Cast    | `recorded_index_in_range`, `recorded_inclusion_proof`, `recorded_consistency_proof`、および STH source 設定時の `recorded_sth_third_party`                                                                                                                                                                              |
-| Counted-as-Recorded | `counted_input_sanity`, `counted_unique_indices`, `counted_unique_commitments`, `counted_tally_consistent`, `counted_missing_indices_zero`, `counted_expected_vs_tree_size`, `counted_election_manifest_consistent`, `counted_close_statement_consistent`, `counted_my_vote_included`, `counted_input_commitment_match` |
-| STARK Verification  | `stark_image_id_match`, `stark_receipt_verify`                                                                                                                                                                                                                                                                          |
-
-補足:
-
-- `recorded_commitment_in_bulletin` は `recorded_inclusion_proof` から、`recorded_root_at_cast_consistent` は `recorded_consistency_proof` から導出される表示用チェックです。
-  チェック一覧には現れますが、単独では step status を決定しません。
-- `recorded_sth_third_party` は通常は optional ですが、STH source が設定されている場合だけ required に昇格し、Recorded-as-Cast の step status と最終判定をブロックし得ます。
-
-ステップのステータスは、required 扱いになったチェックのステータスから次の順序で集約されます。
-
-| 集約ルール | 条件                                                     |
-| ---------- | -------------------------------------------------------- |
-| `failed`   | required チェックのいずれかが `failed`                   |
-| `running`  | `failed` がなく、required チェックのいずれかが `running` |
-| `pending`  | `failed`/`running` がなく、いずれかが `pending`          |
-| `success`  | required チェックがすべて `success`                      |
-| `not_run`  | 上記のいずれにも該当しない                               |
-
-さらに現行実装には、単純集約だけではない 3 つの補正があります。
-
-- `counted_as_recorded` は `journal` が存在しない場合、required チェックに `failed` がない限り `not_run` に補正されます。
-- `recorded_as_cast` は `userVote.proof.treeSize` がない場合、`not_run` に補正されます。
-- `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` は `castSource='client'` で `verificationSteps` / `verificationChecks` を組み立てるため、API 応答上の Cast-as-Intended はいったん `not_run` です。
-  その後ブラウザ側で保存済みセッション情報から Cast チェックを再評価して上書きし、最終的な UI 表示と summary にはそのローカル結果が反映されます。
-
-検証実行と UI 表示の時系列（ポーリングとステップ表示の順序）は [設計と実行フロー](design-and-flow.md) を参照してください。
+サーバーのステップ構築には追加条件があります。Counted はジャーナルがない場合、必須失敗がなければ `not_run` にします。Recorded は投票時の証明の `treeSize` がなければ `not_run` にします。Cast はサーバー応答では `not_run` とし、ブラウザがローカル結果を反映します。
 
 ## 不変条件のまとめ
 
-以下の不変条件は、コードの変更によっても決して緩和してはなりません。
+Verified に必要なのは、完全な必須チェック集合、その成功、除外のない整合した集計、本番用の証明、そして表示準備の完了です。不足、不正形式、未知のデータ、開発用の証拠を、成功の代わりに使うことはできません。
 
-| 不変条件                                                                                                     | 根拠                                                  |
-| ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
-| required check の `failed` / `not_run` / `pending` / `running` → Verified を表示しない                       | 必須証拠の失敗、不在、未完了を成功として扱わない      |
-| 空 check set、未知チェックだけ、未知チェック混在、required 定義の欠落 → Verified を表示しない                | API drift や未対応チェックを fail-closed にする       |
-| `excludedSlots > 0` → successful overall verification を許さない                                             | 投票除外は最も深刻な不正                              |
-| legacy count alias（`excludedCount` など）→ fail-closed compatibility signal としてのみ扱う                  | 旧フィールドを公開成功契約として復活させない          |
-| `recorded_consistency_proof` の失敗 → Verified を表示しない                                                  | 追記専用性が保証されない                              |
-| STH 合意の不成立（有効時） → Verified を表示しない                                                           | スプリットビュー攻撃の可能性                          |
-| `counted_missing_indices_zero` / `counted_expected_vs_tree_size` の失敗 → Verified を表示しない              | tally completeness と入力境界が保証されない           |
-| `counted_election_manifest_consistent` / `counted_close_statement_consistent` の失敗 → Verified を表示しない | 公開 manifest / close statement との binding が崩れる |
-| `counted_my_vote_included` / `counted_input_commitment_match` の失敗 → fully verified をブロックする         | ユーザー inclusion と proof input binding が崩れる    |
-| `stark_image_id_match` / `stark_receipt_verify` の失敗 → fully verified をブロックする                       | 期待 guest image と receipt の正当性が保証されない    |
-| `stark_receipt_verify=success` だけでは Verified にしない                                                    | STARK receipt は必要条件であり十分条件ではない        |
-| dev-mode receipt → production STARK proof として扱わず、緑色の Verified を表示しない                         | `RISC0_DEV_MODE=1` は実証用の fake receipt            |
-| 非公開アーティファクトをバンドルに含めない                                                                   | 投票の秘匿性を維持                                    |
+この表示規則は [テスト](../quality/unit-integration-e2e.md)と [Lean のモデル・実装対応確認](../quality/lean-formalization.md)で継続して検査しています。[改ざんシナリオ](../tamper/scenarios.md)では、何を変えるとこの条件を満たさなくなるかを実際の証拠で示します。
 
-これらの不変条件は、改ざんシナリオ（S0〜S5）の検出を保証する基盤です。
-各シナリオがどのチェックで検出されるかは、[検出メカニズム](../tamper/detection-mechanism.md) を参照してください。
-
-この fail-closed モデルは、[単体、結合、E2E テスト](../quality/unit-integration-e2e.md) で「Verified を誤表示しない」ケースを継続的に検査しています。
-形式化側では [Lean による形式化](../quality/lean-formalization.md) の verification summary / display vectors を通じて、モデルと実装の対応を確認します。
-
-<!-- source: apps/api/src/server/api/handlers/verify.ts, apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/hooks/useVerificationData.ts, apps/web/src/routes/verify/lib/verification-presentation.ts, packages/verification/src/verification/verification-presentation-policy.ts, packages/verification/src/verification/verification-summary.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/engine/derive-stages.ts -->
+<!-- source: apps/api/src/server/api/handlers/verify.ts, apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/hooks/useVerificationData.ts, apps/web/src/routes/verify/lib/verification-presentation.ts, packages/api-contract/src/schemas/verification.ts, packages/verification/src/verification/verification-presentation-policy.ts, packages/verification/src/verification/verification-summary.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/fail-closed-status.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/engine/derive-stages.ts, packages/zkvm-contract/src/zkvm/journal-guards.ts, packages/zkvm-contract/src/zkvm/public-journal.ts -->

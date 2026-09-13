@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
 import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
-import type { FinalizationScenarioContext } from '@stark-ballot/application/finalize/finalization-types';
+import type {
+  FinalizationId,
+  FinalizationScenarioContext,
+} from '@stark-ballot/application/finalize/finalization-types';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type { ArtifactReader, ArtifactReadResult } from '@stark-ballot/application/verification/artifact-reader';
 import { getGlobalStore } from '@stark-ballot/aws-adapters/store/storeInstance';
 import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/schemas/errors';
@@ -9,9 +13,10 @@ import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bullet
 import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sessionCapabilityToken';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
 import type { SessionIdentityRecord, SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 import { logger } from '@stark-ballot/diagnostics/logger';
-import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
-import { createMockVoteStore, type MockVoteStore } from '../../__tests__/support/mockVoteStore';
+import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
+import { createMockVoteStore, type MockVoteStore } from '../../test-support/mockVoteStore';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import { getApiErrorCode, readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
 import { getNumberProperty, getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
@@ -62,7 +67,7 @@ async function requestArtifactRoute(
   }).request(request);
 }
 
-function buildIdentity(sessionId: string): SessionIdentityRecord {
+function buildIdentity(sessionId: SessionId): SessionIdentityRecord {
   return {
     sessionId,
     electionId: '550e8400-e29b-41d4-a716-446655440000',
@@ -79,7 +84,7 @@ function buildIdentity(sessionId: string): SessionIdentityRecord {
   };
 }
 
-function buildVotingRecord(sessionId: string): SessionVotingRecord {
+function buildVotingRecord(sessionId: SessionId): SessionVotingRecord {
   return {
     sessionId,
     votes: new Map(),
@@ -91,7 +96,7 @@ function buildVotingRecord(sessionId: string): SessionVotingRecord {
   };
 }
 
-function buildFinalizedRecord(sessionId: string, finalizationId: string): FinalizationRecord {
+function buildFinalizedRecord(sessionId: SessionId, finalizationId: FinalizationId): FinalizationRecord {
   const now = Date.now();
   const journal = createTestJournal({
     validVotes: 1,
@@ -119,7 +124,11 @@ function buildFinalizedRecord(sessionId: string, finalizationId: string): Finali
   };
 }
 
-function buildStore(sessionId: string, finalizationId: string, overrides: Partial<MockVoteStore> = {}): MockVoteStore {
+function buildStore(
+  sessionId: SessionId,
+  finalizationId: FinalizationId,
+  overrides: Partial<MockVoteStore> = {},
+): MockVoteStore {
   const identity = buildIdentity(sessionId);
   const voting = buildVotingRecord(sessionId);
   const finalization = buildFinalizedRecord(sessionId, finalizationId);
@@ -156,8 +165,8 @@ function expectRequestStatusLogs(spy: MockInstance<typeof logger.warn>, statuses
 }
 
 describe('verification artifact route integration', () => {
-  const sessionId = 'session-1';
-  const finalizationId = 'finalization-1';
+  const sessionId = asSessionId('session-1');
+  const finalizationId = asFinalizationId('finalization-1');
 
   beforeEach(() => {
     vi.stubEnv('SESSION_CAPABILITY_SECRET', capabilitySecret);
@@ -210,7 +219,10 @@ describe('verification artifact route integration', () => {
       getCurrentFinalizationRecord,
     });
     const artifactReader = readerReturning({ kind: 'notFound' });
-    const wrongSessionToken = createSessionCapabilityToken({ sessionId: 'other-session' }, capabilitySecret);
+    const wrongSessionToken = createSessionCapabilityToken(
+      { sessionId: asSessionId('other-session') },
+      capabilitySecret,
+    );
     const url = `http://localhost/api/sessions/${sessionId}/finalizations/${finalizationId}/artifacts/bundle`;
 
     const missing = await requestArtifactRoute(store, artifactReader, new Request(url));
@@ -261,7 +273,7 @@ describe('verification artifact route integration', () => {
         totalBytes: 1,
         representation: {},
       });
-      const store = buildStore(sessionId, 'current-finalization', {
+      const store = buildStore(sessionId, asFinalizationId('current-finalization'), {
         getAwsVerificationDeliveryMetadata,
       });
       const token = createSessionCapabilityToken({ sessionId }, capabilitySecret);

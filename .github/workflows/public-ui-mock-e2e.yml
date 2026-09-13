@@ -6,10 +6,27 @@ on:
     paths:
       - 'apps/**'
       - 'packages/**'
+      - 'public/**'
       - 'tests/e2e/**'
       - 'playwright.config.ts'
+      - 'scripts/start-test-server.sh'
+      - 'scripts/clean-mock-sessions.sh'
+      - 'scripts/tests/.env.test.defaults'
+      - 'scripts/dev/**'
+      - 'scripts/frontend/**'
+      - 'scripts/package.json'
+      - 'scripts/tsconfig.json'
+      - 'tooling/workspace/workspace-metadata.ts'
+      - 'tooling/tsconfig/**'
+      - 'tsconfig.json'
+      - 'vite.config.ts'
+      - 'index.html'
+      - 'postcss.config.mjs'
       - 'package.json'
       - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'patches/**'
+      - '.github/actions/setup-node-pnpm/**'
       - '.github/workflows/public-ui-mock-e2e.yml'
   workflow_dispatch:
 
@@ -25,50 +42,11 @@ env:
   SESSION_CAPABILITY_SECRET: public-ci-session-capability-${{ github.run_id }}-${{ github.run_attempt }}-0123456789abcdef
 
 jobs:
-  playwright-axe:
-    name: Playwright Axe Smoke
-    runs-on: ubuntu-latest
-    container:
-      image: mcr.microsoft.com/playwright:v1.62.1-noble
-      options: --user 1001
-    timeout-minutes: 30
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Node and pnpm
-        uses: ./.github/actions/setup-node-pnpm
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Run Playwright axe smoke suite
-        env:
-          CI: 'true'
-        run: pnpm test:e2e:axe
-
-      - name: Upload Playwright axe report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: playwright-axe-report
-          path: playwright-report
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Upload Playwright axe traces
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: playwright-axe-traces
-          path: test-results
-          if-no-files-found: ignore
-          retention-days: 7
-
   playwright-mock:
-    name: Playwright Mock E2E
+    name: Playwright Mock E2E and Axe
     runs-on: ubuntu-latest
     container:
-      image: mcr.microsoft.com/playwright:v1.62.1-noble
+      image: mcr.microsoft.com/playwright:v1.63.0-noble
       options: --user 1001
     timeout-minutes: 30
     steps:
@@ -80,10 +58,11 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Run Playwright mock suite
+      - name: Run Playwright mock and axe suites
         env:
           CI: 'true'
-        run: pnpm test:e2e:mock --grep @smoke --reporter=list
+          PLAYWRIGHT_HTML_OPEN: 'never'
+        run: pnpm test:e2e
 
       - name: Upload Playwright report
         if: always()

@@ -17,10 +17,10 @@ const legalPages = [
 
 const LANGUAGE_STORAGE_KEY = 'stark-ballot-lang';
 const LANGUAGE_COOKIE_NAME = 'stark-ballot-lang';
-const BASE_URL = 'http://localhost:3000';
 
 test.describe('Legal pages UI', () => {
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, baseURL }) => {
+    if (!baseURL) throw new Error('Legal page tests require the configured E2E baseURL.');
     await page.addInitScript(
       ({ key, value }) => {
         window.localStorage.setItem(key, value);
@@ -28,36 +28,24 @@ test.describe('Legal pages UI', () => {
       { key: LANGUAGE_STORAGE_KEY, value: 'ja' },
     );
 
-    await page.context().addCookies([{ name: LANGUAGE_COOKIE_NAME, value: 'ja', url: BASE_URL }]);
+    await page.context().addCookies([{ name: LANGUAGE_COOKIE_NAME, value: 'ja', url: baseURL }]);
   });
 
   for (const { name, path, titleJa } of legalPages) {
     test.describe(`${name} page`, () => {
-      test('hides Step Indicator', async ({ page }) => {
+      test('shows the legal page without voting controls', async ({ page }) => {
         await page.goto(path, { waitUntil: 'domcontentloaded' });
-        await page.locator('h1').first().waitFor();
+
+        const h1 = page.locator('h1').first();
+        await h1.waitFor();
+        await expect(h1).toContainText(titleJa);
 
         // Step Indicator は data-testid で判定
         const stepIndicator = page.getByTestId('step-indicator');
         await expect(stepIndicator).toHaveCount(0);
-      });
 
-      test('hides Knowledge Panel', async ({ page }) => {
-        await page.goto(path, { waitUntil: 'domcontentloaded' });
-        await page.locator('h1').first().waitFor();
-
-        // Knowledge Panel のセンチネル/スペーサー/ボトムシートは非表示
-        const dockSentinel = page.getByTestId('knowledge-dock-sentinel');
-        await expect(dockSentinel).toHaveCount(0);
-        const spacer = page.getByTestId('knowledge-panel-spacer');
-        await expect(spacer).toHaveCount(0);
-        const bottomSheet = page.getByTestId('knowledge-bottom-sheet');
-        await expect(bottomSheet).toHaveCount(0);
-      });
-
-      test('shows Back to Home link', async ({ page }) => {
-        await page.goto(path, { waitUntil: 'domcontentloaded' });
-        await page.locator('h1').first().waitFor();
+        // Legal pages do not mount the knowledge panel.
+        await expect(page.getByRole('complementary')).toHaveCount(0);
 
         // 「トップに戻る」リンクが表示されている
         const backLink = page.getByTestId('legal-back-to-home');
@@ -73,13 +61,6 @@ test.describe('Legal pages UI', () => {
         await backLink.click();
 
         await expect(page).toHaveURL('/');
-      });
-
-      test('displays correct title in Japanese', async ({ page }) => {
-        await page.goto(path, { waitUntil: 'domcontentloaded' });
-
-        const h1 = page.locator('h1').first();
-        await expect(h1).toContainText(titleJa);
       });
     });
   }

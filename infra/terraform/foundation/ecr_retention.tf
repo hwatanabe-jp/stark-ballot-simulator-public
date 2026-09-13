@@ -3,6 +3,7 @@ locals {
   ecr_retention_log_group_name      = local.deployment_shared_names.ecrRetentionLogGroup
   ecr_retention_role_name           = local.deployment_shared_names.ecrRetentionRole
   ecr_retention_schedule_name       = local.deployment_shared_names.ecrRetentionSchedule
+  ecr_retention_schedule_state      = "ENABLED"
   ecr_retention_boundary_policy_arn = "arn:aws:iam::${var.aws_account_id}:policy/${local.deployment_shared_names.ecrRetentionPermissionsBoundary}"
   ecr_retention_package             = jsondecode(file("${path.module}/ecr-retention-package.json")).artifact
   ecr_retention_package_path        = "${path.module}/../../../.tmp/foundation-lambdas/ecr_retention.zip"
@@ -11,14 +12,16 @@ locals {
   )
   ecr_retention_app_authority_object_arns = [
     "${local.ecr_retention_app_authority_bucket_arn}/${local.deployment_shared_names.acceptedDeploymentPointerKey}",
-    "${local.ecr_retention_app_authority_bucket_arn}/${local.deployment_shared_names.acceptedDeploymentPrefix}/executions/*",
+    "${local.ecr_retention_app_authority_bucket_arn}/${local.deployment_shared_names.acceptedDeploymentPrefix}/acceptances/*",
   ]
   ecr_retention_release_authority_bucket_arn = "arn:aws:s3:::${local.manifest_bucket_name}"
   ecr_retention_release_authority_object_arns = [
     "${local.ecr_retention_release_authority_bucket_arn}/${local.deployment_shared_names.toolchainAcceptedPointerKey}",
     "${local.ecr_retention_release_authority_bucket_arn}/${local.deployment_shared_names.proverAcceptedPointerKey}",
-    "${local.ecr_retention_release_authority_bucket_arn}/${local.deployment_shared_names.toolchainArtifactPrefix}/*",
-    "${local.ecr_retention_release_authority_bucket_arn}/${local.deployment_shared_names.proverReleasePrefix}/*",
+    "${local.ecr_retention_release_authority_bucket_arn}/${local.deployment_shared_names.toolchainArtifactPrefix}/candidates/*",
+    "${local.ecr_retention_release_authority_bucket_arn}/${local.deployment_shared_names.toolchainArtifactPrefix}/releases/*",
+    "${local.ecr_retention_release_authority_bucket_arn}/${local.deployment_shared_names.proverReleasePrefix}/candidates/*",
+    "${local.ecr_retention_release_authority_bucket_arn}/${local.deployment_shared_names.proverReleasePrefix}/releases/*",
   ]
   ecr_retention_pipeline_arns = [
     for pipeline_name in [
@@ -122,7 +125,6 @@ data "aws_iam_policy_document" "ecr_retention" {
     effect = "Allow"
     actions = [
       "s3:GetObject",
-      "s3:GetObjectVersion",
     ]
     resources = local.ecr_retention_app_authority_object_arns
   }
@@ -132,7 +134,6 @@ data "aws_iam_policy_document" "ecr_retention" {
     effect = "Allow"
     actions = [
       "kms:Decrypt",
-      "kms:DescribeKey",
     ]
     resources = [data.aws_kms_key.ecr_retention_app_authority.arn]
 
@@ -154,7 +155,6 @@ data "aws_iam_policy_document" "ecr_retention" {
     effect = "Allow"
     actions = [
       "s3:GetObject",
-      "s3:GetObjectVersion",
     ]
     resources = local.ecr_retention_release_authority_object_arns
   }
@@ -266,8 +266,8 @@ resource "aws_lambda_function" "ecr_retention" {
 resource "aws_cloudwatch_event_rule" "ecr_retention" {
   name                = local.ecr_retention_schedule_name
   description         = "Apply reference-aware subject retention to Foundation ECR repositories."
-  schedule_expression = "rate(1 day)"
-  state               = "ENABLED"
+  schedule_expression = "cron(0 18 * * ? *)"
+  state               = local.ecr_retention_schedule_state
   tags                = local.common_tags
 }
 

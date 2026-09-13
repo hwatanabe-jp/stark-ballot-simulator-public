@@ -1,10 +1,8 @@
 /**
  * RFC 6962 consistency proof shape used by the canonical bulletin-board path.
  *
- * `oldSubtreeHashes`, `appendSubtreeHashes`, and `treeCapacity` remain optional
- * compatibility fields on the type because older fixtures and responses may
- * still surface them at parse boundaries, but the maintained runtime path does
- * not generate or consume them.
+ * `oldSubtreeHashes` and `appendSubtreeHashes` are optional public diagnostic
+ * metadata. RFC 6962 verification depends only on `proofNodes`.
  */
 
 /**
@@ -17,5 +15,4 @@ export interface ConsistencyProof {
   proofNodes: string[]; // Minimal set of nodes for verification (hex strings)
   oldSubtreeHashes?: string[];
   appendSubtreeHashes?: string[];
-  treeCapacity?: number;
 }

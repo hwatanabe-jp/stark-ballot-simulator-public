@@ -10,11 +10,13 @@ import {
 import { createLocalArtifactReader } from '@stark-ballot/node-adapters/artifact-reader';
 import { createVerificationBundleArchive } from '@stark-ballot/node-adapters/verification-bundle';
 import { resolveRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
-import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { resolvePublicBundlePolicy } from '@stark-ballot/verification/public-bundle-manifest';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 
-const sessionId = 'contract-session';
-const finalizationId = 'contract-finalization';
+const sessionId = asSessionId('contract-session');
+const finalizationId = asFinalizationId('contract-finalization');
 const bundleKey = `sessions/${sessionId}/${finalizationId}/bundle.zip`;
 const reportKey = `sessions/${sessionId}/${finalizationId}/verification.json`;
 const bundlePolicy = resolvePublicBundlePolicy('sync');

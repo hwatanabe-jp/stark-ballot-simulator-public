@@ -7,9 +7,11 @@ deployment inventory. Current code, package manifests, Terraform, and tests
 win when this map drifts.
 
 The executable production dependency policy is enforced by the source
-repository's `scripts/__tests__/repository-boundaries.test.ts` test.
-The workspace inventory is declared in
-[`pnpm-workspace.yaml`](../../pnpm-workspace.yaml).
+repository's `tooling/repository/workspace-boundaries.test.ts` test.
+[`pnpm-workspace.yaml`](../../pnpm-workspace.yaml) selects workspace members;
+[`tooling/workspace/workspace-metadata.ts`](../../tooling/workspace/workspace-metadata.ts)
+derives package identities, dependencies, and exports from their manifests and
+owns the reviewed runtime/test map.
 
 ## System Shape
 
@@ -54,7 +56,7 @@ UI presentation remain separate responsibilities.
 | `packages/application`                       | Cross-context use cases and ports for session reads/mutations, finalization, verification reads and artifact delivery, bot flow, and zkVM-input orchestration                     | Depends on domain facts and injected ports; concrete AWS, filesystem, archive, subprocess, HTTP, and browser adapters stay at the edge.                                                   |
 | `packages/aws-adapters`                      | DynamoDB, S3, SQS, rate-limit, target config-reference, artifact, and concrete persistence adapters                                                                               | Server/runtime only. It may compose application ports and shared Node adapters but does not own browser or public-export behavior.                                                        |
 | `packages/crypto-primitives`                 | Product-neutral strict hex normalization/conversion and SHA-256 primitives                                                                                                        | Neutral leaf package; it does not own domain commitments, Merkle policy, verification semantics, runtime configuration, or concrete adapters.                                             |
-| `packages/deployment-authority`              | Pure reviewed deployment-target configuration and deterministic deployment, acceptance, saved-plan, baseline, drift/readiness, recovery, framework, and ECR-retention policy      | No AWS SDK, credential, filesystem, process, Terraform execution, or operator-side effects; those remain in scripts, Lambda adapters, and Terraform roots.                                |
+| `packages/deployment-authority`              | Pure reviewed deployment-target configuration and deterministic execution, acceptance, saved-plan, drift, recovery, framework, and ECR-retention policy                           | No AWS SDK, credential, filesystem, process, Terraform execution, or operator-side effects; those remain in scripts, Lambda adapters, and Terraform roots.                                |
 | `packages/diagnostics`                       | Runtime logging, request-scoped context, request ID extraction, and log-safe hashing                                                                                              | Diagnostics stay outside deterministic domain behavior.                                                                                                                                   |
 | `packages/domain`                            | Session, election, vote, bulletin, finalization, verification-observation facts, deterministic operations, and runtime ports                                                      | No concrete AWS/filesystem adapters, runtime config readers, browser cache, API payload ownership, verification projections, or zkVM-input translation.                                   |
 | `packages/merkle`                            | Pure CT/RFC 6962 tree construction, inclusion/consistency proof behavior, and proof normalization                                                                                 | Depends only on shared cryptographic primitives; it does not own domain, API, browser, verification-policy, or concrete adapter behavior.                                                 |
@@ -81,8 +83,8 @@ UI presentation remain separate responsibilities.
 This table is the exact workspace-package allowlist for production source.
 Third-party dependencies are outside its scope. Tests have a separate
 test-source allowlist; in particular, selected packages may use
-`@stark-ballot/test-support`, and verification tests may use
-`@stark-ballot/node-adapters`.
+`@stark-ballot/test-support`. Verification tests remain within their package's
+production dependency directions.
 
 | From                                 | Allowed production workspace dependencies                                                                                                                                                                                                                                                                                                                                                     |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -96,7 +98,7 @@ test-source allowlist; in particular, selected packages may use
 | `@stark-ballot/diagnostics`          | `@stark-ballot/validation`                                                                                                                                                                                                                                                                                                                                                                    |
 | `@stark-ballot/domain`               | `@stark-ballot/crypto-primitives`, `@stark-ballot/merkle`, `@stark-ballot/validation`                                                                                                                                                                                                                                                                                                         |
 | `@stark-ballot/merkle`               | `@stark-ballot/crypto-primitives`                                                                                                                                                                                                                                                                                                                                                             |
-| `@stark-ballot/node-adapters`        | `@stark-ballot/diagnostics`, `@stark-ballot/validation`, `@stark-ballot/zkvm-contract`                                                                                                                                                                                                                                                                                                        |
+| `@stark-ballot/node-adapters`        | `@stark-ballot/diagnostics`, `@stark-ballot/validation`, `@stark-ballot/verification`, `@stark-ballot/zkvm-contract`                                                                                                                                                                                                                                                                          |
 | `@stark-ballot/repository-tools`     | `@stark-ballot/api`, `@stark-ballot/api-contract`, `@stark-ballot/crypto-primitives`, `@stark-ballot/deployment-authority`, `@stark-ballot/diagnostics`, `@stark-ballot/domain`, `@stark-ballot/merkle`, `@stark-ballot/node-adapters`, `@stark-ballot/runtime-config`, `@stark-ballot/test-support`, `@stark-ballot/validation`, `@stark-ballot/verification`, `@stark-ballot/zkvm-contract` |
 | `@stark-ballot/runtime-config`       | `@stark-ballot/validation`                                                                                                                                                                                                                                                                                                                                                                    |
 | `@stark-ballot/test-support`         | `@stark-ballot/api-contract`, `@stark-ballot/domain`, `@stark-ballot/node-adapters`, `@stark-ballot/validation`, `@stark-ballot/verification`, `@stark-ballot/zkvm-contract`                                                                                                                                                                                                                  |
@@ -115,8 +117,18 @@ is selected into runtime modes by
 [`apps/api/src/server/api/routes/definitions.ts`](../../apps/api/src/server/api/routes/definitions.ts);
 [`apps/api/src/server/api/routes/hono.ts`](../../apps/api/src/server/api/routes/hono.ts)
 binds handlers and admits requests for Hono and the API Gateway Lambda runtime.
+Handlers receive schema-derived route input separately from admitted context,
+which carries trusted transport metadata, dependencies, and validated identifiers.
+Ordinary JSON handlers return responses admitted for their exact route;
+artifact and conditional handlers use the dedicated raw-response boundary.
 The detailed browser-facing contract is documented in
 [`docs/ui/api-contract.md`](../ui/api-contract.md).
+
+[`packages/application/src/session/`](../../packages/application/src/session/)
+owns session-capacity policy, vote prechecks, and mutation ports. Expected
+outcomes use application `Result` values; storage and infrastructure failures
+remain exceptional. API handlers translate these outcomes into route-bound
+HTTP responses and own transport concerns such as capability issuance.
 
 `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification/observations`
 is an authenticated, owner-scoped boundary from the browser verification route

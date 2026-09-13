@@ -1,7 +1,8 @@
 {
   "schema": "stark-ballot:formal-report|v1",
-  "leanToolchain": "leanprover/lean4:v4.32.2",
+  "leanToolchain": "leanprover/lean4:v4.33.1",
   "reportKind": "stable",
+  "generatedVectorEnvelopeType": "stark-ballot.formal-vector.current",
   "modelModules": [
     "formal/StarkBallotFormal/JournalCounts.lean",
     "formal/StarkBallotFormal/VerificationSummary.lean",
@@ -112,12 +113,30 @@
     }
   ],
   "generatedVectorArtifacts": [
-    "docs/formal/generated-vectors/verification-summary-cases.json",
-    "docs/formal/generated-vectors/verification-display-cases.json",
-    "docs/formal/generated-vectors/check-definitions.json",
-    "docs/formal/generated-vectors/input-commitment-cases.json",
-    "docs/formal/generated-vectors/bitmap-cases.json",
-    "docs/formal/generated-vectors/guest-model-cases.json"
+    {
+      "path": "docs/formal/generated-vectors/verification-summary-cases.json",
+      "kind": "verification-summary-cases"
+    },
+    {
+      "path": "docs/formal/generated-vectors/verification-display-cases.json",
+      "kind": "verification-display-cases"
+    },
+    {
+      "path": "docs/formal/generated-vectors/check-definitions.json",
+      "kind": "check-definitions"
+    },
+    {
+      "path": "docs/formal/generated-vectors/input-commitment-cases.json",
+      "kind": "input-commitment-cases"
+    },
+    {
+      "path": "docs/formal/generated-vectors/bitmap-cases.json",
+      "kind": "bitmap-cases"
+    },
+    {
+      "path": "docs/formal/generated-vectors/guest-model-cases.json",
+      "kind": "guest-model-cases"
+    }
   ],
   "formalAuditArtifact": "docs/formal/formal-audit.json",
   "assumptions": [

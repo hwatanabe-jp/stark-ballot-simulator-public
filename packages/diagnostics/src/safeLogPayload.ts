@@ -434,10 +434,6 @@ export function createLogSanitizer(): LogSanitizer {
   };
 }
 
-export function sanitizeLogValue(value: unknown, options: SanitizeLogValueOptions = {}): SafeLogValue | undefined {
-  return createLogSanitizer().sanitize(value, options);
-}
-
 export function serializeBoundedLogValue(value: SafeLogValue): string {
   const serialized = JSON.stringify(value);
   return Buffer.byteLength(serialized, 'utf8') <= MAX_LOG_BYTES ? serialized : SAFE_LOG_FALLBACK_RECORD;

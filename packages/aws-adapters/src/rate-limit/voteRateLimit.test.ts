@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { VoteRateLimiter, getVoteRateLimiter, resetVoteRateLimiter } from './voteRateLimit';
 
 describe('VoteRateLimiter', () => {

@@ -1,14 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
 import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
-import type { FinalizationScenarioContext } from '@stark-ballot/application/finalize/finalization-types';
+import type {
+  FinalizationId,
+  FinalizationScenarioContext,
+} from '@stark-ballot/application/finalize/finalization-types';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type { ArtifactReader, ArtifactReadResult } from '@stark-ballot/application/verification/artifact-reader';
 import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/schemas/errors';
-import { createMockVoteStore } from '../../__tests__/support/mockVoteStore';
+import { createMockVoteStore } from '../../test-support/mockVoteStore';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import { getApiErrorCode, readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
-import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { getVerificationBundleHandler, getVerificationReportHandler } from './verificationBundles';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 
 const canonicalEventMocks = vi.hoisted(() => ({
   emitCanonicalEvent: vi.fn(),
@@ -31,7 +36,7 @@ const scenarioContext: FinalizationScenarioContext = {
   },
 };
 
-function buildFinalizedRecord(sessionId: string, finalizationId: string): FinalizationRecord {
+function buildFinalizedRecord(sessionId: SessionId, finalizationId: FinalizationId): FinalizationRecord {
   const now = Date.now();
   const journal = createTestJournal({
     validVotes: 1,
@@ -66,8 +71,8 @@ function readerReturning(result: ArtifactReadResult): ArtifactReader {
 }
 
 function contextFor(
-  sessionId: string,
-  finalizationId: string,
+  sessionId: SessionId,
+  finalizationId: FinalizationId,
   artifactReader: ArtifactReader,
   finalization: FinalizationRecord | null = buildFinalizedRecord(sessionId, finalizationId),
 ) {
@@ -80,6 +85,7 @@ function contextFor(
     requestOrigin: 'http://localhost',
     operatorGatedDevelop: false,
     sessionId,
+    finalizationId,
     artifactDeliveryDependencies: { artifactReader },
   };
 }
@@ -92,8 +98,8 @@ async function expectStandardError(response: Response, status: number, code: str
 }
 
 describe('verification artifact handler reader mapping', () => {
-  const sessionId = 'session-1';
-  const finalizationId = 'finalization-1';
+  const sessionId = asSessionId('session-1');
+  const finalizationId = asFinalizationId('finalization-1');
   const headers = { 'X-Session-Capability': 'admitted-by-transport' };
 
   beforeEach(() => {

@@ -1,5 +1,6 @@
 {
-  "schema": "stark-ballot.bitmap-proof-parity.v1",
+  "envelopeType": "stark-ballot.bitmap-proof-parity.current",
+  "generatedBy": "scripts/tests/generate-bitmap-golden-vectors.ts",
   "cases": [
     {
       "name": "one-bit",
@@ -86,10 +87,7 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000080",
           "auditPath": [
-            {
-              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
-              "position": "right"
-            }
+            { "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8", "position": "right" }
           ],
           "leafIndex": 0,
           "bitIndex": 0
@@ -97,10 +95,7 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000080",
           "auditPath": [
-            {
-              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
-              "position": "right"
-            }
+            { "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8", "position": "right" }
           ],
           "leafIndex": 0,
           "bitIndex": 255
@@ -108,10 +103,7 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
           "auditPath": [
-            {
-              "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357",
-              "position": "left"
-            }
+            { "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357", "position": "left" }
           ],
           "leafIndex": 1,
           "bitIndex": 256
@@ -128,10 +120,7 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000080",
           "auditPath": [
-            {
-              "hash": "12316adb5b05c27fe2cadf936beba71dec49639b37997dde182a9871b69d879a",
-              "position": "right"
-            }
+            { "hash": "12316adb5b05c27fe2cadf936beba71dec49639b37997dde182a9871b69d879a", "position": "right" }
           ],
           "leafIndex": 0,
           "bitIndex": 0
@@ -139,10 +128,7 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000080",
           "auditPath": [
-            {
-              "hash": "12316adb5b05c27fe2cadf936beba71dec49639b37997dde182a9871b69d879a",
-              "position": "right"
-            }
+            { "hash": "12316adb5b05c27fe2cadf936beba71dec49639b37997dde182a9871b69d879a", "position": "right" }
           ],
           "leafIndex": 0,
           "bitIndex": 255
@@ -150,10 +136,7 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000040",
           "auditPath": [
-            {
-              "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357",
-              "position": "left"
-            }
+            { "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357", "position": "left" }
           ],
           "leafIndex": 1,
           "bitIndex": 256
@@ -161,10 +144,7 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000040",
           "auditPath": [
-            {
-              "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357",
-              "position": "left"
-            }
+            { "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357", "position": "left" }
           ],
           "leafIndex": 1,
           "bitIndex": 510
@@ -181,10 +161,7 @@
         {
           "leafChunk": "0000000000000000000000000000000000000000000000000000000000000080",
           "auditPath": [
-            {
-              "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357",
-              "position": "right"
-            }
+            { "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357", "position": "right" }
           ],
           "leafIndex": 0,
           "bitIndex": 0
@@ -192,10 +169,7 @@
         {
           "leafChunk": "0000000000000000000000000000000000000000000000000000000000000080",
           "auditPath": [
-            {
-              "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357",
-              "position": "right"
-            }
+            { "hash": "3ea65db34d9c60fff4c2e54c66854aefbe968b91a6813122a991ed9426c0b357", "position": "right" }
           ],
           "leafIndex": 0,
           "bitIndex": 255
@@ -203,10 +177,7 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000080",
           "auditPath": [
-            {
-              "hash": "adbe2642f95bd49d26eb4e0f4f310883ab2ff7a6bd00b0d56bd9ae82d32bb01b",
-              "position": "left"
-            }
+            { "hash": "adbe2642f95bd49d26eb4e0f4f310883ab2ff7a6bd00b0d56bd9ae82d32bb01b", "position": "left" }
           ],
           "leafIndex": 1,
           "bitIndex": 256
@@ -214,10 +185,7 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000080",
           "auditPath": [
-            {
-              "hash": "adbe2642f95bd49d26eb4e0f4f310883ab2ff7a6bd00b0d56bd9ae82d32bb01b",
-              "position": "left"
-            }
+            { "hash": "adbe2642f95bd49d26eb4e0f4f310883ab2ff7a6bd00b0d56bd9ae82d32bb01b", "position": "left" }
           ],
           "leafIndex": 1,
           "bitIndex": 511
@@ -234,14 +202,8 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
           "auditPath": [
-            {
-              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
-              "position": "right"
-            },
-            {
-              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
-              "position": "right"
-            }
+            { "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8", "position": "right" },
+            { "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8", "position": "right" }
           ],
           "leafIndex": 0,
           "bitIndex": 0
@@ -249,14 +211,8 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
           "auditPath": [
-            {
-              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
-              "position": "right"
-            },
-            {
-              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
-              "position": "right"
-            }
+            { "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8", "position": "right" },
+            { "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8", "position": "right" }
           ],
           "leafIndex": 0,
           "bitIndex": 255
@@ -264,14 +220,8 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
           "auditPath": [
-            {
-              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
-              "position": "left"
-            },
-            {
-              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
-              "position": "right"
-            }
+            { "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8", "position": "left" },
+            { "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8", "position": "right" }
           ],
           "leafIndex": 1,
           "bitIndex": 256
@@ -279,10 +229,7 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
           "auditPath": [
-            {
-              "hash": "0054a5e06904125fb9adb5b7ce8388312f3fd36642f1bb628551f8aeb6773456",
-              "position": "left"
-            }
+            { "hash": "0054a5e06904125fb9adb5b7ce8388312f3fd36642f1bb628551f8aeb6773456", "position": "left" }
           ],
           "leafIndex": 2,
           "bitIndex": 512
@@ -299,18 +246,9 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
           "auditPath": [
-            {
-              "hash": "7a44d73283ab34ef0fb3a243e46dc7d205769d78f30647b8100ae7394961dc5e",
-              "position": "right"
-            },
-            {
-              "hash": "4e22e94f76343d46ed3caf680414bbdef73a94f8688df060f8893458e2be34a8",
-              "position": "right"
-            },
-            {
-              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
-              "position": "right"
-            }
+            { "hash": "7a44d73283ab34ef0fb3a243e46dc7d205769d78f30647b8100ae7394961dc5e", "position": "right" },
+            { "hash": "4e22e94f76343d46ed3caf680414bbdef73a94f8688df060f8893458e2be34a8", "position": "right" },
+            { "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8", "position": "right" }
           ],
           "leafIndex": 0,
           "bitIndex": 0
@@ -318,18 +256,9 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
           "auditPath": [
-            {
-              "hash": "7a44d73283ab34ef0fb3a243e46dc7d205769d78f30647b8100ae7394961dc5e",
-              "position": "right"
-            },
-            {
-              "hash": "4e22e94f76343d46ed3caf680414bbdef73a94f8688df060f8893458e2be34a8",
-              "position": "right"
-            },
-            {
-              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
-              "position": "right"
-            }
+            { "hash": "7a44d73283ab34ef0fb3a243e46dc7d205769d78f30647b8100ae7394961dc5e", "position": "right" },
+            { "hash": "4e22e94f76343d46ed3caf680414bbdef73a94f8688df060f8893458e2be34a8", "position": "right" },
+            { "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8", "position": "right" }
           ],
           "leafIndex": 0,
           "bitIndex": 255
@@ -337,18 +266,9 @@
         {
           "leafChunk": "0000000000000000000000000000000000000000000000000000000000000000",
           "auditPath": [
-            {
-              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
-              "position": "left"
-            },
-            {
-              "hash": "4e22e94f76343d46ed3caf680414bbdef73a94f8688df060f8893458e2be34a8",
-              "position": "right"
-            },
-            {
-              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
-              "position": "right"
-            }
+            { "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8", "position": "left" },
+            { "hash": "4e22e94f76343d46ed3caf680414bbdef73a94f8688df060f8893458e2be34a8", "position": "right" },
+            { "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8", "position": "right" }
           ],
           "leafIndex": 1,
           "bitIndex": 256
@@ -356,18 +276,9 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
           "auditPath": [
-            {
-              "hash": "7a44d73283ab34ef0fb3a243e46dc7d205769d78f30647b8100ae7394961dc5e",
-              "position": "right"
-            },
-            {
-              "hash": "4e22e94f76343d46ed3caf680414bbdef73a94f8688df060f8893458e2be34a8",
-              "position": "left"
-            },
-            {
-              "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8",
-              "position": "right"
-            }
+            { "hash": "7a44d73283ab34ef0fb3a243e46dc7d205769d78f30647b8100ae7394961dc5e", "position": "right" },
+            { "hash": "4e22e94f76343d46ed3caf680414bbdef73a94f8688df060f8893458e2be34a8", "position": "left" },
+            { "hash": "9c1ce8f00aff41c8b04d93b495fdcc8292413b743a372abb30ee6892042c82d8", "position": "right" }
           ],
           "leafIndex": 2,
           "bitIndex": 512
@@ -375,10 +286,7 @@
         {
           "leafChunk": "0100000000000000000000000000000000000000000000000000000000000000",
           "auditPath": [
-            {
-              "hash": "e8eca749f5c37919afebba2ca1fba2bc7781c7f6f1f52cd858cc9ebe6e986393",
-              "position": "left"
-            }
+            { "hash": "e8eca749f5c37919afebba2ca1fba2bc7781c7f6f1f52cd858cc9ebe6e986393", "position": "left" }
           ],
           "leafIndex": 4,
           "bitIndex": 1024

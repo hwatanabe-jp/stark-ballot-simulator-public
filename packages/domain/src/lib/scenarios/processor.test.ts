@@ -1,21 +1,20 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { ScenarioProcessor } from './processor';
-import type { VoteData } from '@stark-ballot/domain/types/sessionRecords';
+import { ScenarioProcessor, type ScenarioVoteRecord } from './processor';
 
 describe('ScenarioProcessor', () => {
   let processor: ScenarioProcessor;
-  let votes: Map<number, VoteData>;
+  let votes: Map<number, ScenarioVoteRecord>;
 
   beforeEach(() => {
     processor = new ScenarioProcessor();
 
     // Setup sample votes
     votes = new Map([
-      [0, { vote: 'A', rand: 'userRand', commit: 'userCommit', path: [] }], // User vote
-      [1, { vote: 'B', rand: 'bot1Rand', commit: 'bot1Commit', path: [] }],
-      [2, { vote: 'C', rand: 'bot2Rand', commit: 'bot2Commit', path: [] }],
-      [3, { vote: 'D', rand: 'bot3Rand', commit: 'bot3Commit', path: [] }],
-      [4, { vote: 'E', rand: 'bot4Rand', commit: 'bot4Commit', path: [] }],
+      [0, { vote: 'A' }], // User vote
+      [1, { vote: 'B' }],
+      [2, { vote: 'C' }],
+      [3, { vote: 'D' }],
+      [4, { vote: 'E' }],
     ]);
   });
 
@@ -143,10 +142,10 @@ describe('ScenarioProcessor', () => {
 
     it('should handle missing votes', () => {
       // Arrange
-      const sparseVotes: Map<number, VoteData> = new Map([
-        [0, { vote: 'A', rand: 'r1', commit: 'c1', path: [] }],
-        [1, { vote: 'A', rand: 'r2', commit: 'c2', path: [] }],
-        [2, { vote: 'B', rand: 'r3', commit: 'c3', path: [] }],
+      const sparseVotes: Map<number, ScenarioVoteRecord> = new Map([
+        [0, { vote: 'A' }],
+        [1, { vote: 'A' }],
+        [2, { vote: 'B' }],
       ]);
 
       // Act

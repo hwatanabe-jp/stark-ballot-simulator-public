@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
+import type { Dispatch, RefObject, SetStateAction } from 'react';
+import type { UseTranslationResult } from '@stark-ballot/web/hooks/useTranslation';
 import {
   getSessionDataForIdentity,
   isSessionReplaced,
@@ -36,8 +37,8 @@ const SESSION_ERROR_KEY = 'pages.verify.sessionError';
 const SESSION_REPLACED_ERROR_KEY = 'pages.verify.sessionReplaced';
 
 interface UseVerificationDataOptions {
-  t: (key: string, vars?: Record<string, string | number>) => string;
-  sessionIdentityRef: MutableRefObject<SessionIdentity | null>;
+  t: UseTranslationResult['t'];
+  sessionIdentityRef: RefObject<SessionIdentity | null>;
   initialSessionIdentity?: SessionIdentity | null;
 }
 
@@ -50,7 +51,7 @@ interface UseVerificationDataResult {
   error: string | null;
   setError: Dispatch<SetStateAction<string | null>>;
   fetchVerification: () => Promise<VerificationPayload>;
-  fetchVerificationRef: MutableRefObject<() => Promise<VerificationPayload>>;
+  fetchVerificationRef: RefObject<() => Promise<VerificationPayload>>;
   triggerFetch: () => void;
   hasVerificationContinuationAuthority: boolean;
 }
@@ -205,7 +206,6 @@ export function useVerificationData({
     setServerValidated(true);
     // Save verification data to knowledge store
     mergeKnowledgeFromApi(
-      'verify',
       { ...parsed },
       {
         omitKeys: VERIFICATION_GATED_KEYS,

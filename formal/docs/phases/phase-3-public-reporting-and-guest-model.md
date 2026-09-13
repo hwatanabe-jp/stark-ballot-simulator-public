@@ -5,7 +5,7 @@
 > supporting fold invariants and ordering lemmas, the stable
 > `docs/formal/formal-report.json`, the `formal:report` /
 > `formal:report:check` / `formal:verify` scripts, and the schema test in
-> `scripts/__tests__/formal-report.test.ts` are all in place. Follow-up CI
+> `scripts/formal/formal-report.test.ts` are all in place. Follow-up CI
 > integration uses dedicated formal workflows rather than adding Lean to the
 > broad `ci:verify` path.
 

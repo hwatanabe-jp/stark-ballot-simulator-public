@@ -12,11 +12,13 @@ export interface RateLimitStore {
 }
 
 export class RateLimitStoreError extends Error {
-  constructor(
-    public readonly operation: string,
-    public readonly cause: unknown,
-  ) {
+  readonly operation: string;
+  override readonly cause: unknown;
+
+  constructor(operation: string, cause: unknown) {
     super(`Rate limit store operation failed: ${operation}`);
+    this.operation = operation;
+    this.cause = cause;
     this.name = 'RateLimitStoreError';
   }
 }

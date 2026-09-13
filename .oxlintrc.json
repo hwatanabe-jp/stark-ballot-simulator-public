@@ -1,0 +1,104 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "react", "import"],
+  "categories": {
+    "correctness": "error"
+  },
+  "options": {
+    "typeAware": true
+  },
+  "ignorePatterns": [
+    "**/.amplify/**",
+    "**/.cache/**",
+    "**/.next/**",
+    "**/.tmp/**",
+    "**/.turbo/**",
+    "**/amplify_outputs/**",
+    "**/amplify_outputs.json",
+    "**/coverage/**",
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/output/**",
+    "**/playwright-report/**",
+    "**/smoke-output/**",
+    "**/target/**",
+    "**/test-results/**",
+    "**/tmp/**",
+    "**/*.d.ts",
+    "**/public-book/**"
+  ],
+  "overrides": [
+    {
+      "files": ["**/*.{ts,tsx,mts,cts}"],
+      "plugins": ["eslint", "typescript", "react", "import"],
+      "rules": {
+        "typescript/no-floating-promises": "error",
+        "typescript/no-misused-promises": "error",
+        "typescript/no-unnecessary-type-assertion": "error",
+        "typescript/no-deprecated": "error",
+        "typescript/no-non-null-assertion": "error",
+        "typescript/switch-exhaustiveness-check": "error"
+      }
+    },
+    {
+      "files": [
+        "{apps/{api,web},packages/*}/src/**/*.{ts,tsx,mts,cts}",
+        "{infra/lambdas,scripts}/**/*.{ts,tsx,mts,cts}"
+      ],
+      "excludeFiles": [
+        "**/*.{test,spec,type-test}.*",
+        "**/*.d.{ts,mts,cts}",
+        "**/*.generated.ts",
+        "**/{tests,testdata}/**",
+        "{apps,infra,scripts}/**/test-support/**",
+        "packages/*/src/**/test-support/**",
+        "apps/web/src/**/*.stories.tsx"
+      ],
+      "plugins": ["eslint", "typescript", "react", "import"],
+      "rules": {
+        "typescript/no-explicit-any": "error",
+        "typescript/ban-ts-comment": [
+          "error",
+          { "ts-ignore": true, "ts-nocheck": true, "ts-expect-error": true, "ts-check": false }
+        ],
+        "typescript/no-unsafe-assignment": "error"
+      }
+    },
+    {
+      "files": ["apps/web/**/*.{js,jsx,ts,tsx}"],
+      "rules": {
+        "react/rules-of-hooks": "error",
+        "react/exhaustive-deps": "error",
+        "react/jsx-key": "error",
+        "react/jsx-no-target-blank": "error"
+      }
+    },
+    {
+      "files": [
+        "apps/api/src/server/**/*.{ts,tsx}",
+        "packages/aws-adapters/src/aws/**/*.ts",
+        "packages/application/src/finalize/usecases/**/*.ts",
+        "packages/application/src/finalize/finalization-queue.ts",
+        "packages/application/src/finalize/proof-bundle-service.ts",
+        "packages/node-adapters/src/zkvm/executor.ts",
+        "packages/node-adapters/src/zkvm/executor-factory.ts",
+        "packages/application/src/zkvm-input/input-builder.ts",
+        "packages/aws-adapters/src/store/storeInstance.ts",
+        "packages/verification/src/verification/verification-bundle.ts",
+        "packages/verification/src/verification/expected-image-id.ts",
+        "packages/api-contract/src/errors/errorPayload.ts"
+      ],
+      "rules": {
+        "no-console": "error"
+      }
+    },
+    {
+      "files": ["**/*.{test,spec}.*", "**/test-support/**"],
+      "rules": {
+        "no-console": "off",
+        "typescript/no-unnecessary-type-assertion": "off"
+      },
+      "plugins": ["eslint", "typescript", "react", "import"]
+    }
+  ]
+}

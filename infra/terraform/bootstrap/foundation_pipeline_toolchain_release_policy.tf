@@ -2,6 +2,13 @@ data "aws_iam_policy_document" "foundation_toolchain_release_candidate_build" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
   statement {
+    sid       = "ReadExactToolchainCandidateProjectConfiguration"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [aws_codebuild_project.toolchain_release_candidate[0].arn]
+  }
+
+  statement {
     sid    = "UseToolchainReleaseCandidatePipelineArtifacts"
     effect = "Allow"
 
@@ -76,14 +83,15 @@ data "aws_iam_policy_document" "foundation_toolchain_release_candidate_build" {
   }
 
   statement {
-    sid    = "ReadExistingToolchainArtifactRecord"
+    sid    = "UseToolchainCandidateLedgerRecords"
     effect = "Allow"
 
     actions = [
       "s3:GetObject",
       "s3:GetObjectVersion",
+      "s3:PutObject",
     ]
-    resources = [local.foundation_toolchain_artifact_records_objects_arn]
+    resources = [local.foundation_toolchain_candidate_records_objects_arn]
   }
 
 }
@@ -98,6 +106,13 @@ resource "aws_iam_role_policy" "foundation_toolchain_release_candidate_build" {
 
 data "aws_iam_policy_document" "foundation_toolchain_release_update_accepted_pointer_build" {
   count = local.foundation_pipeline_enabled ? 1 : 0
+
+  statement {
+    sid       = "ReadExactToolchainPointerProjectConfiguration"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [aws_codebuild_project.toolchain_release_update_accepted_pointer[0].arn]
+  }
 
   statement {
     sid    = "UseToolchainReleaseAcceptedPointerArtifacts"
@@ -144,23 +159,24 @@ data "aws_iam_policy_document" "foundation_toolchain_release_update_accepted_poi
   }
 
   statement {
-    sid    = "PublishToolchainArtifactRecord"
+    sid    = "ReadToolchainLedgerRecords"
     effect = "Allow"
 
     actions = [
       "s3:GetObject",
       "s3:GetObjectVersion",
-      "s3:PutObject",
     ]
-    resources = [local.foundation_toolchain_artifact_records_objects_arn]
+    resources = [
+      local.foundation_toolchain_candidate_records_objects_arn,
+      local.foundation_toolchain_release_records_objects_arn,
+    ]
   }
 
   statement {
-    sid    = "VerifySelectedToolchainImage"
-    effect = "Allow"
-
-    actions   = ["ecr:DescribeImages"]
-    resources = [local.foundation_risc0_toolchain_ecr_repository_arn]
+    sid       = "PublishToolchainReleaseLedgerRecords"
+    effect    = "Allow"
+    actions   = ["s3:PutObject"]
+    resources = [local.foundation_toolchain_release_records_objects_arn]
   }
 
   statement {

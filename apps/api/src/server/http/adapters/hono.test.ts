@@ -1,10 +1,10 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { resolveAwsRequestId, toApiHandlerContext } from './hono';
-import { createMockVoteStore } from '../../__tests__/support/mockVoteStore';
+import { createMockVoteStore } from '../../test-support/mockVoteStore';
 import { readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
 import { getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
-import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 
 const runtimeProfile = localRuntimeProfile();
 

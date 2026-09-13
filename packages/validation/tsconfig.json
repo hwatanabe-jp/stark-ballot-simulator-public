@@ -1,12 +1,15 @@
 {
   "extends": "../../tooling/tsconfig/base.json",
-  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.js"],
   "exclude": [
     "src/**/*.test.ts",
     "src/**/*.test.tsx",
     "src/**/*.spec.ts",
     "src/**/*.spec.tsx",
-    "src/**/__tests__/**",
-    "src/image-id-policy.d.ts"
+    "src/**/test-support/**"
   ]
 }

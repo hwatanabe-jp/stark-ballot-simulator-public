@@ -23,6 +23,7 @@ if (isCliEntrypoint) {
 
 import {
   CLITestHelpers,
+  getFinalizeTimeoutMs,
   resolveFinalizationCountDiagnostics,
   type TestResult,
 } from '@stark-ballot/test-support/testing/cli-test-helpers';
@@ -37,11 +38,17 @@ import { pollUntil } from '@stark-ballot/test-support/testing/poll';
 import {
   resolveConfiguredImageIdVariant,
   resolveExpectedImageIdFromMapping,
-  type ImageIdMapping,
   type ImageIdVariant,
 } from '@stark-ballot/validation/image-id-policy';
+import { parseImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
 import imageIdMappingJson from '../../public/imageId-mapping.json';
-import { persistCliReport, extractBundleArchive } from '@stark-ballot/test-support/testing/cli-artifacts';
+import {
+  persistCliReport,
+  extractBundleArchive,
+  type CliRunEvidence,
+  type CliRunFailure,
+} from '@stark-ballot/test-support/testing/cli-artifacts';
+import { collectCliRunEvidence, initialCliRunEvidence } from './lib/cli-run-evidence';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
 import {
   collectCliVerificationContractErrors,
@@ -54,6 +61,7 @@ import {
 } from '@stark-ballot/test-support/testing/cli-voting-flow-helpers';
 import { isRecord } from '@stark-ballot/validation/unknown-value-guards';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import { parseVerifierServiceWireReport } from '@stark-ballot/verification/verifier-service-report';
 import {
   REPLACED_RUNTIME_SELECTOR_NAMES,
   TARGET_RUNTIME_EXTERNAL_INPUT_NAMES,
@@ -61,7 +69,7 @@ import {
   type RuntimeProfileSelector,
 } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
-const imageIdMapping = imageIdMappingJson as ImageIdMapping;
+const imageIdMapping = parseImageIdMapping(imageIdMappingJson);
 const currentMethodVersion = imageIdMapping.current;
 const AUTHENTICATED_ENDPOINT_DELIVERY = 'authenticated-endpoint' as const;
 const DEFAULT_BUNDLE_RANGE_CHUNK_BYTES = 4 * 1024 * 1024;
@@ -163,11 +171,12 @@ interface AuthenticatedArtifactDownload {
 export type CommandSpawner = typeof spawn;
 
 export function resolveDefaultCliExpectedImageId(
-  mapping: ImageIdMapping,
+  mapping: unknown,
   variant: ImageIdVariant = resolveConfiguredImageIdVariant(process.env['EXPECTED_IMAGE_ID_VARIANT']),
 ): { imageId: string; variant: ImageIdVariant } {
+  const admittedMapping = parseImageIdMapping(mapping);
   return {
-    imageId: resolveExpectedImageIdFromMapping(mapping, Number(mapping.current), variant),
+    imageId: resolveExpectedImageIdFromMapping(admittedMapping, Number(admittedMapping.current), variant),
     variant,
   };
 }
@@ -315,11 +324,69 @@ export class CLIVotingTest {
   private baseUrl: string | null;
   private serverProcess: ReturnType<typeof spawn> | null = null;
   private fileStoreDirectory: string | null = null;
+  private runEvidence: CliRunEvidence | null = null;
+  private runResults: TestResult[] = [];
 
   constructor(config: CLITestConfig, helpers?: CLITestHelpers) {
     this.config = config;
     this.baseUrl = process.env['STARK_BALLOT_CLI_BASE_URL'] ?? null;
     this.helpers = helpers ?? null;
+  }
+
+  async execute(): Promise<{ results: TestResult[]; passed: boolean }> {
+    let setupComplete = false;
+    let result: { results: TestResult[]; passed: boolean };
+    try {
+      await this.captureRunEvidence();
+      await this.setup();
+      setupComplete = true;
+      result = await this.run();
+    } catch (error) {
+      await this.saveReport(setupComplete ? 'run_interrupted' : 'setup_failed');
+      try {
+        await this.teardown();
+      } catch {
+        this.log('CLI cleanup failed after the original run failure', 'warning');
+      }
+      throw error;
+    }
+    await this.teardown();
+    return result;
+  }
+
+  private selectedCases(): typeof testCases {
+    const scenario = this.config.scenario;
+    return scenario
+      ? testCases.filter((tc) => tc.scenario.includes(scenario) || (scenario === 'S0' && tc.scenario.length === 0))
+      : this.config.allScenarios
+        ? testCases
+        : testCases.slice(0, 2);
+  }
+
+  private async captureRunEvidence(): Promise<void> {
+    const profile = resolveCliRuntimeProfile(this.config);
+    const proofProfile = resolveRuntimeProfile({ RUNTIME_PROFILE: profile }).proof;
+    const options = {
+      projectRoot,
+      profile,
+      scenarios: this.selectedCases().map((testCase) => testCase.scenario[0] ?? 'S0'),
+      useRealZkVM: this.config.useRealZkVM,
+      externalServer: this.baseUrl !== null,
+      finalizeTimeoutMs: null,
+    };
+    this.runEvidence = initialCliRunEvidence(options);
+    const finalizeTimeoutMs = getFinalizeTimeoutMs(proofProfile);
+    this.runEvidence.runtime.finalizeTimeoutMs.effective = finalizeTimeoutMs;
+    try {
+      this.runEvidence = await collectCliRunEvidence({ ...options, finalizeTimeoutMs });
+    } catch {
+      this.log('CLI run metadata unavailable; retaining known initial conditions', 'warning');
+    }
+  }
+
+  private createHelpers(baseUrl: string): CLITestHelpers {
+    const proofProfile = resolveRuntimeProfile({ RUNTIME_PROFILE: resolveCliRuntimeProfile(this.config) }).proof;
+    return new CLITestHelpers(baseUrl, undefined, proofProfile);
   }
 
   async setup(): Promise<void> {
@@ -328,7 +395,7 @@ export class CLIVotingTest {
     }
 
     if (this.baseUrl) {
-      this.helpers = new CLITestHelpers(this.baseUrl);
+      this.helpers = this.createHelpers(this.baseUrl);
       return;
     }
 
@@ -336,15 +403,18 @@ export class CLIVotingTest {
   }
 
   async teardown(): Promise<void> {
-    if (this.serverProcess) {
-      this.serverProcess.kill();
-      await new Promise<void>((resolve) => this.serverProcess?.once('exit', () => resolve()));
-      this.serverProcess = null;
-    }
-    if (this.fileStoreDirectory) {
-      const directory = this.fileStoreDirectory;
-      this.fileStoreDirectory = null;
-      await fs.rm(directory, { recursive: true, force: true });
+    try {
+      if (this.serverProcess) {
+        const server = this.serverProcess;
+        this.serverProcess = null;
+        await stopCliServer(server);
+      }
+    } finally {
+      if (this.fileStoreDirectory) {
+        const directory = this.fileStoreDirectory;
+        this.fileStoreDirectory = null;
+        await fs.rm(directory, { recursive: true, force: true });
+      }
     }
   }
 
@@ -384,7 +454,7 @@ export class CLIVotingTest {
     await waitForService(this.baseUrl);
     console.log(`[CLI] Started Vite static frontend plus Hono API server on ${this.baseUrl}`);
 
-    this.helpers = new CLITestHelpers(this.baseUrl);
+    this.helpers = this.createHelpers(this.baseUrl);
   }
 
   private log(message: string, level: 'info' | 'success' | 'error' | 'warning' = 'info') {
@@ -863,14 +933,6 @@ export class CLIVotingTest {
       candidate.kind === 'bundle'
         ? await this.downloadAuthenticatedBundle(candidate.url)
         : await this.downloadAuthenticatedReport(candidate.url);
-    if (candidate.kind === 'report') {
-      try {
-        JSON.parse(buffer.toString('utf-8'));
-      } catch {
-        throw new Error('report endpoint returned invalid JSON');
-      }
-    }
-
     const hash = createHash('sha256').update(buffer).digest('hex');
     const downloadDir = path.join(projectRoot, '.tmp', 'cli-bundles', sessionId);
     await fs.mkdir(downloadDir, { recursive: true });
@@ -896,7 +958,14 @@ export class CLIVotingTest {
       throw new Error(`HTTP ${response.status} ${response.statusText}`);
     }
 
-    return readResponseBufferWithLimit(response, MAX_REPORT_DOWNLOAD_BYTES, 'report');
+    const buffer = await readResponseBufferWithLimit(response, MAX_REPORT_DOWNLOAD_BYTES, 'report');
+    try {
+      const report: unknown = JSON.parse(buffer.toString('utf-8'));
+      parseVerifierServiceWireReport(report);
+    } catch {
+      throw new Error('report endpoint returned invalid JSON');
+    }
+    return buffer;
   }
 
   private async downloadAuthenticatedBundle(url: string): Promise<Buffer> {
@@ -975,24 +1044,14 @@ export class CLIVotingTest {
   }
 
   async run(): Promise<{ results: TestResult[]; passed: boolean }> {
+    if (!this.runEvidence) await this.captureRunEvidence();
     console.log('=== STARK Ballot Simulator CLI E2E Test ===');
-    const runStartedAtIso = new Date().toISOString();
-    console.log(`[${runStartedAtIso}] Starting test run...`);
+    console.log(`[${this.runEvidence?.capturedAt}] Starting test run...`);
 
-    const results: TestResult[] = [];
+    const results = this.runResults;
 
     // Determine which test cases to run
-    let casesToRun = testCases;
-
-    if (this.config.scenario) {
-      const scenario = this.config.scenario;
-      casesToRun = testCases.filter(
-        (tc) => tc.scenario.includes(scenario) || (scenario === 'S0' && tc.scenario.length === 0),
-      );
-    } else if (!this.config.allScenarios) {
-      // Run only S0 and S1 by default for quick testing
-      casesToRun = testCases.slice(0, 2);
-    }
+    const casesToRun = this.selectedCases();
 
     // Debug: Show what will be run
     if (this.config.verbose || this.config.allScenarios) {
@@ -1005,16 +1064,21 @@ export class CLIVotingTest {
       results.push(result);
     }
 
-    // Generate and display report
+    await this.saveReport();
+
+    const allPassed = results.every((r) => r.passed);
+    return { results, passed: allPassed };
+  }
+
+  private async saveReport(runFailure?: CliRunFailure): Promise<void> {
     console.log('\n' + '='.repeat(50));
-    if (!this.helpers) {
-      throw new Error('CLI helpers not initialized');
-    }
-    const report = await this.helpers.generateReport(results, this.config.outputFormat);
-    console.log(report);
+    const results = this.runResults;
+    let report = 'CLI setup failed before any scenario ran.\n';
 
     const runFinishedAtIso = new Date().toISOString();
     try {
+      if (this.helpers) report = await this.helpers.generateReport(results, this.config.outputFormat);
+      const runStartedAtIso = this.runEvidence?.capturedAt ?? runFinishedAtIso;
       const artifactSessionId = `run-${runStartedAtIso.replace(/[.:]/g, '-')}`;
       const artifacts = await persistCliReport({
         sessionId: artifactSessionId,
@@ -1023,19 +1087,61 @@ export class CLIVotingTest {
         results,
         startedAt: runStartedAtIso,
         finishedAt: runFinishedAtIso,
+        ...omitUndefinedProperties({ evidence: this.runEvidence ?? undefined, runFailure }),
       });
+      console.log(artifacts.content);
       this.log(`CLI report saved to ${artifacts.jsonPath}`, 'success');
       if (artifacts.formattedPath && artifacts.formattedPath !== artifacts.jsonPath) {
         this.log(`Formatted report saved to ${artifacts.formattedPath}`, 'success');
       }
     } catch (artifactError) {
       const message = artifactError instanceof Error ? artifactError.message : String(artifactError);
+      console.log(report);
       this.log(`Failed to persist CLI report: ${message}`, 'warning');
     }
-
-    const allPassed = results.every((r) => r.passed);
-    return { results, passed: allPassed };
   }
+}
+
+/** Allow the server's six-second host shutdown, then bound escalation and exit collection. */
+export function stopCliServer(
+  server: ReturnType<typeof spawn>,
+  shutdownTimeoutMs = 7000,
+  killWaitMs = 1000,
+): Promise<void> {
+  if (server.exitCode !== null || server.signalCode !== null || server.pid === undefined) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    let finalWait: ReturnType<typeof setTimeout> | undefined;
+    function finish(error?: Error): void {
+      clearTimeout(escalation);
+      clearTimeout(finalWait);
+      server.removeListener('exit', onExit);
+      server.removeListener('error', onError);
+      if (error) reject(error);
+      else resolve();
+    }
+    function onExit(): void {
+      finish();
+    }
+    function onError(): void {
+      finish(new Error('CLI server termination failed'));
+    }
+    // Register before signaling: a fast exit must not be missed.
+    server.once('exit', onExit);
+    server.once('error', onError);
+    const escalation = setTimeout(() => {
+      finalWait = setTimeout(() => finish(new Error('CLI server exit could not be confirmed')), killWaitMs);
+      try {
+        server.kill('SIGKILL');
+      } catch {
+        onError();
+      }
+    }, shutdownTimeoutMs);
+    try {
+      server.kill('SIGTERM');
+    } catch {
+      onError();
+    }
+  });
 }
 
 function resolveAdvertisedChunkSize(value: string | null): number {
@@ -1094,12 +1200,16 @@ async function readResponseBufferBounded(response: Response, maxBytes: number, l
   try {
     let result = await reader.read();
     while (!result.done) {
-      totalBytes += result.value.byteLength;
+      const chunk: unknown = result.value;
+      if (!(chunk instanceof Uint8Array)) {
+        throw new Error(limitMessage);
+      }
+      totalBytes += chunk.byteLength;
       if (totalBytes > maxBytes) {
         await reader.cancel().catch(() => undefined);
         throw new Error(limitMessage);
       }
-      chunks.push(result.value);
+      chunks.push(chunk);
       result = await reader.read();
     }
   } finally {
@@ -1273,15 +1383,8 @@ async function main() {
   try {
     const config = parseConfig();
     const test = new CLIVotingTest(config);
-    await test.setup();
-    try {
-      const { passed } = await test.run();
-      await test.teardown();
-      process.exit(passed ? 0 : 1);
-    } catch (error) {
-      await test.teardown();
-      throw error;
-    }
+    const { passed } = await test.execute();
+    process.exit(passed ? 0 : 1);
   } catch (error) {
     console.error('Fatal error:', error);
     process.exit(1);

@@ -1,127 +1,51 @@
 # 単体、結合、E2E テスト
 
-このページでは、example-based tests がどのリスクを守っているかを整理します。
-焦点はテスト数ではなく、検証アプリとして失敗できない境界にどの層のテストを置いているかです。
+S1 で一票を抜いたときに、集計関数が欠落を検出するだけでは十分ではありません。その情報が API を通ってブラウザに届き、画面が成功表示を止めるところまで確認する必要があります。
 
-## テスト層の役割
+## 関数から画面まで
 
-### 単体テスト
+単体テストでは、入力コミットメントの計算、ジャーナルの読み取り、最終判定などを小さく切り出して確かめます。たとえば必須チェックを `failed` にしたときや、未知のチェックを混ぜたときに、完全成功を返さないことを検査します。
 
-単体テストは、純粋関数、小さな UI component、schema、環境変数 guard、エラー整形の退行検出に使います。
+結合テストでは、部品をつないだときの取り違えを探します。投票と集計の状態遷移、API の要求・応答、保存した証拠の読み出し、Rust 検証サービスが返す状態などが対象です。公開 ZIP の許可リストも、生成側と配布側の両方で守られているかを確かめます。
 
-対象:
+CLI テストはブラウザを使わずに、セッション作成から投票、集計、検証までを実行します。Playwright の E2E テストは画面を操作し、同じ流れが利用者の操作として成立するかを確認します。アクセシビリティ検査には axe も使います。
 
-- 検証チェック定義と summary logic
-- Lean 生成 vector と照合する verification summary / display / check definition
-- zkVM journal / input commitment / bitmap helper
-- session capability token と Turnstile bypass guard
-- UI component と hooks
-- i18n translation consistency
+## 軽い確認と、本物の証明を使う確認
 
-### 結合テスト
+日常の画面開発では mock の証明を使い、短時間で失敗を見つけます。一方、証明の入力・出力形式、Image ID、レシート検証の条件を変更した場合は、実際の production STARK 証明を通す必要があります。
 
-結合テストは、境界をまたいだ契約が崩れていないかを検査します。
+| コマンド                     | 確かめるもの                               |
+| ---------------------------- | ------------------------------------------ |
+| `pnpm test:run`              | リポジトリ全体の Vitest 単体・結合テスト   |
+| `pnpm test:public`           | 公開ソースに含める範囲のテスト             |
+| `pnpm test:cli:mock`         | mock 証明を使う API の一連の流れ           |
+| `pnpm test:e2e:mock`         | ブラウザから操作する一連の流れ             |
+| `pnpm test:e2e:axe`          | 主な画面のアクセシビリティ                 |
+| `pnpm test:cli:real-dev`     | 実際の zkVM と開発用レシートを使う接続確認 |
+| `pnpm test:cli:real-prod:s0` | S0 の production STARK 証明を使う確認      |
+| `pnpm rust:zkvm:test`        | Rust のゲスト・共有契約のテスト            |
+| `pnpm rust:verifier:test`    | Rust 検証サービスのテスト                  |
+| `pnpm formal:verify`         | Lean の成果物と TypeScript テストの対応    |
 
-対象:
+開発用レシートが通ることは、production STARK 証明が検証できることの証拠にはなりません。テスト結果を見るときも、どの証明を使った実行かを区別します。
 
-- Hono 互換の API route inventory と request / response contract
-- store 実装と finalization state transition
-- verification bundle の public allowlist
-- `verifier-service` client と STARK receipt status の扱い
-- Lean 生成 vector と照合する input commitment / bitmap Merkle / Rust guest model
-- bitmap proof、bulletin proof、verification run などの session-scoped API
+## mock E2E でも、API を実際に通す
 
-### CLI と E2E テスト
+`pnpm dev` は Vite の開発サーバーとブラウザ内の mock API を使います。これに対して mock E2E は、production モードでビルドしたフロントエンドを静的 Hono サーバーから配信し、同じオリジンの API を呼び出します。画面だけでなく、HTTP と保存処理までつながる点が違います。
 
-CLI と Playwright は、単一関数ではなく利用者フローとしての正しさを見ます。
+| コマンド                                   | API・保存・証明                                                          |
+| ------------------------------------------ | ------------------------------------------------------------------------ |
+| `pnpm dev`                                 | ブラウザ内 mock API。サーバーを使う場合はメモリ保存・同期処理・mock 証明 |
+| `pnpm test:e2e:mock` / `pnpm test:e2e:axe` | Hono API・ファイル保存・同期処理・mock 証明                              |
 
-- CLI flow: session 作成、投票、集計、検証をブラウザなしで実行する
-- Playwright mock flow: Vite の local-mock build を static Hono server で配信し、主要画面を通す
-- axe smoke: 主要ページの重大な accessibility violation を検出する
-- real zkVM dev flow と real zkVM prod flow: proof contract 変更時に mock だけで完了扱いにしないための重い確認経路
+保存方式と証明の組は、[実行プロファイル](../aws/runtime-boundary.md#semantic-runtime-profiles)に定義します。
 
-## 主なコマンド
+E2E の起動スクリプトがブラウザとサーバーのプロファイルを揃えます。AWS 向けの `pnpm build:ci` では `target-aws-async` を選び、出力に mock API やテスト用の Turnstile 回避処理が混入していないことも検査します。
 
-| コマンド                      | 目的                                             |
-| ----------------------------- | ------------------------------------------------ |
-| `pnpm test:run`               | Vitest による単体テストと結合テスト              |
-| `pnpm test:public`            | public snapshot 向けの安全なテスト subset        |
-| `pnpm test:cli:mock`          | mock zkVM / mock store で CLI voting flow を実行 |
-| `pnpm test:e2e:mock`          | Playwright によるブラウザ E2E                    |
-| `pnpm test:e2e:axe`           | axe accessibility smoke                          |
-| `pnpm test:cli:real-dev`      | development evidence の real zkVM 接続 smoke     |
-| `pnpm test:cli:real-prod:s0`  | S0 の production STARK proof flow                |
-| `pnpm formal:verify`          | Lean build / formal vector drift guard           |
-| `pnpm build:zkvm`             | zkVM guest / host の build                       |
-| `pnpm build:verifier-service` | Rust verifier-service の build                   |
-| `pnpm rust:verifier:test`     | verifier-service の Rust tests                   |
-| `pnpm rust:zkvm:test`         | zkVM / contract-core 側の Rust tests             |
+## テストを継続して発見する
 
-`local-proof-development` profile の receipt は production STARK proof ではなく、UI/API の回帰検出に有用でも proof soundness を確認したことにはなりません（判定側の扱いは [ゲーティングロジック](../verification/gating-logic.md#stark-検証のゲーティング) を参照）。
+Vitest のテストは対象実装のそばに置き、Playwright のテストは `tests/e2e/` に置きます。各ワークスペースとリポジトリ用ツールが担当するテストを明示し、未発見や重複実行を検査します。ブラウザ環境の jsdom を使うのは web ワークスペースだけです。
 
-## Vitest の ownership
+各ワークスペースの `test` は狭い確認に使えますが、全体の単体・結合テストはルートの `pnpm test:run` で実行します。CI ではこれに画面テスト、Rust、形式化、公開ソースの検査を組み合わせます。
 
-root の `pnpm test:run` は、workspace manifest と repository tooling metadata から導出した明示的な Vitest project を実行します。
-各 `apps/*`、`packages/*`、`scripts/`、repository tooling scope が自身の test file を所有し、重複した project ownership を許しません。
-
-test environment も scope ごとに固定します。
-browser component を持つ `@stark-ballot/web` だけが jsdom と browser setup を使い、それ以外の workspace と repository tooling は Node environment で実行します。
-各 workspace の local `test` task は狭い確認用で、root の `pnpm test:run` が repository 全体の単体・結合テスト gate です。
-public snapshot では `pnpm test:public` が公開対象に残した範囲だけを実行します。
-
-## mock mode の実行経路
-
-`pnpm dev` と Playwright mock E2E は、どちらもローカル確認用の mock evidence を使いますが、同じ runtime path ではありません。
-
-| 経路                                        | profile 選択と起動                                                                                                                                                                                                                                                                                                                      | projection の内訳                                                                                                                                            |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| browser-mock `pnpm dev`                     | `VITE_RUNTIME_PROFILE=local-demo` で Vite dev server を起動する。server 側も使う場合は `.env.local` の `RUNTIME_PROFILE=local-demo` を選ぶ                                                                                                                                                                                              | browser projection は browser mock API、Turnstile bypass eligibility、mock proof。server 側は memory store、同期 finalization、local artifact                |
-| production ビルド + 静的 Hono（Playwright） | `pnpm test:e2e:mock` / `pnpm test:e2e:axe` が Playwright の `webServer.command` から `scripts/start-test-server.sh` を使い、selector を `RUNTIME_PROFILE=static-mock-e2e` / `VITE_RUNTIME_PROFILE=static-mock-e2e` に固定して、`NODE_ENV=production` で `pnpm build:local-mock` 後に `scripts/dev/static-hono-server.ts` を直接起動する | browser projection は same-origin API と Turnstile bypass eligibility。server projection は file-backed store、mock proof、同期 finalization、local artifact |
-
-`static-mock-e2e` はブラウザ内だけで API を完結させず static Hono server を通るため、`pnpm dev` より本番配信形に近い経路を確認します。
-この分離により、日常の UI 反復は Vite dev server で速く回し、E2E では production-mode の静的 frontend 配信、Hono API handler、session-scoped endpoint、mock zkVM / mock store の結合を確認します。
-個別の mock、store、proof、Turnstile flag は runtime selector として使いません。profile の意味論は [AWS runtime 境界](../aws/runtime-boundary.md) を参照してください。
-target / reusable な `pnpm build:ci` artifact は `target-aws-async` browser profile を選択し、artifact scan で mock API や test-only の Turnstile bypass が混入していないことを確認します。
-
-## 検査観点
-
-### Verified を誤表示しない
-
-このアプリの最優先 invariant は、必要な暗号チェックと整合性チェックが通っていない状態で `Verified` を表示しないことです。
-
-テストでは次のような状態を fail-closed に扱います。
-
-- required check が `failed`
-- required check が `not_run` / `pending` / `running`
-- STARK receipt verification が失敗または未解決
-- unknown check や空の check set
-- `excludedSlots > 0`
-- public tally と verified tally の不一致
-
-この観点は [ゲーティングロジック](../verification/gating-logic.md) の実装側の安全網です。
-
-### 公開 artifact 境界
-
-`bundle.zip` は第三者検証に必要な公開可能 artifact だけを含みます。
-公開してよいものは allowlist で管理し、mode 非依存の保護 4 アーティファクトは配布対象に含めません（一覧と理由は [公開境界](../verification/public-boundary.md#bundlezip-に入れないファイル) を参照）。
-
-この境界は sync 生成、async container、bundle/report delivery の複数箇所にまたがるため、テストで契約として固定します。
-
-### mock zkVM と real zkVM の境界
-
-mock zkVM は UI や API flow の高速な退行検出に使います。
-一方で、journal format、input commitment、Image ID、receipt verification contract に触れる変更では、Rust 側や real zkVM 経路を使って TypeScript と Rust の対応を確認します。
-
-コストの違いを前提に、普段は軽い gate を使い、proof contract に触れる変更では重い gate へ進む設計です。
-
-### UI と accessibility
-
-Playwright は、ユーザーが実際に触る投票、集計、検証の流れを production-mode の static Hono server 上で確認します。
-テスト ID は翻訳文ではなく安定した `data-testid` を使い、i18n やレイアウト変更に引きずられにくくしています。
-
-## CI での位置づけ
-
-CI では、TypeScript の core checks、UI mock E2E、Rust tests、formal checks、public snapshot checks が役割を分けて動きます。
-変更領域に応じて必要な gate を選ぶ方針は [mock zkVM と real zkVM の境界](#mock-zkvm-と-real-zkvm-の境界) と同じです。
-
-<!-- source: package.json, vitest.config.ts, tooling/workspace/workspace-metadata.ts, playwright.config.ts, tests/e2e/, tests/e2e/README.md, scripts/start-test-server.sh, scripts/tests/cli-e2e-voting-flow.ts, scripts/tests/README.md, formal/**, scripts/formal/**, docs/formal/generated-vectors/**, apps/**, packages/**, *.test.ts, *.test.tsx, CI workflow definitions -->
+<!-- source: package.json, vitest.config.ts, tooling/workspace/workspace-metadata.ts, tooling/workspace/vitest-projects.test.ts, scripts/test-discovery/test-layout.ts, scripts/test-discovery/test-layout.test.ts, playwright.config.ts, tests/e2e/, tests/e2e/README.md, scripts/start-test-server.sh, scripts/tests/cli-e2e-voting-flow.ts, scripts/tests/README.md, formal/, scripts/formal/, docs/formal/generated-vectors/, apps/, packages/ -->

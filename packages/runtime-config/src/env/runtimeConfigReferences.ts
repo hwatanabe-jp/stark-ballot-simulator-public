@@ -83,13 +83,6 @@ function requiredMatchGroup(
   return value;
 }
 
-export function expectedRuntimeConfigReferencePath(
-  name: RuntimeConfigReferenceName,
-  deploymentEnvironment: 'develop' | 'main' = 'develop',
-): string {
-  return expectedRuntimeConfigReferencePaths(name, { expectedDeploymentEnvironment: deploymentEnvironment })[0] ?? '';
-}
-
 function expectedRuntimeConfigReferencePaths(
   name: RuntimeConfigReferenceName,
   options: RuntimeConfigReferenceValidationOptions,

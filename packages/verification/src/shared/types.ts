@@ -1,3 +1,10 @@
+import type {
+  VerifierServiceDevModeReport,
+  VerifierServiceFailedReport,
+  VerifierServiceReport,
+  VerifierServiceSuccessReport,
+} from '../verification/verifier-service-report';
+
 export interface VoteReceipt {
   voteId: string;
   commitment: string;
@@ -24,7 +31,10 @@ export interface BulletinBoard {
 }
 
 export type BitmapProofSource = 'mock' | 'real';
-export type VerificationStatus = 'success' | 'failed' | 'dev_mode' | 'not_run' | 'running';
+export const VERIFICATION_STATUS_VALUES = ['success', 'failed', 'dev_mode', 'not_run', 'running'] as const;
+export const TERMINAL_VERIFICATION_STATUS_VALUES = ['success', 'failed', 'dev_mode'] as const;
+export type VerificationStatus = (typeof VERIFICATION_STATUS_VALUES)[number];
+export type TerminalVerificationStatus = (typeof TERMINAL_VERIFICATION_STATUS_VALUES)[number];
 export const VERIFICATION_FAILURE_CATEGORY_VALUES = [
   'none',
   'verifier_crash',
@@ -35,43 +45,35 @@ export const VERIFICATION_FAILURE_CATEGORY_VALUES = [
   'unknown',
 ] as const;
 export type VerificationFailureCategory = (typeof VERIFICATION_FAILURE_CATEGORY_VALUES)[number];
-export type PublicVerificationErrorMessage =
-  | 'ImageID mismatch'
-  | 'Receipt does not contain ImageID'
-  | 'Invalid proof'
-  | 'Failed to download bundle'
-  | 'Verification failed';
+/** Exact terminal report projected from the verifier-service wire contract. */
+export type VerificationReport = VerifierServiceReport;
 
-export interface VerificationReport {
-  status: VerificationStatus;
-  verifier_version: string;
-  verified_at: string;
-  duration_ms: number;
-  expected_image_id: string;
-  receipt_image_id: string | null;
-  dev_mode_receipt: boolean;
-  errors?: string[];
-}
+type InfrastructureVerificationFailureCategory = Exclude<VerificationFailureCategory, 'none'>;
 
-export interface VerificationResult {
-  status: VerificationStatus;
-  report?: VerificationReport;
-  /** Internal-only worker infrastructure classification. Never expose through public projections. */
-  failureCategory?: VerificationFailureCategory;
-}
-
-export interface PublicVerificationReport {
-  status: VerificationStatus;
-  verifier_version?: string;
-  verified_at?: string;
-  duration_ms?: number;
-  expected_image_id?: string;
-  receipt_image_id?: string | null;
-  dev_mode_receipt?: boolean;
-  errors?: PublicVerificationErrorMessage[];
-}
-
-export interface PublicVerificationResult {
-  status: VerificationStatus;
-  report?: PublicVerificationReport;
-}
+/**
+ * Internal verifier state is one closed outcome. Status-only variants remain
+ * intentional for queued work and synthetic/mock execution; whenever a report
+ * is present, its terminal status must match the result discriminator.
+ */
+export type VerificationResult =
+  | Readonly<{
+      status: 'not_run' | 'running';
+      report?: never;
+      failureCategory?: 'none';
+    }>
+  | Readonly<{
+      status: 'success';
+      report?: VerifierServiceSuccessReport;
+      failureCategory?: 'none';
+    }>
+  | Readonly<{
+      status: 'dev_mode';
+      report?: VerifierServiceDevModeReport;
+      failureCategory?: 'none';
+    }>
+  | Readonly<{
+      status: 'failed';
+      report?: VerifierServiceFailedReport;
+      /** Internal-only worker infrastructure classification. Never expose through public projections. */
+      failureCategory?: InfrastructureVerificationFailureCategory;
+    }>;

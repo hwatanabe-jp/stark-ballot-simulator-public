@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resolveAllowedDeploymentTarget } from '@stark-ballot/deployment-authority';
-import { validateAppApprovalEvidence } from '@stark-ballot/deployment-authority/app-acceptance';
+import { admitAppAcceptanceApprovalEvidence } from './app-acceptance-approval.js';
 
 const target = resolveAllowedDeploymentTarget('stark-dev/develop');
 const controlSourceSha = 'a'.repeat(40);
@@ -57,20 +57,23 @@ function emptyPlanApproval() {
 
 describe('App approval evidence', () => {
   it('admits exact manual approval authority', () => {
-    expect(validateAppApprovalEvidence(manualApproval())).toEqual(manualApproval());
+    expect(admitAppAcceptanceApprovalEvidence(manualApproval(), target.targetKey)).toEqual(manualApproval());
   });
 
   it('admits an exact normal empty-plan skip without an approver', () => {
-    expect(validateAppApprovalEvidence(emptyPlanApproval())).toEqual(emptyPlanApproval());
+    expect(admitAppAcceptanceApprovalEvidence(emptyPlanApproval(), target.targetKey)).toEqual(emptyPlanApproval());
   });
 
   it('rejects unknown durable fields', () => {
     expect(() =>
-      validateAppApprovalEvidence({
-        ...manualApproval(),
-        decryptedSecret: 'sentinel-secret-value',
-      }),
-    ).toThrow('App approval evidence must use the exact semantic shape.');
+      admitAppAcceptanceApprovalEvidence(
+        {
+          ...manualApproval(),
+          decryptedSecret: 'sentinel-secret-value',
+        },
+        target.targetKey,
+      ),
+    ).toThrow('App acceptance approval evidence must use the exact enumerable data shape.');
   });
 
   it('rejects a skipped approval with nonempty Terraform changes', () => {
@@ -79,8 +82,8 @@ describe('App approval evidence', () => {
     };
     value.planEmptyEvidence.resourceChangeCount = 1;
 
-    expect(() => validateAppApprovalEvidence(value)).toThrow(
-      'App empty-plan approval evidence must contain zero Terraform changes.',
+    expect(() => admitAppAcceptanceApprovalEvidence(value, target.targetKey)).toThrow(
+      'App acceptance empty-plan approval evidence must contain zero Terraform changes.',
     );
   });
 });

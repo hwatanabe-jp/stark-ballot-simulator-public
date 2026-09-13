@@ -2,11 +2,6 @@
   "name": "@stark-ballot/verification",
   "private": true,
   "type": "module",
-  "scripts": {
-    "lint": "pnpm --dir ../.. exec eslint packages/verification",
-    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/verification",
-    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
-  },
   "exports": {
     ".": "./src/index.ts",
     "./bitmap-proof-types": "./src/verification/bitmap-proof-types.ts",
@@ -22,7 +17,6 @@
     "./finalization-tamper": "./src/verification/finalization-tamper.ts",
     "./image-id": "./src/verification/expected-image-id.ts",
     "./image-id-types": "./src/verification/image-id-types.ts",
-    "./included-bitmap-artifact": "./src/verification/included-bitmap-artifact.ts",
     "./local-cast-checks": "./src/verification/local-cast-checks.ts",
     "./merkle": "./src/verification/merkle.ts",
     "./merkle/*": "./src/merkle/*",
@@ -33,7 +27,7 @@
     "./presentation-policy": "./src/verification/verification-presentation-policy.ts",
     "./public-bundle-manifest": "./src/verification/public-bundle-manifest.ts",
     "./receipt-normalizer": "./src/verification/receipt-normalizer.ts",
-    "./seen-bitmap-artifact": "./src/verification/seen-bitmap-artifact.ts",
+    "./scenario-projection": "./src/verification/scenario-projection.ts",
     "./shared/constants": "./src/shared/constants.ts",
     "./shared/logger": "./src/shared/logger.ts",
     "./shared/types": "./src/shared/types.ts",
@@ -42,7 +36,13 @@
     "./sth-verifier": "./src/verification/sth-verifier.ts",
     "./summary": "./src/verification/verification-summary.ts",
     "./tamper-detection": "./src/verification/tamperDetection.ts",
+    "./verifier-service-report": "./src/verification/verifier-service-report.ts",
     "./types": "./src/verification/types.ts"
+  },
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec oxlint packages/verification",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/verification",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@stark-ballot/crypto-primitives": "workspace:*",
@@ -51,7 +51,6 @@
     "@stark-ballot/zkvm-contract": "workspace:*"
   },
   "devDependencies": {
-    "@stark-ballot/node-adapters": "workspace:*",
     "fast-check": "catalog:crypto-testing",
     "vitest": "catalog:testing"
   }

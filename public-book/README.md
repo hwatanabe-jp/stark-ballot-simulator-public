@@ -6,7 +6,7 @@
 
 ```bash
 cargo install --locked mdbook --version 0.5.4
-cargo install --locked mdbook-mermaid --version 0.17.0
+cargo install --locked mdbook-mermaid --version 0.17.1
 ```
 
 Mermaid のアセットをインストール:
@@ -70,6 +70,12 @@ GitHub Pages ではレスポンスヘッダを任意に設定できないため�
 ## 更新日の管理
 
 ドキュメント内容を更新した際は `src/introduction.md` 冒頭の「最終更新」日付もあわせて更新してください。
+
+## 図の表示
+
+説明用のフローチャートは上から下へ進む配置を基本にします。
+`mermaid-init.js` は図を幅に合わせて縮小せず、`diagrams.css` が横長の図だけを
+図の中でスクロールできるようにします。スマートフォンでも文字サイズを保つためです。
 
 ## 日本語検索
 

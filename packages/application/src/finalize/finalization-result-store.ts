@@ -1,10 +1,11 @@
-import type { VerificationReport, VerificationResult } from '@stark-ballot/verification/shared/types';
-import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
+import type { VerificationResult } from '@stark-ballot/verification/shared/types';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 import { parseVerificationResult } from './finalization-storage';
+import { parseFinalizationId } from './finalization-id';
 import type { FinalizationId } from './finalization-types';
 
 export interface VerificationResultRecord {
-  sessionId: string;
+  sessionId: SessionId;
   finalizationId: FinalizationId;
   verificationResult: VerificationResult;
 }
@@ -26,16 +27,11 @@ export function parseVerificationResultRecord(value: unknown): VerificationResul
   ) {
     return undefined;
   }
-  const sessionId = value['sessionId'];
-  const finalizationId = value['finalizationId'];
+  const rawSessionId = value['sessionId'];
+  const sessionId = typeof rawSessionId === 'string' ? parseSessionId(rawSessionId) : undefined;
+  const finalizationId = parseFinalizationId(value['finalizationId']);
   const verificationResult = parseVerificationResult(value['verificationResult']);
-  if (
-    typeof sessionId !== 'string' ||
-    !isSafeVerifierSegment(sessionId) ||
-    typeof finalizationId !== 'string' ||
-    !isSafeVerifierSegment(finalizationId) ||
-    !verificationResult
-  ) {
+  if (!sessionId || !finalizationId || !verificationResult) {
     return undefined;
   }
   return {
@@ -47,21 +43,25 @@ export function parseVerificationResultRecord(value: unknown): VerificationResul
 
 export interface VerificationResultStore {
   getVerificationResultRecord(
-    sessionId: string,
+    sessionId: SessionId,
     finalizationId: FinalizationId,
   ): Promise<VerificationResultRecord | null>;
 
-  markVerificationRunning(
-    sessionId: string,
-    finalizationId: FinalizationId,
-    report?: VerificationReport,
-  ): Promise<VerificationResultRecord>;
+  markVerificationRunning(sessionId: SessionId, finalizationId: FinalizationId): Promise<VerificationResultRecord>;
 
-  rollbackVerificationResult(sessionId: string, finalizationId: FinalizationId): Promise<void>;
+  rollbackVerificationResult(sessionId: SessionId, finalizationId: FinalizationId): Promise<void>;
 
   completeVerificationResult(
-    sessionId: string,
+    sessionId: SessionId,
     finalizationId: FinalizationId,
     verificationResult: VerificationResult,
   ): Promise<VerificationResultRecord>;
+}
+
+function parseSessionId(value: string): SessionId | undefined {
+  try {
+    return asSessionId(value);
+  } catch {
+    return undefined;
+  }
 }

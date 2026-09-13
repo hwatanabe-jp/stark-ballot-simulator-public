@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
 import {
-  parseFinalizationResultAuthority,
+  admitFinalizationResultAuthority,
   parseVerificationResult,
 } from '@stark-ballot/application/finalize/finalization-storage';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
@@ -29,7 +29,7 @@ describe('AWS finalization metadata admission', () => {
       verificationWorkQueuedAtMs: Date.parse('2026-01-01T00:00:01.000Z'),
     };
 
-    expect(parseFinalizationResultAuthority(authority)).toEqual(authority);
+    expect(admitFinalizationResultAuthority(authority)).toEqual(authority);
     expect(parseAwsVerificationDeliveryMetadata(delivery)).toEqual(delivery);
     expect(authority).not.toHaveProperty('finalizationId');
     expect(authority).not.toHaveProperty('verificationResult');
@@ -53,7 +53,7 @@ describe('AWS finalization metadata admission', () => {
 
   it('rejects raw receipt payloads at the semantic finalization boundary', () => {
     expect(
-      parseFinalizationResultAuthority({
+      admitFinalizationResultAuthority({
         ...buildAuthority(),
         receiptRaw: { private: 'raw-receipt' },
       }),
@@ -70,9 +70,9 @@ describe('AWS finalization metadata admission', () => {
     });
 
     expect(delivery).toBeDefined();
-    expect(parseFinalizationResultAuthority({ ...authority, ...delivery })).toBeUndefined();
+    expect(admitFinalizationResultAuthority({ ...authority, ...delivery })).toBeUndefined();
     expect(parseVerificationResult({ ...verificationResult, ...delivery })).toBeUndefined();
-    expect(parseFinalizationResultAuthority(authority)).toEqual(authority);
+    expect(admitFinalizationResultAuthority(authority)).toEqual(authority);
     expect(parseVerificationResult(verificationResult)).toEqual(verificationResult);
   });
 
@@ -147,7 +147,7 @@ describe('AWS finalization metadata admission', () => {
 
     expect(verificationResult).toEqual({ status: 'failed' });
     expect(authority).not.toHaveProperty('verificationResult');
-    expect(parseFinalizationResultAuthority(authority)).toEqual(authority);
+    expect(admitFinalizationResultAuthority(authority)).toEqual(authority);
   });
 
   it('admits empty optional delivery metadata without undefined own properties', () => {

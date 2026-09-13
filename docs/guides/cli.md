@@ -17,6 +17,9 @@ When this guide and implementation disagree, current code wins. Check these file
 - `package.json` for wired commands.
 - `scripts/tests/cli-e2e-voting-flow.ts` for CLI flags, server startup, ImageID resolution, bundle
   selection, and report persistence.
+- `scripts/tests/lib/cli-run-evidence.ts` and
+  `packages/test-support/src/testing/cli-artifacts.ts` for execution-condition
+  collection and saved run evidence.
 - `packages/test-support/src/testing/cli-voting-flow-helpers.ts` and `packages/test-support/src/testing/*` for CLI assertions and helper
   behavior.
 - `apps/api/src/server/api/handlers/verificationBundles.ts` for authenticated bundle/report delivery.
@@ -142,13 +145,60 @@ pnpm test:cli:real-prod:s0
   `EXPECTED_IMAGE_ID_VARIANT`. Current methodVersion `14` contains target-account `default` / ARM64
   and local `x86_64` trust material. The package CLI scripts explicitly set `x86_64` for local
   real-zkVM checks; target app handoff helpers use the current `default`
-  mapping and its accepted-release provenance. The selected prover
-  release/app deployment record remains the deploy-time authority for
+  mapping and its accepted-release provenance. The selected Prover release and
+  App acceptance remain the deploy-time authority for
   the digest-pinned prover image plus expected ImageID.
 - Real-mode HTTP waits are long by default. Override with `CLI_HEADERS_TIMEOUT_MS`,
   `CLI_BODY_TIMEOUT_MS`, and `CLI_FINALIZE_TIMEOUT_MS` when debugging infrastructure timeouts.
+  The real finalize wait has a 636-second minimum: 600 seconds for the host,
+  5 seconds for termination, 1 second for forced-exit collection, and 30 seconds
+  for the HTTP response. A shorter explicit value is raised to this floor and
+  both values are recorded; the 900-second default and longer explicit waits
+  remain unchanged. Mock finalize waits retain their shorter configuration.
 - `VERIFIER_SERVICE_BIN` can pin a verifier binary outside the default
   `verifier-service/target/{release,debug}/verifier-service` path.
+
+## Run Evidence and Failures
+
+Once execution begins, the harness captures execution conditions before local
+build/server startup. At run completion or a caught setup/run failure, it
+attempts to save those conditions with results under
+`.tmp/cli-bundles/run-<timestamp>/report.json`. Table and Markdown output also
+produce `report.txt` or `report.md`; JSON output uses `report.json` alone.
+
+The conditions record includes commit, dirty state, tracked
+diff SHA-256, eligible untracked source path/hash pairs, Node/pnpm, OS/architecture,
+profile, selected scenarios, expected ImageID, and requested/effective finalize
+timeout. Real runs additionally record available host/verifier binary hashes and
+local Rust/RISC Zero tool versions. Configured Rayon threads are distinct from
+the unmeasured actual worker count; local metadata does not attest an external server.
+
+Untracked source collection is limited to manifest-owned workspaces and eligible
+regular source files. Secret candidates, symlinks, and sources outside that scope
+are excluded; incomplete source identity and failed metadata lookups are explicit.
+The conditions collector retains no raw diff, environment dump, or process stderr.
+If metadata collection fails, the run continues with the known initial conditions
+and explicit unknown values; that failure does not replace the test outcome.
+
+The saved report separates completed test results from selected scenarios that
+were not run:
+
+- `scenarioExecution` records each selected scenario as `passed`, `failed`, or
+  `not_run`.
+- A caught setup failure sets `runFailure: "setup_failed"`; a caught exception
+  after setup sets `runFailure: "run_interrupted"`. Scenarios without a result
+  are `not_run` with that reason, while existing results remain in the report.
+- An ordinary scenario failure is a failed test result. It does not by itself
+  interrupt the remaining selected scenarios.
+- Failure to admit a finalize timeout retains the selected scenarios and an
+  unknown effective deadline before setup begins.
+
+Report persistence is best effort. A formatting or write failure emits a warning
+and may leave no report or a partial set of files. Early argument/module startup
+failures occur before this execution wrapper. The report is saved before server
+teardown, so a later cleanup failure can make the command fail without changing
+the saved scenario results. On a caught setup/run failure, cleanup is attempted
+while preserving the original error.
 
 ## CLI Request and Authentication Flow
 
@@ -202,11 +252,15 @@ store when applicable, and a test-only `SESSION_CAPABILITY_SECRET` supplied by
 `scripts/tests/.env.test.defaults` when no shell or `.env.local` value exists.
 The harness sets `VERIFIER_PUBLIC_BASE_URL` to the owned server and removes the
 temporary file store during teardown.
+Teardown sends `SIGTERM`, allows seven seconds for the server's bounded host
+shutdown, then escalates to `SIGKILL` and waits at most
+one further second. An unconfirmed server exit is reported as cleanup failure.
 
 ### External server runs
 
 Setting `STARK_BALLOT_CLI_BASE_URL` skips local build and server startup. The
-selected CLI mode then governs only local proof interpretation; it does not
+selected CLI mode governs local proof interpretation and the client-side
+finalization deadline, including the real-proof minimum above. It does not
 reconfigure or attest the external server. That server owns capability-secret
 resolution and must independently prove its runtime profile, proof evidence,
 artifact storage, and expected ImageID. Set `EXPECTED_IMAGE_ID` to the
@@ -223,19 +277,15 @@ export EXPECTED_IMAGE_ID="<deployment-authorized-image-id>"
 pnpm test:cli -- --user-choice A --real-zkvm --zkvm-mode prod --scenario S0
 ```
 
-For longer mock/dev-server sessions, `scripts/tests/setup-cli-test.sh` starts `pnpm dev` in tmux:
+For a long-lived local API server, build the static frontend with the intended
+`VITE_RUNTIME_PROFILE`, configure the matching server `RUNTIME_PROFILE` and local
+capability secret, then run `pnpm start`. Set `STARK_BALLOT_CLI_BASE_URL` to that
+server's URL and choose the matching CLI mode. The harness will reuse the server
+and leave its lifecycle to the operator. The CLI-owned commands above perform
+the local build and server setup automatically.
 
-```bash
-bash scripts/tests/setup-cli-test.sh
-./scripts/tests/teardown-cli-test.sh
-```
-
-Set `STARK_BALLOT_CLI_BASE_URL=http://127.0.0.1:3000` before pointing the
-direct harness at that long-lived server. The helper is a dev-server
-convenience: `pnpm dev` reads local defaults from `.env.local`, and the
-checked-in `.env.local.example` starts a mock local UI. Use the CLI-managed
-`test:cli:real-*` scripts or a separately configured server for genuine
-real-zkVM runs.
+`pnpm dev` and `scripts/tests/setup-cli-test.sh` start the browser mock UI in
+Vite. They do not provide the HTTP Hono API needed by this harness.
 
 ## Bundle and Report Downloads
 
@@ -365,7 +415,6 @@ Verifier-service behavior:
   `verifier-service verify --bundle <zip> --image-id <expected>`.
 - Finalization diagnostics are unclear: run
   `pnpm test:run packages/application/src/finalize/usecases/finalize-session.test.ts packages/application/src/finalize/usecases/finalize-sync.test.ts apps/api/src/server/api/routes/hono.test.ts`.
-  Vitest 4.1 does not support `--runInBand`.
 
 ## Maintenance Policy
 

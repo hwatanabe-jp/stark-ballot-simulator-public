@@ -102,7 +102,7 @@ interface ActiveTargetAwsRuntimeProfile extends TargetAwsRuntimeProfileBase {
   name: 'target-aws-async';
   turnstile:
     | { mode: 'operator-gated'; bypassEligible: false; publicSessionCreate: true }
-    | { mode: 'required'; bypassEligible: false; publicSessionCreate: false };
+    | { mode: 'required'; bypassEligible: false; publicSessionCreate: true };
 }
 
 interface QuiescedTargetAwsRuntimeProfile extends TargetAwsRuntimeProfileBase {
@@ -141,6 +141,7 @@ export const REPLACED_RUNTIME_SELECTOR_NAMES = [
   'VITE_USE_MOCK_API',
   'VITE_TURNSTILE_BYPASS',
   'VITE_SESSION_CREATE_TURNSTILE_REQUIRED',
+  'EXPECTED_IMAGEID_POC',
 ] as const satisfies readonly RuntimeConfigName[];
 
 const TARGET_REQUIRED_ENV_NAMES = [
@@ -594,7 +595,7 @@ function createTargetProfile(
         : {
             mode: 'required',
             bypassEligible: false,
-            publicSessionCreate: false,
+            publicSessionCreate: true,
           },
   };
 }

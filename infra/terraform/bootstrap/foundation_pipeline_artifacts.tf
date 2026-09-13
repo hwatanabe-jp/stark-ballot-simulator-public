@@ -51,6 +51,7 @@ resource "aws_kms_key" "foundation_pipeline_artifacts" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
   depends_on = [
+    terraform_data.bootstrap_apply_authorization_propagation,
     aws_iam_role_policy_attachment.terraform_apply_artifact_management,
     aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_artifacts_management,
     aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_iam_management,
@@ -81,6 +82,7 @@ resource "aws_s3_bucket" "foundation_pipeline_artifacts" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
   depends_on = [
+    terraform_data.bootstrap_apply_authorization_propagation,
     aws_iam_role_policy_attachment.terraform_apply_artifact_management,
     aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_artifacts_management,
     aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_iam_management,
@@ -123,14 +125,16 @@ resource "aws_s3_bucket_lifecycle_configuration" "foundation_pipeline_artifacts"
   bucket = aws_s3_bucket.foundation_pipeline_artifacts[0].id
 
   dynamic "rule" {
-    for_each = {
-      foundation        = "${local.foundation_pipeline_name}/"
-      prover-release    = "${local.prover_release_pipeline_name}/"
-      toolchain-release = "${local.toolchain_release_pipeline_name}/"
-    }
+    # CodePipeline truncates the pipeline directory to 20 characters. These
+    # lanes share that directory; deduplicate it without expiring retained keys.
+    for_each = toset([
+      "${substr(local.foundation_pipeline_name, 0, 20)}/",
+      "${substr(local.prover_release_pipeline_name, 0, 20)}/",
+      "${substr(local.toolchain_release_pipeline_name, 0, 20)}/",
+    ])
 
     content {
-      id     = "expire-${rule.key}-execution-artifacts"
+      id     = "expire-${trimsuffix(rule.value, "/")}-execution-artifacts"
       status = "Enabled"
 
       filter {

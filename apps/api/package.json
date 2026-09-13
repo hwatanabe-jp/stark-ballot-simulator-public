@@ -2,14 +2,14 @@
   "name": "@stark-ballot/api",
   "private": true,
   "type": "module",
-  "scripts": {
-    "lint": "pnpm --dir ../.. exec eslint apps/api",
-    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/api",
-    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
-  },
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server/index.ts"
+  },
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec oxlint apps/api",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/api",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@aws-sdk/client-sfn": "catalog:aws-sdk",
@@ -24,7 +24,7 @@
     "@stark-ballot/validation": "workspace:*",
     "@stark-ballot/verification": "workspace:*",
     "@stark-ballot/zkvm-contract": "workspace:*",
-    "hono": "4.13.1"
+    "hono": "4.13.7"
   },
   "devDependencies": {
     "@aws-sdk/lib-dynamodb": "catalog:aws-sdk",

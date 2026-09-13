@@ -4,6 +4,20 @@ data "aws_iam_policy_document" "foundation_terraform_smoke" {
   source_policy_documents = [data.aws_iam_policy_document.foundation_codebuild_common[0].json]
 
   statement {
+    sid       = "ReadFoundationStateKeyIdentityForSmoke"
+    effect    = "Allow"
+    actions   = ["kms:DescribeKey"]
+    resources = [aws_kms_key.state.arn]
+  }
+
+  statement {
+    sid       = "AssumeFoundationAcceptancePublisher"
+    effect    = "Allow"
+    actions   = ["sts:AssumeRole"]
+    resources = [local.foundation_terraform_acceptance_publisher_role_arn]
+  }
+
+  statement {
     sid       = "ReadFoundationSigningConfigurationForSmoke"
     effect    = "Allow"
     actions   = ["ecr:GetSigningConfiguration"]
@@ -22,44 +36,20 @@ data "aws_iam_policy_document" "foundation_terraform_smoke" {
     effect = "Allow"
     actions = [
       "s3:GetBucketPolicy",
+      "s3:GetBucketVersioning",
       "s3:GetLifecycleConfiguration",
     ]
     resources = [local.foundation_release_manifest_bucket_arn]
   }
 
   statement {
-    sid    = "PublishFoundationAppNetworkingHandoff"
+    sid    = "ReadTerraformAuthorityForSmoke"
     effect = "Allow"
     actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-      "s3:PutObject",
+      "s3:GetBucketPolicy",
+      "s3:GetBucketVersioning",
     ]
-    resources = [local.foundation_app_networking_object_arn]
-  }
-
-  statement {
-    sid       = "ListFoundationAppNetworkingAuthority"
-    effect    = "Allow"
-    actions   = ["s3:ListBucket"]
-    resources = [local.foundation_release_manifest_bucket_arn]
-
-    condition {
-      test     = "StringEqualsIfExists"
-      variable = "s3:prefix"
-      values   = [local.deployment_shared_names.foundationAppNetworkingKey]
-    }
-  }
-
-  statement {
-    sid    = "PublishFoundationImageSigningAuthority"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-      "s3:PutObject",
-    ]
-    resources = [local.foundation_image_signing_authority_objects_arn]
+    resources = [local.terraform_authority_bucket_arn]
   }
 
   statement {

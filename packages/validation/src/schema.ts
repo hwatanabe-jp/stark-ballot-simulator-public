@@ -20,10 +20,6 @@ type RefinementContext = {
   addIssue: (issue: IssueInput) => void;
 };
 
-type BaseDef = {
-  description?: string;
-};
-
 export type SchemaIssue = {
   path: (string | number)[];
   message: string;
@@ -51,10 +47,58 @@ interface SchemaLike<TOutput = unknown> {
   parseInternal(input: unknown, path: (string | number)[]): ParseResult<this[typeof schemaOutput]>;
 }
 
-export type Infer<TSchema extends SchemaTypeAny> = TSchema[typeof schemaOutput];
-export type SchemaTypeAny = Schema<unknown>;
-export type SchemaShape = Record<string, SchemaTypeAny>;
+export type Infer<TSchema extends AnySchema> = TSchema[typeof schemaOutput];
+export type AnySchema = Schema<unknown>;
+export type SchemaShape = Record<string, AnySchema>;
 export type UnknownKeyPolicy = 'strip' | 'strict' | 'passthrough';
+
+type LeafSchemaDescriptorKind = 'NeverSchema' | 'BooleanSchema' | 'UnknownSchema' | 'UndefinedSchema';
+
+export type StringSchemaConstraint =
+  | Readonly<{ kind: 'minLength'; value: number }>
+  | Readonly<{ kind: 'maxLength'; value: number }>
+  | Readonly<{ kind: 'pattern'; source: string; flags: string }>
+  | Readonly<{ kind: 'format'; value: 'uuid' }>;
+
+export type NumberSchemaConstraint =
+  | Readonly<{ kind: 'integer' }>
+  | Readonly<{ kind: 'minimum'; value: number; exclusive: boolean }>
+  | Readonly<{ kind: 'maximum'; value: number; exclusive: boolean }>;
+
+export type ArraySchemaConstraint =
+  | Readonly<{ kind: 'minItems'; value: number }>
+  | Readonly<{ kind: 'maxItems'; value: number }>;
+
+type StringRule = StringSchemaConstraint & Readonly<{ message: string }>;
+type NumberRule = NumberSchemaConstraint & Readonly<{ message: string }>;
+type ArrayRule = (ArraySchemaConstraint | Readonly<{ kind: 'length'; value: number }>) & Readonly<{ message: string }>;
+
+const UUID_PATTERN = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$/;
+
+export type SchemaDescriptor =
+  | Readonly<{ kind: LeafSchemaDescriptorKind }>
+  | Readonly<{ kind: 'StringSchema'; constraints: readonly StringSchemaConstraint[] }>
+  | Readonly<{ kind: 'NumberSchema'; constraints: readonly NumberSchemaConstraint[] }>
+  | Readonly<{ kind: 'LiteralSchema'; value: string | number | boolean | null | undefined }>
+  | Readonly<{ kind: 'EnumSchema'; values: readonly string[] }>
+  | Readonly<{ kind: 'OptionalSchema' | 'NullableSchema'; inner: AnySchema }>
+  | Readonly<{ kind: 'EffectsSchema'; inner: AnySchema; effect: 'refinement' | 'transform' }>
+  | Readonly<{ kind: 'ArraySchema'; item: AnySchema; constraints: readonly ArraySchemaConstraint[] }>
+  | Readonly<{ kind: 'TupleSchema'; items: readonly AnySchema[] }>
+  | Readonly<{
+      kind: 'ObjectSchema';
+      shape: Readonly<Record<string, AnySchema>>;
+      unknownKeys: UnknownKeyPolicy;
+      catchall: AnySchema;
+    }>
+  | Readonly<{ kind: 'UnionSchema'; options: readonly AnySchema[] }>
+  | Readonly<{ kind: 'CustomSchema'; name: string }>;
+
+function freezeConstraints<TConstraint extends Readonly<Record<string, unknown>>>(
+  constraints: readonly TConstraint[],
+): readonly TConstraint[] {
+  return Object.freeze(constraints.map((constraint) => Object.freeze({ ...constraint })));
+}
 
 type Simplify<TValue> = { [TKey in keyof TValue]: TValue[TKey] };
 
@@ -77,7 +121,7 @@ type ExactObjectShapeOutput<TShape extends SchemaShape> = keyof TShape extends n
 type ObjectOutput<
   TShape extends SchemaShape,
   TUnknownKeys extends UnknownKeyPolicy,
-  TCatchall extends SchemaTypeAny,
+  TCatchall extends AnySchema,
 > = TCatchall extends NeverSchema
   ? TUnknownKeys extends 'passthrough'
     ? ObjectShapeOutput<TShape> & Record<string, unknown>
@@ -89,18 +133,9 @@ type ObjectOutput<
 type ExtendedShape<TShape extends SchemaShape, TExtension extends SchemaShape> = Omit<TShape, keyof TExtension> &
   TExtension;
 
-type DefaultOutput<TSchema extends SchemaTypeAny> = Exclude<Infer<TSchema>, undefined>;
-
-type BivariantCallback<TArgs extends unknown[], TResult> = {
-  bivarianceHack(...args: TArgs): TResult;
-}['bivarianceHack'];
-
-type IntersectionOutput<TLeft extends SchemaTypeAny, TRight extends SchemaTypeAny> =
-  Infer<TLeft> extends Record<string, unknown>
-    ? Infer<TRight> extends Record<string, unknown>
-      ? Simplify<Omit<Infer<TLeft>, keyof Infer<TRight>> & Infer<TRight>>
-      : Infer<TRight>
-    : Infer<TRight>;
+type TupleOutput<TItems extends readonly AnySchema[]> = {
+  -readonly [TIndex in keyof TItems]: TItems[TIndex] extends AnySchema ? Infer<TItems[TIndex]> : never;
+};
 
 export class SchemaError extends Error {
   public readonly issues: SchemaIssue[];
@@ -155,35 +190,9 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function isCloneablePlainRecord(value: unknown): value is Record<string, unknown> {
-  if (!isPlainRecord(value)) {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(value) as object | null;
-  return prototype === Object.prototype || prototype === null;
-}
-
-function cloneDefaultValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map((item) => cloneDefaultValue(item));
-  }
-  if (isCloneablePlainRecord(value)) {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneDefaultValue(item)]));
-  }
-  return value;
-}
-
 export abstract class Schema<TOutput = unknown> implements SchemaLike<TOutput> {
   declare public readonly [schemaOutput]: TOutput;
-  public readonly _def: BaseDef;
   public readonly description?: string;
-
-  protected constructor(def: BaseDef = {}) {
-    this._def = def;
-    if (def.description !== undefined) {
-      this.description = def.description;
-    }
-  }
 
   public safeParse(input: unknown): SafeParseResult<TOutput> {
     const result = this.parseInternal(input, []);
@@ -207,10 +216,6 @@ export abstract class Schema<TOutput = unknown> implements SchemaLike<TOutput> {
 
   public nullable(): NullableSchema<this> {
     return new NullableSchema(this);
-  }
-
-  public default(defaultValue: Exclude<TOutput, undefined>): DefaultSchema<Schema<TOutput>> {
-    return new DefaultSchema<Schema<TOutput>>(this, () => defaultValue);
   }
 
   public refine(predicate: (value: TOutput) => boolean, options?: { message?: string }): EffectsSchema<TOutput> {
@@ -241,19 +246,19 @@ export abstract class Schema<TOutput = unknown> implements SchemaLike<TOutput> {
   }
 
   public describe(description: string): this {
-    Object.assign(this._def, { description });
     Object.defineProperty(this, 'description', { value: description, configurable: true });
     return this;
   }
 
-  public and<TRight extends SchemaTypeAny>(right: TRight): IntersectionSchema<this, TRight> {
-    return new IntersectionSchema(this, right);
+  /** Implementation hook for the stable `getSchemaDescriptor` API. */
+  public getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({ kind: 'CustomSchema', name: this.constructor.name || 'Schema' });
   }
 
   public abstract parseInternal(input: unknown, path: (string | number)[]): ParseResult<TOutput>;
 }
 
-function parseWithSchema<TSchema extends SchemaTypeAny>(
+function parseWithSchema<TSchema extends AnySchema>(
   schema: TSchema,
   input: unknown,
   path: (string | number)[],
@@ -269,18 +274,19 @@ export class NeverSchema extends Schema<never> {
   public parseInternal(_input: unknown, path: (string | number)[]): ParseResult<never> {
     return fail('Expected never', path);
   }
+
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({ kind: 'NeverSchema' });
+  }
 }
 
 export class StringSchema extends Schema<string> {
-  private readonly checks: ((value: string, path: (string | number)[]) => ParseFailure | null)[];
+  private readonly rules: readonly StringRule[];
   private readonly requiredError?: string;
 
-  public constructor(
-    checks: ((value: string, path: (string | number)[]) => ParseFailure | null)[] = [],
-    requiredError?: string,
-  ) {
+  public constructor(rules: readonly StringRule[] = [], requiredError?: string) {
     super();
-    this.checks = checks;
+    this.rules = freezeConstraints(rules);
     if (requiredError !== undefined) {
       this.requiredError = requiredError;
     }
@@ -289,9 +295,8 @@ export class StringSchema extends Schema<string> {
   public min(length: number, message?: string): StringSchema {
     return new StringSchema(
       [
-        ...this.checks,
-        (value, path) =>
-          value.length >= length ? null : fail(message ?? `String must contain at least ${length} character(s)`, path),
+        ...this.rules,
+        { kind: 'minLength', value: length, message: message ?? `String must contain at least ${length} character(s)` },
       ],
       this.requiredError,
     );
@@ -300,9 +305,8 @@ export class StringSchema extends Schema<string> {
   public max(length: number, message?: string): StringSchema {
     return new StringSchema(
       [
-        ...this.checks,
-        (value, path) =>
-          value.length <= length ? null : fail(message ?? `String must contain at most ${length} character(s)`, path),
+        ...this.rules,
+        { kind: 'maxLength', value: length, message: message ?? `String must contain at most ${length} character(s)` },
       ],
       this.requiredError,
     );
@@ -310,15 +314,18 @@ export class StringSchema extends Schema<string> {
 
   public regex(pattern: RegExp, message?: string): StringSchema {
     return new StringSchema(
-      [...this.checks, (value, path) => (pattern.test(value) ? null : fail(message ?? 'Invalid string', path))],
+      [
+        ...this.rules,
+        { kind: 'pattern', source: pattern.source, flags: pattern.flags, message: message ?? 'Invalid string' },
+      ],
       this.requiredError,
     );
   }
 
   public uuid(message?: string): StringSchema {
-    return this.regex(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-      message ?? 'Invalid UUID',
+    return new StringSchema(
+      [...this.rules, { kind: 'format', value: 'uuid', message: message ?? 'Invalid UUID' }],
+      this.requiredError,
     );
   }
 
@@ -329,26 +336,47 @@ export class StringSchema extends Schema<string> {
     if (typeof input !== 'string') {
       return fail('Expected string', path);
     }
-    const failures = this.checks
-      .map((check) => check(input, path))
-      .filter((result): result is ParseFailure => result !== null);
-    return failures.length === 0 ? ok(input) : failIssues(mergeIssues(failures));
+    const issues = this.rules
+      .filter((rule) => !matchesStringRule(input, rule))
+      .map((rule) => ({ path, message: rule.message }));
+    return issues.length === 0 ? ok(input) : failIssues(issues);
+  }
+
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    const constraints = this.rules.flatMap(({ message, ...constraint }): StringSchemaConstraint[] => {
+      void message;
+      return constraint.kind === 'format'
+        ? [constraint, { kind: 'pattern', source: UUID_PATTERN.source, flags: UUID_PATTERN.flags }]
+        : [constraint];
+    });
+    return Object.freeze({ kind: 'StringSchema', constraints: freezeConstraints(constraints) });
+  }
+}
+
+function matchesStringRule(value: string, rule: StringRule): boolean {
+  switch (rule.kind) {
+    case 'minLength':
+      return value.length >= rule.value;
+    case 'maxLength':
+      return value.length <= rule.value;
+    case 'pattern':
+      // Each admission starts at index zero, including global and sticky patterns.
+      return new RegExp(rule.source, rule.flags).test(value);
+    case 'format':
+      return UUID_PATTERN.test(value);
   }
 }
 
 export class NumberSchema extends Schema<number> {
-  private readonly checks: ((value: number, path: (string | number)[]) => ParseFailure | null)[];
+  private readonly rules: readonly NumberRule[];
 
-  public constructor(checks: ((value: number, path: (string | number)[]) => ParseFailure | null)[] = []) {
+  public constructor(rules: readonly NumberRule[] = []) {
     super();
-    this.checks = checks;
+    this.rules = freezeConstraints(rules);
   }
 
   public int(message?: string): NumberSchema {
-    return new NumberSchema([
-      ...this.checks,
-      (value, path) => (Number.isInteger(value) ? null : fail(message ?? 'Expected integer', path)),
-    ]);
+    return new NumberSchema([...this.rules, { kind: 'integer', message: message ?? 'Expected integer' }]);
   }
 
   public nonnegative(message?: string): NumberSchema {
@@ -357,24 +385,32 @@ export class NumberSchema extends Schema<number> {
 
   public positive(message?: string): NumberSchema {
     return new NumberSchema([
-      ...this.checks,
-      (value, path) => (value > 0 ? null : fail(message ?? 'Expected positive number', path)),
+      ...this.rules,
+      { kind: 'minimum', value: 0, exclusive: true, message: message ?? 'Expected positive number' },
     ]);
   }
 
   public min(minimum: number, message?: string): NumberSchema {
     return new NumberSchema([
-      ...this.checks,
-      (value, path) =>
-        value >= minimum ? null : fail(message ?? `Number must be greater than or equal to ${minimum}`, path),
+      ...this.rules,
+      {
+        kind: 'minimum',
+        value: minimum,
+        exclusive: false,
+        message: message ?? `Number must be greater than or equal to ${minimum}`,
+      },
     ]);
   }
 
   public max(maximum: number, message?: string): NumberSchema {
     return new NumberSchema([
-      ...this.checks,
-      (value, path) =>
-        value <= maximum ? null : fail(message ?? `Number must be less than or equal to ${maximum}`, path),
+      ...this.rules,
+      {
+        kind: 'maximum',
+        value: maximum,
+        exclusive: false,
+        message: message ?? `Number must be less than or equal to ${maximum}`,
+      },
     ]);
   }
 
@@ -382,10 +418,33 @@ export class NumberSchema extends Schema<number> {
     if (typeof input !== 'number' || !Number.isFinite(input)) {
       return fail('Expected number', path);
     }
-    const failures = this.checks
-      .map((check) => check(input, path))
-      .filter((result): result is ParseFailure => result !== null);
-    return failures.length === 0 ? ok(input) : failIssues(mergeIssues(failures));
+    const issues = this.rules
+      .filter((rule) => !matchesNumberRule(input, rule))
+      .map((rule) => ({ path, message: rule.message }));
+    return issues.length === 0 ? ok(input) : failIssues(issues);
+  }
+
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({
+      kind: 'NumberSchema',
+      constraints: freezeConstraints(
+        this.rules.map(({ message, ...constraint }) => {
+          void message;
+          return constraint;
+        }),
+      ),
+    });
+  }
+}
+
+function matchesNumberRule(value: number, rule: NumberRule): boolean {
+  switch (rule.kind) {
+    case 'integer':
+      return Number.isInteger(value);
+    case 'minimum':
+      return rule.exclusive ? value > rule.value : value >= rule.value;
+    case 'maximum':
+      return rule.exclusive ? value < rule.value : value <= rule.value;
   }
 }
 
@@ -397,6 +456,10 @@ export class BooleanSchema extends Schema<boolean> {
   public parseInternal(input: unknown, path: (string | number)[]): ParseResult<boolean> {
     return typeof input === 'boolean' ? ok(input) : fail('Expected boolean', path);
   }
+
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({ kind: 'BooleanSchema' });
+  }
 }
 
 export class UnknownSchema extends Schema<unknown> {
@@ -407,6 +470,10 @@ export class UnknownSchema extends Schema<unknown> {
   public parseInternal(input: unknown): ParseResult<unknown> {
     return ok(input);
   }
+
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({ kind: 'UnknownSchema' });
+  }
 }
 
 export class UndefinedSchema extends Schema<undefined> {
@@ -416,6 +483,10 @@ export class UndefinedSchema extends Schema<undefined> {
 
   public parseInternal(input: unknown, path: (string | number)[]): ParseResult<undefined> {
     return input === undefined ? ok(undefined) : fail('Expected undefined', path);
+  }
+
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({ kind: 'UndefinedSchema' });
   }
 }
 
@@ -430,14 +501,22 @@ export class LiteralSchema<TValue extends string | number | boolean | null | und
   public parseInternal(input: unknown, path: (string | number)[]): ParseResult<TValue> {
     return input === this.value ? ok(this.value) : fail(`Expected literal ${String(this.value)}`, path);
   }
+
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({ kind: 'LiteralSchema', value: this.value });
+  }
+}
+
+function snapshotTuple<TItems extends readonly unknown[]>(items: TItems): Readonly<TItems> {
+  return Object.freeze([...items]) as Readonly<TItems>;
 }
 
 export class EnumSchema<TValues extends readonly string[]> extends Schema<TValues[number]> {
-  private readonly values: readonly string[];
+  private readonly values: Readonly<TValues>;
 
   public constructor(values: TValues) {
     super();
-    this.values = values;
+    this.values = snapshotTuple(values);
   }
 
   public parseInternal(input: unknown, path: (string | number)[]): ParseResult<TValues[number]> {
@@ -446,119 +525,120 @@ export class EnumSchema<TValues extends readonly string[]> extends Schema<TValue
     }
     return fail(`Expected one of: ${this.values.join(', ')}`, path);
   }
+
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({ kind: 'EnumSchema', values: Object.freeze([...this.values]) });
+  }
 }
 
-export class OptionalSchema<TInner extends SchemaTypeAny = SchemaTypeAny> extends Schema<Infer<TInner> | undefined> {
-  public readonly _def: BaseDef & { innerType: TInner };
+export class OptionalSchema<TInner extends AnySchema = AnySchema> extends Schema<Infer<TInner> | undefined> {
+  private readonly _def: Readonly<{ innerType: TInner }>;
 
   public constructor(innerType: TInner) {
-    super({ innerType } as BaseDef & { innerType: TInner });
-    this._def = { innerType };
+    super();
+    this._def = Object.freeze({ innerType });
   }
 
   public parseInternal(input: unknown, path: (string | number)[]): ParseResult<Infer<TInner> | undefined> {
     return input === undefined ? ok(undefined) : parseWithSchema(this._def.innerType, input, path);
   }
+
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({ kind: 'OptionalSchema', inner: this._def.innerType });
+  }
 }
 
-export class NullableSchema<TInner extends SchemaTypeAny = SchemaTypeAny> extends Schema<Infer<TInner> | null> {
-  public readonly _def: BaseDef & { innerType: TInner };
+export class NullableSchema<TInner extends AnySchema = AnySchema> extends Schema<Infer<TInner> | null> {
+  private readonly _def: Readonly<{ innerType: TInner }>;
 
   public constructor(innerType: TInner) {
-    super({ innerType } as BaseDef & { innerType: TInner });
-    this._def = { innerType };
+    super();
+    this._def = Object.freeze({ innerType });
   }
 
   public parseInternal(input: unknown, path: (string | number)[]): ParseResult<Infer<TInner> | null> {
     return input === null ? ok(null) : parseWithSchema(this._def.innerType, input, path);
   }
-}
 
-export class DefaultSchema<TInner extends SchemaTypeAny = SchemaTypeAny> extends Schema<DefaultOutput<TInner>> {
-  public readonly _def: BaseDef & { innerType: TInner; defaultValue: () => DefaultOutput<TInner> };
-
-  public constructor(innerType: TInner, defaultValue: () => DefaultOutput<TInner>) {
-    super({ innerType, defaultValue } as BaseDef & {
-      innerType: TInner;
-      defaultValue: () => DefaultOutput<TInner>;
-    });
-    this._def = { innerType, defaultValue };
-  }
-
-  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<DefaultOutput<TInner>> {
-    const value = input === undefined ? cloneDefaultValue(this._def.defaultValue()) : input;
-    return parseWithSchema(this._def.innerType, value, path) as ParseResult<DefaultOutput<TInner>>;
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({ kind: 'NullableSchema', inner: this._def.innerType });
   }
 }
 
 type EffectDefinition<TInput, TOutput> =
   | {
-      kind: 'transform';
-      transform: BivariantCallback<[value: TInput], TOutput>;
+      readonly kind: 'transform';
+      readonly transform: (value: TInput) => TOutput;
     }
   | {
-      kind: 'refinement';
-      refine: BivariantCallback<[value: TInput, ctx: RefinementContext], void>;
-      output: BivariantCallback<[value: TInput], TOutput>;
+      readonly kind: 'refinement';
+      readonly refine: (value: TInput, ctx: RefinementContext) => void;
+      readonly output: (value: TInput) => TOutput;
     };
 
 export class EffectsSchema<TOutput = unknown, TInput = TOutput> extends Schema<TOutput> {
-  public readonly _def: BaseDef & { schema: Schema<TInput>; effect: EffectDefinition<TInput, TOutput> };
+  private readonly inner: AnySchema;
+  private readonly effectKind: 'transform' | 'refinement';
+  private readonly parseEffect: (input: unknown, path: (string | number)[]) => ParseResult<TOutput>;
 
-  public constructor(schema: Schema<TInput>, effect: EffectDefinition<TInput, TOutput>) {
-    super({ schema, effect } as BaseDef & {
-      schema: Schema<TInput>;
-      effect: EffectDefinition<TInput, TOutput>;
-    });
-    this._def = { schema, effect };
+  public constructor(schema: Schema<TInput>, effect: EffectDefinition<NoInfer<TInput>, TOutput>) {
+    super();
+    this.inner = schema;
+    this.effectKind = effect.kind;
+    const capturedEffect = Object.freeze({ ...effect });
+    this.parseEffect = (input, path) => {
+      const inner = schema.parseInternal(input, path);
+      if (!inner.success) {
+        return inner;
+      }
+      if (capturedEffect.kind === 'transform') {
+        return ok(capturedEffect.transform(inner.data));
+      }
+      const issues: SchemaIssue[] = [];
+      capturedEffect.refine(inner.data, {
+        path,
+        addIssue: (issue) => {
+          issues.push({ path: issue.path ?? path, message: issue.message });
+        },
+      });
+      return issues.length === 0 ? ok(capturedEffect.output(inner.data)) : failIssues(issues);
+    };
   }
 
   public parseInternal(input: unknown, path: (string | number)[]): ParseResult<TOutput> {
-    const inner = this._def.schema.parseInternal(input, path);
-    if (!inner.success) {
-      return inner;
-    }
-    if (this._def.effect.kind === 'transform') {
-      return ok(this._def.effect.transform(inner.data));
-    }
+    return this.parseEffect(input, path);
+  }
 
-    const issues: SchemaIssue[] = [];
-    this._def.effect.refine(inner.data, {
-      path,
-      addIssue: (issue) => {
-        issues.push({ path: issue.path ?? path, message: issue.message });
-      },
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({
+      kind: 'EffectsSchema',
+      inner: this.inner,
+      effect: this.effectKind,
     });
-    return issues.length === 0 ? ok(this._def.effect.output(inner.data)) : failIssues(issues);
   }
 }
 
-export class ArraySchema<TItem extends SchemaTypeAny = SchemaTypeAny> extends Schema<Infer<TItem>[]> {
-  public readonly _def: BaseDef & { type: TItem };
-  private readonly checks: ((value: unknown[], path: (string | number)[]) => ParseFailure | null)[];
+export class ArraySchema<TItem extends AnySchema = AnySchema> extends Schema<Infer<TItem>[]> {
+  private readonly _def: Readonly<{ type: TItem }>;
+  private readonly rules: readonly ArrayRule[];
 
-  public constructor(
-    type: TItem,
-    checks: ((value: unknown[], path: (string | number)[]) => ParseFailure | null)[] = [],
-  ) {
-    super({ type } as BaseDef & { type: TItem });
-    this._def = { type };
-    this.checks = checks;
+  public constructor(type: TItem, rules: readonly ArrayRule[] = []) {
+    super();
+    this._def = Object.freeze({ type });
+    this.rules = freezeConstraints(rules);
   }
 
   public min(length: number, message?: string): ArraySchema<TItem> {
     return new ArraySchema(this._def.type, [
-      ...this.checks,
-      (value, path) =>
-        value.length >= length ? null : fail(message ?? `Array must contain at least ${length} element(s)`, path),
+      ...this.rules,
+      { kind: 'minItems', value: length, message: message ?? `Array must contain at least ${length} element(s)` },
     ]);
   }
 
   public length(length: number, message?: string): ArraySchema<TItem> {
     return new ArraySchema(this._def.type, [
-      ...this.checks,
-      (value, path) =>
-        value.length === length ? null : fail(message ?? `Array must contain exactly ${length} element(s)`, path),
+      ...this.rules,
+      { kind: 'length', value: length, message: message ?? `Array must contain exactly ${length} element(s)` },
     ]);
   }
 
@@ -567,9 +647,9 @@ export class ArraySchema<TItem extends SchemaTypeAny = SchemaTypeAny> extends Sc
       return fail('Expected array', path);
     }
 
-    const issues = mergeIssues(
-      this.checks.map((check) => check(input, path)).filter((result): result is ParseFailure => result !== null),
-    );
+    const issues = this.rules
+      .filter((rule) => !matchesArrayRule(input, rule))
+      .map((rule) => ({ path, message: rule.message }));
     const parsed: Infer<TItem>[] = [];
     input.forEach((item, index) => {
       const result = parseWithSchema(this._def.type, item, [...path, index]);
@@ -582,28 +662,91 @@ export class ArraySchema<TItem extends SchemaTypeAny = SchemaTypeAny> extends Sc
 
     return issues.length === 0 ? ok(parsed) : failIssues(issues);
   }
+
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    const constraints = this.rules.flatMap(({ message, ...constraint }): ArraySchemaConstraint[] => {
+      void message;
+      return constraint.kind === 'length'
+        ? [
+            { kind: 'minItems', value: constraint.value },
+            { kind: 'maxItems', value: constraint.value },
+          ]
+        : [constraint];
+    });
+    return Object.freeze({
+      kind: 'ArraySchema',
+      item: this._def.type,
+      constraints: freezeConstraints(constraints),
+    });
+  }
+}
+
+function matchesArrayRule(value: readonly unknown[], rule: ArrayRule): boolean {
+  switch (rule.kind) {
+    case 'minItems':
+      return value.length >= rule.value;
+    case 'maxItems':
+      return value.length <= rule.value;
+    case 'length':
+      return value.length === rule.value;
+  }
+}
+
+export class TupleSchema<TItems extends readonly AnySchema[] = readonly AnySchema[]> extends Schema<
+  TupleOutput<TItems>
+> {
+  private readonly _def: Readonly<{ items: Readonly<TItems> }>;
+
+  public constructor(items: TItems) {
+    super();
+    this._def = Object.freeze({ items: snapshotTuple(items) });
+  }
+
+  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<TupleOutput<TItems>> {
+    if (!Array.isArray(input)) {
+      return fail('Expected tuple', path);
+    }
+    if (input.length !== this._def.items.length) {
+      return fail(`Tuple must contain exactly ${this._def.items.length} element(s)`, path);
+    }
+
+    const parsed: unknown[] = [];
+    const issues: SchemaIssue[] = [];
+    this._def.items.forEach((itemSchema, index) => {
+      const result = parseWithSchema(itemSchema, input[index], [...path, index]);
+      if (result.success) {
+        parsed.push(result.data);
+      } else {
+        issues.push(...result.issues);
+      }
+    });
+
+    return issues.length === 0 ? ok(parsed as TupleOutput<TItems>) : failIssues(issues);
+  }
+
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({ kind: 'TupleSchema', items: Object.freeze([...this._def.items]) });
+  }
 }
 
 export class ObjectSchema<
   TShape extends SchemaShape = SchemaShape,
   TUnknownKeys extends UnknownKeyPolicy = UnknownKeyPolicy,
-  TCatchall extends SchemaTypeAny = SchemaTypeAny,
+  TCatchall extends AnySchema = AnySchema,
 > extends Schema<ObjectOutput<TShape, TUnknownKeys, TCatchall>> {
-  public readonly _def: BaseDef & {
-    shape: TShape;
+  private readonly _def: Readonly<{
+    shape: Readonly<TShape>;
     unknownKeys: TUnknownKeys;
     catchall: TCatchall;
-  };
-  public readonly shape: TShape;
+  }>;
 
   public constructor(shape: TShape, unknownKeys: TUnknownKeys, catchall: TCatchall) {
-    super({ shape, unknownKeys, catchall } as BaseDef & {
-      shape: TShape;
-      unknownKeys: TUnknownKeys;
-      catchall: TCatchall;
-    });
-    this.shape = shape;
-    this._def = { shape, unknownKeys, catchall };
+    super();
+    this._def = Object.freeze({ shape: Object.freeze({ ...shape }), unknownKeys, catchall });
+  }
+
+  public get shape(): Readonly<TShape> {
+    return this._def.shape;
   }
 
   public strict(): ObjectSchema<TShape, 'strict', TCatchall> {
@@ -614,7 +757,7 @@ export class ObjectSchema<
     return new ObjectSchema(this.shape, 'passthrough', this._def.catchall);
   }
 
-  public catchall<TNextCatchall extends SchemaTypeAny>(
+  public catchall<TNextCatchall extends AnySchema>(
     schema: TNextCatchall,
   ): ObjectSchema<TShape, TUnknownKeys, TNextCatchall> {
     return new ObjectSchema(this.shape, this._def.unknownKeys, schema);
@@ -671,16 +814,25 @@ export class ObjectSchema<
 
     return issues.length === 0 ? ok(output as ObjectOutput<TShape, TUnknownKeys, TCatchall>) : failIssues(issues);
   }
+
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({
+      kind: 'ObjectSchema',
+      shape: Object.freeze({ ...this.shape }),
+      unknownKeys: this._def.unknownKeys,
+      catchall: this._def.catchall,
+    });
+  }
 }
 
-export class UnionSchema<TOptions extends readonly SchemaTypeAny[] = readonly SchemaTypeAny[]> extends Schema<
+export class UnionSchema<TOptions extends readonly AnySchema[] = readonly AnySchema[]> extends Schema<
   Infer<TOptions[number]>
 > {
-  public readonly _def: BaseDef & { options: TOptions };
+  private readonly _def: Readonly<{ options: Readonly<TOptions> }>;
 
   public constructor(options: TOptions) {
-    super({ options } as BaseDef & { options: TOptions });
-    this._def = { options };
+    super();
+    this._def = Object.freeze({ options: snapshotTuple(options) });
   }
 
   public parseInternal(input: unknown, path: (string | number)[]): ParseResult<Infer<TOptions[number]>> {
@@ -695,41 +847,19 @@ export class UnionSchema<TOptions extends readonly SchemaTypeAny[] = readonly Sc
     const issues = mergeIssues(failures);
     return failIssues(issues.length > 0 ? issues : [{ path, message: 'Invalid union' }]);
   }
+
+  public override getStructuralDescriptor(): SchemaDescriptor {
+    return Object.freeze({ kind: 'UnionSchema', options: Object.freeze([...this._def.options]) });
+  }
 }
 
-export class DiscriminatedUnionSchema<
-  TOptions extends readonly SchemaTypeAny[] = readonly SchemaTypeAny[],
-> extends UnionSchema<TOptions> {}
-
-export class IntersectionSchema<
-  TLeft extends SchemaTypeAny = SchemaTypeAny,
-  TRight extends SchemaTypeAny = SchemaTypeAny,
-> extends Schema<IntersectionOutput<TLeft, TRight>> {
-  public readonly _def: BaseDef & { left: TLeft; right: TRight };
-
-  public constructor(left: TLeft, right: TRight) {
-    super({ left, right } as BaseDef & { left: TLeft; right: TRight });
-    this._def = { left, right };
-  }
-
-  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<IntersectionOutput<TLeft, TRight>> {
-    const left = parseWithSchema(this._def.left, input, path);
-    const right = parseWithSchema(this._def.right, input, path);
-    if (!left.success || !right.success) {
-      const failures: ParseFailure[] = [];
-      if (!left.success) {
-        failures.push(left);
-      }
-      if (!right.success) {
-        failures.push(right);
-      }
-      return failIssues(mergeIssues(failures));
-    }
-    if (isPlainRecord(left.data) && isPlainRecord(right.data)) {
-      return ok({ ...left.data, ...right.data } as IntersectionOutput<TLeft, TRight>);
-    }
-    return ok(right.data as IntersectionOutput<TLeft, TRight>);
-  }
+/**
+ * Return the stable, read-only structural view used by repository tooling.
+ * Admission behavior remains owned by `safeParse`; callbacks and mutable
+ * implementation details are intentionally excluded from this descriptor.
+ */
+export function getSchemaDescriptor(schema: AnySchema): SchemaDescriptor {
+  return schema.getStructuralDescriptor();
 }
 
 function string(options?: { required_error?: string }): StringSchema {
@@ -764,31 +894,25 @@ function object<const TShape extends SchemaShape>(shape: TShape): ObjectSchema<T
   return new ObjectSchema(shape, 'strip', new NeverSchema());
 }
 
-function array<TItem extends SchemaTypeAny>(item: TItem): ArraySchema<TItem> {
+function array<TItem extends AnySchema>(item: TItem): ArraySchema<TItem> {
   return new ArraySchema(item);
 }
 
-function union<const TOptions extends readonly [SchemaTypeAny, SchemaTypeAny, ...SchemaTypeAny[]]>(
+function tuple<const TItems extends readonly AnySchema[]>(items: TItems): TupleSchema<TItems> {
+  return new TupleSchema(items);
+}
+
+function union<const TOptions extends readonly [AnySchema, AnySchema, ...AnySchema[]]>(
   options: TOptions,
 ): UnionSchema<TOptions> {
   return new UnionSchema(options);
 }
 
-function intersection<TLeft extends SchemaTypeAny, TRight extends SchemaTypeAny>(
-  left: TLeft,
-  right: TRight,
-): IntersectionSchema<TLeft, TRight> {
-  return new IntersectionSchema(left, right);
-}
-
 export const s = {
   ArraySchema,
   BooleanSchema,
-  DefaultSchema,
-  DiscriminatedUnionSchema,
   EffectsSchema,
   EnumSchema,
-  IntersectionSchema,
   LiteralSchema,
   NeverSchema,
   NullableSchema,
@@ -796,6 +920,7 @@ export const s = {
   ObjectSchema,
   OptionalSchema,
   StringSchema,
+  TupleSchema,
   Schema,
   UndefinedSchema,
   UnionSchema,
@@ -803,11 +928,11 @@ export const s = {
   array,
   boolean,
   enum: enumSchema,
-  intersection,
   literal,
   number,
   object,
   string,
+  tuple,
   undefined: undefinedSchema,
   union,
   unknown,

@@ -1,6 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 import { PLAYWRIGHT_RUNTIME_PROFILE } from './tests/e2e/runtime-profile';
 
+const E2E_PORT = 3100;
+const E2E_BASE_URL = `http://localhost:${E2E_PORT}`;
+
 if (process.env['FORCE_COLOR'] && process.env['NO_COLOR']) {
   delete process.env['NO_COLOR'];
 }
@@ -18,6 +21,7 @@ if (process.env['FORCE_COLOR'] && process.env['NO_COLOR']) {
  */
 export default defineConfig({
   testDir: './tests/e2e',
+  testIgnore: process.env['PLAYWRIGHT_BENCHMARK'] === '1' ? [] : ['**/voting-performance.spec.ts'],
   /* Run tests in files in parallel */
   fullyParallel: true,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
@@ -35,7 +39,7 @@ export default defineConfig({
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     /* Base URL to use in actions like `await page.goto('/')`. */
-    baseURL: 'http://localhost:3000',
+    baseURL: E2E_BASE_URL,
 
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: 'on-first-retry',
@@ -101,8 +105,9 @@ export default defineConfig({
       ].join(' ');
       return `${profileEnv} pnpm build && ${profileEnv} pnpm start`;
     })(),
-    url: 'http://localhost:3000',
-    reuseExistingServer: !process.env['CI'],
+    env: { PORT: String(E2E_PORT), VERIFIER_PUBLIC_BASE_URL: E2E_BASE_URL },
+    url: E2E_BASE_URL,
+    reuseExistingServer: false,
     stdout: 'ignore', // Changed back to 'ignore' after diagnostics
     stderr: 'pipe',
     timeout: 180 * 1000, // 3 minutes timeout for build + start

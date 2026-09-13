@@ -1,24 +1,13 @@
-import { render, screen } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { LayoutProvider } from './LayoutProvider';
-import { useDockingPanel, useMediaQuery } from '@stark-ballot/web/hooks';
+import { useLanguage } from '@stark-ballot/web/hooks';
+import { useVerificationTab } from '@stark-ballot/web/components/knowledge';
+import { clearKnowledge, VERIFY_BOT_KNOWLEDGE_KEYS, VERIFY_MY_KNOWLEDGE_KEYS } from '@stark-ballot/web/knowledge';
+import { clearSession } from '@stark-ballot/web/session';
 import { useAppPathname } from '@stark-ballot/web/navigation/appNavigation';
 
-let footerHeightOverride: number | null = null;
-
-const createRect = (height: number): DOMRect => {
-  return {
-    height,
-    width: 0,
-    top: 0,
-    left: 0,
-    bottom: height,
-    right: 0,
-    x: 0,
-    y: 0,
-    toJSON: () => ({}),
-  };
-};
+const { push, setActiveTab } = vi.hoisted(() => ({ push: vi.fn(), setActiveTab: vi.fn() }));
 
 vi.mock('@stark-ballot/web/navigation/appNavigation', () => ({
   AppLink: ({ children, href, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => (
@@ -26,11 +15,10 @@ vi.mock('@stark-ballot/web/navigation/appNavigation', () => ({
       {children}
     </a>
   ),
-  useAppRouter: () => ({ push: vi.fn() }),
-  useAppPathname: vi.fn(() => '/'),
+  useAppRouter: () => ({ push }),
+  useAppPathname: vi.fn(),
 }));
 
-// Mock dependencies
 vi.mock('@stark-ballot/web/components/step', () => ({
   StepIndicatorHorizontal: ({ language }: { language: string }) => (
     <div data-testid="step-indicator" data-language={language}>
@@ -40,139 +28,115 @@ vi.mock('@stark-ballot/web/components/step', () => ({
 }));
 
 vi.mock('@stark-ballot/web/components/layout/Header', () => ({
-  Header: ({ showReset = true }: { showReset?: boolean }) => (
+  Header: ({ showReset = true, onReset }: { showReset?: boolean; onReset: () => void }) => (
     <header data-testid="header" data-show-reset={showReset ? 'true' : 'false'}>
-      Header
+      {showReset && <button onClick={onReset}>Reset</button>}
     </header>
   ),
 }));
 
-vi.mock('@stark-ballot/web/components/layout/Footer', async () => {
-  const React = await import('react');
-  const Footer = React.forwardRef<HTMLElement>((_props, ref) => {
-    const setRef = (node: HTMLElement | null) => {
-      const override = footerHeightOverride;
-      if (node && override !== null) {
-        node.getBoundingClientRect = () => createRect(override);
-      }
-      if (typeof ref === 'function') {
-        ref(node);
-      } else if (ref) {
-        ref.current = node;
-      }
-    };
-
-    return (
-      <footer ref={setRef} data-testid="footer">
-        Footer
-      </footer>
-    );
-  });
-  Footer.displayName = 'Footer';
-  return { Footer };
-});
+vi.mock('@stark-ballot/web/components/layout/Footer', () => ({
+  Footer: () => <footer data-testid="footer">Footer</footer>,
+}));
 
 vi.mock('@stark-ballot/web/components/knowledge', () => ({
-  KnowledgePanel: ({ variant }: { variant?: string }) => (
-    <div data-testid="knowledge-panel" data-variant={variant}>
+  KnowledgePanel: ({ filterKeys }: { filterKeys?: readonly string[] }) => (
+    <aside data-testid="knowledge-panel" data-filter-keys={filterKeys?.join(',')}>
       Knowledge Panel
-    </div>
+    </aside>
   ),
   KnowledgeHighlightProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   VerificationTabProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  useVerificationTab: () => ({ activeTab: 'my', setActiveTab: vi.fn() }),
+  useVerificationTab: vi.fn(),
 }));
 
 vi.mock('@stark-ballot/web/knowledge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@stark-ballot/web/knowledge')>();
-
-  return {
-    ...actual,
-    clearKnowledge: vi.fn(),
-  };
+  return { ...actual, clearKnowledge: vi.fn() };
 });
 
-vi.mock('@stark-ballot/web/hooks', () => ({
-  useLanguage: vi.fn(() => ({ language: 'ja', setLanguage: vi.fn(), isLoaded: true })),
-  useMediaQuery: vi.fn(() => false),
-  useDockingPanel: vi.fn(() => ({
-    isDocked: false,
-    dockZoneRef: vi.fn(),
-    panelRef: vi.fn(),
-    isFloating: true,
-    floatingPanelHeight: 0,
-  })),
-}));
+vi.mock('@stark-ballot/web/session', () => ({ clearSession: vi.fn() }));
+vi.mock('@stark-ballot/web/hooks', () => ({ useLanguage: vi.fn() }));
+
+const visibleKeys = () => screen.getByTestId('knowledge-panel').getAttribute('data-filter-keys')?.split(',') ?? [];
 
 describe('LayoutProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    footerHeightOverride = null;
-  });
-
-  it('should render step indicator and children', () => {
-    render(
-      <LayoutProvider>
-        <div>Test Content</div>
-      </LayoutProvider>,
-    );
-
-    expect(screen.getByTestId('step-indicator')).toBeInTheDocument();
-    expect(screen.getByText('Test Content')).toBeInTheDocument();
-  });
-
-  it('should pass language to step indicator', () => {
-    render(
-      <LayoutProvider>
-        <div>Content</div>
-      </LayoutProvider>,
-    );
-
-    const stepIndicator = screen.getByTestId('step-indicator');
-    expect(stepIndicator).toHaveAttribute('data-language', 'ja');
-  });
-
-  it('should have proper layout structure', () => {
-    render(
-      <LayoutProvider>
-        <div>Content</div>
-      </LayoutProvider>,
-    );
-
-    const main = screen.getByRole('main');
-    expect(main).toBeInTheDocument();
-  });
-
-  it('should use bottom sheet variant on mobile', () => {
-    vi.mocked(useMediaQuery).mockReturnValue(true);
     vi.mocked(useAppPathname).mockReturnValue('/vote');
+    vi.mocked(useLanguage).mockReturnValue({ language: 'ja', setLanguage: vi.fn(), isLoaded: true });
+    vi.mocked(useVerificationTab).mockReturnValue({ activeTab: 'my', setActiveTab });
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+  });
 
+  afterEach(() => vi.restoreAllMocks());
+
+  it('passes the active language to the step indicator and document', () => {
+    const originalLang = document.documentElement.lang;
+    vi.mocked(useLanguage).mockReturnValue({ language: 'en', setLanguage: vi.fn(), isLoaded: true });
     render(
       <LayoutProvider>
         <div>Content</div>
       </LayoutProvider>,
     );
 
-    const knowledgePanel = screen.getByTestId('knowledge-panel');
-    expect(knowledgePanel).toHaveAttribute('data-variant', 'bottomSheet');
+    expect(screen.getByTestId('step-indicator')).toHaveAttribute('data-language', 'en');
+    expect(document.documentElement.lang).toBe('en');
+    document.documentElement.lang = originalLang;
   });
 
-  it('adds a mobile footer spacer when the bottom sheet is visible', () => {
-    vi.mocked(useMediaQuery).mockReturnValue(true);
-    vi.mocked(useAppPathname).mockReturnValue('/vote');
-
+  it('places one knowledge panel after page content and before the footer', () => {
     render(
       <LayoutProvider>
         <div>Content</div>
       </LayoutProvider>,
     );
 
-    expect(screen.getByTestId('knowledge-bottom-sheet-spacer')).toBeInTheDocument();
+    const panel = screen.getByTestId('knowledge-panel');
+    const content = screen.getByText('Content');
+    const footer = screen.getByTestId('footer');
+    expect(screen.getAllByTestId('knowledge-panel')).toHaveLength(1);
+    expect(panel.closest('main')).toBe(screen.getByRole('main'));
+    expect(content.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(panel.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('disables reset controls on legal routes', () => {
-    vi.mocked(useAppPathname).mockReturnValue('/terms');
+  it('keeps the knowledge panel mounted when the viewport and active route change', () => {
+    const { rerender } = render(
+      <LayoutProvider>
+        <div>Content</div>
+      </LayoutProvider>,
+    );
+    const panel = screen.getByTestId('knowledge-panel');
 
+    fireEvent.resize(window);
+    vi.mocked(useAppPathname).mockReturnValue('/result');
+    rerender(
+      <LayoutProvider>
+        <div>Result</div>
+      </LayoutProvider>,
+    );
+
+    expect(screen.getByTestId('knowledge-panel')).toBe(panel);
+    expect(visibleKeys()).toContain('tally.counts');
+  });
+
+  it('keeps the home page free of progress and knowledge panels and clears prior knowledge', () => {
+    vi.mocked(useAppPathname).mockReturnValue('/');
+    render(
+      <LayoutProvider>
+        <div>Content</div>
+      </LayoutProvider>,
+    );
+
+    expect(screen.queryByTestId('step-indicator')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('knowledge-panel')).not.toBeInTheDocument();
+    expect(clearKnowledge).toHaveBeenCalledOnce();
+    expect(setActiveTab).toHaveBeenCalledWith('my');
+  });
+
+  it.each(['/privacy', '/terms', '/privacy/details', '/terms/details'])('hides voting controls on %s', (path) => {
+    vi.mocked(useAppPathname).mockReturnValue(path);
     render(
       <LayoutProvider>
         <div>Content</div>
@@ -181,141 +145,75 @@ describe('LayoutProvider', () => {
 
     expect(screen.getByTestId('header')).toHaveAttribute('data-show-reset', 'false');
     expect(screen.queryByTestId('step-indicator')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('knowledge-panel')).not.toBeInTheDocument();
   });
 
-  it('renders a docking sentinel on desktop routes', () => {
-    vi.mocked(useMediaQuery).mockReturnValue(false);
-    vi.mocked(useAppPathname).mockReturnValue('/vote');
-
+  it.each(['/vote', '/aggregate'])('limits %s knowledge to session and vote data', (path) => {
+    vi.mocked(useAppPathname).mockReturnValue(path);
     render(
       <LayoutProvider>
         <div>Content</div>
       </LayoutProvider>,
     );
 
-    expect(screen.getByTestId('knowledge-dock-sentinel')).toBeInTheDocument();
+    expect(visibleKeys()).toEqual(expect.arrayContaining(['electionId', 'user.choice', 'user.commitment']));
+    expect(visibleKeys()).not.toContain('tally.counts');
+    expect(visibleKeys()).not.toContain('user.voteReceipt');
+    expect(visibleKeys()).not.toContain('user.merklePath');
   });
 
-  it('adds spacer equal to floating panel height plus bottom gap on desktop', () => {
-    vi.mocked(useAppPathname).mockReturnValue('/vote');
-    vi.mocked(useMediaQuery).mockReturnValue(false);
-    vi.mocked(useDockingPanel).mockReturnValue({
-      isDocked: false,
-      dockZoneRef: vi.fn(),
-      panelRef: vi.fn(),
-      isFloating: true,
-      floatingPanelHeight: 120,
-    });
-
+  it('adds public result knowledge without verification-only receipts', () => {
+    vi.mocked(useAppPathname).mockReturnValue('/result');
     render(
       <LayoutProvider>
         <div>Content</div>
       </LayoutProvider>,
     );
 
-    const spacer = screen.getByTestId('knowledge-panel-spacer');
-    expect(spacer).toHaveStyle({ height: '208px' });
+    expect(visibleKeys()).toEqual(expect.arrayContaining(['tally.counts', 'proofBundleStatus']));
+    expect(visibleKeys()).not.toContain('user.voteReceipt');
+    expect(visibleKeys()).not.toContain('user.merklePath');
   });
 
-  it('keeps bottom gap spacer when docked to avoid scroll jumps', () => {
-    vi.mocked(useAppPathname).mockReturnValue('/vote');
-    vi.mocked(useMediaQuery).mockReturnValue(false);
-    vi.mocked(useDockingPanel).mockReturnValue({
-      isDocked: true,
-      dockZoneRef: vi.fn(),
-      panelRef: vi.fn(),
-      isFloating: false,
-      floatingPanelHeight: 120,
-    });
-
-    render(
-      <LayoutProvider>
-        <div>Content</div>
-      </LayoutProvider>,
-    );
-
-    const spacer = screen.getByTestId('knowledge-panel-spacer');
-    expect(spacer).toHaveStyle({ height: '88px' });
-  });
-
-  it('keeps floating bottom gap independent of footer height', () => {
-    footerHeightOverride = 200;
-    vi.mocked(useAppPathname).mockReturnValue('/vote');
-    vi.mocked(useMediaQuery).mockReturnValue(false);
-    vi.mocked(useDockingPanel).mockReturnValue({
-      isDocked: false,
-      dockZoneRef: vi.fn(),
-      panelRef: vi.fn(),
-      isFloating: true,
-      floatingPanelHeight: 120,
-    });
-
-    render(
-      <LayoutProvider>
-        <div>Content</div>
-      </LayoutProvider>,
-    );
-
-    const spacer = screen.getByTestId('knowledge-panel-spacer');
-    expect(spacer).toHaveStyle({ height: '208px' });
-  });
-
-  it('should update document language', () => {
-    const originalLang = document.documentElement.lang;
-
-    render(
-      <LayoutProvider>
-        <div>Content</div>
-      </LayoutProvider>,
-    );
-
-    expect(document.documentElement.lang).toBe('ja');
-
-    // Cleanup
-    document.documentElement.lang = originalLang;
-  });
-
-  it('should use wide content width on verify subroutes', () => {
-    vi.mocked(useAppPathname).mockReturnValue('/verify/bot/12');
-
-    render(
-      <LayoutProvider>
-        <div>Content</div>
-      </LayoutProvider>,
-    );
-
-    const main = screen.getByRole('main');
-    expect(main.className).toContain('max-w-4xl');
-  });
-
-  it('should not set up beforeunload listener on mount', () => {
-    const addEventListenerSpy = vi.spyOn(window, 'addEventListener');
-
-    render(
-      <LayoutProvider>
-        <div>Content</div>
-      </LayoutProvider>,
-    );
-
-    expect(addEventListenerSpy).not.toHaveBeenCalledWith('beforeunload', expect.any(Function));
-  });
-
-  it('scrolls to top on route change', () => {
-    const scrollToSpy = vi.fn();
-    Object.defineProperty(window, 'scrollTo', {
-      value: scrollToSpy,
-      writable: true,
-      configurable: true,
-    });
-
-    vi.mocked(useAppPathname).mockReturnValue('/vote');
+  it.each(['/verify', '/verify/details'])('uses the active verification tab visibility on %s', (path) => {
+    vi.mocked(useAppPathname).mockReturnValue(path);
     const { rerender } = render(
       <LayoutProvider>
         <div>Content</div>
       </LayoutProvider>,
     );
+    expect(visibleKeys()).toEqual(VERIFY_MY_KNOWLEDGE_KEYS);
 
-    expect(scrollToSpy).not.toHaveBeenCalled();
+    vi.mocked(useVerificationTab).mockReturnValue({ activeTab: 'bot', setActiveTab });
+    rerender(
+      <LayoutProvider>
+        <div>Content</div>
+      </LayoutProvider>,
+    );
+    expect(visibleKeys()).toEqual(VERIFY_BOT_KNOWLEDGE_KEYS);
+  });
+
+  it('clears session and knowledge before returning home through reset', () => {
+    render(
+      <LayoutProvider>
+        <div>Content</div>
+      </LayoutProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+
+    expect(clearSession).toHaveBeenCalledOnce();
+    expect(clearKnowledge).toHaveBeenCalledOnce();
+    expect(setActiveTab).toHaveBeenCalledWith('my');
+    expect(push).toHaveBeenCalledWith('/');
+  });
+
+  it('scrolls to top on route change', () => {
+    const { rerender } = render(
+      <LayoutProvider>
+        <div>Content</div>
+      </LayoutProvider>,
+    );
+    expect(window.scrollTo).not.toHaveBeenCalled();
 
     vi.mocked(useAppPathname).mockReturnValue('/aggregate');
     rerender(
@@ -323,7 +221,6 @@ describe('LayoutProvider', () => {
         <div>Content</div>
       </LayoutProvider>,
     );
-
-    expect(scrollToSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
+    expect(window.scrollTo).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
   });
 });

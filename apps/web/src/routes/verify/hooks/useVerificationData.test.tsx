@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MutableRefObject } from 'react';
+import type { RefObject } from 'react';
 import type { AvailableVerificationResource } from '@stark-ballot/api-contract/schemas/verification';
 import type { SessionIdentity } from '@stark-ballot/web/session';
 import type { SessionData } from '@stark-ballot/web/session/types';
@@ -125,6 +125,7 @@ function availableResource(): AvailableVerificationResource {
       treeSize: 1,
       excludedSlots: 0,
       sthDigest: HEX_D,
+      seenBitmapRoot: HEX_E,
       includedBitmapRoot: HEX_E,
       inputCommitment: HEX_F,
       seenIndicesCount: 1,
@@ -136,6 +137,7 @@ function availableResource(): AvailableVerificationResource {
         tamperedCount: 0,
       },
       scenarioId: 'S0',
+      tamperDetected: false,
       policy: {
         summary: { status: 'fully_verified', tone: 'verified' },
         stageStatuses: {
@@ -157,7 +159,18 @@ function availableResource(): AvailableVerificationResource {
         missingEvidence: false,
       },
     },
-    verifierResult: { status: 'success', report: { status: 'success' } },
+    verifierResult: {
+      status: 'success',
+      report: {
+        status: 'success',
+        verifier_version: 'test-verifier',
+        verified_at: '2026-08-12T00:00:00.000Z',
+        duration_ms: 1,
+        expected_image_id: HEX_C,
+        receipt_image_id: HEX_C,
+        dev_mode_receipt: false,
+      },
+    },
     verification: {
       checks: VERIFICATION_CHECK_DEFINITIONS.map((definition) => ({
         id: definition.id,
@@ -176,6 +189,7 @@ function availableResource(): AvailableVerificationResource {
         bulletinIndex: 0,
         bulletinRootAtCast: HEX_B,
         castAtMs: 1,
+        inputCommitment: HEX_F,
       },
       userVote: {
         commitment,
@@ -192,7 +206,7 @@ function availableResource(): AvailableVerificationResource {
   };
 }
 
-function identityRef(): MutableRefObject<SessionIdentity | null> {
+function identityRef(): RefObject<SessionIdentity | null> {
   return {
     current: {
       sessionId: 'session-1',

@@ -1,207 +1,98 @@
-# イメージ署名
+# 起動するコンテナを確かめる
 
-AWS Signer でプローバーイメージを managed signing し、App deployment の preflight と ECS 実行前の両方で暗号学的に検証する仕組みを扱う章です。
+STARK レシートを期待する Image ID で検証すれば、計算を行ったゲストプログラムを確かめられます。しかし、その検証は計算の後です。未承認のコンテナが先に起動し、入力や実行権限へ触れてしまうことは防げません。
 
-STARK 証明は「特定のゲストプログラムが正しく実行された」ことを保証します。
-ただし、そのゲストプログラムを含むコンテナイメージ自体が改ざんされていないことも確認する必要があります。
-イメージ署名は、期待する signing profile と trust root で検証できる digest 固定のプローバーイメージだけを証明生成に使うためのセキュリティゲートです。
-
-## 脅威モデル
-
-署名なしの場合、未承認イメージへの差し替えは検証段階の Image ID 照合や STARK レシート検証で拒否され得ます。
-しかし、証明生成インフラ上で未承認イメージが実行されること自体は起動前に止められません。
-現在の App は、選択された digest 固定のプローバーイメージに対して、normal App lane の preflight と Step Functions の実行前 gate で同じ暗号学的 verifier contract を適用します。
-
-イメージ署名は、STARK 証明が紐づく Image ID（ゲストバイナリの暗号的識別子）とは別レイヤの防御です（両者の関係は [Image ID との関係](#image-id-との関係) を参照）。
-
-| 保証の種類                   | メカニズム                                         | 検出対象                                                    |
-| ---------------------------- | -------------------------------------------------- | ----------------------------------------------------------- |
-| ゲストプログラムの同一性     | Image ID（RISC Zero）                              | STARK レシートが示すゲストバイナリと期待値の不一致          |
-| プローバーイメージの署名検証 | Notation + AWS Signer plugin + strict trust policy | 期待する signing profile / trust root で検証できない digest |
-| 署名処理の readiness         | ECR managed-signing status                         | 署名の欠落、失敗、処理中、予期しない profile                |
-
-> **ステータス確認と暗号学的検証の違い**
-> `DescribeImageSigningStatus` は expected profile の readiness を確認する前段です。
-> App による受理には、packaged Notation と AWS Signer plugin が strict trust policy の下で返す暗号学的検証成功も必要です。
-
-## 責務境界、ビルドと署名、実行時ゲート
-
-### 責務境界
-
-イメージ署名では、プローバーコンテナのビルド、ECR 上の digest、AWS Signer の readiness、暗号学的 verifier、Image ID、runtime 設定を別々の責務として扱います。
-公開仕様では、個別の承認手順や内部証跡ではなく、どの情報がどの境界で使われるかを説明します。
-
-| 領域                     | 責務                                                                                                                 |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| Foundation               | Prover / Toolchain repository の保持と、Prover repository 限定の Signer profile / ECR registry signing configuration |
-| Toolchain release        | digest 固定 image、scan、provenance（署名・暗号学的署名検証なし）                                                    |
-| Prover candidate build   | digest 固定 URI、Image ID / `methodVersion` の push 前後一致、scan `PASS`、managed-signing readiness の確認          |
-| Prover release authority | 承認済み candidate の immutable prover release record 保存と、CAS で更新する accepted prover pointer による選択      |
-| App verifier preflight   | immutable verifier version の `preflight` alias による、選択した Prover digest の暗号学的検証                        |
-| App deployment selection | accepted pointer chain / preflight evidence の検証と、digest 固定 URI・expected Image ID・verifier authority の固定  |
-| Rejected selection paths | managed release lane 外の直接の CodeBuild output、`latest.json`、legacy SSM current pointer は選択に使用しない       |
-| App runtime              | digest 固定 Prover image の `runtime` alias による実行前の再検証                                                     |
-| verifier-service / UI    | STARK レシートの Image ID と公開 trust material の照合、fail-closed な結果表示                                       |
-
-表の各領域について、次の条件が成り立ちます。
-
-- Prover candidate build は、metadata を出力する前に対象 profile の managed-signing readiness が `COMPLETE` か確認しますが、release lane の semantic image record に署名検証結果を埋め込みません。
-- Rejected selection paths は候補 lookup にも target topology の release authority にも使いません。
-- 暗号学的検証は Toolchain / Prover release lane ではなく、App verifier preflight と App runtime の 2 境界で行います。App runtime が再検証するのは、app deployment record に結び付く digest 固定 Prover image です。
-- App deployment selection では、normal deployment の app deployment record が preflight の immutable evidence と verifier authority を保持します。rollback は新しい verifier を変更せず、選択した accepted deployment に保持された cryptographic authority を再検証して再利用します。
-- Candidate metadata、release record、pointer、preflight evidence、app deployment record は public proof bundle の構成要素ではありません（公開検証での最終的な authority は [Image ID との関係](#image-id-との関係)）。
-
-### ビルドと署名の概念
-
-プローバーイメージのビルドでは、ARM64 用のコンテナを作成し、guest Image ID と `methodVersion` を抽出します。
-イメージを ECR に push して digest 固定 URI を解決した後、その digest を pull し直して Image ID と `methodVersion` を再抽出し、push 前後の一致を確認します。
-候補は ECR scan が `PASS`、対象 digest の ECR managed signing status が `COMPLETE` になるまで fail-closed です。
-candidate metadata は digest 固定 URI、scan 結果、Image ID / `methodVersion`、ソース識別子、digest 固定 Toolchain authority を記録します。
-`COMPLETE` は metadata 作成の前提ですが、`signingStatus` フィールドとして semantic record に持ち越しません。
-ECR managed signing の authority は、foundation Terraform が Signer profile と registry signing configuration として管理します。
-registry signing configuration の対象は Prover repository のみです。
-
-```mermaid
-sequenceDiagram
-  participant BUILD as Image build
-  participant ECR as ECR
-  participant SGN as AWS Signer
-  participant EVID as Candidate metadata
-  participant APR as Promotion approval
-  participant AUTH as Immutable release authority
-  participant PREFLIGHT as App preflight verifier
-  participant APP as App deployment record
-  participant RUN as App runtime
-  participant ECS as ECS prover task
-
-  BUILD->>BUILD: ARM64 prover image build
-  BUILD->>BUILD: push 前 Image ID / methodVersion 抽出
-  BUILD->>ECR: イメージを push
-  ECR-->>BUILD: digest を解決
-  ECR->>SGN: ECR managed signing
-  SGN->>ECR: 署名ステータス更新
-  BUILD->>ECR: digest を pull / scan と signing status を参照
-  BUILD->>BUILD: Image ID / methodVersion の push 前後一致を確認
-  ECR-->>BUILD: scan PASS / signing COMPLETE
-  BUILD->>EVID: digest / scan / Image ID / provenance を保存
-  EVID->>APR: candidate metadata をレビュー
-  APR->>AUTH: immutable prover release record を作成
-  AUTH->>AUTH: accepted pointer を CAS promotion
-  AUTH->>PREFLIGHT: accepted digest を選択
-  PREFLIGHT->>ECR: status / expected profile を bounded check
-  PREFLIGHT->>PREFLIGHT: Notation strict verification
-  PREFLIGHT-->>APP: VERIFIED cryptographic evidence
-  APP->>APP: pointer chain / Image ID / verifier authority を固定
-  APP->>RUN: digest 固定 URI / runtime verifier authority
-  RUN->>ECR: status / expected profile を bounded check
-  RUN->>RUN: Notation strict verification
-  RUN->>ECS: VERIFIED の場合だけ起動
-```
-
-Build/push で運用上のタグを使う場合でも、App preflight と runtime の検証対象は常に digest 固定です（[ダイジェスト固定](#ダイジェスト固定)）。
-
-### App preflight と実行前確認
-
-App-owned の `image-signature-verifier` Lambda は、checksum 固定の Notation、AWS Signer plugin、ECR credential helper、trust root を同じ ZIP に含めます。
-normal App deployment は verifier-only plan をレビューして immutable Lambda version と `preflight` alias を用意し、その alias が選択した Prover digest を検証してから app deployment record を生成します。
-
-runtime では、Step Functions ステートマシンの最初のステートが同じ immutable version に結び付く `runtime` alias を呼びます。
-`VerifyImageSignature` から semaphore 取得、ECS 起動までの state machine 上の流れは [非同期プローバー](async-prover.md) を参照してください。
-
-`image-signature-verifier` は以下の処理を fail-closed に行います。
-
-1. 呼び出しの account、region、repository、digest、image URI、signing profile が互いに整合することを確認する
-2. ECR の `DescribeImageSigningStatus` を bounded retry / timeout で呼び、期待する profile が一意かつ `COMPLETE` であることを確認する
-3. packaged asset の allowlist、type、size、mode、checksum と、deployment が期待する asset manifest / trust root を検証する
-4. 対象 repository と signing profile に限定した strict trust policy を一時 workspace に作る
-5. `notation verify <digest-pinned-image-uri>` を bounded process として実行する
-6. 成功時は `result = VERIFIED`、`mode = cryptographic`、verifier version、trust-policy hash だけを caller に返す。失敗時は bounded reason code で拒否する
-
-Step Functions は `result = VERIFIED` と `mode = cryptographic` の両方がある場合だけ semaphore 取得へ進みます。
-readiness、asset authority、trust policy、Notation、timeout、Lambda invocation のいずれかが失敗した場合は署名ゲート失敗を通知します。
-ECS タスクは起動されません。
-
-## ECR リポジトリと digest 固定
-
-### リポジトリ構成
-
-| リポジトリ種別                 | 用途                                      | signing / verification contract                                        |
-| ------------------------------ | ----------------------------------------- | ---------------------------------------------------------------------- |
-| Prover image repository        | ECS Fargate で実行するプローバーイメージ  | ECR managed signing + App preflight/runtime cryptographic verification |
-| RISC Zero Toolchain repository | プローバーイメージの base Toolchain image | 署名なし。digest-bound scan / provenance のみ                          |
-
-ECR repository は app runtime の前提リソースです。
-app root は repository を作成したり image publication を所有したりせず、digest 固定の prover image URI を入力として消費します。
-
-### ダイジェスト固定
-
-Terraform の prover image URI 変数には、digest 固定 URI のみが許可されます。
-バリデーションルールにより `@sha256:<64-hex>` 形式が強制されます。
-Build/push では運用上のタグを使う場合がありますが、App preflight と runtime が参照する `prover_image_uri`、readiness 確認、Notation 検証の対象は常に digest 固定であり、タグの上書きによるイメージのすり替えを防止します。
-ベースとなる RISC Zero Toolchain image も digest 固定で扱い、プローバーイメージの provenance と metadata の整合性を保ちますが、Toolchain image 自体は signing 対象ではありません。
-
-Step Functions の定義に含まれるイメージダイジェストは、Terraform の変数から以下のように抽出されます。
-
-- **リポジトリ名**: URI の `@` より前の部分からレジストリホストを除去
-- **ダイジェスト**: URI の `@` より後の部分（`sha256:...`）
-
-この分解により、`image-signature-verifier` Lambda は正確な registry、repository、digest、signing profile の組み合わせで readiness と暗号学的署名を検証できます。
+そこで AWS では、起動するプローバーコンテナ自体にも署名を要求します。承認された内容のダイジェストを選び、期待する署名者で検証できることを、アプリへの採用前と証明生成の直前に確かめます。
 
 ## Image ID との関係
 
-イメージ署名と [Image ID](../zkvm/image-id.md) は異なるレイヤのセキュリティメカニズムです。
-両者は共に「正しいプログラムが実行されたこと」の信頼チェーンを構成します。
+二つの「イメージ」は対象が異なります。
+
+| 識別するもの | 確認方法                                                       | 答えられる問い                                                   |
+| ------------ | -------------------------------------------------------------- | ---------------------------------------------------------------- |
+| コンテナ全体 | ECR の内容ダイジェストと、Notation / AWS Signer による署名検証 | 期待する署名者で検証できるコンテナを選び、起動しようとしているか |
+| zkVM ゲスト  | 期待する Image ID を指定した STARK レシート検証                | 期待するゲストがこの計算を行ったか                               |
 
 ```mermaid
-flowchart TD
-  subgraph "ビルド時"
-    BUILD["コンテナイメージ<br/>ビルド"] --> SIGN["ECR managed signing<br/>(運用設定)"]
-    BUILD --> IMGID["push 前後の ARM64 Image ID /<br/>methodVersion 一致と scan PASS"]
-    SIGN -->|COMPLETE| READY["managed-signing<br/>readiness gate"]
-    IMGID --> META["digest 固定<br/>candidate metadata"]
-    READY --> APR["promotion approval"]
-    META --> APR
-    APR --> RECORD["immutable prover<br/>release record"]
-    RECORD --> POINTER["CAS accepted pointer"]
-    POINTER --> PREFLIGHT["App preflight<br/>Notation strict verification"]
-    PREFLIGHT --> DEPLOY["app deployment record"]
-  end
-
-  subgraph "実行時"
-    URI["digest 固定<br/>prover image URI"] --> VERIFY_SIG
-    VERIFY_SIG["暗号学的イメージ署名検証<br/>(runtime alias)"] --> RUN["プローバー実行"]
-    RUN --> RECEIPT["レシート生成<br/>(Image ID を含む)"]
-  end
-
-  subgraph "検証時"
-    MAP["imageId-mapping.json<br/>expected Image ID"]
-    RECEIPT --> VERIFY_RECEIPT["レシート検証<br/>(verifier-service)"]
-    MAP --> VERIFY_RECEIPT
-    VERIFY_RECEIPT --> MATCH{"Image ID<br/>一致?"}
-  end
-
-  DEPLOY --> URI
-  DEPLOY -. "expected Image ID / methodVersion" .-> MAP
+flowchart TB
+  C["コンテナの署名を確認"] --> P["プローバーを起動"]
+  P --> R["STARKレシート"]
+  I["期待するImage ID"] --> V["レシートを検証"]
+  R --> V
 ```
 
-Candidate metadata から承認済み release record、accepted pointer、preflight evidence、app deployment record までの chain が、digest 固定 URI と Image ID / `methodVersion` の対応関係を保持します。
-公開検証で「正しいゲストが実行された」と判断する authority は、STARK レシート検証と expected Image ID の照合です。
-イメージ署名はその前段で、期待する signing identity で暗号学的に検証できないコンテナイメージを App が選択または実行しないための deployment/runtime gate として機能します。
+コンテナの署名が正しくても、得票表示や投票の包含まで正しいとは言えません。公開検証でゲストの同一性を判断する根拠は、[期待する Image ID](../zkvm/image-id.md)と STARK レシート検証です。さらに総合判定には他の必須チェックも必要です。
 
-| 検証ポイント              | タイミング             | 検証主体                           | 失敗時の動作                    |
-| ------------------------- | ---------------------- | ---------------------------------- | ------------------------------- |
-| managed-signing readiness | Prover candidate build | CodeBuild + ECR                    | candidate metadata を出力しない |
-| cryptographic signature   | normal App deployment  | App preflight verifier alias       | App lane を継続しない           |
-| cryptographic signature   | 証明生成直前           | Step Functions + runtime alias     | ECS タスクの起動拒否            |
-| STARK receipt / Image ID  | 公開検証時             | verifier-service / verification UI | 検証失敗の報告                  |
+この署名方式は AWS Signer のプロファイル、ECR の署名設定、検証ツールと信頼ルート、デプロイ権限の分離を信頼します。第三者がコンテナの再現可能ビルドを独立に証明する仕組みではありません。署名の事前確認や採用記録は運用側の記録で、公開証拠 ZIP には入りません。
 
-## PoC としての境界
+## ダイジェスト固定
 
-この gate は、AWS Signer profile、ECR signing configuration、App pipeline の権限分離、checksum 固定の verifier assets、保持された deployment authority を信頼します。
-コンテナの再現可能ビルドを第三者が独立に証明する仕組みでも、Toolchain image を署名する仕組みでもありません。
-また、public proof bundle に image-signature preflight evidence を追加するものではありません。
+タグは別のイメージへ付け替えられます。そこで、アプリが使う `prover_image_uri` は `@sha256:<64-hex>` で終わる URI に限定します。ビルドや push でタグを使っても、事前確認と実行時確認は常にこの内容ダイジェストを対象にします。
 
-この構成は教育用 PoC の defense in depth です。
-本番の投票システムに必要な supply-chain governance、鍵運用、独立監査、incident response を満たすという主張ではありません。
+ベースとなる RISC Zero Toolchain もダイジェストで固定します。ただし、署名の扱いは二つのリポジトリで異なります。
 
-<!-- source: buildspec.yml, infra/image-signature-verifier/asset-manifest.json, infra/image-signature-verifier/verifier.mjs, infra/lambdas/image-signature-verifier/index.mjs, infra/terraform/bootstrap/app_pipeline_codepipeline.tf, infra/terraform/bootstrap/app-signature-preflight-scripts/invoke-preflight.mjs, infra/terraform/foundation/ecr_signing.tf, infra/terraform/foundation/locals.tf, infra/terraform/app/image_signature_verifier.tf, infra/terraform/app/step_functions.tf, scripts/__tests__/bootstrap-terraform-policy.release-signature-verification.test.ts -->
+| リポジトリ | 採用時の根拠                                                                                         |
+| ---------- | ---------------------------------------------------------------------------------------------------- |
+| Prover     | ダイジェスト、スキャン、生成元の記録、署名処理完了。アプリ採用前と実行前に暗号学的署名検証を追加する |
+| Toolchain  | ダイジェストに結び付くスキャンと生成元の記録。署名と暗号学的署名検証は行わない                       |
+
+Foundation が両リポジトリを管理し、Signer プロファイルと ECR managed signing の対象は Prover に限定します。App はリポジトリやイメージを作らず、採用済みのダイジェスト固定 URI を受け取ります。
+
+## ビルドと署名の概念
+
+新しいプローバー候補は ARM64 用にビルドします。まず Image ID と `methodVersion` を取り出し、ECR へ push した後、そのダイジェストを指定して pull し直します。再取得したコンテナから同じ二値を取り出して比較し、手元で確認したものと登録したものの一致を確かめます。
+
+候補のメタデータを出す前に、ECR scan が `PASS`、期待する署名プロファイルの managed-signing status が `COMPLETE` であることを要求します。記録にはコンテナのダイジェスト、スキャン、Image ID / `methodVersion`、ソース、固定した Toolchain の参照、`managedSigningStatus: COMPLETE` を結び付けます。
+
+ここで `COMPLETE` が示すのは署名処理の完了です。実際の署名を信頼ポリシーに照らして検証できたことは、まだ示していません。暗号学的検証は後述の App 事前確認と実行前確認で行います。
+
+候補を作る承認と、その候補を採用する承認は別です。候補・リリースの記録は内容のハッシュを含むキーで保存し、採用先を指すポインターにはリリース記録のキーだけを置きます。ポインターは初回作成または比較してからの条件付き更新で進め、別の更新を上書きしません。
+
+```mermaid
+flowchart TB
+  B["候補作成の承認"] --> C["ビルドと候補検査"]
+  C --> R["候補記録を保存"]
+  R --> A["採用の承認"]
+  A --> P["リリース記録と採用先を更新"]
+```
+
+保持済み候補を選ぶ `existing` でも、この二つの承認を分けます。入力は内容ハッシュで特定する候補キー一つだけです。Toolchain との結び付き、ECR 上のダイジェスト、HIGH / CRITICAL の検出が0件であること、署名処理完了を改めて確認します。この経路の候補確認は読み取りのみで、ビルド、push、スキャン・署名要求、候補の書き換え、ECR の変更は行いません。
+
+<a id="app-preflight-と実行前確認"></a>
+
+## App の変更前と起動前に確認する
+
+通常の App デプロイは、呼び出し元が先に固定した対象環境について、現在の Foundation と Toolchain / Prover の採用先を一度だけ解決します。Foundation の構成契約と選択ソースが一致し、Prover の記録が要求するゲスト契約と対応することを確認した選択を、後続処理へ引き継ぎます。
+
+事前確認の `image-signature-verifier` Lambda には、チェックサムで固定した Notation、AWS Signer plugin、ECR credential helper、信頼ルートを同じ ZIP に同梱します。verifier 専用の Terraform 計画を承認・適用し、変更不能な Lambda バージョンと `preflight` alias を用意して、選択した Prover を検証します。
+
+成功した事前確認の記録、対象ダイジェスト、期待する Image ID、使った verifier は、その App 実行の固定入力になります。適用後の確認も成功したとき、これらを[App の受入記録](terraform.md#acceptance-evidence)に保持します。
+
+main の初回構築では、まず verifier とその依存資源だけを作り、別の実行で初回 App の事前確認と配備へ進みます。それぞれの保存済み計画に承認が必要です。受入記録がないことを理由に自動で初期化はせず、[初回構築の経路](terraform.md#initial-app-acceptance)を明示的に選びます。
+
+実際の証明生成では、Step Functions の最初の処理が同じ変更不能バージョンに結び付く `runtime` alias を呼びます。デプロイ時の成功結果をそのまま流用せず、起動直前に署名を再検証します。
+
+### 検証する順序
+
+verifier は次の六段階を実行します。
+
+1. アカウント、リージョン、リポジトリ、ダイジェスト、URI、署名プロファイルの整合を確認する。
+2. `DescribeImageSigningStatus` を時間と回数を制限して呼び、期待するプロファイルが一意で `COMPLETE` であることを確認する。
+3. 同梱ファイルの許可一覧、種類、サイズ、モード、チェックサムを確認し、期待する資産マニフェストと信頼ルートに照合する。
+4. 対象リポジトリと署名プロファイルに限った strict trust policy を一時作業領域に作る。
+5. `notation verify <digest-pinned-image-uri>` を、実行時間を制限して呼び出す。
+6. 成功時は `result = VERIFIED`、`mode = cryptographic`、verifier version、trust-policy hash を返す。失敗は定義済みの理由コードへ絞って返す。
+
+Step Functions が次へ進むのは `VERIFIED` と `cryptographic` の両方があるときだけです。署名の準備不足、資産やポリシーの不一致、Notation の失敗、時間切れ、Lambda 呼び出し失敗では、同時実行枠の取得も ECS 起動も行いません。
+
+### 検証器自体の取り違えを防ぐ
+
+デプロイ時には Lambda のコードハッシュと、設定を正規化して計算したハッシュを必ず照合します。AWS の COPY モードの応答がネイティブの `ConfigSha256` や `ResolvedS3Object` を省略した場合は `null` のまま保持し、値を補作しません。AWS が返した場合はそのハッシュや S3 座標も照合します。部分的に壊れた S3 座標は拒否し、期限付きのダウンロードURL `Code.Location` は保持しません。
+
+VPC を使わない関数では、VPC 設定全体の省略、または VPC ID が空・セキュリティグループが空・IPv6 dual stack が明示的に false の場合に限る subnet ID の省略を、VPC なしの設定として正規化します。それ以外の不完全な応答を VPC なしと推定しません。
+
+保持したバージョン、またはそれより古い稼働中 alias が指すバージョンを起点に、後続の変更不能バージョンを漏れなく列挙・検証します。その範囲の、実行許可に関わる設定を正規化して比較します。古い未選択の設定を現在の期待値にはしません。期待する ZIP の S3 bucket / key / VersionId は Terraform state と App 受入記録に保持された値を使います。
+
+rollback は、新しいリリースや verifier を選ぶ操作ではありません。到達可能な App 履歴から選んだ受入記録に保持されたイメージと verifier の根拠を再検証して使い、現在のリリースポインターの解決や verifier の事前変更は行いません。
+
+<!-- source: buildspec.yml, packages/deployment-authority/src/release-ledger.js, infra/terraform/bootstrap/foundation-pipeline-scripts/prover-release-ledger-adapter.mjs, infra/image-signature-verifier/verifier.mjs, infra/image-signature-verifier/asset-manifest.json, infra/lambdas/image-signature-verifier/index.mjs, infra/terraform/bootstrap/app-signature-preflight-scripts, infra/terraform/foundation/ecr_signing.tf, infra/terraform/app/image_signature_verifier.tf, infra/terraform/app/step_functions.tf -->

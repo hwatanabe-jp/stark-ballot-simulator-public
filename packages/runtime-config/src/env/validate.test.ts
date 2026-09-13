@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { validateEnv as validateResolvedEnv } from '@stark-ballot/runtime-config/env/validate';
 import { RuntimeConfigValidationError } from '@stark-ballot/runtime-config/env/configValidationError';
 import { resolveRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
-import { localRuntimeProfile, targetRuntimeProfile, targetRuntimeProfileEnv } from './__tests__/runtimeProfileFixtures';
+import {
+  localRuntimeProfile,
+  targetRuntimeProfile,
+  targetRuntimeProfileEnv,
+} from './test-support/runtimeProfileFixtures';
 
 const originalEnv = { ...process.env };
 const VALID_SESSION_CAPABILITY_SECRET = 'prod-session-capability-secret-0123456789abcdef';

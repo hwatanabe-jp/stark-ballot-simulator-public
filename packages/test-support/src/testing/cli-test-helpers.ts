@@ -9,6 +9,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 
 import { createZkVMExecutor, type ZkVMProofProfile } from '@stark-ballot/node-adapters/zkvm/executor-factory';
+import { HOST_RESPONSE_TIMEOUT_MS } from '@stark-ballot/node-adapters/zkvm/executor';
 import { verifyCTMerkleInclusion } from '@stark-ballot/verification/merkle';
 import type { ZkVMInput, ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
@@ -42,9 +43,9 @@ import {
 import type {
   AvailableVerificationResource,
   CurrentZkVMJournal as ContractCurrentZkVMJournal,
-  PublicVerificationReport,
 } from '@stark-ballot/api-contract/schemas/verification';
 import { VerificationResourceResponseSchema } from '@stark-ballot/api-contract/schemas/verification';
+import type { PublicVerificationReport } from '@stark-ballot/verification/public-result';
 import { fetchCurrentFinalization, CurrentFinalizationError } from './finalization-status-client';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
@@ -75,13 +76,18 @@ try {
   // setGlobalDispatcher can only be called once per process; ignore if already set.
 }
 
-function getFinalizeTimeoutMs(proofProfile?: ZkVMProofProfile): number {
+export function getFinalizeTimeoutMs(proofProfile?: ZkVMProofProfile): number {
   const explicit = Number(process.env['CLI_FINALIZE_TIMEOUT_MS']);
-  if (Number.isFinite(explicit) && explicit > 0) {
-    return explicit;
+  const timeout =
+    Number.isFinite(explicit) && explicit > 0
+      ? explicit
+      : proofProfile?.executor === 'mock'
+        ? 2 * 60 * 1000
+        : 15 * 60 * 1000;
+  if (!Number.isSafeInteger(timeout) || timeout > 2_147_483_647) {
+    throw new Error('CLI_FINALIZE_TIMEOUT_MS must be a positive bounded integer.');
   }
-
-  return proofProfile?.executor === 'mock' ? 2 * 60 * 1000 : 15 * 60 * 1000;
+  return proofProfile?.executor === 'risc0' ? Math.max(timeout, HOST_RESPONSE_TIMEOUT_MS) : timeout;
 }
 
 const POLL_MIN_DELAY_MS = 750;
@@ -416,16 +422,18 @@ function deriveCliVerificationPresentationPolicy(
 }
 
 function projectVerificationChecks(resource: AvailableVerificationResource): VerificationCheck[] {
-  return resource.verification.checks.map((check) => ({
-    id: check.id,
-    status: check.status,
-    evidence: check.evidence,
-    inputs: [...check.inputs],
-    ...omitUndefinedProperties({
-      noteKey: check.noteKey,
-      derivedFrom: check.derivedFrom,
-    }),
-  }));
+  return resource.verification.checks.map((check): VerificationCheck => {
+    const base = {
+      id: check.id,
+      evidence: check.evidence,
+      inputs: [...check.inputs],
+      ...omitUndefinedProperties({ derivedFrom: check.derivedFrom }),
+    };
+    if ((check.status === 'failed' || check.status === 'not_run') && 'noteKey' in check) {
+      return { ...base, status: check.status, noteKey: check.noteKey };
+    }
+    return { ...base, status: check.status };
+  });
 }
 
 function projectVerificationSteps(
@@ -465,10 +473,14 @@ function projectVerificationResource(resource: AvailableVerificationResource): F
             merklePath: [...voterEvidence.userVote.proof.merklePath],
           },
         }
-      : {
-          commitment: voterEvidence.userVote.commitment,
-          ...omitUndefinedProperties({ voteId: voterEvidence.userVote.voteId }),
-        };
+      : voterEvidence.reason === 'exact_proof_unavailable'
+        ? {
+            commitment: voterEvidence.userVote.commitment,
+            voteId: voterEvidence.userVote.voteId,
+          }
+        : {
+            commitment: voterEvidence.userVote.commitment,
+          };
 
   return omitUndefinedProperties({
     finalizationId: resource.finalizationId,
@@ -479,17 +491,17 @@ function projectVerificationResource(resource: AvailableVerificationResource): F
       counts: { ...presentation.tally.counts },
       bulletinRoot: proof.bulletinRoot,
       totalVotes: presentation.tally.totalVotes,
-      tamperedCount: presentation.tally.tamperedCount ?? 0,
+      tamperedCount: presentation.tally.tamperedCount,
     },
     result: {
       counts: { ...presentation.tally.counts },
       bulletinRoot: proof.bulletinRoot,
       totalVotes: presentation.tally.totalVotes,
-      tamperedCount: presentation.tally.tamperedCount ?? 0,
+      tamperedCount: presentation.tally.tamperedCount,
     },
     bulletinRoot: proof.bulletinRoot,
     totalVotes: presentation.tally.totalVotes,
-    tamperedCount: presentation.tally.tamperedCount ?? 0,
+    tamperedCount: presentation.tally.tamperedCount,
     totalExpected: proof.totalExpected,
     treeSize: proof.treeSize,
     userVote,
@@ -505,10 +517,12 @@ function projectVerificationResource(resource: AvailableVerificationResource): F
     verificationSteps: projectVerificationSteps(resource, policy),
     verificationChecks,
     verificationReport: verifierReport
-      ? {
-          ...verifierReport,
-          ...omitUndefinedProperties({ errors: verifierReport.errors ? [...verifierReport.errors] : undefined }),
-        }
+      ? verifierReport.status === 'success'
+        ? { ...verifierReport }
+        : {
+            ...verifierReport,
+            ...omitUndefinedProperties({ errors: verifierReport.errors ? [...verifierReport.errors] : undefined }),
+          }
       : undefined,
     presentationPolicy: policy,
     missingSlots: proof.missingSlots,
@@ -691,7 +705,7 @@ export class CLITestHelpers {
     });
 
     if (!response.ok) {
-      let errorPayload: unknown = null;
+      let errorPayload: unknown;
       try {
         errorPayload = await response.json();
       } catch {
@@ -777,7 +791,7 @@ export class CLITestHelpers {
     });
 
     if (!response.ok) {
-      let errorPayload: unknown = null;
+      let errorPayload: unknown;
       try {
         errorPayload = await response.json();
       } catch {
@@ -849,7 +863,7 @@ export class CLITestHelpers {
             console.log(`[CLITest] Bot voting progress: ${botCount}/${BOT_COUNT}`);
           }
         } else {
-          let errorPayload: unknown = null;
+          let errorPayload: unknown;
           try {
             errorPayload = await response.json();
           } catch {
@@ -876,8 +890,17 @@ export class CLITestHelpers {
    */
   async finalizeWithScenarios(sessionId: string, scenarioId: string): Promise<FinalizeWithScenariosResult> {
     const timeoutMs = getFinalizeTimeoutMs(this.proofProfile);
+    const requestedTimeoutMs = Number(process.env['CLI_FINALIZE_TIMEOUT_MS']);
+    if (Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 && requestedTimeoutMs < timeoutMs) {
+      console.log(
+        `[CLI] Finalize HTTP timeout: ${timeoutMs}ms (requested ${requestedTimeoutMs}ms; includes host shutdown and response time)`,
+      );
+    }
     const controller = new AbortController();
-    const timeout = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    const timeout = setTimeout(
+      () => controller.abort(new Error(`Finalization HTTP deadline exceeded (${timeoutMs}ms)`)),
+      timeoutMs,
+    );
     const baseUrl = this.requireBaseUrl();
 
     try {
@@ -967,9 +990,7 @@ export class CLITestHelpers {
         },
       };
     } finally {
-      if (timeout) {
-        clearTimeout(timeout);
-      }
+      clearTimeout(timeout);
     }
   }
 
@@ -1225,7 +1246,6 @@ export class CLITestHelpers {
         (await resolveExpectedImageId(undefined, {
           ...omitUndefinedProperties({ explicitImageId: process.env['EXPECTED_IMAGE_ID'] }),
           ...omitUndefinedProperties({
-            legacyExpectedImageIdPoc: process.env['EXPECTED_IMAGEID_POC'],
             variant: process.env['EXPECTED_IMAGE_ID_VARIANT'],
           }),
           loadImageIdMapping: loadPublicImageIdMapping,
@@ -1429,7 +1449,7 @@ export class CLITestHelpers {
       report += `## Results\n\n`;
 
       for (const result of results) {
-        const status = result.passed ? '✅' : '❌';
+        const status = result.passed ? 'PASS' : 'FAIL';
         report += `### ${status} ${result.name}\n\n`;
         report += `- Duration: ${(result.duration / 1000).toFixed(2)}s\n`;
 
@@ -1502,7 +1522,7 @@ export class CLITestHelpers {
     report += '─────────────────────────────────────────\n';
 
     for (const result of results) {
-      const status = result.passed ? '✅' : '❌';
+      const status = result.passed ? 'PASS' : 'FAIL';
       report += `${status} ${result.name}\n`;
       report += `   Duration: ${(result.duration / 1000).toFixed(2)}s\n`;
 

@@ -2,7 +2,6 @@ import {
   ECR_SUBJECT_RETENTION_COUNTS,
   planEcrSubjectRetention,
   type EcrRetentionRepositoryPlan,
-  type EcrRetentionRepositorySnapshot,
   type EcrSubjectRetentionPlan,
 } from '@stark-ballot/deployment-authority/ecr-retention';
 import {
@@ -14,11 +13,6 @@ import {
 
 type RepositoryKind = 'prover' | 'toolchain';
 type ActivityKind = 'codeBuild' | 'codePipeline' | 'ecs' | 'stepFunctions';
-
-export interface EcrRetentionObservation {
-  authoritySnapshotSha256: string;
-  repositories: Readonly<Record<RepositoryKind, EcrRetentionRepositorySnapshot>>;
-}
 
 export interface EcrRetentionDeleteRequest {
   readonly repositoryKind: RepositoryKind;
@@ -58,23 +52,18 @@ export interface EcrRetentionConfig {
   readonly expectedRegion: string;
   readonly expectedScheduleArn: string;
   readonly retainedSubjectCount: number;
-  readonly targetKey: 'stark-dev/develop';
+  readonly targetKey: ReturnType<typeof resolveAllowedDeploymentTarget>['targetKey'];
   readonly repositories: Readonly<Record<RepositoryKind, string>>;
 }
 
 export type EcrRetentionDisposition =
-  'blocked' | 'delete-failed' | 'delete-unverified' | 'deleted' | 'no-change' | 'skipped-active' | 'skipped-changed';
-
-export type EcrRetentionRuntimeBlocker =
-  | 'BATCH_DELETE_FAILED'
-  | 'CALLER_IDENTITY_FAILED'
-  | 'CALLER_IDENTITY_MISMATCH'
-  | 'INVOCATION_AUTHORITY_MISMATCH'
-  | 'MUTATION_REVALIDATION_CHANGED'
-  | 'OBSERVATION_FAILED'
-  | 'POST_DELETE_READ_FAILED'
-  | 'POST_DELETE_REQUIRED_PRESENT_MISSING'
-  | 'POST_DELETE_TARGET_PRESENT';
+  | 'blocked'
+  | 'delete-failed'
+  | 'delete-unverified'
+  | 'deleted'
+  | 'no-change'
+  | 'skipped-active'
+  | 'skipped-changed';
 
 export interface EcrRetentionRepositoryEvidence {
   readonly repositoryName: string;
@@ -89,7 +78,7 @@ export interface EcrRetentionRepositoryEvidence {
 
 export interface EcrRetentionEvidence {
   readonly evidenceType: 'ecr-subject-retention';
-  readonly targetKey: 'stark-dev/develop';
+  readonly targetKey: EcrRetentionConfig['targetKey'];
   readonly reportOnly: false;
   readonly disposition: EcrRetentionDisposition;
   readonly blockers: readonly string[];
@@ -153,10 +142,7 @@ function parseConfig(value: unknown): EcrRetentionConfig {
   ) {
     throw new Error('ECR retention config must use the exact current shape.');
   }
-  if (value['targetKey'] !== 'stark-dev/develop') {
-    throw new Error('ECR retention runtime is allowed only for stark-dev/develop.');
-  }
-  const target = resolveAllowedDeploymentTarget('stark-dev/develop');
+  const target = resolveAllowedDeploymentTarget(requireString(value['targetKey'], 'targetKey', /^.+$/u));
   const foundation = resolveDeploymentLaneAuthority(target, 'foundation');
   const repositories = value['repositories'];
   if (!isRecord(repositories) || !hasExactKeys(repositories, REPOSITORY_KINDS)) {
@@ -172,21 +158,27 @@ function parseConfig(value: unknown): EcrRetentionConfig {
   if (
     expectedAccountId !== target.accountId ||
     expectedRegion !== target.region ||
-    !expectedScheduleArn.startsWith(`arn:aws:events:${target.region}:${target.accountId}:rule/`) ||
+    expectedScheduleArn !==
+      `arn:aws:events:${target.region}:${target.accountId}:rule/${foundation.names.ecrRetentionSchedule}` ||
     repositories['prover'] !== foundation.names.proverRepository ||
     repositories['toolchain'] !== foundation.names.toolchainRepository
   ) {
-    throw new Error('ECR retention config does not match stark-dev/develop authority.');
+    throw new Error('ECR retention config does not match the reviewed target authority.');
   }
-  if (value['retainedSubjectCount'] !== ECR_SUBJECT_RETENTION_COUNTS.develop) {
-    throw new Error('retainedSubjectCount must match the reviewed develop retention policy.');
+  const environment = target.environmentId;
+  if (environment !== 'develop' && environment !== 'main') {
+    throw new Error('ECR retention target has no reviewed retention policy.');
+  }
+  const retainedSubjectCount = ECR_SUBJECT_RETENTION_COUNTS[environment];
+  if (value['retainedSubjectCount'] !== retainedSubjectCount) {
+    throw new Error('retainedSubjectCount must match the reviewed target retention policy.');
   }
   return deepFreeze({
     expectedAccountId,
     expectedRegion,
     expectedScheduleArn,
-    retainedSubjectCount: ECR_SUBJECT_RETENTION_COUNTS.develop,
-    targetKey: 'stark-dev/develop',
+    retainedSubjectCount,
+    targetKey: target.targetKey,
     repositories: {
       prover: foundation.names.proverRepository,
       toolchain: foundation.names.toolchainRepository,
@@ -229,7 +221,7 @@ function parseObservation(
   }
   const authoritySnapshotSha256 = parseSha256(value['authoritySnapshotSha256'], 'ECR authority snapshot SHA-256');
   const plan = planEcrSubjectRetention({
-    environmentId: 'develop',
+    environmentId: resolveAllowedDeploymentTarget(config.targetKey).environmentId,
     repositories: value['repositories'],
   });
   if (
@@ -281,7 +273,7 @@ function evidence(options: {
   const { config, observation } = options;
   return deepFreeze({
     evidenceType: 'ecr-subject-retention',
-    targetKey: 'stark-dev/develop',
+    targetKey: config.targetKey,
     reportOnly: false,
     disposition: options.disposition,
     blockers: [...(options.blockers ?? [])],

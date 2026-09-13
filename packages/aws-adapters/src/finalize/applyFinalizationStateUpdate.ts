@@ -11,6 +11,7 @@ import {
   type AwsFinalizationStateUpdateRuntimeMetadata,
 } from '@stark-ballot/aws-adapters/finalize/finalizationStateUpdateAdmission';
 import type { AwsFinalizationRuntimeTransitionStore } from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 
 function withAwsRuntimeMetadata<TPayload extends object>(
   payload: TPayload,
@@ -28,7 +29,7 @@ function withAwsRuntimeMetadata<TPayload extends object>(
 
 async function loadAppliedFinalizationRecord(
   store: FinalizationLifecycleStore,
-  sessionId: string,
+  sessionId: SessionId,
   state: FinalizationState,
 ): Promise<FinalizationRecord> {
   const record = await store.getFinalizationRecord(sessionId, state.finalizationId);

@@ -25,12 +25,14 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const VALID_RECEIPT = join(scriptDirectory, '../../zkvm/test-data/test-fixture-valid-receipt.json');
 const TAMPERED_RECEIPT = join(scriptDirectory, '../../zkvm/test-data/test-fixture-tampered-stark-receipt.json');
 
-enum TamperType {
-  SINGLE_BIT_FLIP = 'SINGLE_BIT_FLIP', // Flip 1 bit (minimal change)
-  SINGLE_VALUE_CHANGE = 'SINGLE_VALUE_CHANGE', // Change 1 array element
-  MULTIPLE_VALUES = 'MULTIPLE_VALUES', // Change multiple elements
-  ZERO_OUT_RANGE = 'ZERO_OUT_RANGE', // Zero out a range
-}
+const TamperType = {
+  SINGLE_BIT_FLIP: 'SINGLE_BIT_FLIP', // Flip 1 bit (minimal change)
+  SINGLE_VALUE_CHANGE: 'SINGLE_VALUE_CHANGE', // Change 1 array element
+  MULTIPLE_VALUES: 'MULTIPLE_VALUES', // Change multiple elements
+  ZERO_OUT_RANGE: 'ZERO_OUT_RANGE', // Zero out a range
+} as const;
+
+type TamperType = (typeof TamperType)[keyof typeof TamperType];
 
 interface Receipt {
   receipt: {

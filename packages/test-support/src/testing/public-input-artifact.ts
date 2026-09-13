@@ -1,4 +1,8 @@
-import type { SupportedPublicInputArtifact } from '@stark-ballot/verification/public-input';
+import {
+  PUBLIC_INPUT_SCHEMA,
+  PUBLIC_INPUT_VERSION,
+  type SupportedPublicInputArtifact,
+} from '@stark-ballot/verification/public-input';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
 
 export interface TestPublicInputArtifactOptions {
@@ -15,8 +19,8 @@ export function createTestPublicInputArtifact(
 
   return {
     format: {
-      schema: 'stark-ballot.public_input',
-      version: '1.1',
+      schema: PUBLIC_INPUT_SCHEMA,
+      version: PUBLIC_INPUT_VERSION,
     },
     provenance: {
       source,

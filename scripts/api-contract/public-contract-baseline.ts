@@ -1,3 +1,4 @@
+import { isNode, isReexport, isStringLiteral, parseSource, staticText } from '../source-analysis/source';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
@@ -5,10 +6,10 @@ import { mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { format as formatWithPrettier, resolveConfig as resolvePrettierConfig } from 'prettier';
-import ts from 'typescript';
+import { formatSource } from '../formatting/format-source';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
 import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sessionCapabilityToken';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
 import { createVerificationBundleArchive } from '@stark-ballot/node-adapters/verification-bundle';
 import { resolveRuntimeProfile, type ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
@@ -37,8 +38,10 @@ import {
 } from './lib/public-contract-capture-policy';
 import {
   comparePublicContractSnapshots,
+  parseDriftClassification,
+  parsePublicContractSnapshot,
+  parseSchemaSemanticSnapshot,
   stableStringify,
-  type DriftClassification,
   type MountedBehaviorMode,
   type MountedBehaviorProbe,
   type MountedBehaviorProbeSnapshot,
@@ -57,6 +60,70 @@ import {
 interface MaterializedSourceRef {
   repoRoot: string;
   tempRoot: string;
+}
+
+function requireJsonRecord(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function parseJsonRecord(source: string, label: string): Record<string, unknown> {
+  const input: unknown = JSON.parse(source);
+  return requireJsonRecord(input, label);
+}
+
+function parseIsolatedRouteContracts(value: unknown): BaselineApiRouteContract[] {
+  if (!Array.isArray(value)) {
+    throw new Error('isolated route contracts must be an array');
+  }
+  for (const [index, entry] of value.entries()) {
+    const route = requireJsonRecord(entry, `isolated route contract[${index}]`);
+    for (const key of ['routeId', 'method', 'path'] as const) {
+      if (typeof route[key] !== 'string' || route[key].length === 0) {
+        throw new Error(`isolated route contract[${index}].${key} must be a nonempty string`);
+      }
+    }
+  }
+  return value as BaselineApiRouteContract[];
+}
+
+function parseIsolatedMountedRoutes(value: unknown): TypedMountedRoute[] {
+  if (!Array.isArray(value)) {
+    throw new Error('isolated mounted routes must be an array');
+  }
+  return value.map((entry, index) => {
+    const route = requireJsonRecord(entry, `isolated mounted route[${index}]`);
+    const read = (key: keyof TypedMountedRoute): string => {
+      const candidate = route[key];
+      if (typeof candidate !== 'string' || candidate.length === 0) {
+        throw new Error(`isolated mounted route[${index}].${key} must be a nonempty string`);
+      }
+      return candidate;
+    };
+    return {
+      routeId: read('routeId'),
+      method: read('method'),
+      path: read('path'),
+      kind: read('kind'),
+      lifecycle: read('lifecycle'),
+    };
+  });
+}
+
+function parseMountedBehaviorSnapshots(value: unknown): MountedBehaviorProbeSnapshot[] {
+  if (!Array.isArray(value)) {
+    throw new Error('isolated mounted behavior snapshots must be an array');
+  }
+  for (const [index, entry] of value.entries()) {
+    const snapshot = requireJsonRecord(entry, `isolated mounted behavior snapshot[${index}]`);
+    if (typeof snapshot['probeId'] !== 'string' || !Number.isInteger(snapshot['status'])) {
+      throw new Error(`isolated mounted behavior snapshot[${index}] is invalid`);
+    }
+    requireJsonRecord(snapshot['body'], `isolated mounted behavior snapshot[${index}].body`);
+  }
+  return value as MountedBehaviorProbeSnapshot[];
 }
 
 function runGit(args: string[], cwd = process.cwd()): string {
@@ -122,9 +189,10 @@ async function linkCurrentDependencies(repoRoot: string): Promise<void> {
       if (!existsSync(manifestPath)) {
         continue;
       }
-      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { name?: unknown };
-      if (typeof manifest.name === 'string' && manifest.name.startsWith('@stark-ballot/')) {
-        await symlink(packageDir, path.join(starkBallotScope, manifest.name.slice('@stark-ballot/'.length)));
+      const manifest = parseJsonRecord(await readFile(manifestPath, 'utf8'), `package manifest ${manifestPath}`);
+      const packageName = manifest['name'];
+      if (typeof packageName === 'string' && packageName.startsWith('@stark-ballot/')) {
+        await symlink(packageDir, path.join(starkBallotScope, packageName.slice('@stark-ballot/'.length)));
       }
     }
   }
@@ -139,11 +207,12 @@ async function linkCurrentDependencies(repoRoot: string): Promise<void> {
       if (!existsSync(manifestPath)) {
         continue;
       }
-      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { name?: unknown };
-      if (typeof manifest.name !== 'string' || !manifest.name.startsWith('@stark-ballot/')) {
+      const manifest = parseJsonRecord(await readFile(manifestPath, 'utf8'), `package manifest ${manifestPath}`);
+      const packageName = manifest['name'];
+      if (typeof packageName !== 'string' || !packageName.startsWith('@stark-ballot/')) {
         continue;
       }
-      const linkPath = path.join(starkBallotScope, manifest.name.slice('@stark-ballot/'.length));
+      const linkPath = path.join(starkBallotScope, packageName.slice('@stark-ballot/'.length));
       if (!existsSync(linkPath)) {
         await symlink(packageDir, linkPath);
       }
@@ -181,7 +250,7 @@ async function materializeSourceRefFromRoot(sourceRepoRoot: string, sourceRef: s
   return { repoRoot, tempRoot };
 }
 
-function runSourceRootJson<T>(repoRoot: string, script: string): T {
+function runSourceRootJson(repoRoot: string, script: string): unknown {
   const marker = '__PUBLIC_CONTRACT_BASELINE_JSON__';
   const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script], {
     cwd: repoRoot,
@@ -199,7 +268,7 @@ function runSourceRootJson<T>(repoRoot: string, script: string): T {
   if (!payloadLine) {
     throw new Error(`source-root module evaluation did not emit ${marker}`);
   }
-  return JSON.parse(payloadLine.slice(marker.length)) as T;
+  return JSON.parse(payloadLine.slice(marker.length)) as unknown;
 }
 
 async function importRouteContracts(repoRoot: string, isolatedSourceRoot = false): Promise<BaselineApiRouteContract[]> {
@@ -207,9 +276,10 @@ async function importRouteContracts(repoRoot: string, isolatedSourceRoot = false
   let routeContracts: readonly BaselineApiRouteContract[];
 
   if (isolatedSourceRoot) {
-    routeContracts = runSourceRootJson<readonly BaselineApiRouteContract[]>(
-      repoRoot,
-      `
+    routeContracts = parseIsolatedRouteContracts(
+      runSourceRootJson(
+        repoRoot,
+        `
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 const routeModule = await import(pathToFileURL(path.join(process.cwd(), 'packages/api-contract/src/routes/index.ts')).href);
@@ -217,6 +287,7 @@ const projectionModule = await import(pathToFileURL(path.join(process.cwd(), 'sc
 const projected = projectionModule.projectTypedRoutesForBaseline(routeModule.TARGET_API_ROUTE_CONTRACTS);
 console.log('__PUBLIC_CONTRACT_BASELINE_JSON__' + JSON.stringify(projected));
 `,
+      ),
     );
   } else {
     const routeModule = (await import(pathToFileURL(typedModulePath).href)) as {
@@ -237,9 +308,10 @@ async function importTypedRouteRegistrations(
   let mountedRoutes: TypedMountedRoute[];
 
   if (isolatedSourceRoot) {
-    mountedRoutes = runSourceRootJson<TypedMountedRoute[]>(
-      repoRoot,
-      `
+    mountedRoutes = parseIsolatedMountedRoutes(
+      runSourceRootJson(
+        repoRoot,
+        `
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 const routeModule = await import(pathToFileURL(path.join(process.cwd(), 'packages/api-contract/src/routes/index.ts')).href);
@@ -257,6 +329,7 @@ const mountedRoutes = routeKeys.map((key) => {
 });
 console.log('__PUBLIC_CONTRACT_BASELINE_JSON__' + JSON.stringify(mountedRoutes));
 `,
+      ),
     );
   } else {
     const routeModule = (await import(
@@ -319,7 +392,9 @@ export async function captureMountedBehaviorForSourceRoot(repoRoot: string): Pro
     TRUSTED_PROXY: process.env['TRUSTED_PROXY'],
     VERIFIER_WORK_DIR: process.env['VERIFIER_WORK_DIR'],
   };
-  const globalStore = globalThis as typeof globalThis & { __globalStoreInstance?: unknown };
+  const globalStore = globalThis as typeof globalThis & {
+    __globalStoreInstance?: unknown;
+  };
   const previousStore = globalStore.__globalStoreInstance;
 
   try {
@@ -347,11 +422,15 @@ export async function captureMountedBehaviorForSourceRoot(repoRoot: string): Pro
         request: (
           input: string,
           init?: RequestInit,
-          env?: { requestContext: { requestId: string } },
+          env?: {
+            requestContext: {
+              requestId: string;
+            };
+          },
         ) => Promise<Response>;
       };
     };
-    const capability = createSessionCapabilityToken({ sessionId }, capabilitySecret);
+    const capability = createSessionCapabilityToken({ sessionId: asSessionId(sessionId) }, capabilitySecret);
     const pathCapabilityHeaders = {
       [SESSION_CAPABILITY_HEADER]: capability,
     };
@@ -430,13 +509,15 @@ export async function captureMountedBehaviorForSourceRoot(repoRoot: string): Pro
 
 function captureMountedBehavior(repoRoot: string): MountedBehaviorProbeSnapshot[] {
   const moduleUrl = pathToFileURL(new URL(import.meta.url).pathname).href;
-  return runSourceRootJson<MountedBehaviorProbeSnapshot[]>(
-    repoRoot,
-    `
+  return parseMountedBehaviorSnapshots(
+    runSourceRootJson(
+      repoRoot,
+      `
 import { captureMountedBehaviorForSourceRoot } from ${JSON.stringify(moduleUrl)};
 const result = await captureMountedBehaviorForSourceRoot(process.cwd());
 console.log('__PUBLIC_CONTRACT_BASELINE_JSON__' + JSON.stringify(result));
 `,
+    ),
   );
 }
 
@@ -450,18 +531,14 @@ async function readSchemaSourceModules(repoRoot: string): Promise<Map<string, Sc
       continue;
     }
     const source = await readFile(currentPath, 'utf8');
-    const sourceFile = ts.createSourceFile(currentPath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const sourceFile = parseSource(currentPath, source);
     modules.set(currentPath, { source, sourceFile });
 
-    for (const statement of sourceFile.statements) {
-      if (
-        !ts.isExportDeclaration(statement) ||
-        !statement.moduleSpecifier ||
-        !ts.isStringLiteral(statement.moduleSpecifier)
-      ) {
+    for (const statement of sourceFile.body) {
+      if (!isReexport(statement) || !statement.source || !isStringLiteral(statement.source)) {
         continue;
       }
-      const resolved = resolveSchemaAuthorityImport(repoRoot, currentPath, statement.moduleSpecifier.text);
+      const resolved = resolveSchemaAuthorityImport(repoRoot, currentPath, staticText(statement.source));
       if (resolved && !modules.has(resolved)) {
         pending.push(resolved);
       }
@@ -492,13 +569,16 @@ async function readSchemaSemantics(repoRoot: string, isolatedSourceRoot: boolean
     return captureSchemaSemanticsForSourceRoot(repoRoot);
   }
   const moduleUrl = pathToFileURL(new URL(import.meta.url).pathname).href;
-  return runSourceRootJson<SchemaSemanticSnapshot>(
-    repoRoot,
-    `
+  return parseSchemaSemanticSnapshot(
+    runSourceRootJson(
+      repoRoot,
+      `
 import { captureSchemaSemanticsForSourceRoot } from ${JSON.stringify(moduleUrl)};
 const result = await captureSchemaSemanticsForSourceRoot(process.cwd());
 console.log('__PUBLIC_CONTRACT_BASELINE_JSON__' + JSON.stringify(result));
 `,
+    ),
+    'isolated schema semantic snapshot',
   );
 }
 
@@ -507,11 +587,12 @@ function resolveWorkspacePackageExport(packageDir: string, subpath: string | und
   if (!existsSync(manifestPath)) {
     return undefined;
   }
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { exports?: unknown };
-  if (!manifest.exports || typeof manifest.exports !== 'object' || Array.isArray(manifest.exports)) {
+  const manifest = parseJsonRecord(readFileSync(manifestPath, 'utf8'), `package manifest ${manifestPath}`);
+  const manifestExports = manifest['exports'];
+  if (!manifestExports || typeof manifestExports !== 'object' || Array.isArray(manifestExports)) {
     return undefined;
   }
-  const exportsMap = manifest.exports as Record<string, unknown>;
+  const exportsMap = requireJsonRecord(manifestExports, `package exports ${manifestPath}`);
   const exportKey = subpath ? `./${subpath}` : '.';
   const exactTarget = exportsMap[exportKey];
   if (typeof exactTarget === 'string') {
@@ -577,15 +658,19 @@ async function readSchemaAuthorityFingerprints(repoRoot: string): Promise<Record
     const source = (await readFile(currentPath, 'utf8')).replace(/\r\n?/gu, '\n');
     const relativePath = path.relative(repoRoot, currentPath).split(path.sep).join('/');
     fingerprints[relativePath] = createHash('sha256').update(source).digest('hex');
+    if (path.extname(currentPath) === '.json') {
+      JSON.parse(source);
+      continue;
+    }
 
-    const sourceFile = ts.createSourceFile(currentPath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-    for (const statement of sourceFile.statements) {
+    const sourceFile = parseSource(currentPath, source);
+    for (const statement of sourceFile.body) {
       const moduleSpecifier =
-        ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement) ? statement.moduleSpecifier : undefined;
-      if (!moduleSpecifier || !ts.isStringLiteral(moduleSpecifier)) {
+        isNode(statement, 'ImportDeclaration') || isReexport(statement) ? statement.source : undefined;
+      if (!moduleSpecifier || !isStringLiteral(moduleSpecifier)) {
         continue;
       }
-      const resolved = resolveSchemaAuthorityImport(repoRoot, currentPath, moduleSpecifier.text);
+      const resolved = resolveSchemaAuthorityImport(repoRoot, currentPath, staticText(moduleSpecifier));
       if (resolved && !visited.has(resolved)) {
         pending.push(resolved);
       }
@@ -660,20 +745,13 @@ export async function capturePublicContractSnapshot(
   }
 }
 
-async function readJsonFile<T>(filePath: string): Promise<T> {
-  return JSON.parse(await readFile(filePath, 'utf8')) as T;
+async function readJsonFile(filePath: string): Promise<unknown> {
+  return JSON.parse(await readFile(filePath, 'utf8')) as unknown;
 }
 
 async function writeSnapshot(outPath: string, snapshot: PublicContractSnapshot): Promise<void> {
   await mkdir(path.dirname(outPath), { recursive: true });
-  const prettierConfig = await resolvePrettierConfig(outPath);
-  await writeFile(
-    outPath,
-    await formatWithPrettier(stableStringify(snapshot), {
-      ...(prettierConfig ?? {}),
-      filepath: outPath,
-    }),
-  );
+  await writeFile(outPath, await formatSource(outPath, stableStringify(snapshot)));
 }
 
 async function main(): Promise<void> {
@@ -702,10 +780,13 @@ async function main(): Promise<void> {
   if (plan.captureCurrent) {
     await writeSnapshot(plan.currentPath, await capturePublicContractSnapshot());
   }
-  const baseline = await readJsonFile<PublicContractSnapshot>(plan.baselinePath);
-  const current = await readJsonFile<PublicContractSnapshot>(plan.currentPath);
+  const baseline = parsePublicContractSnapshot(
+    await readJsonFile(plan.baselinePath),
+    'Baseline public-contract snapshot',
+  );
+  const current = parsePublicContractSnapshot(await readJsonFile(plan.currentPath), 'Current public-contract snapshot');
   const classification = plan.classificationPath
-    ? await readJsonFile<DriftClassification>(plan.classificationPath)
+    ? parseDriftClassification(await readJsonFile(plan.classificationPath))
     : undefined;
   const drift = comparePublicContractSnapshots(baseline, current, classification);
   if (drift.length > 0) {

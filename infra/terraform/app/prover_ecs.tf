@@ -106,6 +106,7 @@ locals {
   existing_prover_container_insights_performance_log_groups = (
     var.account_alias == local.deployment_target.accountLabel
     && var.deployment_environment == local.deployment_target.environmentId
+    && local.deployment_target.environmentTier == "development"
     ? local.prover_container_insights_performance_log_groups
     : {}
   )

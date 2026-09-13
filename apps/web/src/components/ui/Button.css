@@ -1,0 +1,89 @@
+@layer components {
+  .ui-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 48px;
+    min-width: min(148px, 100%);
+    max-width: 100%;
+    padding: 13px 28px;
+    border: 1px solid #171717;
+    border-radius: 0;
+    font-family:
+      -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans JP', 'Hiragino Kaku Gothic ProN', Meiryo, sans-serif;
+    font-size: 0.83rem;
+    font-weight: 500;
+    line-height: 1.5;
+    text-align: center;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  .ui-button--verify {
+    background: #171717;
+    color: #fff;
+  }
+
+  .ui-button--verify:hover:not(:disabled) {
+    background: #353535;
+  }
+
+  .ui-button--secondary {
+    background: #fff;
+    color: #171717;
+  }
+
+  .ui-button--secondary:hover:not(:disabled) {
+    background: #f6f6f6;
+  }
+
+  .ui-button:disabled {
+    border-color: #b4b4b4;
+    background: #eee;
+    color: #626262;
+    cursor: not-allowed;
+  }
+
+  .ui-button--full-width {
+    width: 100%;
+  }
+
+  .ui-button__spinner {
+    display: inline-flex;
+    flex: 0 0 auto;
+    width: 1em;
+    height: 1em;
+    animation: button-spinner 0.9s linear infinite;
+  }
+
+  .ui-button__spinner svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  @keyframes button-spinner {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ui-button__spinner {
+      animation: none;
+    }
+  }
+
+  @media (max-width: 540px) {
+    .ui-button {
+      padding: 13px 18px;
+      font-size: 0.8rem;
+    }
+  }
+}
+
+.ui-button:focus-visible {
+  outline: 3px solid #171717;
+  outline-offset: 4px;
+}

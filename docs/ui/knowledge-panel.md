@@ -1,6 +1,6 @@
 # 知識パネル仕様（CURRENT / 実装準拠）
 
-> 最終更新: 2026-08-09
+> 最終更新: 2026-09-13
 > 主な実装 authority: `apps/web/src/knowledge/{types,normalizer,store,visibility}.ts`、
 > `apps/web/src/session/{client,storage,storageAdmission}.ts`、
 > `apps/web/src/finalize/client-finalization-result.ts`、
@@ -17,7 +17,7 @@
 - 知識パネルは、現在のブラウザセッションについて「ユーザーが知り得る情報のスナップショット」を表示する。
 - snapshot はクライアントの `localStorage` にだけ保存する。サーバー側に knowledge store を同期しない。
 - 接続済みの公開フローは「自分の投票」の knowledge を表示する。ボット投票の進捗表示はあるが、個々の bot opening を取得・検証する公開フローは接続されていない。
-- UI は単一カラムで、デスクトップでは浮遊/ドッキングパネル、モバイルではボトムシートとして表示する。
+- UI は単一カラムで、画面幅にかかわらず本文末尾の通常フローに同じパネルを表示する。検証項目を選択すると、対応する既存値をその行の直下でも読める。
 - `/` と `/privacy` / `/terms` 系では知識パネルを表示しない。
 
 ---
@@ -27,24 +27,27 @@
 ### 2.1 保存 API
 
 - 保存キーは `localStorage` の `stark-ballot-knowledge`。
-- API/route projection からの取り込みは `mergeKnowledgeFromApi()`、すでに knowledge shape になった値の追加は `saveKnowledgeData()` を使う。
-- `mergeKnowledgeFromApi()` は入力を正規化し、`omitKeys` を適用した後、`saveKnowledgeData()` の admission を通す。
-- `undefined` の patch 値は既存値を削除せず無視する。値が実際に変化したキーだけを新規/更新項目として通知する。
+- API/route projection からの取り込みは `mergeKnowledgeFromApi(apiData, options?)`、型付きの knowledge patch の追加は `saveKnowledgeData(data, options?)` を使う。
+- `mergeKnowledgeFromApi()` は入力を正規化し、`omitKeys` を適用した後、store 内部の `saveKnowledgeCandidate()` で admission する。公開 `saveKnowledgeData()` も同じ内部 admission を通す。
+- `undefined` の patch 値は既存値を削除せず無視する。値が実際に変化したキーだけを新規/更新項目として通知し、通知 phase は最初の変更キーから導出する。
 
 ### 2.2 セッション所有権と複数タブ
 
 - knowledge write は、明示された `sessionId`、`expectedSessionId`、または active session に束縛される。
 - 既存 snapshot と異なる新しい `sessionId` を受け入れる場合、以前の knowledge を引き継がず、新しい `sessionId` を基点に作り直す。
 - `expectedSessionId` が active session と一致しない場合や、別タブが session を置き換えて現在の tab lock が stale になった場合、read/write は knowledge を返さず、置換後の共有 snapshot を変更しない。
+- 表示用の `useKnowledgeItems()` は `useSyncExternalStore` で同一タブの knowledge 更新と、session / knowledge の `storage` event を購読する。snapshot の取得時は通知内容をそのまま表示せず、必ず既存の `getKnowledgeItems()` admission を通して読み直す。同じ内容の snapshot は参照を共有する。`clearKnowledge()` と、対象 snapshot を削除した `clearKnowledgeForSession()`、bot 項目を削除した `clearBotKnowledge()` は削除後に購読者へ通知し、描画済みの値も消す。
+- `KnowledgeItem` は key に対応する値の型を保持する判別 union で、公開する項目配列と内部の値は readonly とする。admission 済みの `KnowledgeData` から項目への投影は `knowledgeItemsFromData()` に集約し、Storybook の型付き fixture でも同じ関数を使う。renderer は項目の key で値を絞り込み、表示箇所ごとの型 cast を行わない。readonly は TypeScript の契約であり、runtime の入力検証や object freeze の代わりではない。
 - active session があるのに snapshot に `sessionId` がない場合は、その snapshot を削除する。snapshot の `sessionId` が active session と異なる場合は表示しないが、別セッション所有の共有 snapshot は削除しない。
 - 保存済み session 自体が current session shape に適合しない場合、session admission が session、knowledge、tab lock をまとめて破棄する。
+- read は session admission を先に完了してから knowledge snapshot を読む。不正・期限切れ session を破棄した最初の read から旧値を返さない。session admission に伴う削除の `storage` 通知は microtask へ遅延させ、読み取り中の購読者への再入を避ける。
 
 ### 2.3 Read/write の fail-closed validation
 
 - storage schema version marker や read-time migration は使わない。保存済み snapshot は、現在の `KnowledgeData` のキーと値 shape にそのまま適合する場合だけ読み込む。
 - malformed JSON、未知キー、retired key、`null`、または不正な current key value を含む、現在の tab が所有する snapshot は、部分修復せず snapshot 全体を拒否して削除する。
 - `missingIndices`、`invalidIndices`、`countedIndices`、`excludedCount`、`s3BundleUrl`、`s3BundleExpiresAt`、`proofMode` はすべて current key ではない。保存済みデータから個別削除して再利用することはない。
-- write は既存値と patch を合わせた candidate 全体を検証してから永続化する。candidate が不正なら、patch 全体を拒否し、storage、item timestamp、listener を更新しない。
+- write は既存値と patch を合わせた candidate 全体を検証してから永続化する。candidate が不正なら、その値は永続化せず、更新項目の timestamp 登録や listener 通知も行わない。session 所有権の切替や不正な保存済み snapshot の破棄は、candidate の検証前に行う。
 - `mergeKnowledgeFromApi()` の未知の入力フィールドは normalizer が無視する。一方、正規化後の current key に不正な値がある場合は candidate write 全体が失敗する。
 
 主な value admission は次のとおり。
@@ -73,7 +76,7 @@ API resource と knowledge store の shape は同一ではない。取り込み�
 1. route-specific projection が API resource を検証し、ブラウザ用の current payload に投影する。
    - succeeded finalization resource は `projectFinalizationResourceToClientSnapshot()` / `resolveCanonicalFinalizationPayload()` により `ClientFinalizationSnapshot` になる。
    - available verification resource は `projectVerificationResource()` により flat な `VerificationPayload` になる。ここで `verification.steps`、`verifierResult.report`、`journal.representation = "included"` の `journal.value` を、それぞれ `verificationSteps`、`verificationReport`、raw `journal` に投影する。
-2. `normalizeKnowledgeData()` が projected payload の正規フィールドを knowledge key に写し、`saveKnowledgeData()` が candidate 全体を admission する。
+2. `mergeKnowledgeFromApi()` 内の `normalizeKnowledgeData()` が projected payload の正規フィールドを knowledge key に写す。返値の `KnowledgeCandidate` は値がまだ `unknown` の候補であり、型付きの保存 API へ直接渡す値ではない。`omitKeys` 適用後、store 内部で candidate 全体を admission してから保存・通知する。
 
 `normalizeKnowledgeData()` 自体は、nested API resource envelope の parser ではない。raw finalization/verification resource を projection せず直接渡すことは current route contract ではない。
 
@@ -156,7 +159,7 @@ interface ReceiptPublication {
 |    5 | bot     | `bot.id`, `bot.choice`, `bot.random`, `bot.commitment`, `bot.voteId`, `bot.bulletinIndex`, `bot.bulletinRootAtCast`, `bot.voteTimestamp`, `bot.merklePath`, `bot.verification.steps`                                                                                                                       |
 |    6 | public  | `tally.counts`, `tally.totalVotes`, `tally.tamperedCount`, `missingSlots`, `invalidPresentedSlots`, `rejectedRecords`, `validVotes`, `excludedSlots`, `totalExpected`, `bulletinRoot`, `treeSize`, `sthDigest`, `seenBitmapRoot`, `includedBitmapRoot`, `inputCommitment`, `imageId`, `receiptPublication` |
 
-public group は常に最後に置く。`missingSlots` / `invalidPresentedSlots` / `validVotes` / `excludedSlots` は slot-based metric、`rejectedRecords` は record-based metric である。`tally.tamperedCount` は表示用の除外数で、通常は journal の `excludedSlots` を反映し、シナリオ由来の改ざん件数があればその count も反映しうる。
+public group は常に最後に置く。表示可能な値がない group は見出しごと表示しない。`missingSlots` / `invalidPresentedSlots` / `validVotes` / `excludedSlots` は slot-based metric、`rejectedRecords` は record-based metric である。`tally.tamperedCount` は通常 journal の `excludedSlots` を反映し、シナリオ由来の改ざん件数があればその count も反映しうる。既存の「除外数」ラベルでは発表結果の改ざんを投票の除外と誤解しうるため、現在のパネルと行直下の表示からは省く。snapshot / normalizer の field 自体は変更せず、ラベルの改名もしない。
 
 次の key は snapshot に保持するが、全 route の知識パネルで非表示にする。
 
@@ -184,38 +187,35 @@ public group は常に最後に置く。`missingSlots` / `invalidPresentedSlots`
 
 `VERIFY_MY_KNOWLEDGE_KEYS` は `electionId`、user choice/random/commitment/voteId、verification-gated な user receipt/proof、public group 全体、`proofBundleStatus` で構成する。
 
-### 5.2 Responsive variant
+### 5.2 通常フローの単一パネル
 
-- Desktop: `variant="floating"`
-  - 通常は画面下部に固定し、dock zone が視界に入ると本文フローへ合流する。
-  - 浮遊中はパネル高さと下端 offset に対応する spacer を確保する。
-  - 浮遊中の最大高さは 30vh。超過分は内部スクロールにし、scroll position をドッキング切替後も復元する。
-  - 浮遊→ドッキングでは expanded group を引き継ぐ。ドッキング中の変更は floating state へ同期しないため、ドッキング→浮遊でリセットされうる。
-- Mobile: `variant="bottomSheet"`
-  - `collapsed`: 60px
-  - `mid`: 40vh
-  - `expanded`: 80vh
-- `inline` variant は generic component として残るが、`LayoutProvider` は使用しない。
+- デスクトップとモバイルで同じパネルインスタンスを本文末尾に表示する。浮遊、ドッキング、内部スクロール、ボトムシートとその spacer は使用しない。
+- 白地と上罫線で本文と区切り、グループ内の値は最大 `64ch` の1列に並べる。画面が狭い場合は値を折り返す。
+- パネルの高さは内容に従う。スクロール位置やviewportに応じた再マウントは行わない。
 
-### 5.3 展開、新規表示、ハイライト
+### 5.3 展開と選択
 
-- 初期状態は全 group を折りたたみ、自動展開や自動スクロールは行わない。
-- 「展開 / 縮小」で現在表示対象の全 group を操作する。
-- admitted write で値が変わった key は 2 秒間 `isNew=true` になり、group header の animation/緑 dot と、展開済み item の緑 dot を表示する。
-- `/verify` では進行中 step の入力 key を highlight する。filter 済みかつ表示中の item だけが見える。
+- 初期状態は session group を展開する。その他の非空 group はボタンで開閉し、「展開 / 縮小」で現在存在する group をまとめて操作できる。
+- 検証項目の明示的な選択に対応する既存値があれば、その group を開き、選択状態を静的に示す。値の更新だけで画面をスクロールしたり、選択を時間で解除したりしない。
+- 行直下の `KnowledgeEvidence` は、現在の route で許可された key と check input の積集合に対して、admission 済み snapshot に実在する値だけを表示する。新しい説明文や receipt の内部 field は追加しない。
+- `selectKnowledgeItems()` は hidden key と `tally.tamperedCount` を常に除外し、同じ選択規則をパネルと行直下で使用する。検証開始前の receipt / inclusion proof の保存禁止は既存 route boundary の責務として維持する。
+- Storybookの明示的なfixtureは実ストアを購読せず、fixtureから実ストアへ切り替える最初の描画から現在値を読む。
+- 表示項目の `KnowledgeItem` は `KnowledgeData` から導出し、key と value の対応を型で維持する。snapshot の配列・項目・構造化値は読み取り専用で、`knowledgeItemsFromData()` が admission 済みデータと型付き fixture の表示投影を共用する。投影自体は raw API / storage の admission を代替しない。
+- Store の `isNew` / timestamp は維持するが、UI の新規 dot、通知アニメーション、透明・blur・pulse・開閉の ViewTransition は使用しない。値や展開状態が変わっても文字をいったん透明にしない。
+- パネル全体には `aria-live` を付けない。ボタンの展開状態を `aria-expanded` と `aria-controls` で示し、操作中のフォーカスを維持する。
 
 ### 5.4 値フォーマット
 
 - label は `knowledge.items.*` の i18n を使い、未定義なら raw key を表示する。
-- hash は `0xaaaa…bbbb` 形式に省略し、クリックでコピーできる。
-- number は `toLocaleString()`、boolean は「はい/いいえ」、generic object は field 数で要約する。
+- hash は `0x` を付けた全体を等幅で表示し、折り返す。ブラウザ標準のテキスト選択でコピーできる。コピー専用の擬似ボタン、clipboard API、コピー結果の通知は使用しない。
+- number は `toLocaleString()`、個別書式を持たない object は field 数で要約する。
 - `proofBundleStatus`: 未ダウンロード / ダウンロード済。
 - `botVotesStatus`: pending/completed と、存在すれば total。
 - `tally.counts`: `A:1 B:2 ...`。
 - `user.merklePath` / `bot.merklePath`: `idx:<leafIndex> / <treeSize>`。
 - `user.voteReceipt`: `#<bulletinIndex>`。
-- admitted `receiptPublication` は必須の `receiptHash` を hash 表示する。generic renderer は外部から渡された item 向けに `#<boardIndex>` fallback も持つ。
-- generic renderer は `null` / `undefined` に「未設定 / Not set」を返すが、admitted stored snapshot はその値を保持しない。
+- `receiptPublication` は必須の `receiptHash` を hash 表示する。不完全な publication を別書式で補完しない。
+- `null` / `undefined` は表示項目を作らない。fixture も現在の key/value 型に従う。
 
 ---
 
@@ -223,7 +223,7 @@ public group は常に最後に置く。`missingSlots` / `invalidPresentedSlots`
 
 ### 6.1 Session と vote
 
-1. `/` で `POST /api/sessions` が成功すると、session identity を初期化し、`mergeKnowledgeFromApi('session', ...)` で `sessionId`、`electionId`、`electionConfigHash`、`logId` を保存する。`sessionId` は表示しない。
+1. `/` で `POST /api/sessions` が成功すると、session identity を初期化し、`mergeKnowledgeFromApi({ ...session })` で `sessionId`、`electionId`、`electionConfigHash`、`logId` を保存する。`sessionId` は表示しない。
 2. `/vote` の選択時に `user.choice` を保存する。
 3. `POST /api/sessions/:sessionId/votes` 成功時に `user.random`、`user.commitment`、`user.voteId`、`user.bulletinIndex`、`user.bulletinRootAtCast`、`user.castAtMs` を保存する。
 4. ボット投票生成中は `botVotesStatus` を pending、完了時は completed と total に更新する。
@@ -245,16 +245,16 @@ public group は常に最後に置く。`missingSlots` / `invalidPresentedSlots`
 
 ---
 
-## 7. 検証 step の highlight authority
+## 7. 検証項目と既存値の対応
 
-既定の highlight input は `packages/verification/src/verification/verification-checks.ts` の check definition から `getVerificationStepInputs()` が導出する。projected API step に non-empty `inputs` があればそれを優先する。
+既定の check input は `packages/verification/src/verification/verification-checks.ts` の check definition から `getVerificationStepInputs()` が導出する。projected API step に non-empty `inputs` があればそれを優先する。
 
 - `cast_as_intended`: `electionId`, `user.choice`, `user.random`, `user.commitment`, `user.voteId`
 - `recorded_as_cast`: `user.commitment`, `user.voteReceipt`, `user.merklePath`, `treeSize`, `bulletinRoot`, `sthDigest`
 - `counted_as_recorded`: `proofBundleStatus`, `bulletinRoot`, `treeSize`, `tally.counts`, `tally.totalVotes`, `missingSlots`, `invalidPresentedSlots`, `totalExpected`, `electionId`, `electionConfigHash`, `logId`, `sthDigest`, `includedBitmapRoot`, `user.voteReceipt`, `inputCommitment`
 - `stark_verification`: `imageId`, `proofBundleStatus`
 
-`counted_as_recorded` の check input には `electionManifest`、`closeStatement`、`timestamp` も含まれるが、knowledge panel key ではないため表示されない。
+`counted_as_recorded` の check input には `electionManifest`、`closeStatement`、`timestamp` も含まれるが、knowledge panel key ではないため表示されない。対応 key が定義されていても、現在の route filter 外や snapshot に存在しない値は表示しない。
 
 ---
 

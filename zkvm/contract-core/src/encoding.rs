@@ -5,7 +5,8 @@ use risc0_zkvm::sha::{Impl, Sha256};
 
 use crate::types::VoteWithProof;
 
-const INPUT_DOMAIN_TAG: &[u8] = b"stark-ballot:input|v1.0";
+pub const INPUT_COMMITMENT_DOMAIN_TAG: &[u8] = b"stark-ballot:input|v1.0";
+pub const INPUT_COMMITMENT_FORMAT_VERSION: u32 = 10;
 
 /// Compute input commitment with canonical encoding.
 pub fn compute_input_commitment_v4(
@@ -37,8 +38,8 @@ fn encode_input_commitment_preimage(
 ) -> Result<Vec<u8>, String> {
     let mut data = Vec::with_capacity(encoded_prefix_len() + encoded_votes_len(votes));
 
-    data.extend_from_slice(INPUT_DOMAIN_TAG);
-    data.extend_from_slice(&10u32.to_le_bytes());
+    data.extend_from_slice(INPUT_COMMITMENT_DOMAIN_TAG);
+    data.extend_from_slice(&INPUT_COMMITMENT_FORMAT_VERSION.to_le_bytes());
     data.extend_from_slice(election_id);
     data.extend_from_slice(bulletin_root);
     data.extend_from_slice(&tree_size.to_le_bytes());
@@ -116,7 +117,7 @@ fn compare_merkle_paths(left: &[[u8; 32]], right: &[[u8; 32]]) -> Ordering {
 }
 
 fn encoded_prefix_len() -> usize {
-    INPUT_DOMAIN_TAG.len() + 4 + 16 + 32 + 4 + 4 + 4
+    INPUT_COMMITMENT_DOMAIN_TAG.len() + 4 + 16 + 32 + 4 + 4 + 4
 }
 
 fn encoded_votes_len(votes: &[VoteWithProof]) -> usize {
@@ -129,11 +130,23 @@ fn encoded_votes_len(votes: &[VoteWithProof]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        CURRENT_METHOD_VERSION, MAX_GUEST_MERKLE_PATH_NODES_PER_RECORD,
+        MAX_GUEST_SERIALIZED_INPUT_BYTES, MAX_GUEST_TOTAL_EXPECTED, MAX_GUEST_TOTAL_PATH_NODES,
+        MAX_GUEST_TREE_SIZE, MAX_GUEST_VOTE_COUNT, VERIFIED_TALLY_WIDTH,
+    };
     use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
     use serde::Deserialize;
     use sha2::{Digest, Sha256};
+
+    mod formal_vector_test_support {
+        include!("formal_vector_test_support.rs");
+    }
+    use formal_vector_test_support::{
+        admit_current_formal_vector, FormalVectorEnvelope, FormalVectorModeledBounds,
+    };
 
     fn create_test_vote(index: u32, choice: u8) -> VoteWithProof {
         VoteWithProof {
@@ -258,8 +271,10 @@ mod tests {
     }
 
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct FormalInputCommitmentCase {
+        #[serde(rename = "name")]
+        _name: String,
         election_id: String,
         bulletin_root: String,
         tree_size: u32,
@@ -270,7 +285,7 @@ mod tests {
     }
 
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct FormalVote {
         id: String,
         index: u32,
@@ -308,14 +323,44 @@ mod tests {
         (vote.index, vote.commitment, vote.merkle_path.clone())
     }
 
+    fn assert_formal_vector_bounds(bounds: &FormalVectorModeledBounds) {
+        assert_eq!(
+            bounds.input_commitment.format_version,
+            INPUT_COMMITMENT_FORMAT_VERSION
+        );
+        assert_eq!(bounds.input_commitment.u16_max, u32::from(u16::MAX));
+        assert_eq!(bounds.input_commitment.u32_max, u64::from(u32::MAX));
+        assert_eq!(bounds.guest.method_version, CURRENT_METHOD_VERSION);
+        assert_eq!(bounds.guest.tree_size_max, MAX_GUEST_TREE_SIZE);
+        assert_eq!(bounds.guest.total_expected_max, MAX_GUEST_TOTAL_EXPECTED);
+        assert_eq!(bounds.guest.vote_count_max, MAX_GUEST_VOTE_COUNT);
+        assert_eq!(
+            bounds.guest.merkle_path_nodes_per_record_max,
+            MAX_GUEST_MERKLE_PATH_NODES_PER_RECORD
+        );
+        assert_eq!(
+            bounds.guest.total_merkle_path_nodes_max,
+            MAX_GUEST_TOTAL_PATH_NODES
+        );
+        assert_eq!(
+            bounds.guest.serialized_input_bytes_max,
+            MAX_GUEST_SERIALIZED_INPUT_BYTES
+        );
+        assert_eq!(bounds.guest.tally_width, VERIFIED_TALLY_WIDTH);
+        assert_eq!(bounds.guest.tally_bucket_max, MAX_GUEST_TREE_SIZE);
+    }
+
     #[test]
     fn test_formal_input_commitment_vectors() {
-        let cases: Vec<FormalInputCommitmentCase> = serde_json::from_str(include_str!(
-            "../../../docs/formal/generated-vectors/input-commitment-cases.json"
-        ))
-        .expect("formal input commitment vectors should parse");
+        let envelope: FormalVectorEnvelope<FormalInputCommitmentCase> =
+            admit_current_formal_vector(
+                include_str!("../../../docs/formal/generated-vectors/input-commitment-cases.json"),
+                "input-commitment-cases",
+            )
+            .expect("formal input commitment vectors should admit");
+        assert_formal_vector_bounds(&envelope.modeled_bounds);
 
-        for case in cases {
+        for case in envelope.payload {
             let election_id = parse_uuid_bytes(&case.election_id);
             let bulletin_root = parse_hex(&case.bulletin_root);
             let votes: Vec<VoteWithProof> = case.votes.iter().map(parse_vote).collect();
@@ -360,5 +405,35 @@ mod tests {
             assert_eq!(encoded, expected_encoded_bytes);
             assert_eq!(commitment, expected_digest);
         }
+    }
+
+    #[test]
+    fn test_formal_input_commitment_envelope_rejects_unknown_keys() {
+        let source =
+            include_str!("../../../docs/formal/generated-vectors/input-commitment-cases.json");
+        let unknown_envelope = source.replacen('{', "{\"schemaVersion\":1,", 1);
+        let result = admit_current_formal_vector::<FormalInputCommitmentCase>(
+            &unknown_envelope,
+            "input-commitment-cases",
+        );
+        assert!(result.is_err());
+
+        let unknown_case = source.replacen(
+            "\"name\": \"minimal-one-vote\"",
+            "\"unexpected\": true, \"name\": \"minimal-one-vote\"",
+            1,
+        );
+        let result = admit_current_formal_vector::<FormalInputCommitmentCase>(
+            &unknown_case,
+            "input-commitment-cases",
+        );
+        assert!(result.is_err());
+
+        let fingerprint_drift = source.replacen("minimal-one-vote", "drifted-one-vote", 1);
+        let result = admit_current_formal_vector::<FormalInputCommitmentCase>(
+            &fingerprint_drift,
+            "input-commitment-cases",
+        );
+        assert!(result.is_err());
     }
 }

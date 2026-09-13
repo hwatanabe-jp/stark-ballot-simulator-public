@@ -5,7 +5,9 @@ import {
   type VerificationCheckId,
 } from '@stark-ballot/verification/checks';
 import { deriveStageStatusFromChecks } from '@stark-ballot/verification/stage-status';
+import { VOTE_CHOICES, type VoteChoice } from '@stark-ballot/verification/shared/constants';
 import type { VerificationStatus } from '@stark-ballot/verification/shared/types';
+import { normalizeHexString } from '@stark-ballot/zkvm-contract/zkvm/hex';
 import {
   VERIFICATION_SUMMARY_STATUS_VALUES,
   VERIFICATION_SUMMARY_TONE_VALUES,
@@ -15,6 +17,14 @@ import {
   type VerificationSummaryTone,
 } from '@stark-ballot/verification/summary';
 import type { VerificationStepId, VerificationStepStatus } from './step-types';
+import {
+  resolveCountedExpectedVsTreeSize,
+  resolveCountedMissingIndicesZero,
+  resolveCountedTallyConsistent,
+  resolveRecordedInclusionProof,
+  resolveRecordedIndexInRange,
+  resolveZkGateStatus,
+} from './engine/evaluate-checks';
 
 export { VERIFICATION_SUMMARY_STATUS_VALUES, VERIFICATION_SUMMARY_TONE_VALUES };
 
@@ -54,12 +64,41 @@ export interface VerificationDisplayDecisionInput {
   hardFailureDetected: boolean;
 }
 
-export interface VerificationDisplayDecision {
-  readiness: VerificationDisplayReadiness;
-  source: VerificationDisplaySource | null;
-  status: VerificationDisplayStatus | null;
-  renderedStatus: VerificationDisplayStatus | null;
-}
+type VerificationDisplayResolution =
+  | { source: null; status: null }
+  | {
+      [TStatus in VerificationExplicitServerFailureStatus]: {
+        source: 'explicit_server_failure';
+        status: TStatus;
+      };
+    }[VerificationExplicitServerFailureStatus]
+  | {
+      [TStatus in VerificationDisplayStatus]: { source: 'summary'; status: TStatus };
+    }[VerificationDisplayStatus]
+  | { source: 'hard_failure'; status: 'failed' }
+  | { source: 'pending'; status: 'warning' }
+  | { source: 'unavailable'; status: 'warning' }
+  | { source: 'corrupt'; status: 'failed' };
+
+type NonReadyVerificationDisplayDecision = VerificationDisplayResolution & {
+  readiness: Exclude<VerificationDisplayReadiness, 'ready'>;
+  renderedStatus: null;
+};
+
+type ReadyVerificationDisplayDecision =
+  | ({ readiness: 'ready'; renderedStatus: null } & Extract<VerificationDisplayResolution, { status: null }>)
+  | ({ readiness: 'ready'; renderedStatus: 'verified' } & Extract<
+      VerificationDisplayResolution,
+      { status: 'verified' }
+    >)
+  | ({ readiness: 'ready'; renderedStatus: 'failed' } & Extract<VerificationDisplayResolution, { status: 'failed' }>)
+  | ({ readiness: 'ready'; renderedStatus: 'warning' } & Extract<VerificationDisplayResolution, { status: 'warning' }>)
+  | ({ readiness: 'ready'; renderedStatus: 'demo_only' } & Extract<
+      VerificationDisplayResolution,
+      { status: 'demo_only' }
+    >);
+
+export type VerificationDisplayDecision = NonReadyVerificationDisplayDecision | ReadyVerificationDisplayDecision;
 
 export interface VerificationPresentationPolicyInput {
   availability: VerificationAvailability;
@@ -73,17 +112,169 @@ export interface VerificationPresentationPolicyInput {
 }
 
 export type VerificationStageStatuses = Readonly<Record<VerificationStepId, VerificationStepStatus>>;
+export interface VerificationCheckStatusEvidence {
+  readonly id: VerificationCheckId;
+  readonly status: VerificationCheck['status'];
+}
 
-export interface VerificationPresentationPolicyResult {
+export interface FullyVerifiedPresentationEvidenceInput {
+  readonly scenarioId: string;
+  readonly checks: readonly (VerificationCheckStatusEvidence & {
+    readonly evidence: VerificationCheck['evidence'];
+    readonly inputs: readonly string[];
+    readonly derivedFrom?: VerificationCheckId | undefined;
+  })[];
+  readonly stageStatuses: VerificationStageStatuses;
+  readonly verificationStatus: VerificationStatus;
+  readonly verificationReport?:
+    | {
+        readonly status: VerificationStatus;
+        readonly expected_image_id: string;
+        readonly receipt_image_id: string | null;
+      }
+    | undefined;
+  readonly proof: {
+    readonly imageId: string;
+    readonly bulletinRoot: string;
+    readonly inputCommitment: string;
+    readonly seenBitmapRoot: string;
+    readonly includedBitmapRoot: string;
+    readonly verifiedTally: readonly [number, number, number, number, number];
+    readonly missingSlots: number;
+    readonly invalidPresentedSlots: number;
+    readonly rejectedRecords: number;
+    readonly excludedSlots: number;
+    readonly totalExpected: number;
+    readonly treeSize: number;
+    readonly seenIndicesCount: number;
+  };
+  readonly presentation: {
+    readonly counts: Readonly<Record<VoteChoice, number>>;
+    readonly totalVotes: number;
+    readonly tamperedCount?: number | undefined;
+    readonly tamperDetected?: boolean | undefined;
+    readonly tamperSummary?:
+      | {
+          readonly ignoredVotes: number;
+          readonly recountedVotes: number;
+          readonly userRecountedTo: VoteChoice | null;
+          readonly affectedBotIds?: readonly number[] | undefined;
+        }
+      | undefined;
+  };
+  readonly voterEvidence: FullyVerifiedVoterEvidenceInput;
+}
+
+interface FullyVerifiedAvailableVoterEvidenceInput {
+  readonly availability: 'available';
+  readonly voteReceipt: {
+    readonly voteId: string;
+    readonly commitment: string;
+    readonly bulletinIndex: number;
+    readonly bulletinRootAtCast: string;
+    readonly inputCommitment: string;
+  };
+  readonly userVote: {
+    readonly voteId: string;
+    readonly commitment: string;
+    readonly proof: {
+      readonly leafIndex: number;
+      readonly treeSize: number;
+      readonly bulletinRootAtCast: string;
+    };
+  };
+}
+
+type FullyVerifiedVoterEvidenceInput =
+  | FullyVerifiedAvailableVoterEvidenceInput
+  | { readonly availability: 'unavailable' };
+
+interface VerificationPresentationPolicyBase {
   summary: VerificationSummaryResult | null;
   stageStatuses: VerificationStageStatuses;
   evidenceFullyVerified: boolean;
-  fullyVerifiedLabelEligible: boolean;
   display: VerificationDisplayDecision;
   publishedTallyMismatch: boolean;
   devModeEvidence: boolean;
   missingEvidence: boolean;
   explanationKey?: string;
+}
+
+const fullyVerifiedEligibilityWitness = Symbol('fully-verified-eligibility');
+
+type FullyVerifiedDisplayDecision = {
+  readiness: 'ready';
+  source: 'summary';
+  status: 'verified';
+  renderedStatus: 'verified';
+};
+
+export interface VerifiedPresentation extends Omit<
+  VerificationPresentationPolicyBase,
+  | 'summary'
+  | 'evidenceFullyVerified'
+  | 'display'
+  | 'stageStatuses'
+  | 'publishedTallyMismatch'
+  | 'devModeEvidence'
+  | 'missingEvidence'
+  | 'explanationKey'
+> {
+  readonly [fullyVerifiedEligibilityWitness]: true;
+  summary: VerificationSummaryResult & { status: 'fully_verified'; tone: 'verified' };
+  evidenceFullyVerified: true;
+  fullyVerifiedLabelEligible: true;
+  stageStatuses: Readonly<Record<VerificationStepId, 'success'>>;
+  display: FullyVerifiedDisplayDecision;
+  publishedTallyMismatch: false;
+  devModeEvidence: false;
+  missingEvidence: false;
+  explanationKey?: never;
+}
+
+export type IneligibleVerificationPresentation = VerificationPresentationPolicyBase & {
+  fullyVerifiedLabelEligible: false;
+  display: Exclude<VerificationDisplayDecision, FullyVerifiedDisplayDecision>;
+};
+
+export type VerificationPresentationPolicyResult = VerifiedPresentation | IneligibleVerificationPresentation;
+
+export interface SerializableVerificationPresentationPolicy {
+  readonly summary: {
+    readonly status: VerificationSummaryResult['status'];
+    readonly tone: VerificationSummaryResult['tone'];
+    readonly messageKey?: string | undefined;
+  } | null;
+  readonly stageStatuses: VerificationStageStatuses;
+  readonly evidenceFullyVerified: boolean;
+  readonly fullyVerifiedLabelEligible: boolean;
+  readonly display: {
+    readonly readiness: VerificationDisplayReadiness;
+    readonly source: VerificationDisplaySource | null;
+    readonly status: VerificationDisplayStatus | null;
+    readonly renderedStatus: VerificationDisplayStatus | null;
+  };
+  readonly publishedTallyMismatch: boolean;
+  readonly devModeEvidence: boolean;
+  readonly missingEvidence: boolean;
+  readonly explanationKey?: string | undefined;
+}
+
+function isFullyVerifiedDisplayDecision(display: VerificationDisplayDecision): display is FullyVerifiedDisplayDecision {
+  return display.renderedStatus === 'verified';
+}
+
+type SuccessfulVerificationStageStatuses = Readonly<Record<VerificationStepId, 'success'>>;
+
+function areAllVerificationStagesSuccessful(
+  statuses: VerificationStageStatuses,
+): statuses is SuccessfulVerificationStageStatuses {
+  return (
+    statuses.cast_as_intended === 'success' &&
+    statuses.recorded_as_cast === 'success' &&
+    statuses.counted_as_recorded === 'success' &&
+    statuses.stark_verification === 'success'
+  );
 }
 
 const VERIFICATION_STEP_IDS = [
@@ -143,30 +334,24 @@ function resolveDisplayReadiness(input: {
 export function resolveVerificationDisplayDecision(
   input: VerificationDisplayDecisionInput,
 ): VerificationDisplayDecision {
-  let source: VerificationDisplaySource | null = null;
-  let status: VerificationDisplayStatus | null = null;
+  let resolution: VerificationDisplayResolution = { source: null, status: null };
 
   if (input.explicitServerFailureStatus) {
-    source = 'explicit_server_failure';
-    status = input.explicitServerFailureStatus;
+    resolution = { source: 'explicit_server_failure', status: input.explicitServerFailureStatus };
   } else if (input.hasVerificationChecks && input.hardFailureDetected && input.summaryTone !== 'failed') {
-    source = 'hard_failure';
-    status = 'failed';
+    resolution = { source: 'hard_failure', status: 'failed' };
   } else if (input.summaryTone) {
-    source = 'summary';
-    status = SUMMARY_TONE_TO_DISPLAY_STATUS[input.summaryTone];
+    resolution = { source: 'summary', status: SUMMARY_TONE_TO_DISPLAY_STATUS[input.summaryTone] };
   } else if (input.hasVerificationChecks && input.hasCheckPending) {
-    source = 'pending';
-    status = 'warning';
+    resolution = { source: 'pending', status: 'warning' };
   }
 
   const readiness = resolveDisplayReadiness(input);
   return {
     readiness,
-    source,
-    status,
-    renderedStatus: readiness === 'ready' ? status : null,
-  };
+    ...resolution,
+    renderedStatus: readiness === 'ready' ? resolution.status : null,
+  } as VerificationDisplayDecision;
 }
 
 function resolveWorstStatus(left: VerificationStepStatus, right: VerificationStepStatus): VerificationStepStatus {
@@ -174,7 +359,7 @@ function resolveWorstStatus(left: VerificationStepStatus, right: VerificationSte
 }
 
 function buildCheckResultMap(
-  checks: readonly VerificationCheck[],
+  checks: readonly VerificationCheckStatusEvidence[],
 ): Map<VerificationCheckId, Pick<VerificationCheck, 'status'>> {
   const results = new Map<VerificationCheckId, Pick<VerificationCheck, 'status'>>();
   for (const check of checks) {
@@ -190,7 +375,7 @@ function buildCheckResultMap(
 }
 
 function deriveStageStatuses(
-  checks: readonly VerificationCheck[],
+  checks: readonly VerificationCheckStatusEvidence[],
   context: VerificationSummaryContext,
 ): VerificationStageStatuses {
   const results = buildCheckResultMap(checks);
@@ -203,6 +388,491 @@ function deriveStageStatuses(
       deriveStageStatusFromChecks(results, getVerificationRequiredCheckIdsForStep(stepId, requirementContext)),
     ]),
   ) as Record<VerificationStepId, VerificationStepStatus>;
+}
+
+function hasSameStageStatuses(left: VerificationStageStatuses, right: VerificationStageStatuses): boolean {
+  return VERIFICATION_STEP_IDS.every((stepId) => left[stepId] === right[stepId]);
+}
+
+function resolveEffectiveSthSourcesConfigured(
+  checks: readonly VerificationCheckStatusEvidence[],
+  expectedStageStatuses: VerificationStageStatuses,
+): boolean {
+  const withoutConfiguredSth = deriveStageStatuses(checks, { sthSourcesConfigured: false });
+  const thirdPartySthCheck = checks.find((check) => check.id === 'recorded_sth_third_party');
+  return (
+    (thirdPartySthCheck !== undefined && thirdPartySthCheck.status !== 'not_run') ||
+    expectedStageStatuses.recorded_as_cast !== withoutConfiguredSth.recorded_as_cast
+  );
+}
+
+export function hasCanonicalVerificationCheckEvidence(
+  checks: FullyVerifiedPresentationEvidenceInput['checks'],
+  devModeEvidence: boolean,
+): boolean {
+  if (checks.length !== VERIFICATION_CHECK_DEFINITIONS.length) {
+    return false;
+  }
+  return VERIFICATION_CHECK_DEFINITIONS.every((definition, index) => {
+    const check = checks[index];
+    const expectedEvidence = devModeEvidence && definition.evidence === 'zk' ? 'demo' : definition.evidence;
+    if (
+      !check ||
+      check.id !== definition.id ||
+      check.evidence !== expectedEvidence ||
+      check.inputs.length !== definition.inputs.length ||
+      check.inputs.some((input, index) => input !== definition.inputs[index]) ||
+      check.derivedFrom !== definition.derivedFrom
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
+/** Re-evaluates check statuses whose complete evidence is present in the public resource. */
+export function hasCoherentPublicFactDerivedCheckStatuses(input: {
+  readonly checks: readonly {
+    readonly id: VerificationCheckId;
+    readonly status: VerificationStepStatus;
+    readonly derivedFrom?: VerificationCheckId | undefined;
+    readonly noteKey?: VerificationCheck['noteKey'] | undefined;
+  }[];
+  readonly verificationStatus: VerificationStatus;
+  readonly voterEvidence:
+    | {
+        readonly availability: 'available';
+        readonly voteReceipt: {
+          readonly voteId: string;
+          readonly commitment: string;
+          readonly bulletinIndex: number;
+          readonly bulletinRootAtCast: string;
+          readonly castAtMs: number;
+          readonly inputCommitment: string;
+        };
+        readonly userVote: {
+          readonly voteId: string;
+          readonly commitment: string;
+          readonly proof: {
+            readonly leafIndex: number;
+            readonly treeSize: number;
+            readonly merklePath: readonly string[];
+            readonly bulletinRootAtCast: string;
+          };
+        };
+      }
+    | {
+        readonly availability: 'unavailable';
+        readonly reason: 'vote_id_unavailable' | 'exact_proof_unavailable';
+      };
+  readonly proof: {
+    readonly verifiedTally: readonly [number, number, number, number, number];
+    readonly missingSlots: number;
+    readonly invalidPresentedSlots: number;
+    readonly excludedSlots: number;
+    readonly totalExpected: number;
+    readonly treeSize: number;
+    readonly inputCommitment: string;
+  };
+  readonly presentation: {
+    readonly counts: Readonly<Record<VoteChoice, number>>;
+    readonly totalVotes: number;
+  };
+}): boolean {
+  const statusById = new Map(input.checks.map((check) => [check.id, check.status]));
+  for (const definition of VERIFICATION_CHECK_DEFINITIONS) {
+    const status = statusById.get(definition.id);
+    if (status === undefined || (definition.category === 'cast_as_intended' && status !== 'not_run')) {
+      return false;
+    }
+    if (definition.derivedFrom !== undefined && status !== statusById.get(definition.derivedFrom)) {
+      return false;
+    }
+  }
+  if (input.checks.some((check) => check.id !== 'counted_my_vote_included' && check.noteKey !== undefined)) {
+    return false;
+  }
+
+  const starkReceiptStatus = statusById.get('stark_receipt_verify');
+  const zkGateStatus =
+    input.verificationStatus === 'dev_mode'
+      ? starkReceiptStatus === 'not_run'
+        ? 'not_run'
+        : undefined
+      : resolveZkGateStatus(input.verificationStatus);
+  const myVoteIncludedCheck = input.checks.find((check) => check.id === 'counted_my_vote_included');
+  if (myVoteIncludedCheck === undefined) {
+    return false;
+  }
+  if (zkGateStatus !== undefined) {
+    if (myVoteIncludedCheck.status !== zkGateStatus || myVoteIncludedCheck.noteKey !== undefined) {
+      return false;
+    }
+  } else if (input.voterEvidence.availability === 'unavailable') {
+    const expectedNote =
+      input.proof.excludedSlots > 0
+        ? 'pages.verify.stepsCard.notes.myVoteIncluded.excluded'
+        : 'pages.verify.stepsCard.notes.myVoteIncluded.missingReceipt';
+    if (myVoteIncludedCheck.status !== 'not_run' || myVoteIncludedCheck.noteKey !== expectedNote) {
+      return false;
+    }
+  } else if (
+    myVoteIncludedCheck.noteKey === 'pages.verify.stepsCard.notes.myVoteIncluded.missingReceipt' ||
+    (myVoteIncludedCheck.status === 'success' && myVoteIncludedCheck.noteKey !== undefined)
+  ) {
+    return false;
+  }
+
+  const recordedCheckIds = [
+    'recorded_index_in_range',
+    'recorded_inclusion_proof',
+    'recorded_consistency_proof',
+  ] as const satisfies readonly VerificationCheckId[];
+  if (input.voterEvidence.availability === 'unavailable') {
+    if (recordedCheckIds.some((id) => statusById.get(id) !== 'not_run')) {
+      return false;
+    }
+  } else {
+    const voteReceipt = {
+      ...input.voterEvidence.voteReceipt,
+      timestamp: input.voterEvidence.voteReceipt.castAtMs,
+    };
+    const recordedIndexStatus = resolveRecordedIndexInRange(voteReceipt, input.proof.treeSize).status;
+    if (statusById.get('recorded_index_in_range') !== recordedIndexStatus) {
+      return false;
+    }
+    const recordedInclusionStatus = resolveRecordedInclusionProof({
+      voteReceipt,
+      userVote: {
+        ...input.voterEvidence.userVote,
+        proof: {
+          ...input.voterEvidence.userVote.proof,
+          merklePath: [...input.voterEvidence.userVote.proof.merklePath],
+        },
+      },
+    }).status;
+    if (statusById.get('recorded_inclusion_proof') !== recordedInclusionStatus) {
+      return false;
+    }
+  }
+
+  if (
+    zkGateStatus !== undefined &&
+    (statusById.get('counted_election_manifest_consistent') !== zkGateStatus ||
+      statusById.get('counted_close_statement_consistent') !== zkGateStatus ||
+      statusById.get('counted_input_commitment_match') !== zkGateStatus)
+  ) {
+    return false;
+  }
+
+  const expectedMissingIndicesStatus = resolveCountedMissingIndicesZero(
+    {
+      journal: undefined,
+      missingSlots: input.proof.missingSlots,
+      invalidPresentedSlots: input.proof.invalidPresentedSlots,
+      excludedSlots: input.proof.excludedSlots,
+    },
+    zkGateStatus,
+  ).status;
+  if (statusById.get('counted_missing_indices_zero') !== expectedMissingIndicesStatus) {
+    return false;
+  }
+
+  const expectedTallyStatus = resolveCountedTallyConsistent(
+    {
+      journal: undefined,
+      tally: { counts: input.presentation.counts, totalVotes: input.presentation.totalVotes },
+      verifiedTally: [
+        input.proof.verifiedTally[0],
+        input.proof.verifiedTally[1],
+        input.proof.verifiedTally[2],
+        input.proof.verifiedTally[3],
+        input.proof.verifiedTally[4],
+      ],
+    },
+    zkGateStatus,
+  ).status;
+  if (statusById.get('counted_tally_consistent') !== expectedTallyStatus) {
+    return false;
+  }
+
+  const expectedVsTreeStatus = resolveCountedExpectedVsTreeSize(
+    { journal: undefined, totalExpected: input.proof.totalExpected, treeSize: input.proof.treeSize },
+    zkGateStatus,
+  ).status;
+  return statusById.get('counted_expected_vs_tree_size') === expectedVsTreeStatus;
+}
+
+export function hasCoherentPublicVerifierChecks(input: {
+  readonly checks: readonly VerificationCheckStatusEvidence[];
+  readonly verifierResult: {
+    readonly status: VerificationStatus;
+    readonly report?:
+      | {
+          readonly receipt_image_id: string | null;
+          readonly dev_mode_receipt: boolean;
+        }
+      | undefined;
+  };
+}): boolean {
+  const imageIdCheck = input.checks.find((check) => check.id === 'stark_image_id_match');
+  const receiptCheck = input.checks.find((check) => check.id === 'stark_receipt_verify');
+  if (!imageIdCheck || !receiptCheck) {
+    return false;
+  }
+
+  switch (input.verifierResult.status) {
+    case 'not_run':
+      return imageIdCheck.status === 'not_run' && receiptCheck.status === 'not_run';
+    case 'running':
+      return imageIdCheck.status === 'running' && receiptCheck.status === 'running';
+    case 'failed':
+      return imageIdCheck.status === 'failed' && receiptCheck.status === 'failed';
+    case 'success':
+      return (
+        receiptCheck.status === 'success' &&
+        imageIdCheck.status === (input.verifierResult.report === undefined ? 'not_run' : 'success')
+      );
+    case 'dev_mode': {
+      if (receiptCheck.status === 'not_run' && imageIdCheck.status === 'not_run') {
+        return true;
+      }
+      const expectedImageStatus =
+        input.verifierResult.report === undefined
+          ? 'not_run'
+          : input.verifierResult.report.receipt_image_id === null
+            ? 'failed'
+            : 'success';
+      return receiptCheck.status === 'success' && imageIdCheck.status === expectedImageStatus;
+    }
+  }
+}
+
+function hasSamePresentationPolicy(
+  derived: VerificationPresentationPolicyResult,
+  candidate: SerializableVerificationPresentationPolicy,
+): boolean {
+  const derivedSummary = derived.summary;
+  const candidateSummary = candidate.summary;
+  return (
+    ((derivedSummary === null && candidateSummary === null) ||
+      (derivedSummary !== null &&
+        candidateSummary !== null &&
+        derivedSummary.status === candidateSummary.status &&
+        derivedSummary.tone === candidateSummary.tone &&
+        derivedSummary.messageKey === candidateSummary.messageKey)) &&
+    hasSameStageStatuses(derived.stageStatuses, candidate.stageStatuses) &&
+    derived.evidenceFullyVerified === candidate.evidenceFullyVerified &&
+    derived.fullyVerifiedLabelEligible === candidate.fullyVerifiedLabelEligible &&
+    derived.display.readiness === candidate.display.readiness &&
+    derived.display.source === candidate.display.source &&
+    derived.display.status === candidate.display.status &&
+    derived.display.renderedStatus === candidate.display.renderedStatus &&
+    derived.publishedTallyMismatch === candidate.publishedTallyMismatch &&
+    derived.devModeEvidence === candidate.devModeEvidence &&
+    derived.missingEvidence === candidate.missingEvidence &&
+    derived.explanationKey === candidate.explanationKey
+  );
+}
+
+export function hasCoherentPublicPresentationPolicy(input: {
+  readonly checks: FullyVerifiedPresentationEvidenceInput['checks'];
+  readonly policy: SerializableVerificationPresentationPolicy;
+  readonly proof: Pick<
+    VerificationSummaryContext,
+    'missingSlots' | 'invalidPresentedSlots' | 'rejectedRecords' | 'excludedSlots'
+  >;
+  readonly verificationStatus: VerificationStatus;
+  readonly verificationReportStatus?: VerificationStatus | undefined;
+  readonly devModeEvidence: boolean;
+}): boolean {
+  const checks = projectCanonicalVerificationChecks(input.checks, input.devModeEvidence);
+  if (!checks) {
+    return false;
+  }
+  return [false, true].some((sthSourcesConfigured) =>
+    hasSamePresentationPolicy(
+      deriveVerificationPresentationPolicy({
+        availability: 'available',
+        checks,
+        context: { ...input.proof, sthSourcesConfigured },
+        verificationStatus: input.verificationStatus,
+        ...(input.verificationReportStatus === undefined
+          ? {}
+          : { verificationReportStatus: input.verificationReportStatus }),
+      }),
+      input.policy,
+    ),
+  );
+}
+
+function projectCanonicalVerificationChecks(
+  checks: FullyVerifiedPresentationEvidenceInput['checks'],
+  devModeEvidence: boolean,
+): VerificationCheck[] | undefined {
+  if (!hasCanonicalVerificationCheckEvidence(checks, devModeEvidence)) {
+    return undefined;
+  }
+  return VERIFICATION_CHECK_DEFINITIONS.map((definition, index) => {
+    const check = checks[index];
+    if (!check) {
+      return undefined;
+    }
+    return {
+      id: definition.id,
+      status: check.status,
+      evidence: devModeEvidence && definition.evidence === 'zk' ? 'demo' : definition.evidence,
+      inputs: [...definition.inputs],
+      ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
+    };
+  }).filter((check): check is VerificationCheck => check !== undefined);
+}
+
+export function hasCoherentVerificationReportExpectedImageId(
+  report: { readonly expected_image_id: string } | undefined,
+  proofImageId: string,
+): boolean {
+  return report === undefined || normalizeHexString(report.expected_image_id) === normalizeHexString(proofImageId);
+}
+
+export function hasCoherentAvailableVoterEvidence(input: {
+  readonly voterEvidence: FullyVerifiedAvailableVoterEvidenceInput;
+  readonly proofAuthority: {
+    readonly bulletinRoot: string;
+    readonly inputCommitment: string;
+    readonly treeSize: number;
+  };
+}): boolean {
+  const { voteReceipt, userVote } = input.voterEvidence;
+  const castTreeSize = userVote.proof.treeSize;
+  if (
+    voteReceipt.voteId !== userVote.voteId ||
+    normalizeHexString(voteReceipt.commitment) !== normalizeHexString(userVote.commitment) ||
+    voteReceipt.bulletinIndex !== userVote.proof.leafIndex ||
+    normalizeHexString(voteReceipt.bulletinRootAtCast) !== normalizeHexString(userVote.proof.bulletinRootAtCast) ||
+    normalizeHexString(voteReceipt.inputCommitment) !== normalizeHexString(input.proofAuthority.inputCommitment) ||
+    !Number.isSafeInteger(userVote.proof.leafIndex) ||
+    userVote.proof.leafIndex < 0 ||
+    !Number.isSafeInteger(castTreeSize) ||
+    castTreeSize !== voteReceipt.bulletinIndex + 1 ||
+    userVote.proof.leafIndex >= castTreeSize ||
+    castTreeSize > input.proofAuthority.treeSize
+  ) {
+    return false;
+  }
+  return (
+    castTreeSize !== input.proofAuthority.treeSize ||
+    normalizeHexString(userVote.proof.bulletinRootAtCast) === normalizeHexString(input.proofAuthority.bulletinRoot)
+  );
+}
+
+export function hasCoherentTamperPresentation(input: {
+  readonly scenarioId: string;
+  readonly tamperDetected: boolean;
+  readonly tamperedCount: number;
+  readonly proof: {
+    readonly missingSlots: number;
+    readonly invalidPresentedSlots: number;
+    readonly rejectedRecords: number;
+    readonly excludedSlots: number;
+  };
+  readonly tamperSummary?: FullyVerifiedPresentationEvidenceInput['presentation']['tamperSummary'];
+}): boolean {
+  if (input.scenarioId !== 'S0' && !input.tamperDetected) {
+    return false;
+  }
+  if (input.tamperDetected) {
+    return true;
+  }
+  const tamperSummary = input.tamperSummary;
+  return (
+    input.tamperedCount === 0 &&
+    input.proof.missingSlots === 0 &&
+    input.proof.invalidPresentedSlots === 0 &&
+    input.proof.rejectedRecords === 0 &&
+    input.proof.excludedSlots === 0 &&
+    (tamperSummary === undefined ||
+      (tamperSummary.ignoredVotes === 0 &&
+        tamperSummary.recountedVotes === 0 &&
+        tamperSummary.userRecountedTo === null &&
+        (tamperSummary.affectedBotIds?.length ?? 0) === 0))
+  );
+}
+
+/** Recomputes every public fact that can authorize the fully verified presentation. */
+export function hasCoherentFullyVerifiedPresentationEvidence(input: FullyVerifiedPresentationEvidenceInput): boolean {
+  const verificationReport = input.verificationReport;
+  if (
+    input.scenarioId !== 'S0' ||
+    input.verificationStatus !== 'success' ||
+    input.voterEvidence.availability !== 'available' ||
+    normalizeHexString(input.proof.seenBitmapRoot) !== normalizeHexString(input.proof.includedBitmapRoot) ||
+    (verificationReport !== undefined &&
+      (verificationReport.status !== 'success' ||
+        !hasCoherentVerificationReportExpectedImageId(verificationReport, input.proof.imageId) ||
+        verificationReport.receipt_image_id === null ||
+        normalizeHexString(verificationReport.receipt_image_id) !== normalizeHexString(input.proof.imageId))) ||
+    !hasCoherentAvailableVoterEvidence({
+      voterEvidence: input.voterEvidence,
+      proofAuthority: input.proof,
+    }) ||
+    !hasCoherentTamperPresentation({
+      scenarioId: input.scenarioId,
+      tamperDetected: input.presentation.tamperDetected ?? false,
+      tamperedCount: input.presentation.tamperedCount ?? 0,
+      proof: input.proof,
+      tamperSummary: input.presentation.tamperSummary,
+    }) ||
+    input.presentation.tamperDetected === true ||
+    input.proof.missingSlots !== 0 ||
+    input.proof.invalidPresentedSlots !== 0 ||
+    input.proof.rejectedRecords !== 0 ||
+    input.proof.excludedSlots !== 0 ||
+    input.proof.treeSize !== input.proof.totalExpected ||
+    input.proof.seenIndicesCount !== input.proof.treeSize
+  ) {
+    return false;
+  }
+
+  const checks = projectCanonicalVerificationChecks(input.checks, false);
+  if (!checks) {
+    return false;
+  }
+  const sthSourcesConfigured = resolveEffectiveSthSourcesConfigured(checks, input.stageStatuses);
+  const derivedPolicy = deriveVerificationPresentationPolicy({
+    availability: 'available',
+    checks,
+    context: {
+      missingSlots: input.proof.missingSlots,
+      invalidPresentedSlots: input.proof.invalidPresentedSlots,
+      rejectedRecords: input.proof.rejectedRecords,
+      excludedSlots: input.proof.excludedSlots,
+      sthSourcesConfigured,
+      devModeEvidence: false,
+    },
+    verificationStatus: input.verificationStatus,
+    verificationReportStatus: input.verificationStatus,
+  });
+  if (
+    !derivedPolicy.fullyVerifiedLabelEligible ||
+    !hasSameStageStatuses(derivedPolicy.stageStatuses, input.stageStatuses)
+  ) {
+    return false;
+  }
+
+  const verifiedCounts: Readonly<Record<VoteChoice, number>> = {
+    A: input.proof.verifiedTally[0],
+    B: input.proof.verifiedTally[1],
+    C: input.proof.verifiedTally[2],
+    D: input.proof.verifiedTally[3],
+    E: input.proof.verifiedTally[4],
+  };
+  const verifiedTotal = VOTE_CHOICES.reduce((sum, choice) => sum + verifiedCounts[choice], 0);
+  return (
+    VOTE_CHOICES.every((choice) => input.presentation.counts[choice] === verifiedCounts[choice]) &&
+    input.presentation.totalVotes === verifiedTotal &&
+    input.presentation.totalVotes === input.proof.totalExpected
+  );
 }
 
 function hasFailedCheck(checks: readonly VerificationCheck[], ids: ReadonlySet<VerificationCheckId>): boolean {
@@ -269,19 +939,20 @@ function hasExplicitProofFailure(
 function deriveUnavailableDisplay(
   availability: Exclude<VerificationAvailability, 'available'>,
   input: Pick<VerificationPresentationPolicyInput, 'verificationStarted' | 'sequenceComplete'>,
-): VerificationDisplayDecision {
+): Exclude<VerificationDisplayDecision, FullyVerifiedDisplayDecision> {
   const readiness = resolveDisplayReadiness({
     verificationStarted: input.verificationStarted ?? true,
     sequenceComplete: input.sequenceComplete ?? true,
     hasCheckPending: false,
   });
-  const status: VerificationDisplayStatus = availability === 'corrupt' ? 'failed' : 'warning';
-  return {
-    readiness,
-    source: availability,
-    status,
-    renderedStatus: readiness === 'ready' ? status : null,
-  };
+  if (availability === 'corrupt') {
+    return readiness === 'ready'
+      ? { readiness: 'ready', source: 'corrupt', status: 'failed', renderedStatus: 'failed' }
+      : { readiness, source: 'corrupt', status: 'failed', renderedStatus: null };
+  }
+  return readiness === 'ready'
+    ? { readiness: 'ready', source: 'unavailable', status: 'warning', renderedStatus: 'warning' }
+    : { readiness, source: 'unavailable', status: 'warning', renderedStatus: null };
 }
 
 const NOT_RUN_STAGE_STATUSES: VerificationStageStatuses = {
@@ -339,15 +1010,47 @@ export function deriveVerificationPresentationPolicy(
     !hardFailureDetected &&
     explicitServerFailureStatus === null;
 
-  return {
+  const stageStatuses = deriveStageStatuses(checks, context);
+  if (
+    evidenceFullyVerified &&
+    summary.status === 'fully_verified' &&
+    summary.tone === 'verified' &&
+    isFullyVerifiedDisplayDecision(display) &&
+    areAllVerificationStagesSuccessful(stageStatuses) &&
+    !devModeEvidence
+  ) {
+    return {
+      [fullyVerifiedEligibilityWitness]: true,
+      summary: { ...summary, status: 'fully_verified', tone: 'verified' },
+      stageStatuses,
+      evidenceFullyVerified: true,
+      fullyVerifiedLabelEligible: true,
+      display: {
+        readiness: 'ready',
+        source: 'summary',
+        status: 'verified',
+        renderedStatus: 'verified',
+      },
+      publishedTallyMismatch: false,
+      devModeEvidence: false,
+      missingEvidence: false,
+    };
+  }
+
+  const ineligibleResult = {
     summary,
-    stageStatuses: deriveStageStatuses(checks, context),
+    stageStatuses,
     evidenceFullyVerified,
-    fullyVerifiedLabelEligible: evidenceFullyVerified && display.renderedStatus === 'verified',
+    fullyVerifiedLabelEligible: false as const,
     display,
     publishedTallyMismatch: summary?.status === 'published_tally_mismatch',
     devModeEvidence,
     missingEvidence: summary === null || summary.status === 'missing_evidence',
     ...(summary?.messageKey ? { explanationKey: summary.messageKey } : {}),
   };
+
+  if (isFullyVerifiedDisplayDecision(display)) {
+    throw new Error('Verification presentation policy derived contradictory fully verified facts');
+  }
+  return { ...ineligibleResult, display };
 }

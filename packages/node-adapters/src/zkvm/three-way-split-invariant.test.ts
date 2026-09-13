@@ -16,7 +16,7 @@ import { describe, it, expect } from 'vitest';
 import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { createElectionId } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { executeMockZkVM } from './mock-executor';
-import { createTestVoteWithProof, generateElectionConfigHash, generateDefaultLogId } from './__tests__/test-helpers';
+import { createTestVoteWithProof, generateElectionConfigHash, generateDefaultLogId } from './test-support/test-helpers';
 
 describe('Three-way Split Semantics', () => {
   describe('Current contract: excludedSlots mirrors slot-based exclusions', () => {

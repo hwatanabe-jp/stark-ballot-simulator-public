@@ -1,4 +1,4 @@
-import type { ApiHandlerArguments, ClientRateLimitedContext } from '../context';
+import type { ApiHandlerArguments, ClientRateLimitedContext, RouteBoundResponse } from '../context';
 import { createSessionRoute } from '@stark-ballot/api-contract/routes';
 import { respondWithRoute } from '../utils/responseSchema';
 import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sessionCapabilityToken';
@@ -7,8 +7,8 @@ import {
   resolveSessionCapabilityTtlSeconds,
 } from '../security/sessionCapabilityRuntimeConfig';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
-import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
-import { errorResponse } from '../../http/response';
+import { createSessionWithinCapacity } from '@stark-ballot/application/session/create-session';
+import { respondWithApplicationError } from '../utils/applicationErrorResponse';
 
 const DEFAULT_MAX_SESSIONS = 100;
 
@@ -48,20 +48,16 @@ function resolveMaxSessions(): number {
  */
 export async function createSessionHandler({
   context,
-}: ApiHandlerArguments<typeof createSessionRoute, ClientRateLimitedContext>): Promise<Response> {
+}: ApiHandlerArguments<typeof createSessionRoute, ClientRateLimitedContext>): Promise<
+  RouteBoundResponse<typeof createSessionRoute>
+> {
   const { store } = context;
   const maxSessions = resolveMaxSessions();
-  const activeSessions = await store.getActiveSessionCount();
-  if (activeSessions >= maxSessions) {
-    return errorResponse(ErrorCode.SESSION_LIMIT_EXCEEDED);
+  const result = await createSessionWithinCapacity(store, maxSessions);
+  if (!result.ok) {
+    return respondWithApplicationError(createSessionRoute, result.error);
   }
-
-  const { sessionId, electionId, electionConfigHash, logId } = await store.createSession();
-  if (!sessionId || !electionId || !electionConfigHash || !logId) {
-    return errorResponse(ErrorCode.INTERNAL_ERROR, {
-      details: 'Session store returned incomplete identity authority',
-    });
-  }
+  const { sessionId, electionId, electionConfigHash, logId } = result.value;
   const capabilityToken = createSessionCapabilityToken(
     {
       sessionId,

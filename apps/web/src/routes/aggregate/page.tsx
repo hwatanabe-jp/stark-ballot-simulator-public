@@ -1,8 +1,6 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@stark-ballot/web/components/ui/Card';
-import { Badge } from '@stark-ballot/web/components/ui/Badge';
 import {
   FinalizeButton,
   ProgressDisplay,
@@ -12,7 +10,6 @@ import {
 import { useTranslation } from '@stark-ballot/web/hooks';
 import {
   captureSessionIdentity,
-  clearSession,
   getSessionData,
   getSessionDataForIdentity,
   isSessionReplacedForIdentity,
@@ -28,7 +25,10 @@ import {
 } from '@stark-ballot/web/knowledge';
 import { TurnstileWidget } from '@stark-ballot/web/components/security/TurnstileWidget';
 import { isBrowserTurnstileRequiredForAction } from '@stark-ballot/web/components/security/turnstilePolicy';
-import { clearClientFinalizedProjection } from '@stark-ballot/web/finalize/client-finalization-boundary';
+import {
+  clearClientFinalizedProjection,
+  clearClientSessionAuthority,
+} from '@stark-ballot/web/finalize/client-finalization-boundary';
 import {
   projectFinalizationResourceToClientSnapshot,
   projectClientFinalizationSnapshotForKnowledge,
@@ -43,6 +43,7 @@ import type { FinalizationResource, FinalizationQueue } from '@stark-ballot/api-
 import { resolveApiClientErrorCode } from '@stark-ballot/web/api/client';
 import { useAppRouter } from '@stark-ballot/web/navigation/appNavigation';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import '@stark-ballot/web/components/aggregate/AggregationViews.css';
 
 type FinalizationPhase = 'idle' | 'submitting' | 'queued' | 'running' | 'succeeded' | 'failed';
 
@@ -73,38 +74,40 @@ export default function AggregatePage(): React.ReactElement {
   );
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const requireFinalizeTurnstile = isBrowserTurnstileRequiredForAction('finalize');
-  const [error, setError] = useState<string | null>(null);
-  const [phase, setPhase] = useState<FinalizationPhase>('idle');
+  const [expectedSessionIdentity] = useState(() => captureSessionIdentity(getSessionData()));
+  const [error, setError] = useState<string | null>(() =>
+    isSessionReplacedForIdentity(expectedSessionIdentity) || isSessionReplaced()
+      ? t('pages.aggregate.errors.sessionReplaced')
+      : null,
+  );
+  const [phase, setPhase] = useState<FinalizationPhase>(error ? 'failed' : 'idle');
   const [queueInfo, setQueueInfo] = useState<QueueInfo>({});
-  const [queuedAt, setQueuedAt] = useState<number | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const navigationTimeoutRef = useRef<number | null>(null);
-  const [expectedSessionIdentity] = useState(() => captureSessionIdentity(getSessionData()));
-  const expectedSessionIdentityRef = useRef(expectedSessionIdentity);
+  const submissionControllerRef = useRef<AbortController | null>(null);
   const expectedSessionId = expectedSessionIdentity?.sessionId;
 
   const getExpectedSession = useCallback(
-    () => getSessionDataForIdentity(expectedSessionIdentityRef.current),
-    [expectedSessionIdentityRef],
+    () => getSessionDataForIdentity(expectedSessionIdentity),
+    [expectedSessionIdentity],
   );
 
   const resolveSessionErrorMessage = useCallback(
     (): string =>
-      isSessionReplacedForIdentity(expectedSessionIdentityRef.current) || isSessionReplaced()
+      isSessionReplacedForIdentity(expectedSessionIdentity) || isSessionReplaced()
         ? t('pages.aggregate.errors.sessionReplaced')
         : t('pages.aggregate.errors.sessionNotFound'),
-    [t],
+    [expectedSessionIdentity, t],
   );
 
   const scheduleResultNavigation = useCallback(
     (finalizationResult: ClientFinalizationSnapshot): void => {
       setPhase('succeeded');
       mergeKnowledgeFromApi(
-        'result',
         projectClientFinalizationSnapshotForKnowledge(finalizationResult),
         knowledgeOptions(expectedSessionId, VERIFICATION_GATED_KEYS),
       );
-      saveSessionDataForIdentity(expectedSessionIdentityRef.current, {
+      saveSessionDataForIdentity(expectedSessionIdentity, {
         finalizeResult: finalizationResult,
         phase: 'verifying',
       });
@@ -112,10 +115,15 @@ export default function AggregatePage(): React.ReactElement {
         window.clearTimeout(navigationTimeoutRef.current);
       }
       navigationTimeoutRef.current = window.setTimeout(() => {
+        if (!getExpectedSession()) {
+          setError(resolveSessionErrorMessage());
+          setPhase('failed');
+          return;
+        }
         router.push('/result');
       }, RESULT_TRANSITION_DELAY_MS);
     },
-    [expectedSessionId, router],
+    [expectedSessionId, expectedSessionIdentity, getExpectedSession, resolveSessionErrorMessage, router],
   );
 
   const handleMissingFinalizeResult = useCallback(
@@ -128,19 +136,17 @@ export default function AggregatePage(): React.ReactElement {
   );
 
   const handleMissingSession = useCallback((): void => {
-    clearSession();
+    clearClientSessionAuthority(expectedSessionIdentity);
     setQueueInfo({});
-    setQueuedAt(null);
     setStartedAt(null);
     setError(resolveSessionErrorMessage());
     setPhase('failed');
-  }, [resolveSessionErrorMessage]);
+  }, [expectedSessionIdentity, resolveSessionErrorMessage]);
 
   const handleTerminalFailure = useCallback(
     (resource: Extract<FinalizationResource, { status: 'failed' | 'timeout' }>): void => {
-      clearClientFinalizedProjection(expectedSessionIdentityRef.current);
+      clearClientFinalizedProjection(expectedSessionIdentity);
       setQueueInfo({});
-      setQueuedAt(null);
       setStartedAt(null);
       setPhase('failed');
 
@@ -150,20 +156,20 @@ export default function AggregatePage(): React.ReactElement {
       }
       setError(t('pages.aggregate.errors.timeout'));
     },
-    [t],
+    [expectedSessionIdentity, t],
   );
 
   const handleSucceededResource = useCallback(
     (resource: Extract<FinalizationResource, { status: 'succeeded' }>, context: string): void => {
       const canonicalFinalizationResult = projectFinalizationResourceToClientSnapshot(resource);
       if (!canonicalFinalizationResult) {
-        clearClientFinalizedProjection(expectedSessionIdentityRef.current);
+        clearClientFinalizedProjection(expectedSessionIdentity);
         handleMissingFinalizeResult(context);
         return;
       }
       scheduleResultNavigation(canonicalFinalizationResult);
     },
-    [handleMissingFinalizeResult, scheduleResultNavigation],
+    [expectedSessionIdentity, handleMissingFinalizeResult, scheduleResultNavigation],
   );
 
   const applyFinalizationResource = useCallback(
@@ -172,19 +178,17 @@ export default function AggregatePage(): React.ReactElement {
       switch (resource.status) {
         case 'pending':
           setPhase('queued');
-          setQueuedAt(resource.queuedAtMs);
           setStartedAt(null);
           setQueueInfo(queue ? toQueueInfo(queue) : {});
           setError(null);
-          saveSessionDataForIdentity(expectedSessionIdentityRef.current, { phase: 'finalizing' });
+          saveSessionDataForIdentity(expectedSessionIdentity, { phase: 'finalizing' });
           return;
         case 'running':
           setPhase('running');
-          setQueuedAt(resource.queuedAtMs);
           setStartedAt(resource.startedAtMs);
           setQueueInfo(queue ? toQueueInfo(queue) : {});
           setError(null);
-          saveSessionDataForIdentity(expectedSessionIdentityRef.current, { phase: 'finalizing' });
+          saveSessionDataForIdentity(expectedSessionIdentity, { phase: 'finalizing' });
           return;
         case 'succeeded':
           handleSucceededResource(resource, 'current-finalization');
@@ -195,11 +199,12 @@ export default function AggregatePage(): React.ReactElement {
           return;
       }
     },
-    [handleSucceededResource, handleTerminalFailure],
+    [expectedSessionIdentity, handleSucceededResource, handleTerminalFailure],
   );
 
   useEffect(() => {
     return () => {
+      submissionControllerRef.current?.abort();
       if (navigationTimeoutRef.current) {
         window.clearTimeout(navigationTimeoutRef.current);
       }
@@ -211,7 +216,7 @@ export default function AggregatePage(): React.ReactElement {
       if (event.key !== SESSION_STORAGE_KEY) {
         return;
       }
-      if (!isSessionReplacedForIdentity(expectedSessionIdentityRef.current)) {
+      if (!isSessionReplacedForIdentity(expectedSessionIdentity)) {
         return;
       }
       setError(t('pages.aggregate.errors.sessionReplaced'));
@@ -222,45 +227,24 @@ export default function AggregatePage(): React.ReactElement {
     return () => {
       window.removeEventListener('storage', handleStorage);
     };
-  }, [t]);
-
-  const scrollToBottom = useCallback((): void => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    const prefersReducedMotion =
-      typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const behavior: ScrollBehavior = prefersReducedMotion ? 'auto' : 'smooth';
-    window.setTimeout(() => {
-      try {
-        window.scrollTo({ top: document.documentElement.scrollHeight, behavior });
-      } catch {
-        // no-op
-      }
-    }, 60);
-  }, []);
+  }, [expectedSessionIdentity, t]);
 
   const handleScenarioChange = useCallback(
     (scenarioId: ScenarioId): void => {
-      if (isSessionReplacedForIdentity(expectedSessionIdentityRef.current)) {
+      if (isSessionReplacedForIdentity(expectedSessionIdentity)) {
         setError(t('pages.aggregate.errors.sessionReplaced'));
         setPhase('failed');
         return;
       }
       setSelectedScenario(scenarioId);
       saveKnowledgeData({ scenarioId }, knowledgeOptions(expectedSessionId));
-      scrollToBottom();
     },
-    [expectedSessionId, scrollToBottom, t],
+    [expectedSessionId, expectedSessionIdentity, t],
   );
 
   useEffect(() => {
     const sessionData = getExpectedSession();
     if (!sessionData?.sessionId) {
-      if (isSessionReplacedForIdentity(expectedSessionIdentityRef.current)) {
-        setError(t('pages.aggregate.errors.sessionReplaced'));
-        setPhase('failed');
-      }
       return;
     }
 
@@ -269,12 +253,6 @@ export default function AggregatePage(): React.ReactElement {
 
     const restoreFinalization = async () => {
       try {
-        if (!getExpectedSession()) {
-          setError(t('pages.aggregate.errors.sessionReplaced'));
-          setPhase('failed');
-          return;
-        }
-
         const resource = await fetchCurrentFinalization(sessionData, {
           signal: controller.signal,
         });
@@ -389,6 +367,7 @@ export default function AggregatePage(): React.ReactElement {
   }, [getExpectedSession, applyFinalizationResource, handleMissingSession, phase, resolveSessionErrorMessage, t]);
 
   const handleFinalize = useCallback(async () => {
+    if (submissionControllerRef.current) return;
     const sessionData = getExpectedSession();
     if (!sessionData?.sessionId) {
       setError(resolveSessionErrorMessage());
@@ -406,6 +385,8 @@ export default function AggregatePage(): React.ReactElement {
       return;
     }
 
+    const controller = new AbortController();
+    submissionControllerRef.current = controller;
     setPhase('submitting');
     setError(null);
 
@@ -415,11 +396,16 @@ export default function AggregatePage(): React.ReactElement {
       const scenarioId = selectedScenario;
       let result;
       try {
-        result = await startFinalization(sessionData, {
-          scenarioId,
-          ...(turnstileToken ? { turnstileToken } : {}),
-        });
+        result = await startFinalization(
+          sessionData,
+          {
+            scenarioId,
+            ...(turnstileToken ? { turnstileToken } : {}),
+          },
+          { signal: controller.signal },
+        );
       } catch (requestError) {
+        if (controller.signal.aborted) return;
         const errorCode = resolveApiClientErrorCode(requestError);
         if (errorCode === 'CAPTCHA_FAILED') {
           setError(t('errors.captchaFailed'));
@@ -430,11 +416,20 @@ export default function AggregatePage(): React.ReactElement {
         throw requestError;
       }
 
+      if (controller.signal.aborted) return;
+      if (!getExpectedSession()) {
+        setError(resolveSessionErrorMessage());
+        setPhase('failed');
+        return;
+      }
       applyFinalizationResource(result.data);
     } catch (err) {
+      if (controller.signal.aborted) return;
       console.error('[AggregatePage] Finalize error:', err);
       setError(err instanceof Error ? err.message : t('errors.generic'));
       setPhase('failed');
+    } finally {
+      if (submissionControllerRef.current === controller) submissionControllerRef.current = null;
     }
   }, [
     getExpectedSession,
@@ -462,82 +457,62 @@ export default function AggregatePage(): React.ReactElement {
       : t('pages.aggregate.progress.description.processing');
 
   return (
-    <div className="max-w-2xl mx-auto px-4 md:px-6 py-6">
-      {/* Page Header */}
-      <div className="mb-8">
-        <h1 className="font-display text-[var(--text-display)] font-bold text-ink-900 mb-3 tracking-[var(--tracking-display)] leading-[var(--leading-display)]">
-          {t('pages.aggregate.title')}
-        </h1>
-        {!showProgress && (
-          <p className="font-secondary text-text-secondary leading-relaxed">{t('pages.aggregate.description')}</p>
-        )}
+    <div className="aggregate-page">
+      <div className="page-intro">
+        <h1 className="page-title">{t('pages.aggregate.title')}</h1>
+        {!showProgress && <p>{t('pages.aggregate.description')}</p>}
       </div>
 
-      {/* Progress Display (shown during finalization) */}
       {showProgress && (
-        <Card className="mb-6 animate-fade-in">
-          <CardHeader>
-            <CardTitle className="font-primary text-xl">{progressTitle}</CardTitle>
-            <CardDescription>{progressDescription}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ProgressDisplay
-              status={progressStatus}
-              queuedAt={queuedAt}
-              startedAt={startedAt}
-              {...omitUndefinedProperties({
-                estimatedDurationMs: queueInfo.estimatedDurationMs,
-                concurrencyLimit: queueInfo.concurrencyLimit,
-              })}
-            />
-          </CardContent>
-        </Card>
+        <section className="aggregate-progress" aria-labelledby="aggregate-progress-title">
+          <div className="aggregate-section-heading">
+            <h2 id="aggregate-progress-title">{progressTitle}</h2>
+            <p>{progressDescription}</p>
+          </div>
+          <ProgressDisplay
+            status={progressStatus}
+            startedAt={startedAt}
+            {...omitUndefinedProperties({
+              estimatedDurationMs: queueInfo.estimatedDurationMs,
+              concurrencyLimit: queueInfo.concurrencyLimit,
+            })}
+          />
+        </section>
       )}
 
-      {/* Scenario Selector (hidden during processing) */}
       {!showProgress && (
-        <>
-          <Card className="mb-6">
-            <CardHeader>
-              <CardTitle className="font-primary text-xl text-ink-800">
-                {t('pages.aggregate.scenarios.cardTitle')}
-              </CardTitle>
-              <CardDescription>{t('pages.aggregate.scenarios.description')}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <TamperScenarioSelector
-                value={selectedScenario}
-                onChange={handleScenarioChange}
-                disabled={isProcessing}
-              />
-            </CardContent>
-          </Card>
+        <div className="aggregate-controls">
+          <section aria-labelledby="aggregate-scenarios-title">
+            <div className="aggregate-section-heading">
+              <h2 id="aggregate-scenarios-title">{t('pages.aggregate.scenarios.cardTitle')}</h2>
+              <p>{t('pages.aggregate.scenarios.description')}</p>
+            </div>
+            <TamperScenarioSelector value={selectedScenario} onChange={handleScenarioChange} disabled={isProcessing} />
+          </section>
 
           {requireFinalizeTurnstile && (
-            <div className="mb-6 flex justify-center">
+            <div className="aggregate-captcha">
               <TurnstileWidget action="finalize" onTokenChange={setTurnstileToken} disabled={isProcessing} />
             </div>
           )}
 
-          {/* Error Display */}
           {error && (
-            <div className="mb-6 animate-fade-in">
-              <Badge variant="error" size="medium" className="w-full justify-center py-3">
-                {error}
-              </Badge>
-            </div>
+            <p className="aggregate-error" role="alert">
+              {error}
+            </p>
           )}
 
-          {/* Submit Button */}
-          <FinalizeButton
-            onClick={() => {
-              void handleFinalize();
-            }}
-            disabled={!selectedScenario || (requireFinalizeTurnstile && !turnstileToken) || isProcessing}
-            loading={phase === 'submitting'}
-            className="py-4 text-lg"
-          />
-        </>
+          <div className="aggregate-actions">
+            <FinalizeButton
+              onClick={() => {
+                void handleFinalize();
+              }}
+              disabled={!selectedScenario || (requireFinalizeTurnstile && !turnstileToken) || isProcessing}
+              loading={phase === 'submitting'}
+              className="aggregate-start"
+            />
+          </div>
+        </div>
       )}
     </div>
   );

@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { asCapabilityToken, type CapabilityToken, type SessionId } from '@stark-ballot/domain/types/identifiers';
 
 const TOKEN_VERSION = 'v1';
 export const DEFAULT_SESSION_CAPABILITY_TTL_SECONDS = 24 * 60 * 60;
@@ -12,7 +13,7 @@ interface SessionCapabilityClaims {
 }
 
 export interface SessionCapabilityPayload {
-  sessionId: string;
+  sessionId: SessionId;
   issuedAt: number;
   expiresAt: number;
   nonce: string;
@@ -21,20 +22,21 @@ export interface SessionCapabilityPayload {
 export type SessionCapabilityVerifyFailureReason = 'invalid' | 'expired' | 'session_mismatch';
 
 export type SessionCapabilityVerifyResult =
-  { ok: true; payload: SessionCapabilityPayload } | { ok: false; reason: SessionCapabilityVerifyFailureReason };
+  | { ok: true; payload: SessionCapabilityPayload }
+  | { ok: false; reason: SessionCapabilityVerifyFailureReason };
 
 /**
  * Create a signed capability token bound to a session ID.
  */
 export function createSessionCapabilityToken(
   options: {
-    sessionId: string;
+    sessionId: SessionId;
     nowMs?: number;
     ttlSeconds?: number;
     nonce?: string;
   },
   secret: string,
-): string {
+): CapabilityToken {
   const sessionId = options.sessionId.trim();
   if (!sessionId) {
     throw new Error('sessionId is required to create capability token');
@@ -58,17 +60,17 @@ export function createSessionCapabilityToken(
   const message = `${TOKEN_VERSION}.${payload}`;
   const signature = sign(message, secret);
 
-  return `${message}.${signature}`;
+  return asCapabilityToken(`${message}.${signature}`);
 }
 
 /**
  * Verify and decode a signed capability token.
  */
 export function verifySessionCapabilityToken(
-  token: string,
+  token: CapabilityToken,
   secret: string,
   options: {
-    sessionId: string;
+    sessionId: SessionId;
     nowMs?: number;
     maxTtlSeconds?: number;
   },
@@ -133,7 +135,7 @@ export function verifySessionCapabilityToken(
   return {
     ok: true,
     payload: {
-      sessionId: claims.sid,
+      sessionId: options.sessionId,
       issuedAt: claims.iat,
       expiresAt: claims.exp,
       nonce: claims.nonce,

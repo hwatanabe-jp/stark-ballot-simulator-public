@@ -54,25 +54,32 @@ import {
   canonicalRecordJson,
   canonicalJsonSha256,
   parseDigestPinnedImageReference,
-  parseImmutableObjectReference,
   parseS3VersionId,
   parseSha256,
   resolveAllowedDeploymentTarget,
   resolveDeploymentLaneAuthority,
-  validateAcceptedReleasePointer,
   type DigestPinnedImagePolicy,
   type ImmutableObjectReference,
 } from '@stark-ballot/deployment-authority';
 import {
-  validateAcceptedDeploymentCurrentAuthority,
-  validateAcceptedDeploymentCurrentAuthorityProjection,
-} from '@stark-ballot/deployment-authority/app-acceptance';
-import {
-  validateProverReleaseRecord,
-  validateToolchainArtifactRecord,
-} from '@stark-ballot/deployment-authority/ecr-retention';
+  PROVER_RELEASE_KIND,
+  TOOLCHAIN_RELEASE_KIND,
+  createReleaseLedger,
+} from '@stark-ballot/deployment-authority/release-ledger';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { createHash } from 'node:crypto';
+import {
+  bindAppAcceptanceSelection,
+  admitAppCurrentAcceptancePointer,
+} from '@stark-ballot/deployment-authority/app-acceptance-ledger';
+import {
+  assertUnproxiedPortShell,
+  captureExactPortRecord,
+  invokeExactPort,
+} from '@stark-ballot/deployment-authority/conditional-object-ledger';
+import { snapshotDataTree, snapshotDenseArray } from '@stark-ballot/deployment-authority/descriptor-snapshot';
+import { snapshotBoundedBytes } from '@stark-ballot/deployment-authority/exact-bytes';
+import { projectAppEcrRetentionAuthority } from '../../terraform/bootstrap/app-acceptance-scripts/project-app-ecr-retention-authority.mjs';
 import {
   createEcrRetentionHandler,
   type EcrRetentionConfig,
@@ -110,45 +117,13 @@ export interface EcrRetentionAwsOperations {
   readonly listTasks: (input: ListTasksCommandInput) => Promise<AwsResponse<ListTasksCommandOutput>>;
 }
 
+type EcrRetentionAuthorityReadOperations = Readonly<
+  Pick<EcrRetentionAwsOperations, 'describeStateMachine' | 'describeTaskDefinition' | 'getObject'>
+>;
+
 export interface EcrRetentionProtectionAuthority {
   readonly authoritySnapshotSha256: string;
   readonly protectedDigests: Readonly<Record<RepositoryKind, readonly string[]>>;
-}
-
-interface ToolchainProtectionRecord {
-  readonly imageDigest: string;
-  readonly imageUri: string;
-}
-
-interface ProverProtectionRecord {
-  readonly imageDigest: string;
-  readonly imageUri: string;
-  readonly selectedToolchain: ImmutableObjectReference & {
-    readonly imageDigest: string;
-    readonly imageUri: string;
-  };
-}
-
-interface AcceptedDeploymentProtectionRecord {
-  readonly releaseAuthority: Readonly<Record<string, unknown>>;
-}
-
-export interface EcrRetentionAuthorityValidators {
-  readonly acceptedCurrent: (value: unknown) => Readonly<Record<string, unknown>>;
-  readonly acceptedProjection: (
-    accepted: unknown,
-    entry: unknown,
-    options: Readonly<{ expectedManifestSha256: string }>,
-  ) => Readonly<{
-    accepted: AcceptedDeploymentProtectionRecord;
-    entry: Readonly<Record<string, unknown>>;
-  }>;
-  readonly acceptedReleasePointer: (value: unknown, kind: RepositoryKind) => Readonly<Record<string, unknown>>;
-  readonly proverRelease: (
-    value: unknown,
-    policies: Readonly<{ prover: DigestPinnedImagePolicy; toolchain: DigestPinnedImagePolicy }>,
-  ) => ProverProtectionRecord;
-  readonly toolchainArtifact: (value: unknown, policy: DigestPinnedImagePolicy) => ToolchainProtectionRecord;
 }
 
 export interface EcrRetentionRuntimeConfig {
@@ -164,11 +139,6 @@ export interface EcrRetentionRuntimeConfig {
   readonly ecsTaskFamily: string;
 }
 
-const target = resolveAllowedDeploymentTarget('stark-dev/develop');
-const foundation = resolveDeploymentLaneAuthority(target, 'foundation');
-const appLane = resolveDeploymentLaneAuthority(target, 'app');
-const toolchainLane = resolveDeploymentLaneAuthority(target, 'toolchain');
-const proverLane = resolveDeploymentLaneAuthority(target, 'prover');
 const SUBJECT_MANIFEST_MEDIA_TYPE = 'application/vnd.docker.distribution.manifest.v2+json';
 const SUBJECT_ARTIFACT_MEDIA_TYPE = 'application/vnd.docker.container.image.v1+json';
 const ACTIVE_PIPELINE_STATUSES = new Set(['InProgress', 'Stopping']);
@@ -183,14 +153,23 @@ const KNOWN_PIPELINE_STATUSES = new Set([
   'Superseded',
 ]);
 const KNOWN_BUILD_STATUSES = new Set(['FAILED', 'FAULT', 'IN_PROGRESS', 'STOPPED', 'SUCCEEDED', 'TIMED_OUT']);
-const MAX_AUTHORITY_OBJECT_BYTES = 1024 * 1024;
-const DEFAULT_AUTHORITY_VALIDATORS: EcrRetentionAuthorityValidators = Object.freeze({
-  acceptedCurrent: validateAcceptedDeploymentCurrentAuthority,
-  acceptedProjection: validateAcceptedDeploymentCurrentAuthorityProjection,
-  acceptedReleasePointer: validateAcceptedReleasePointer,
-  proverRelease: validateProverReleaseRecord,
-  toolchainArtifact: validateToolchainArtifactRecord,
-});
+const APP_ACCEPTANCE_POINTER_MAX_BYTES = 64 * 1024;
+const APP_ACCEPTANCE_RECORD_MAX_BYTES = 8 * 1024 * 1024;
+const RELEASE_LEDGER_OBJECT_MAX_BYTES = 1024 * 1024;
+const AUTHORITY_OPERATION_KEYS = [
+  'batchDeleteImage',
+  'batchGetBuilds',
+  'describeImages',
+  'describeStateMachine',
+  'describeTaskDefinition',
+  'getCallerIdentity',
+  'getObject',
+  'listBuildsForProject',
+  'listExecutions',
+  'listImageReferrers',
+  'listPipelineExecutions',
+  'listTasks',
+] as const;
 const RETRYABLE_BLOCKERS = new Set([
   'BATCH_DELETE_FAILED',
   'CALLER_IDENTITY_FAILED',
@@ -210,6 +189,11 @@ function requiredEnv(environment: NodeJS.ProcessEnv, name: string): string {
 
 export function parseEcrRetentionRuntimeConfig(environment: NodeJS.ProcessEnv): EcrRetentionRuntimeConfig {
   const targetKey = requiredEnv(environment, 'TARGET_KEY');
+  const target = resolveAllowedDeploymentTarget(targetKey);
+  const foundation = resolveDeploymentLaneAuthority(target, 'foundation');
+  const appLane = resolveDeploymentLaneAuthority(target, 'app');
+  const toolchainLane = resolveDeploymentLaneAuthority(target, 'toolchain');
+  const proverLane = resolveDeploymentLaneAuthority(target, 'prover');
   const accountId = requiredEnv(environment, 'EXPECTED_ACCOUNT_ID');
   const expectedRegion = requiredEnv(environment, 'EXPECTED_REGION');
   const runtimeRegion = environment['AWS_REGION'] ?? environment['AWS_DEFAULT_REGION'];
@@ -258,7 +242,7 @@ export function parseEcrRetentionRuntimeConfig(environment: NodeJS.ProcessEnv): 
       expectedRegion,
       expectedScheduleArn,
       retainedSubjectCount: 10,
-      targetKey: 'stark-dev/develop',
+      targetKey: target.targetKey,
       repositories: Object.freeze({
         prover: foundation.names.proverRepository,
         toolchain: foundation.names.toolchainRepository,
@@ -607,6 +591,7 @@ interface AuthorityObjectReference extends ImmutableObjectReference {
 
 interface AuthorityObjectRead {
   readonly reference: AuthorityObjectReference;
+  readonly etag?: string;
   readonly value: unknown;
 }
 
@@ -622,12 +607,195 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
   return typeof (value as { readonly [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function';
 }
 
-async function bodyBytes(output: AwsResponse<GetObjectCommandOutput>): Promise<Uint8Array> {
+function captureAuthorityOperations(operations: EcrRetentionAwsOperations): EcrRetentionAwsOperations {
+  return captureExactPortRecord(
+    operations,
+    AUTHORITY_OPERATION_KEYS,
+    'ECR retention authority operations',
+  ) as unknown as EcrRetentionAwsOperations;
+}
+
+function projectAuthorityReadOperations(operations: EcrRetentionAwsOperations): EcrRetentionAuthorityReadOperations {
+  return Object.freeze({
+    describeStateMachine: operations.describeStateMachine,
+    describeTaskDefinition: operations.describeTaskDefinition,
+    getObject: operations.getObject,
+  });
+}
+
+function rejectThenDescriptor(value: object, label: string): void {
+  let current: object | null = value;
+  while (current !== null) {
+    if (Reflect.getOwnPropertyDescriptor(current, 'then') !== undefined) {
+      throw new Error(`${label} must not be thenable.`);
+    }
+    current = Reflect.getPrototypeOf(current);
+  }
+}
+
+function admitPlainDescriptorRecord(value: unknown, label: string): object {
+  assertUnproxiedPortShell(value, label);
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object.`);
+  }
+  rejectThenDescriptor(value, label);
+  const prototype = Reflect.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error(`${label} must use a plain object prototype.`);
+  }
+  return value;
+}
+
+function ownDataProperty(value: object, key: string, label: string): unknown {
+  const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+  if (descriptor === undefined) return undefined;
+  if (descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+    throw new Error(`${label} ${key} must be an own data property.`);
+  }
+  return descriptor.value;
+}
+
+function requiredOwnDataProperty(value: object, key: string, label: string): unknown {
+  const result = ownDataProperty(value, key, label);
+  if (result === undefined) throw new Error(`${label} ${key} is required.`);
+  return result;
+}
+
+function requiredStringDataProperty(value: object, key: string, label: string): string {
+  const result = requiredOwnDataProperty(value, key, label);
+  if (typeof result !== 'string') throw new Error(`${label} ${key} must be a string.`);
+  return result;
+}
+
+interface ProjectedStateMachineDescription {
+  readonly definition: string;
+  readonly stateMachineArn: string;
+  readonly status: string;
+}
+
+function projectStateMachineDescription(value: unknown): ProjectedStateMachineDescription {
+  const label = 'ECR retention describeStateMachine result';
+  const response = admitPlainDescriptorRecord(value, label);
+  return Object.freeze({
+    definition: requiredStringDataProperty(response, 'definition', label),
+    stateMachineArn: requiredStringDataProperty(response, 'stateMachineArn', label),
+    status: requiredStringDataProperty(response, 'status', label),
+  });
+}
+
+interface ProjectedContainerDefinition {
+  readonly image: string;
+  readonly name: string;
+}
+
+interface ProjectedTaskDefinitionDescription {
+  readonly taskDefinition: Readonly<{
+    readonly containerDefinitions: readonly ProjectedContainerDefinition[];
+    readonly family: string;
+    readonly revision: number;
+    readonly status: string;
+    readonly taskDefinitionArn: string;
+  }>;
+}
+
+interface ProjectedGetObjectResponse {
+  readonly Body?: unknown;
+  readonly ContentLength?: number;
+  readonly ETag?: string;
+  readonly VersionId?: string;
+}
+
+function projectContainerDefinition(value: unknown, index: number): ProjectedContainerDefinition {
+  const label = `ECR retention task containerDefinitions[${index}]`;
+  const container = admitPlainDescriptorRecord(value, label);
+  return Object.freeze({
+    image: requiredStringDataProperty(container, 'image', label),
+    name: requiredStringDataProperty(container, 'name', label),
+  });
+}
+
+function projectTaskDefinitionDescription(value: unknown): ProjectedTaskDefinitionDescription {
+  const resultLabel = 'ECR retention describeTaskDefinition result';
+  const response = admitPlainDescriptorRecord(value, resultLabel);
+  const taskDefinitionLabel = 'ECR retention task definition';
+  const taskDefinition = admitPlainDescriptorRecord(
+    requiredOwnDataProperty(response, 'taskDefinition', resultLabel),
+    taskDefinitionLabel,
+  );
+  const rawContainerDefinitions = requiredOwnDataProperty(taskDefinition, 'containerDefinitions', taskDefinitionLabel);
+  assertUnproxiedPortShell(rawContainerDefinitions, 'ECR retention task containerDefinitions');
+  if (!Array.isArray(rawContainerDefinitions)) {
+    throw new Error('ECR retention task containerDefinitions must use a dense array.');
+  }
+  if (Reflect.getPrototypeOf(rawContainerDefinitions) !== Array.prototype) {
+    throw new Error('ECR retention task containerDefinitions must use the exact array prototype.');
+  }
+  rejectThenDescriptor(rawContainerDefinitions, 'ECR retention task containerDefinitions');
+  const containerDefinitions = Object.freeze(
+    snapshotDenseArray(rawContainerDefinitions, 'ECR retention task containerDefinitions').map((container, index) =>
+      projectContainerDefinition(container, index),
+    ),
+  );
+  const revision = requiredOwnDataProperty(taskDefinition, 'revision', taskDefinitionLabel);
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision <= 0) {
+    throw new Error('ECR retention task definition revision must be a positive safe integer.');
+  }
+  return Object.freeze({
+    taskDefinition: Object.freeze({
+      containerDefinitions,
+      family: requiredStringDataProperty(taskDefinition, 'family', taskDefinitionLabel),
+      revision,
+      status: requiredStringDataProperty(taskDefinition, 'status', taskDefinitionLabel),
+      taskDefinitionArn: requiredStringDataProperty(taskDefinition, 'taskDefinitionArn', taskDefinitionLabel),
+    }),
+  });
+}
+
+function admitGetObjectResponse(value: unknown, maxBytes: number): ProjectedGetObjectResponse {
+  const label = 'ECR retention authority getObject result';
+  const response = admitPlainDescriptorRecord(value, label);
+  const body = ownDataProperty(response, 'Body', 'ECR retention authority getObject result');
+  assertUnproxiedPortShell(body, 'ECR retention authority object body');
+  const admitted: {
+    Body?: unknown;
+    ContentLength?: number;
+    ETag?: string;
+    VersionId?: string;
+  } = {};
+  if (body instanceof Uint8Array) {
+    admitted.Body = snapshotBoundedBytes(body, {
+      label: 'ECR retention authority direct object body',
+      maxBytes,
+    });
+  } else if (body !== undefined) {
+    admitted.Body = body;
+  }
+  const contentLength = ownDataProperty(response, 'ContentLength', 'ECR retention authority getObject result');
+  if (contentLength !== undefined) {
+    if (typeof contentLength !== 'number') throw new Error(`${label} ContentLength must be a number.`);
+    admitted.ContentLength = contentLength;
+  }
+  const etag = ownDataProperty(response, 'ETag', 'ECR retention authority getObject result');
+  if (etag !== undefined) {
+    if (typeof etag !== 'string') throw new Error(`${label} ETag must be a string.`);
+    admitted.ETag = etag;
+  }
+  const versionId = ownDataProperty(response, 'VersionId', 'ECR retention authority getObject result');
+  if (versionId !== undefined) {
+    if (typeof versionId !== 'string') throw new Error(`${label} VersionId must be a string.`);
+    admitted.VersionId = versionId;
+  }
+  return Object.freeze(admitted);
+}
+
+async function bodyBytes(output: ProjectedGetObjectResponse, maxBytes: number): Promise<Uint8Array> {
   if (output.Body === undefined) throw new Error('S3 authority object body is missing.');
   if (
+    !Number.isSafeInteger(maxBytes) ||
+    maxBytes <= 0 ||
     !Number.isSafeInteger(output.ContentLength) ||
     (output.ContentLength ?? 0) <= 0 ||
-    (output.ContentLength ?? 0) > MAX_AUTHORITY_OBJECT_BYTES
+    (output.ContentLength ?? 0) > maxBytes
   ) {
     throw new Error('S3 authority object ContentLength is invalid.');
   }
@@ -635,10 +803,13 @@ async function bodyBytes(output: AwsResponse<GetObjectCommandOutput>): Promise<U
   const chunks: Uint8Array[] = [];
   let totalBytes = 0;
   const append = (part: unknown): void => {
-    if (!(part instanceof Uint8Array)) throw new Error('S3 authority object body emitted an unsupported chunk.');
-    totalBytes += part.byteLength;
-    if (totalBytes > MAX_AUTHORITY_OBJECT_BYTES) throw new Error('S3 authority object exceeds the byte limit.');
-    chunks.push(part);
+    const remainingBytes = maxBytes - totalBytes;
+    const chunk = snapshotBoundedBytes(part, {
+      label: 'S3 authority object stream chunk',
+      maxBytes: remainingBytes,
+    });
+    totalBytes += chunk.byteLength;
+    chunks.push(chunk);
   };
 
   if (output.Body instanceof Uint8Array) {
@@ -662,12 +833,14 @@ async function bodyBytes(output: AwsResponse<GetObjectCommandOutput>): Promise<U
 }
 
 async function readAuthorityObject(
-  operations: EcrRetentionAwsOperations,
+  operations: EcrRetentionAuthorityReadOperations,
   request: Readonly<{
     bucket: string;
     expectedBucketOwner: string;
     expectedSha256?: string;
     key: string;
+    maxBytes: number;
+    requireEtag?: boolean;
     versionId?: string;
   }>,
 ): Promise<AuthorityObjectRead> {
@@ -675,17 +848,31 @@ async function readAuthorityObject(
     request.versionId === undefined ? undefined : parseS3VersionId(request.versionId, 'authority object VersionId');
   const expectedSha256 =
     request.expectedSha256 === undefined ? undefined : parseSha256(request.expectedSha256, 'authority object SHA-256');
-  const output = await operations.getObject({
-    Bucket: request.bucket,
-    ExpectedBucketOwner: request.expectedBucketOwner,
-    Key: request.key,
-    ...(expectedVersionId === undefined ? {} : { VersionId: expectedVersionId }),
-  });
+  const output = await invokeExactPort(
+    operations.getObject,
+    [
+      {
+        Bucket: request.bucket,
+        ExpectedBucketOwner: request.expectedBucketOwner,
+        Key: request.key,
+        ...(expectedVersionId === undefined ? {} : { VersionId: expectedVersionId }),
+      },
+    ],
+    'ECR retention authority getObject',
+    (value) => admitGetObjectResponse(value, request.maxBytes),
+  );
   const observedVersionId = parseS3VersionId(output.VersionId, 'observed authority object VersionId');
+  const observedEtag = output.ETag;
+  if (
+    request.requireEtag === true &&
+    (typeof observedEtag !== 'string' || observedEtag.length === 0 || observedEtag.trim() !== observedEtag)
+  ) {
+    throw new Error('Observed authority object ETag is invalid.');
+  }
   if (expectedVersionId !== undefined && observedVersionId !== expectedVersionId) {
     throw new Error('Observed authority object VersionId does not match its immutable reference.');
   }
-  const bytes = await bodyBytes(output);
+  const bytes = await bodyBytes(output, request.maxBytes);
   const observedSha256 = createHash('sha256').update(bytes).digest('hex');
   if (expectedSha256 !== undefined && observedSha256 !== expectedSha256) {
     throw new Error('Observed authority object SHA-256 does not match its immutable reference.');
@@ -713,48 +900,33 @@ async function readAuthorityObject(
       sha256: observedSha256,
       versionId: observedVersionId,
     }),
+    ...(observedEtag === undefined ? {} : { etag: observedEtag }),
     value,
   });
-}
-
-function pointerRecordReference(
-  pointer: Readonly<Record<string, unknown>>,
-  kind: RepositoryKind,
-): ImmutableObjectReference {
-  const prefix = kind === 'toolchain' ? 'artifactRecord' : 'releaseRecord';
-  return parseImmutableObjectReference({
-    key: pointer[`${prefix}Key`],
-    sha256: pointer[`${prefix}Sha256`],
-    versionId: pointer[`${prefix}VersionId`],
-  });
-}
-
-function appManifestReference(entry: Readonly<Record<string, unknown>>): ImmutableObjectReference {
-  return parseImmutableObjectReference({
-    key: entry['manifestPath'],
-    sha256: entry['manifestSha256'],
-    versionId: entry['manifestVersionId'],
-  });
-}
-
-function immutableReferencesEqual(left: ImmutableObjectReference, right: ImmutableObjectReference): boolean {
-  return left.key === right.key && left.sha256 === right.sha256 && left.versionId === right.versionId;
-}
-
-function selectedToolchainReference(value: ProverProtectionRecord['selectedToolchain']): ImmutableObjectReference {
-  return parseImmutableObjectReference({ key: value.key, sha256: value.sha256, versionId: value.versionId });
 }
 
 function authorityReferenceKey(reference: AuthorityObjectReference): string {
   return `${reference.bucket}\0${reference.key}\0${reference.versionId}\0${reference.sha256}`;
 }
 
+function requiredAuthorityEtag(read: AuthorityObjectRead, label: string): string {
+  if (typeof read.etag !== 'string') {
+    throw new Error(`${label} ETag is invalid.`);
+  }
+  return read.etag;
+}
+
 async function readLiveProverImage(
-  operations: EcrRetentionAwsOperations,
+  operations: EcrRetentionAuthorityReadOperations,
   config: EcrRetentionRuntimeConfig,
   policy: DigestPinnedImagePolicy,
 ): Promise<Readonly<Record<string, unknown>> & { readonly imageDigest: string }> {
-  const stateMachine = await operations.describeStateMachine({ stateMachineArn: config.stateMachineArn });
+  const stateMachine = await invokeExactPort(
+    operations.describeStateMachine,
+    [{ stateMachineArn: config.stateMachineArn }],
+    'ECR retention describeStateMachine',
+    projectStateMachineDescription,
+  );
   if (
     stateMachine.stateMachineArn !== config.stateMachineArn ||
     stateMachine.status !== 'ACTIVE' ||
@@ -768,7 +940,10 @@ async function readLiveProverImage(
   } catch (error) {
     throw new Error('Live Prover state machine definition is not valid JSON.', { cause: error });
   }
-  const definition = asRecord(definitionValue, 'Live Prover state machine definition');
+  const definition = asRecord(
+    snapshotDataTree(definitionValue, 'Live Prover state machine definition snapshot'),
+    'Live Prover state machine definition',
+  );
   const states = asRecord(definition['States'], 'Live Prover state machine states');
   const runProver = asRecord(states['RunProver'], 'Live Prover RunProver state');
   const parameters = asRecord(runProver['Parameters'], 'Live Prover RunProver parameters');
@@ -788,28 +963,28 @@ async function readLiveProverImage(
   ) {
     throw new Error('Live Prover RunProver task-definition authority is invalid.');
   }
-  const described = await operations.describeTaskDefinition({ taskDefinition: taskDefinitionArn });
+  const described = await invokeExactPort(
+    operations.describeTaskDefinition,
+    [{ taskDefinition: taskDefinitionArn }],
+    'ECR retention describeTaskDefinition',
+    projectTaskDefinitionDescription,
+  );
   const taskDefinition = described.taskDefinition;
-  const taskDefinitionRevision =
-    typeof taskDefinitionArn === 'string' ? Number(taskDefinitionArn.slice(expectedTaskPrefix.length)) : Number.NaN;
+  const taskDefinitionRevision = Number(taskDefinitionArn.slice(expectedTaskPrefix.length));
   if (
-    taskDefinition === undefined ||
     taskDefinition.taskDefinitionArn !== taskDefinitionArn ||
     taskDefinition.family !== config.ecsTaskFamily ||
     taskDefinition.status !== 'ACTIVE' ||
-    !Number.isSafeInteger(taskDefinition.revision) ||
-    (taskDefinition.revision ?? 0) <= 0 ||
     taskDefinition.revision !== taskDefinitionRevision
   ) {
     throw new Error('Live Prover ECS task definition identity is invalid.');
   }
-  const proverContainers = (taskDefinition.containerDefinitions ?? []).filter(
-    (container) => container.name === 'prover',
-  );
-  if (proverContainers.length !== 1 || typeof proverContainers[0]?.image !== 'string') {
+  const proverContainers = taskDefinition.containerDefinitions.filter((container) => container.name === 'prover');
+  const proverContainer = proverContainers[0];
+  if (proverContainers.length !== 1 || proverContainer === undefined) {
     throw new Error('Live Prover ECS task definition must contain one exact prover container.');
   }
-  const image = parseDigestPinnedImageReference(proverContainers[0].image, policy);
+  const image = parseDigestPinnedImageReference(proverContainer.image, policy);
   return Object.freeze({
     imageDigest: image.digest,
     imageUri: image.imageUri,
@@ -823,15 +998,15 @@ async function readLiveProverImage(
 export function createEcrRetentionProtectionAuthorityReader(
   operations: EcrRetentionAwsOperations,
   config: EcrRetentionRuntimeConfig,
-  validators: EcrRetentionAuthorityValidators = DEFAULT_AUTHORITY_VALIDATORS,
 ): () => Promise<EcrRetentionProtectionAuthority> {
-  return async () => readProtectionAuthority(operations, config, validators);
+  const capturedOperations = captureAuthorityOperations(operations);
+  const authorityReadOperations = projectAuthorityReadOperations(capturedOperations);
+  return async () => readProtectionAuthority(authorityReadOperations, config);
 }
 
 async function readProtectionAuthority(
-  operations: EcrRetentionAwsOperations,
+  operations: EcrRetentionAuthorityReadOperations,
   config: EcrRetentionRuntimeConfig,
-  validators: EcrRetentionAuthorityValidators,
 ): Promise<EcrRetentionProtectionAuthority> {
   const imagePolicies = Object.freeze({
     prover: Object.freeze({
@@ -853,116 +1028,140 @@ async function readProtectionAuthority(
   };
   const currentReferences: AuthorityObjectReference[] = [];
   const immutableReferences = new Map<string, AuthorityObjectReference>();
-  const immutableReads = new Map<string, Promise<AuthorityObjectRead>>();
 
-  const readImmutable = (bucket: string, rawReference: unknown): Promise<AuthorityObjectRead> => {
-    const reference = parseImmutableObjectReference(rawReference);
-    const cacheKey = `${bucket}\0${reference.key}\0${reference.versionId}\0${reference.sha256}`;
-    let result = immutableReads.get(cacheKey);
-    if (result === undefined) {
-      result = readAuthorityObject(operations, {
-        bucket,
-        expectedBucketOwner: config.handler.expectedAccountId,
-        expectedSha256: reference.sha256,
-        key: reference.key,
-        versionId: reference.versionId,
-      });
-      immutableReads.set(cacheKey, result);
-    }
-    return result.then((read) => {
-      immutableReferences.set(authorityReferenceKey(read.reference), read.reference);
-      return read;
-    });
-  };
-
-  const toolchainRecords = new Map<string, Promise<ToolchainProtectionRecord>>();
-  const readToolchain = async (rawReference: unknown): Promise<ToolchainProtectionRecord> => {
-    const reference = parseImmutableObjectReference(rawReference);
-    const key = `${reference.key}\0${reference.versionId}\0${reference.sha256}`;
-    let result = toolchainRecords.get(key);
-    if (result === undefined) {
-      result = readImmutable(config.releaseAuthorityBucket, reference).then((read) =>
-        validators.toolchainArtifact(read.value, imagePolicies.toolchain),
-      );
-      toolchainRecords.set(key, result);
-    }
-    const record = await result;
-    protectedDigests.toolchain.add(record.imageDigest);
-    return record;
-  };
-
-  const proverRecords = new Map<string, Promise<ProverProtectionRecord>>();
-  const readProver = async (rawReference: unknown): Promise<ProverProtectionRecord> => {
-    const reference = parseImmutableObjectReference(rawReference);
-    const key = `${reference.key}\0${reference.versionId}\0${reference.sha256}`;
-    let result = proverRecords.get(key);
-    if (result === undefined) {
-      result = readImmutable(config.releaseAuthorityBucket, reference).then((read) =>
-        validators.proverRelease(read.value, imagePolicies),
-      );
-      proverRecords.set(key, result);
-    }
-    const record = await result;
-    protectedDigests.prover.add(record.imageDigest);
-    const selectedToolchain = await readToolchain(selectedToolchainReference(record.selectedToolchain));
-    if (
-      selectedToolchain.imageDigest !== record.selectedToolchain.imageDigest ||
-      selectedToolchain.imageUri !== record.selectedToolchain.imageUri
-    ) {
-      throw new Error('Prover release selected Toolchain authority is inconsistent.');
-    }
-    return record;
-  };
-
-  const readCurrent = async (bucket: string, key: string): Promise<AuthorityObjectRead> => {
+  const readCurrent = async (
+    bucket: string,
+    key: string,
+    maxBytes: number,
+    requireEtag = false,
+  ): Promise<AuthorityObjectRead> => {
     const read = await readAuthorityObject(operations, {
       bucket,
       expectedBucketOwner: config.handler.expectedAccountId,
       key,
+      maxBytes,
+      requireEtag,
     });
     currentReferences.push(read.reference);
     return read;
   };
 
-  const toolchainPointerRead = await readCurrent(config.releaseAuthorityBucket, config.acceptedPointerKeys.toolchain);
-  const toolchainPointer = validators.acceptedReleasePointer(toolchainPointerRead.value, 'toolchain');
-  await readToolchain(pointerRecordReference(toolchainPointer, 'toolchain'));
-
-  const proverPointerRead = await readCurrent(config.releaseAuthorityBucket, config.acceptedPointerKeys.prover);
-  const proverPointer = validators.acceptedReleasePointer(proverPointerRead.value, 'prover');
-  await readProver(pointerRecordReference(proverPointer, 'prover'));
-
-  const appAuthorityRead = await readCurrent(config.appAcceptedAuthorityBucket, config.appAcceptedAuthorityKey);
-  const appAuthority = validators.acceptedCurrent(appAuthorityRead.value);
-  const acceptedDeployments = appAuthority['acceptedDeployments'];
-  if (!Array.isArray(acceptedDeployments) || acceptedDeployments.length === 0 || acceptedDeployments.length > 10) {
-    throw new Error('Accepted App deployment protection authority must retain between one and ten records.');
+  const releaseLedger = createReleaseLedger(
+    {
+      getObject: async ({ key }: Readonly<{ key: string }>) => {
+        const read = await readAuthorityObject(operations, {
+          bucket: config.releaseAuthorityBucket,
+          expectedBucketOwner: config.handler.expectedAccountId,
+          key,
+          maxBytes: RELEASE_LEDGER_OBJECT_MAX_BYTES,
+          requireEtag: true,
+        });
+        const body = canonicalRecordJson(read.value);
+        const reference = read.reference;
+        if (key === config.acceptedPointerKeys.toolchain || key === config.acceptedPointerKeys.prover) {
+          currentReferences.push(reference);
+        } else {
+          immutableReferences.set(authorityReferenceKey(reference), reference);
+        }
+        return {
+          body,
+          etag: read.etag,
+          versionId: reference.versionId,
+        };
+      },
+      putObject: () => {
+        throw new Error('ECR retention release-ledger transport is read-only.');
+      },
+    },
+    config.handler.targetKey,
+  );
+  const resolvedToolchain = await releaseLedger.resolvePointer(config.acceptedPointerKeys.toolchain);
+  if (resolvedToolchain.record.kind !== TOOLCHAIN_RELEASE_KIND) {
+    throw new Error('Current Toolchain authority did not resolve a Toolchain release.');
   }
-  for (const entryValue of acceptedDeployments) {
-    const entry = asRecord(entryValue, 'Accepted App deployment authority entry');
-    const manifestReference = appManifestReference(entry);
-    const manifestRead = await readImmutable(config.appAcceptedAuthorityBucket, manifestReference);
-    const projection = validators.acceptedProjection(manifestRead.value, entry, {
-      expectedManifestSha256: manifestReference.sha256,
+  protectedDigests.toolchain.add(resolvedToolchain.record.imageDigest);
+
+  const resolvedProver = await releaseLedger.resolvePointer(config.acceptedPointerKeys.prover);
+  if (resolvedProver.record.kind !== PROVER_RELEASE_KIND) {
+    throw new Error('Current Prover authority did not resolve a Prover release.');
+  }
+  protectedDigests.prover.add(resolvedProver.record.imageDigest);
+  protectedDigests.toolchain.add(resolvedProver.record.selectedToolchainImageDigest);
+
+  const appPointerRead = await readCurrent(
+    config.appAcceptedAuthorityBucket,
+    config.appAcceptedAuthorityKey,
+    APP_ACCEPTANCE_POINTER_MAX_BYTES,
+    true,
+  );
+  const appPointer = admitAppCurrentAcceptancePointer(appPointerRead.value, config.handler.targetKey);
+  const appPointerObservation = Object.freeze({
+    etag: requiredAuthorityEtag(appPointerRead, 'App acceptance pointer observation'),
+    versionId: appPointerRead.reference.versionId,
+  });
+  const appRecordObservations: Array<Readonly<AuthorityObjectReference & { readonly etag: string }>> = [];
+  const appSelections: unknown[] = [];
+  for (const acceptanceKey of appPointer.history) {
+    const acceptanceRead = await readAuthorityObject(operations, {
+      bucket: config.appAcceptedAuthorityBucket,
+      expectedBucketOwner: config.handler.expectedAccountId,
+      key: acceptanceKey,
+      maxBytes: APP_ACCEPTANCE_RECORD_MAX_BYTES,
+      requireEtag: true,
     });
-    const releaseAuthority = asRecord(
-      projection.accepted.releaseAuthority,
-      'Accepted App deployment release authority',
+    immutableReferences.set(authorityReferenceKey(acceptanceRead.reference), acceptanceRead.reference);
+    const acceptanceObservation = Object.freeze({
+      etag: requiredAuthorityEtag(acceptanceRead, 'App acceptance record observation'),
+      versionId: acceptanceRead.reference.versionId,
+    });
+    const selection = bindAppAcceptanceSelection(
+      {
+        pointer: appPointer,
+        pointerObservation: appPointerObservation,
+        recordKey: acceptanceKey,
+        record: acceptanceRead.value,
+        recordObservation: acceptanceObservation,
+      },
+      config.handler.targetKey,
     );
-    const toolchainReference = parseImmutableObjectReference(releaseAuthority['toolchainArtifactRecord']);
-    const proverReference = parseImmutableObjectReference(releaseAuthority['proverReleaseRecord']);
-    const [toolchainRecord, proverRecord] = await Promise.all([
-      readToolchain(toolchainReference),
-      readProver(proverReference),
-    ]);
+    appSelections.push(selection);
+    appRecordObservations.push(
+      Object.freeze({
+        ...acceptanceRead.reference,
+        etag: acceptanceObservation.etag,
+      }),
+    );
+  }
+  const appImageAuthority = projectAppEcrRetentionAuthority(
+    {
+      resolutionType: 'app-acceptance-history',
+      pointerKey: config.appAcceptedAuthorityKey,
+      pointer: appPointer,
+      pointerObservation: appPointerObservation,
+      selections: appSelections,
+    },
+    config.handler.targetKey,
+  );
+  for (const imageAuthorityValue of appImageAuthority.retainedImageAuthorities) {
+    const imageAuthority = asRecord(imageAuthorityValue, 'Retained App image authority');
+    const proverImageAuthority = asRecord(imageAuthority['proverImage'], 'Retained App Prover image authority');
+    const toolchainImageAuthority = asRecord(
+      imageAuthority['toolchainImage'],
+      'Retained App Toolchain image authority',
+    );
+    const proverImage = parseDigestPinnedImageReference(proverImageAuthority['imageUri'], imagePolicies.prover);
+    const toolchainImage = parseDigestPinnedImageReference(
+      toolchainImageAuthority['imageUri'],
+      imagePolicies.toolchain,
+    );
     if (
-      !immutableReferencesEqual(toolchainReference, proverRecord.selectedToolchain) ||
-      toolchainRecord.imageDigest !== proverRecord.selectedToolchain.imageDigest ||
-      toolchainRecord.imageUri !== proverRecord.selectedToolchain.imageUri ||
-      releaseAuthority['proverImageUri'] !== proverRecord.imageUri
+      proverImage.digest !== proverImageAuthority['imageDigest'] ||
+      toolchainImage.digest !== toolchainImageAuthority['imageDigest']
     ) {
-      throw new Error('Accepted App deployment release authority is not a closed Prover/Toolchain selection.');
+      throw new Error('Retained App image authority digest is detached from its immutable image URI.');
     }
+    protectedDigests.prover.add(proverImage.digest);
+    protectedDigests.toolchain.add(toolchainImage.digest);
   }
 
   const liveProver = await readLiveProverImage(operations, config, imagePolicies.prover);
@@ -979,6 +1178,13 @@ async function readProtectionAuthority(
   });
   return Object.freeze({
     authoritySnapshotSha256: canonicalJsonSha256({
+      appAcceptanceHistory: {
+        pointer: {
+          ...appPointerRead.reference,
+          etag: appPointerObservation.etag,
+        },
+        records: appRecordObservations,
+      },
       currentReferences: sortedCurrentReferences,
       immutableReferences: sortedImmutableReferences,
       liveProver,

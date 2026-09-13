@@ -4,6 +4,7 @@ import { admitStoredSessionData } from './storageAdmission';
 import {
   clearStoredSessionData,
   hasClientStorageSupport,
+  notifyStoredSessionChange,
   SESSION_LOCK_KEY,
   SESSION_STORAGE_KEY as SESSION_STORAGE_KEY_VALUE,
 } from './storage';
@@ -291,6 +292,7 @@ export function initializeSession(identity: ServerIssuedSessionIdentity): string
       sessionId: serialized.data.sessionId,
       capabilityToken: serialized.data.capabilityToken,
     });
+    notifyStoredSessionChange();
   }
   return serialized.data.sessionId;
 }
@@ -299,19 +301,6 @@ export function captureSessionIdentity(
   sessionOverride?: Pick<SessionData, 'sessionId' | 'capabilityToken'> | null,
 ): SessionIdentity | null {
   return toSessionIdentity(sessionOverride ?? getSessionData());
-}
-
-export function checkTimeout(): boolean {
-  const session = readSessionForAccess();
-  if (!session) {
-    return true;
-  }
-
-  if (isExpired(session)) {
-    clearSession();
-    return true;
-  }
-  return false;
 }
 
 export function clearSession(): void {

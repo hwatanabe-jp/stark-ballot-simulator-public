@@ -22,10 +22,3 @@ export function getFinalizeCancelRateLimiter(profile: ResolvedRuntimeProfile): F
   }
   return finalizeCancelRateLimiter;
 }
-
-export function resetFinalizeCancelRateLimiter(): void {
-  if (finalizeCancelRateLimiter instanceof VoteRateLimiter) {
-    finalizeCancelRateLimiter.reset();
-  }
-  finalizeCancelRateLimiter = null;
-}

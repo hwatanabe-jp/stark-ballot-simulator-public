@@ -1,9 +1,15 @@
 import { Buffer } from 'buffer';
-import { CURRENT_METHOD_VERSION, type CurrentZkVMJournal, type ZkVMInput, type ZkVMJournal } from './types';
-import { isSupportedZkVMJournal } from './journal-guards';
-import { getNumberArrayProperty, getNumberProperty, getStringProperty } from './guards';
+import {
+  CURRENT_METHOD_VERSION,
+  VERIFIED_TALLY_WIDTH,
+  type CurrentZkVMJournal,
+  type VerifiedTally,
+  type ZkVMInput,
+  type ZkVMJournal,
+} from './types';
+import { CURRENT_ZKVM_SEMANTIC_CONTRACT } from './semantic-contract';
+import { getNumberArrayProperty, getNumberProperty, getStringProperty, isRecord } from './guards';
 import { addHexPrefix, isValidHexString, normalizeHexString } from './hex';
-import { assertZkvmWireNumericPreflight } from './wire-numeric-preflight';
 import { toValidatedCurrentZkVMJournal, toValidatedZkVMInput } from './validated-domain';
 
 export interface AggregatorInputJson {
@@ -40,14 +46,13 @@ export interface ZkVMExecutionResult extends ZkVMJournal {
 
 const HASH_BYTE_LENGTH = 32;
 const IMAGE_ID_BYTE_LENGTH = 32;
-const VERIFIED_TALLY_LENGTH = 5;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CURRENT_HOST_OUTPUT_KEYS = CURRENT_ZKVM_SEMANTIC_CONTRACT.hostJsonProjection.fields.map((field) => field.name);
 
 /**
  * Convert canonical zkVM input into the JSON shape consumed by the Rust host.
  */
 export function serializeZkvmAggregatorInput(input: ZkVMInput): AggregatorInputJson {
-  assertZkvmWireNumericPreflight(input);
   const validated = toValidatedZkVMInput(input);
 
   return {
@@ -68,40 +73,55 @@ export function serializeZkvmAggregatorInput(input: ZkVMInput): AggregatorInputJ
   };
 }
 
+/**
+ * Admit the JSON value emitted by the Rust host before projecting the current
+ * journal contract. Receipt-internal RISC Zero serde bytes are intentionally
+ * outside this boundary.
+ */
+export function parseHostZkVMOutput(output: unknown): ZkVMExecutionResult {
+  if (!isRecord(output)) {
+    throw new Error('Current zkVM host output must be an object');
+  }
+  return parseCurrentHostExecutionResult(output);
+}
+
 export function parseCurrentHostExecutionResult(output: Record<string, unknown>): ZkVMExecutionResult {
-  const methodVersion = getRequiredNumberField(output, ['methodVersion'], 'methodVersion');
+  const actualKeys = Object.keys(output);
+  const expectedKeys = new Set(CURRENT_HOST_OUTPUT_KEYS);
+  if (actualKeys.length !== expectedKeys.size || actualKeys.some((key) => !expectedKeys.has(key))) {
+    throw new Error('Current zkVM host output must contain the exact current fields');
+  }
+
+  const methodVersion = getRequiredNumberField(output, 'methodVersion');
   if (methodVersion !== CURRENT_METHOD_VERSION) {
     throw new Error(`Unsupported zkVM host output methodVersion: ${methodVersion}`);
   }
 
   const journalCandidate: CurrentZkVMJournal = {
-    electionId: getRequiredUuidField(output, ['electionId'], 'electionId'),
-    electionConfigHash: getRequiredHexField(output, ['electionConfigHash'], 'electionConfigHash', HASH_BYTE_LENGTH),
-    bulletinRoot: getRequiredHexField(output, ['bulletinRoot'], 'bulletinRoot', HASH_BYTE_LENGTH),
-    treeSize: getRequiredNumberField(output, ['treeSize'], 'treeSize'),
-    totalExpected: getRequiredNumberField(output, ['totalExpected'], 'totalExpected'),
-    sthDigest: getRequiredHexField(output, ['sthDigest'], 'sthDigest', HASH_BYTE_LENGTH),
-    verifiedTally: getRequiredNumberArrayField(output, ['verifiedTally'], 'verifiedTally', VERIFIED_TALLY_LENGTH),
-    totalVotes: getRequiredNumberField(output, ['totalVotes'], 'totalVotes'),
-    validVotes: getRequiredNumberField(output, ['validVotes'], 'validVotes'),
-    invalidVotes: getRequiredNumberField(output, ['invalidVotes'], 'invalidVotes'),
-    seenIndicesCount: getRequiredNumberField(output, ['seenIndicesCount'], 'seenIndicesCount'),
-    missingSlots: getRequiredNumberField(output, ['missingSlots'], 'missingSlots'),
-    invalidPresentedSlots: getRequiredNumberField(output, ['invalidPresentedSlots'], 'invalidPresentedSlots'),
-    rejectedRecords: getRequiredNumberField(output, ['rejectedRecords'], 'rejectedRecords'),
-    seenBitmapRoot: getRequiredHexField(output, ['seenBitmapRoot'], 'seenBitmapRoot', HASH_BYTE_LENGTH),
-    includedBitmapRoot: getRequiredHexField(output, ['includedBitmapRoot'], 'includedBitmapRoot', HASH_BYTE_LENGTH),
-    excludedSlots: getRequiredNumberField(output, ['excludedSlots'], 'excludedSlots'),
-    inputCommitment: getRequiredHexField(output, ['inputCommitment'], 'inputCommitment', HASH_BYTE_LENGTH),
+    electionId: getRequiredUuidField(output, 'electionId'),
+    electionConfigHash: getRequiredHexField(output, 'electionConfigHash', HASH_BYTE_LENGTH),
+    bulletinRoot: getRequiredHexField(output, 'bulletinRoot', HASH_BYTE_LENGTH),
+    treeSize: getRequiredNumberField(output, 'treeSize'),
+    totalExpected: getRequiredNumberField(output, 'totalExpected'),
+    sthDigest: getRequiredHexField(output, 'sthDigest', HASH_BYTE_LENGTH),
+    verifiedTally: getRequiredNumberArrayField(output, 'verifiedTally', VERIFIED_TALLY_WIDTH),
+    totalVotes: getRequiredNumberField(output, 'totalVotes'),
+    validVotes: getRequiredNumberField(output, 'validVotes'),
+    invalidVotes: getRequiredNumberField(output, 'invalidVotes'),
+    seenIndicesCount: getRequiredNumberField(output, 'seenIndicesCount'),
+    missingSlots: getRequiredNumberField(output, 'missingSlots'),
+    invalidPresentedSlots: getRequiredNumberField(output, 'invalidPresentedSlots'),
+    rejectedRecords: getRequiredNumberField(output, 'rejectedRecords'),
+    seenBitmapRoot: getRequiredHexField(output, 'seenBitmapRoot', HASH_BYTE_LENGTH),
+    includedBitmapRoot: getRequiredHexField(output, 'includedBitmapRoot', HASH_BYTE_LENGTH),
+    excludedSlots: getRequiredNumberField(output, 'excludedSlots'),
+    inputCommitment: getRequiredHexField(output, 'inputCommitment', HASH_BYTE_LENGTH),
     methodVersion: CURRENT_METHOD_VERSION,
   };
 
-  if (!isSupportedZkVMJournal(journalCandidate)) {
-    throw new Error('zkVM host output does not satisfy the current journal contract');
-  }
   const journal = toValidatedCurrentZkVMJournal(journalCandidate);
 
-  const imageId = getRequiredImageIdField(output, ['imageId'], 'imageId');
+  const imageId = getRequiredImageIdField(output, 'imageId');
 
   return {
     ...journal,
@@ -128,13 +148,8 @@ function parseHexField(value: unknown): string | undefined {
   return undefined;
 }
 
-function getRequiredHexField(
-  record: Record<string, unknown>,
-  keys: string[],
-  fieldName: string,
-  expectedBytes: number,
-): string {
-  const value = getField(record, keys);
+function getRequiredHexField(record: Record<string, unknown>, fieldName: string, expectedBytes: number): string {
+  const value = getField(record, fieldName);
   if (value === undefined) {
     throw new Error(`Current zkVM host output missing ${fieldName}`);
   }
@@ -165,8 +180,8 @@ function formatUuidField(value: unknown): string | undefined {
   return undefined;
 }
 
-function getRequiredUuidField(record: Record<string, unknown>, keys: string[], fieldName: string): string {
-  const raw = getField(record, keys);
+function getRequiredUuidField(record: Record<string, unknown>, fieldName: string): string {
+  const raw = getField(record, fieldName);
   if (raw === undefined) {
     throw new Error(`Current zkVM host output missing ${fieldName}`);
   }
@@ -182,71 +197,57 @@ function compactToUuid(compactHex: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
-function getField(record: Record<string, unknown>, keys: string[]): unknown {
-  for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(record, key)) {
-      return record[key];
-    }
-  }
-  return undefined;
+function getField(record: Record<string, unknown>, key: string): unknown {
+  return Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
 }
 
-function getStringField(record: Record<string, unknown>, keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = getStringProperty(record, key);
-    if (value !== undefined) {
-      return value;
-    }
-  }
-  return undefined;
+function getStringField(record: Record<string, unknown>, key: string): string | undefined {
+  return getStringProperty(record, key);
 }
 
-function getNumberField(record: Record<string, unknown>, keys: string[]): number | undefined {
-  for (const key of keys) {
-    const value = getNumberProperty(record, key);
-    if (value !== undefined) {
-      return value;
-    }
-  }
-  return undefined;
+function getNumberField(record: Record<string, unknown>, key: string): number | undefined {
+  return getNumberProperty(record, key);
 }
 
-function getRequiredNumberField(record: Record<string, unknown>, keys: string[], fieldName: string): number {
-  const value = getNumberField(record, keys);
+function getRequiredNumberField(record: Record<string, unknown>, fieldName: string): number {
+  const value = getNumberField(record, fieldName);
   if (value === undefined) {
     throw new Error(`Current zkVM host output missing ${fieldName}`);
   }
   return value;
 }
 
-function getNumberArrayField(record: Record<string, unknown>, keys: string[]): number[] | undefined {
-  for (const key of keys) {
-    const value = getNumberArrayProperty(record, key);
-    if (value !== undefined) {
-      return value;
-    }
-  }
-  return undefined;
+function getNumberArrayField(record: Record<string, unknown>, key: string): number[] | undefined {
+  return getNumberArrayProperty(record, key);
 }
 
 function getRequiredNumberArrayField(
   record: Record<string, unknown>,
-  keys: string[],
   fieldName: string,
   expectedLength: number,
-): number[] {
-  const value = getNumberArrayField(record, keys);
+): VerifiedTally {
+  const value = getNumberArrayField(record, fieldName);
   if (value === undefined) {
     throw new Error(`Current zkVM host output missing ${fieldName}`);
   }
   if (value.length !== expectedLength || !value.every((entry) => Number.isInteger(entry) && entry >= 0)) {
     throw new Error(`Current zkVM host output invalid ${fieldName}`);
   }
-  return value;
+  const [first, second, third, fourth, fifth] = value;
+  if (
+    first === undefined ||
+    second === undefined ||
+    third === undefined ||
+    fourth === undefined ||
+    fifth === undefined
+  ) {
+    throw new Error(`Current zkVM host output invalid ${fieldName}`);
+  }
+  return [first, second, third, fourth, fifth];
 }
 
-function getRequiredImageIdField(record: Record<string, unknown>, keys: string[], fieldName: string): string {
-  const normalized = normalizeImageId(getStringField(record, keys));
+function getRequiredImageIdField(record: Record<string, unknown>, fieldName: string): string {
+  const normalized = normalizeImageId(getStringField(record, fieldName));
   if (normalized === undefined) {
     throw new Error(`Current zkVM host output missing ${fieldName}`);
   }

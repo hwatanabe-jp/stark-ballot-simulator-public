@@ -17,10 +17,21 @@ import {
   FinalizationResponseSchema,
   CurrentFinalizationResponseSchema,
   StandardErrorResponseSchema,
+  tallySchema,
 } from './index';
 import finalizeAcceptedFixture from './fixtures/json/finalizations.post.accepted.json';
 import finalizeSyncFixture from './fixtures/json/finalizations.post.succeeded.json';
 import statusSucceededFixture from './fixtures/json/finalizations.current.succeeded.json';
+import { s } from '@stark-ballot/validation/schema';
+import {
+  apiResponseSchema,
+  nonNegativeIntegerQuerySchema,
+  positiveIntegerQuerySchema,
+  timestampMsSchema,
+  durationMsSchema,
+  treeSizeSchema,
+  voteIndexSchema,
+} from './primitives';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -89,6 +100,24 @@ describe('VoteRequestSchema', () => {
       rand: '0x' + 'g'.repeat(64),
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('tallySchema', () => {
+  const coherentTally = {
+    counts: { A: 1, B: 2, C: 3, D: 4, E: 5 },
+    totalVotes: 15,
+  };
+
+  it('rejects a total that differs from the exact sum of all choices', () => {
+    expect(tallySchema.safeParse({ ...coherentTally, totalVotes: 14 }).success).toBe(false);
+  });
+
+  it.each([
+    ['choice count', { ...coherentTally, counts: { ...coherentTally.counts, A: 0x1_0000_0000 } }],
+    ['total', { ...coherentTally, totalVotes: 0x1_0000_0000 }],
+  ] as const)('rejects a tally with an out-of-range %s', (_label, tally) => {
+    expect(tallySchema.safeParse(tally).success).toBe(false);
   });
 });
 
@@ -282,6 +311,30 @@ describe('current finalization evidence params', () => {
 });
 
 describe('numeric query schemas', () => {
+  it('admits the exact largest safe decimal without rounding', () => {
+    const text = String(Number.MAX_SAFE_INTEGER);
+    expect(nonNegativeIntegerQuerySchema.parse(text)).toBe(Number.MAX_SAFE_INTEGER);
+    expect(positiveIntegerQuerySchema.parse(text)).toBe(Number.MAX_SAFE_INTEGER);
+    expect(BulletinQuerySchema.parse({ offset: text })).toEqual({ offset: Number.MAX_SAFE_INTEGER });
+  });
+
+  it.each(['9007199254740992', '9007199254740993', '9'.repeat(400)])(
+    'rejects decimal values outside the safe integer domain: %s',
+    (text) => {
+      expect(nonNegativeIntegerQuerySchema.safeParse(text).success).toBe(false);
+      expect(positiveIntegerQuerySchema.safeParse(text).success).toBe(false);
+      expect(BulletinQuerySchema.safeParse({ offset: text }).success).toBe(false);
+      expect(ConsistencyProofQuerySchema.safeParse({ fromTreeSize: '0', toTreeSize: text }).success).toBe(false);
+      expect(
+        CurrentFinalizationBitmapProofParamsSchema.safeParse({
+          sessionId: 'session-123',
+          kind: 'included',
+          voteIndex: text,
+        }).success,
+      ).toBe(false);
+    },
+  );
+
   it('preserves lexical admission while returning numeric values', () => {
     expect(BulletinQuerySchema.parse({ offset: '0', limit: '1000' })).toEqual({ offset: 0, limit: 1000 });
     expect(ConsistencyProofQuerySchema.parse({ fromTreeSize: '0', toTreeSize: '12' })).toEqual({
@@ -301,6 +354,29 @@ describe('numeric query schemas', () => {
     [CurrentFinalizationBitmapProofParamsSchema, { sessionId: 'session-123', kind: 'other', voteIndex: '1' }],
   ])('rejects ambiguous or out-of-contract query %#', (schema, value) => {
     expect(schema.safeParse(value).success).toBe(false);
+  });
+});
+
+describe('numeric response primitives', () => {
+  it.each([timestampMsSchema, durationMsSchema, treeSizeSchema, voteIndexSchema])(
+    'requires an exactly representable non-negative integer',
+    (schema) => {
+      expect(schema.parse(Number.MAX_SAFE_INTEGER)).toBe(Number.MAX_SAFE_INTEGER);
+      for (const value of [Number.MAX_SAFE_INTEGER + 1, Infinity, -1, 1.5]) {
+        expect(schema.safeParse(value).success).toBe(false);
+      }
+    },
+  );
+});
+
+describe('response metadata schema', () => {
+  it('preserves the canonical requestId when additional metadata uses the same key', () => {
+    const schema = apiResponseSchema(s.string(), { requestId: s.number(), page: s.number() });
+    expect(schema.parse({ data: 'ok', meta: { requestId: 'request-1', page: 2 } })).toEqual({
+      data: 'ok',
+      meta: { requestId: 'request-1', page: 2 },
+    });
+    expect(schema.safeParse({ data: 'ok', meta: { requestId: 1, page: 2 } }).success).toBe(false);
   });
 });
 

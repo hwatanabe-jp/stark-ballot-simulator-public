@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readBoundedRequestBody } from './boundedRequestBody';
 
-function requestWithBody(body: BodyInit, headers?: HeadersInit): Request {
+type HeadersInput = NonNullable<ConstructorParameters<typeof Headers>[0]>;
+type RequestBody = NonNullable<RequestInit['body']>;
+
+function requestWithBody(body: RequestBody, headers?: HeadersInput): Request {
   return new Request('http://localhost/test', {
     method: 'POST',
     body,
@@ -10,7 +13,7 @@ function requestWithBody(body: BodyInit, headers?: HeadersInit): Request {
   } as RequestInit & { duplex: 'half' });
 }
 
-function requestWithStream(stream: ReadableStream<Uint8Array>, headers?: HeadersInit): Request {
+function requestWithStream(stream: ReadableStream<Uint8Array>, headers?: HeadersInput): Request {
   return requestWithBody(stream, headers);
 }
 
@@ -122,7 +125,7 @@ describe('readBoundedRequestBody', () => {
   });
 
   it('returns exact multibyte UTF-8 bytes split across chunks', async () => {
-    const body = new TextEncoder().encode('票🙂');
+    const body = new TextEncoder().encode('票𠀀');
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(body.subarray(0, 2));

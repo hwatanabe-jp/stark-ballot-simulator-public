@@ -3,7 +3,7 @@ import type { ArtifactReader } from '@stark-ballot/application/verification/arti
 import {
   localRuntimeProfile,
   targetRuntimeProfile,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 
 const readerMocks = vi.hoisted(() => ({
   createLocalArtifactReader: vi.fn(),

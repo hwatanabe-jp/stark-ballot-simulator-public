@@ -3,5 +3,5 @@
   "compilerOptions": {
     "allowImportingTsExtensions": true
   },
-  "include": ["playwright.config.ts", "vite.config.ts", "vitest.config.ts", "vitest.zkvm.config.ts"]
+  "include": ["vite.config.ts", "vitest.config.ts", "vitest.zkvm.config.ts", "oxfmt.config.ts"]
 }

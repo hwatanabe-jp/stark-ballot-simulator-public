@@ -26,29 +26,40 @@
       "@stark-ballot/aws-adapters/sqs/*": ["../../packages/aws-adapters/src/sqs/*"],
       "@stark-ballot/aws-adapters/store/*": ["../../packages/aws-adapters/src/store/*"],
       "@stark-ballot/crypto-primitives": ["../../packages/crypto-primitives/src/index.ts"],
-      "@stark-ballot/deployment-authority": ["../../packages/deployment-authority/src/index"],
-      "@stark-ballot/deployment-authority/app-acceptance": ["../../packages/deployment-authority/src/app-acceptance"],
+      "@stark-ballot/deployment-authority": ["../../packages/deployment-authority/src/index.js"],
+      "@stark-ballot/deployment-authority/app-acceptance-ledger": [
+        "../../packages/deployment-authority/src/app-acceptance-ledger.js"
+      ],
+      "@stark-ballot/deployment-authority/app-execution-authority": [
+        "../../packages/deployment-authority/src/app-execution-authority.js"
+      ],
+      "@stark-ballot/deployment-authority/authority-bucket-policy": [
+        "../../packages/deployment-authority/src/authority-bucket-policy.js"
+      ],
+      "@stark-ballot/deployment-authority/conditional-object-ledger": [
+        "../../packages/deployment-authority/src/conditional-object-ledger.js"
+      ],
+      "@stark-ballot/deployment-authority/descriptor-snapshot": [
+        "../../packages/deployment-authority/src/descriptor-snapshot.js"
+      ],
       "@stark-ballot/deployment-authority/dynamodb-recovery-phase": [
-        "../../packages/deployment-authority/src/dynamodb-recovery-phase"
+        "../../packages/deployment-authority/src/dynamodb-recovery-phase.js"
       ],
-      "@stark-ballot/deployment-authority/dynamodb-recovery-readiness": [
-        "../../packages/deployment-authority/src/dynamodb-recovery-readiness"
-      ],
-      "@stark-ballot/deployment-authority/ecr-retention": ["../../packages/deployment-authority/src/ecr-retention"],
-      "@stark-ballot/deployment-authority/plan-approval": ["../../packages/deployment-authority/src/plan-approval"],
-      "@stark-ballot/deployment-authority/readiness-check-failure": [
-        "../../packages/deployment-authority/src/readiness-check-failure"
-      ],
-      "@stark-ballot/deployment-authority/rollback-readiness": [
-        "../../packages/deployment-authority/src/rollback-readiness"
+      "@stark-ballot/deployment-authority/ecr-retention": ["../../packages/deployment-authority/src/ecr-retention.js"],
+      "@stark-ballot/deployment-authority/exact-bytes": ["../../packages/deployment-authority/src/exact-bytes.js"],
+      "@stark-ballot/deployment-authority/plan-approval": ["../../packages/deployment-authority/src/plan-approval.js"],
+      "@stark-ballot/deployment-authority/release-ledger": [
+        "../../packages/deployment-authority/src/release-ledger.js"
       ],
       "@stark-ballot/deployment-authority/saved-plan-review": [
         "../../packages/deployment-authority/src/saved-plan-review.js"
       ],
-      "@stark-ballot/deployment-authority/terraform-baseline": [
-        "../../packages/deployment-authority/src/terraform-baseline"
+      "@stark-ballot/deployment-authority/terraform-authority": [
+        "../../packages/deployment-authority/src/terraform-authority.js"
       ],
-      "@stark-ballot/deployment-authority/terraform-drift": ["../../packages/deployment-authority/src/terraform-drift"],
+      "@stark-ballot/deployment-authority/terraform-drift": [
+        "../../packages/deployment-authority/src/terraform-drift.js"
+      ],
       "@stark-ballot/diagnostics": ["../../packages/diagnostics/src/index.ts"],
       "@stark-ballot/diagnostics/canonicalEvents": ["../../packages/diagnostics/src/canonicalEvents.ts"],
       "@stark-ballot/diagnostics/logger": ["../../packages/diagnostics/src/logger.ts"],
@@ -97,12 +108,12 @@
       "@stark-ballot/validation/duplicate-detector-cache": [
         "../../packages/validation/src/duplicate-detector-cache.ts"
       ],
-      "@stark-ballot/validation/image-id-mapping": ["../../packages/validation/src/image-id-mapping"],
-      "@stark-ballot/validation/image-id-mapping-types": ["../../packages/validation/src/image-id-mapping.d.ts"],
-      "@stark-ballot/validation/image-id-policy": ["../../packages/validation/src/image-id-policy.ts"],
+      "@stark-ballot/validation/image-id-mapping": ["../../packages/validation/src/image-id-mapping.js"],
+      "@stark-ballot/validation/image-id-policy": ["../../packages/validation/src/image-id-policy.js"],
       "@stark-ballot/validation/log-hash-salt": ["../../packages/validation/src/log-hash-salt.ts"],
       "@stark-ballot/validation/safe-verifier-segment": ["../../packages/validation/src/safe-verifier-segment.ts"],
       "@stark-ballot/validation/schema": ["../../packages/validation/src/schema.ts"],
+      "@stark-ballot/validation/schema-openapi": ["../../packages/validation/src/schema-openapi.ts"],
       "@stark-ballot/validation/unknown-value-guards": ["../../packages/validation/src/unknown-value-guards.ts"],
       "@stark-ballot/verification": ["../../packages/verification/src/index.ts"],
       "@stark-ballot/verification/bitmap-proof-types": [
@@ -128,9 +139,6 @@
       ],
       "@stark-ballot/verification/image-id": ["../../packages/verification/src/verification/expected-image-id.ts"],
       "@stark-ballot/verification/image-id-types": ["../../packages/verification/src/verification/image-id-types.ts"],
-      "@stark-ballot/verification/included-bitmap-artifact": [
-        "../../packages/verification/src/verification/included-bitmap-artifact.ts"
-      ],
       "@stark-ballot/verification/local-cast-checks": [
         "../../packages/verification/src/verification/local-cast-checks.ts"
       ],
@@ -157,8 +165,8 @@
       "@stark-ballot/verification/receipt-normalizer": [
         "../../packages/verification/src/verification/receipt-normalizer.ts"
       ],
-      "@stark-ballot/verification/seen-bitmap-artifact": [
-        "../../packages/verification/src/verification/seen-bitmap-artifact.ts"
+      "@stark-ballot/verification/scenario-projection": [
+        "../../packages/verification/src/verification/scenario-projection.ts"
       ],
       "@stark-ballot/verification/shared/constants": ["../../packages/verification/src/shared/constants.ts"],
       "@stark-ballot/verification/shared/logger": ["../../packages/verification/src/shared/logger.ts"],
@@ -173,6 +181,9 @@
         "../../packages/verification/src/verification/tamperDetection.ts"
       ],
       "@stark-ballot/verification/types": ["../../packages/verification/src/verification/types.ts"],
+      "@stark-ballot/verification/verifier-service-report": [
+        "../../packages/verification/src/verification/verifier-service-report.ts"
+      ],
       "@stark-ballot/web": ["../../apps/web/src/index.ts"],
       "@stark-ballot/web/api/*": ["../../apps/web/src/api/*"],
       "@stark-ballot/web/components/*": ["../../apps/web/src/components/*"],
@@ -198,10 +209,14 @@
         "../../packages/zkvm-contract/src/zkvm/bitmap-artifacts.ts"
       ],
       "@stark-ballot/zkvm-contract/zkvm/bitmap-core": ["../../packages/zkvm-contract/src/zkvm/bitmap-core.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/bitmap-golden-vectors": [
+        "../../packages/zkvm-contract/src/zkvm/bitmap-golden-vectors.ts"
+      ],
       "@stark-ballot/zkvm-contract/zkvm/contract-constants": [
         "../../packages/zkvm-contract/src/zkvm/contract-constants.ts"
       ],
       "@stark-ballot/zkvm-contract/zkvm/election-config": ["../../packages/zkvm-contract/src/zkvm/election-config.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/formal-vectors": ["../../packages/zkvm-contract/src/zkvm/formal-vectors.ts"],
       "@stark-ballot/zkvm-contract/zkvm/guards": ["../../packages/zkvm-contract/src/zkvm/guards.ts"],
       "@stark-ballot/zkvm-contract/zkvm/hex": ["../../packages/zkvm-contract/src/zkvm/hex.ts"],
       "@stark-ballot/zkvm-contract/zkvm/host-io": ["../../packages/zkvm-contract/src/zkvm/host-io.ts"],
@@ -209,6 +224,9 @@
       "@stark-ballot/zkvm-contract/zkvm/journal-guards": ["../../packages/zkvm-contract/src/zkvm/journal-guards.ts"],
       "@stark-ballot/zkvm-contract/zkvm/log-id": ["../../packages/zkvm-contract/src/zkvm/log-id.ts"],
       "@stark-ballot/zkvm-contract/zkvm/public-journal": ["../../packages/zkvm-contract/src/zkvm/public-journal.ts"],
+      "@stark-ballot/zkvm-contract/zkvm/semantic-contract": [
+        "../../packages/zkvm-contract/src/zkvm/semantic-contract.ts"
+      ],
       "@stark-ballot/zkvm-contract/zkvm/types": ["../../packages/zkvm-contract/src/zkvm/types.ts"],
       "@stark-ballot/zkvm-contract/zkvm/validated-domain": [
         "../../packages/zkvm-contract/src/zkvm/validated-domain.ts"

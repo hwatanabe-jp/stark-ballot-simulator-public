@@ -8,30 +8,41 @@ import type {
   VerificationObservationWrite,
 } from '@stark-ballot/domain/types/verificationObservation';
 import type { SessionReadModel } from '@stark-ballot/application/session/session-read-model';
-import type { FinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-types';
+import {
+  createUnavailableFinalizationArtifacts,
+  type FinalizationResultAuthority,
+} from '@stark-ballot/application/finalize/finalization-types';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import {
   VERIFICATION_CHECK_DEFINITIONS,
+  getVerificationStepInputs,
   type VerificationCheck,
   type VerificationCheckId,
 } from '@stark-ballot/verification/checks';
+import { deriveVerificationPresentationPolicy } from '@stark-ballot/verification/presentation-policy';
 import type { VerificationResult } from '@stark-ballot/verification/shared/types';
 import type { VerificationObservationRequest } from '@stark-ballot/api-contract/schemas/verification';
 import type { verificationRoute } from '@stark-ballot/api-contract/routes';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
-import { createMockVoteStore, type MockVoteStore } from '../../__tests__/support/mockVoteStore';
-import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { createMockVoteStore, type MockVoteStore } from '../../test-support/mockVoteStore';
+import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import {
   getApiErrorCode,
   readJsonRecord,
   requireDataRecord,
 } from '@stark-ballot/test-support/testing/response-helpers';
 import { getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
-import type { ApiHandlerArguments, SessionAdmittedContext } from '../context';
+import type { ApiHandlerArguments, SessionFinalizationAdmittedContext } from '../context';
 import type { VerificationRunSummaryObservationInput } from './verificationObservability';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
 
 const dependencyMocks = vi.hoisted(() => ({
   getVerifyHandler:
-    vi.fn<(arguments_: ApiHandlerArguments<typeof verificationRoute, SessionAdmittedContext>) => Promise<Response>>(),
+    vi.fn<
+      (
+        arguments_: ApiHandlerArguments<typeof verificationRoute, SessionFinalizationAdmittedContext>,
+      ) => Promise<Response>
+    >(),
   emitVerificationRunSummaryObservation: vi.fn<(input: VerificationRunSummaryObservationInput) => void>(),
 }));
 
@@ -50,9 +61,18 @@ vi.mock('./verificationObservability', async (importOriginal) => {
 import { buildObservedVerificationChecks, submitVerificationObservationHandler } from './verificationObservation';
 
 const capabilitySecret = 'verification-observation-secret-0123456789abcdef';
-const sessionId = 'session-verification-observation-1';
-const finalizationId = 'execution-verification-observation-1';
+const sessionId = asSessionId('session-verification-observation-1');
+const finalizationId = asFinalizationId('execution-verification-observation-1');
 const hex = `0x${'12'.repeat(32)}`;
+const electionId = '550e8400-e29b-41d4-a716-446655440000';
+
+function computeSingleLeafRoot(commitment: string): string {
+  return `0x${createHash('sha256')
+    .update(Buffer.from([0]))
+    .update('stark-ballot:leaf|v1')
+    .update(Buffer.from(commitment.slice(2), 'hex'))
+    .digest('hex')}`;
+}
 
 const castStatuses = {
   cast_receipt_present: 'success',
@@ -75,7 +95,7 @@ function buildChecks(
     id: definition.id,
     status: overrides[definition.id] ?? (definition.id.startsWith('cast_') ? 'not_run' : 'success'),
     evidence: definition.evidence,
-    inputs: definition.inputs,
+    inputs: [...definition.inputs],
     ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
   }));
 }
@@ -94,22 +114,35 @@ function buildFinalizationResult(): FinalizationResultAuthority {
     },
     imageId: hex,
     journal,
+    artifacts: createUnavailableFinalizationArtifacts(),
     scenarios: ['S2'],
   };
 }
 
 function buildVerificationResult(devMode = false): VerificationResult {
+  const commonReport = {
+    verifier_version: '0.1.0',
+    verified_at: '2026-07-28T00:00:00.000Z',
+    duration_ms: 42,
+    expected_image_id: hex,
+    receipt_image_id: hex,
+  };
+  if (devMode) {
+    return {
+      status: 'dev_mode',
+      report: {
+        status: 'dev_mode',
+        ...commonReport,
+        dev_mode_receipt: true,
+      },
+    };
+  }
   return {
-    status: devMode ? 'dev_mode' : 'success',
+    status: 'success',
     report: {
-      status: devMode ? 'dev_mode' : 'success',
-      verifier_version: '0.1.0',
-      verified_at: '2026-07-28T00:00:00.000Z',
-      duration_ms: 42,
-      expected_image_id: hex,
-      receipt_image_id: hex,
-      dev_mode_receipt: devMode,
-      errors: [],
+      status: 'success',
+      ...commonReport,
+      dev_mode_receipt: false,
     },
   };
 }
@@ -185,16 +218,33 @@ function createObservationStore(
 }
 
 function buildVerifyResponse(checks = buildChecks()): Response {
+  const bulletinRootAtCast = computeSingleLeafRoot(hex);
+  const policy = deriveVerificationPresentationPolicy({
+    availability: 'available',
+    checks,
+    context: {
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
+      rejectedRecords: 0,
+      excludedSlots: 0,
+      sthSourcesConfigured: false,
+      devModeEvidence: false,
+    },
+    verificationStatus: 'success',
+    verificationReportStatus: 'success',
+  });
+  const stepIds = ['cast_as_intended', 'recorded_as_cast', 'counted_as_recorded', 'stark_verification'] as const;
+
   return new Response(
     JSON.stringify({
       data: {
         availability: 'available',
         finalizationId,
         proofAuthority: {
-          electionId: 'election-1',
+          electionId,
           electionConfigHash: hex,
-          logId: 'log-1',
-          bulletinRoot: hex,
+          logId: hex,
+          bulletinRoot: bulletinRootAtCast,
           imageId: hex,
           verifiedTally: [1, 0, 0, 0, 0],
           missingSlots: 0,
@@ -204,6 +254,7 @@ function buildVerifyResponse(checks = buildChecks()): Response {
           treeSize: 1,
           excludedSlots: 0,
           sthDigest: hex,
+          seenBitmapRoot: hex,
           includedBitmapRoot: hex,
           inputCommitment: hex,
           seenIndicesCount: 1,
@@ -214,49 +265,38 @@ function buildVerifyResponse(checks = buildChecks()): Response {
             totalVotes: 1,
             tamperedCount: 0,
           },
-          scenarioId: 'S2',
-          tamperDetected: true,
-          policy: {
-            summary: {
-              status: 'published_tally_mismatch',
-              tone: 'failed',
-            },
-            stageStatuses: {
-              cast_as_intended: 'not_run',
-              recorded_as_cast: 'success',
-              counted_as_recorded: 'success',
-              stark_verification: 'success',
-            },
-            evidenceFullyVerified: false,
-            fullyVerifiedLabelEligible: false,
-            display: {
-              readiness: 'ready',
-              source: 'summary',
-              status: 'failed',
-              renderedStatus: 'failed',
-            },
-            publishedTallyMismatch: true,
-            devModeEvidence: false,
-            missingEvidence: false,
-          },
+          scenarioId: 'S0',
+          tamperDetected: false,
+          policy,
         },
-        verifierResult: {
-          status: 'success',
-        },
+        verifierResult: buildVerificationResult(),
         verification: {
           checks,
-          steps: [
-            { id: 'cast_as_intended', status: 'not_run' },
-            { id: 'recorded_as_cast', status: 'success' },
-            { id: 'counted_as_recorded', status: 'success' },
-            { id: 'stark_verification', status: 'success' },
-          ],
+          steps: stepIds.map((id) => ({
+            id,
+            status: policy.stageStatuses[id],
+            inputs: getVerificationStepInputs(id),
+          })),
         },
         voterEvidence: {
-          availability: 'unavailable',
-          reason: 'exact_proof_unavailable',
+          availability: 'available',
+          voteReceipt: {
+            voteId: 'vote-1',
+            commitment: hex,
+            bulletinIndex: 0,
+            bulletinRootAtCast,
+            castAtMs: 1_700_000_000_000,
+            inputCommitment: hex,
+          },
           userVote: {
             commitment: hex,
+            voteId: 'vote-1',
+            proof: {
+              leafIndex: 0,
+              treeSize: 1,
+              merklePath: [],
+              bulletinRootAtCast,
+            },
           },
         },
         journal: {
@@ -303,6 +343,7 @@ async function invokeObservation(
       requestOrigin: 'http://localhost',
       operatorGatedDevelop: false,
       sessionId,
+      finalizationId: asFinalizationId(requestedFinalizationId),
       session,
     },
   });
@@ -442,7 +483,7 @@ describe('submitVerificationObservationHandler', () => {
       recordVerificationObservation,
     });
 
-    const response = await invokeObservation(store, 'execution-stale');
+    const response = await invokeObservation(store, asFinalizationId('execution-stale'));
 
     expect(response.status).toBe(409);
     expect(dependencyMocks.getVerifyHandler).not.toHaveBeenCalled();

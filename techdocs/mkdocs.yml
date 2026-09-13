@@ -1,0 +1,15 @@
+site_name: STARK Ballot Simulator
+site_description: Guest-safe architecture, ownership, release, and verification overview.
+docs_dir: docs
+nav:
+  - Overview: index.md
+  - Architecture and ownership: architecture.md
+  - Release lanes: release-lanes.md
+  - Exact-source reviewed releases: exact-source-releases.md
+  - Verification honesty: verification-honesty.md
+plugins:
+  - techdocs-core
+strict: true
+theme:
+  name: material
+  font: false

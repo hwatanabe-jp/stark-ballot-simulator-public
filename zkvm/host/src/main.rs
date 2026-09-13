@@ -1,8 +1,12 @@
 use contract_core::{
     compute_bitmap_merkle_root, compute_commitment, validate_guest_work_budget,
     verify_inclusion_proof_rfc6962, AggregatorInput, GuestWorkBudgetError, UnixTimestampMillis,
-    VerificationOutput, VoteWithProof, CURRENT_METHOD_VERSION, MAX_GUEST_SERIALIZED_INPUT_BYTES,
+    VerificationOutput, VoteWithProof, CURRENT_METHOD_VERSION, HOST_INCLUDED_BITMAP_FILE_SUFFIX,
+    HOST_OUTPUT_FILE_SUFFIX, HOST_RECEIPT_FILE_SUFFIX, HOST_SEEN_BITMAP_FILE_SUFFIX,
+    INCLUDED_BITMAP_ARTIFACT_SCHEMA, INCLUDED_BITMAP_ARTIFACT_VERSION,
+    MAX_GUEST_SERIALIZED_INPUT_BYTES, SEEN_BITMAP_ARTIFACT_SCHEMA, SEEN_BITMAP_ARTIFACT_VERSION,
 };
+use host::artifacts::{ElectionConfig, HostJsonOutput};
 use risc0_zkvm::{default_prover, ExecutorEnv};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -25,51 +29,29 @@ enum ImageIdOutputFormat {
 
 // JSON-friendly input structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JsonInput {
-    pub election_id: Vec<u8>,   // 16 bytes
-    pub bulletin_root: Vec<u8>, // 32 bytes
+    pub election_id: [u8; 16],
+    pub bulletin_root: [u8; 32],
     pub tree_size: u32,
-    pub log_id: Vec<u8>, // 32 bytes
+    pub log_id: [u8; 32],
     /// Unix timestamp in milliseconds.
     pub timestamp: u64,
     pub total_expected: u32,
-    pub election_config_hash: Vec<u8>, // 32 bytes
+    pub election_config_hash: [u8; 32],
     pub votes: Vec<JsonVoteWithProof>,
+    #[serde(default)]
+    pub election_config: Option<ElectionConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JsonVoteWithProof {
-    pub commitment: Vec<u8>, // 32 bytes
+    pub commitment: [u8; 32],
     pub choice: u8,
-    pub random: Vec<u8>, // 32 bytes
+    pub random: [u8; 32],
     pub index: u32,
-    pub merkle_path: Vec<Vec<u8>>, // Array of 32-byte hashes
-}
-
-// JSON output structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct JsonOutput {
-    election_id: Vec<u8>,
-    election_config_hash: Vec<u8>,
-    bulletin_root: Vec<u8>,
-    tree_size: u32,
-    total_expected: u32,
-    sth_digest: Vec<u8>,
-    verified_tally: [u32; 5],
-    total_votes: u32,
-    valid_votes: u32,
-    invalid_votes: u32,
-    seen_indices_count: u32,
-    missing_slots: u32,
-    invalid_presented_slots: u32,
-    rejected_records: u32,
-    seen_bitmap_root: Vec<u8>,
-    included_bitmap_root: Vec<u8>,
-    excluded_slots: u32,
-    input_commitment: Vec<u8>,
-    method_version: u32,
-    image_id: String, // ImageID of the zkVM program
+    pub merkle_path: Vec<[u8; 32]>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,19 +245,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check for potential issues
     if output.missing_slots > 0 {
         println!(
-            "\n⚠️  WARNING: {} votes were not presented to zkVM!",
+            "\nWARNING: {} votes were not presented to zkVM!",
             output.missing_slots
         );
     }
     if output.invalid_votes > 0 {
-        println!(
-            "⚠️  WARNING: {} votes failed validation!",
-            output.invalid_votes
-        );
+        println!("WARNING: {} votes failed validation!", output.invalid_votes);
     }
     if output.total_expected != output.tree_size {
         println!(
-            "⚠️  WARNING: Expected {} votes but tree size is {}",
+            "WARNING: Expected {} votes but tree size is {}",
             output.total_expected, output.tree_size
         );
     }
@@ -286,31 +265,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nGuest Program ImageID: {}", image_id);
 
     // Convert output to JSON format
-    let json_output = JsonOutput {
-        election_id: output.election_id.to_vec(),
-        election_config_hash: output.election_config_hash.to_vec(),
-        bulletin_root: output.bulletin_root.to_vec(),
-        tree_size: output.tree_size,
-        total_expected: output.total_expected,
-        sth_digest: output.sth_digest.to_vec(),
-        verified_tally: output.verified_tally,
-        total_votes: output.total_votes,
-        valid_votes: output.valid_votes,
-        invalid_votes: output.invalid_votes,
-        seen_indices_count: output.seen_indices_count,
-        missing_slots: output.missing_slots,
-        invalid_presented_slots: output.invalid_presented_slots,
-        rejected_records: output.rejected_records,
-        seen_bitmap_root: output.seen_bitmap_root.to_vec(),
-        included_bitmap_root: output.included_bitmap_root.to_vec(),
-        excluded_slots: output.excluded_slots,
-        input_commitment: output.input_commitment.to_vec(),
-        method_version: output.method_version,
-        image_id: image_id.clone(),
-    };
+    let json_output = HostJsonOutput::from_verification_output(output.clone(), image_id.clone());
 
     // Save output as JSON
-    let output_file = input_path.replace(".json", "-output.json");
+    let output_file = input_path.replace(".json", HOST_OUTPUT_FILE_SUFFIX);
     let output_json = serde_json::to_string_pretty(&json_output)?;
     std::fs::write(&output_file, output_json)?;
     println!("\nOutput saved to: {}", output_file);
@@ -321,14 +279,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } = build_exact_bitmaps(&aggregator_input);
     let computed_seen_bitmap_root = compute_bitmap_merkle_root(&seen_bitmap);
     let computed_included_bitmap_root = compute_bitmap_merkle_root(&included_bitmap);
-    let seen_bitmap_file = input_path.replace(".json", "-seen-bitmap.json");
-    let bitmap_file = input_path.replace(".json", "-bitmap.json");
+    let seen_bitmap_file = input_path.replace(".json", HOST_SEEN_BITMAP_FILE_SUFFIX);
+    let bitmap_file = input_path.replace(".json", HOST_INCLUDED_BITMAP_FILE_SUFFIX);
     std::fs::remove_file(&seen_bitmap_file).ok();
     std::fs::remove_file(&bitmap_file).ok();
     if computed_seen_bitmap_root == output.seen_bitmap_root {
         let seen_bitmap_artifact = JsonSeenBitmapArtifact {
-            schema: "stark-ballot.seen_bitmap".to_string(),
-            version: "1.0".to_string(),
+            schema: SEEN_BITMAP_ARTIFACT_SCHEMA.to_string(),
+            version: SEEN_BITMAP_ARTIFACT_VERSION.to_string(),
             tree_size: aggregator_input.tree_size,
             seen_bitmap_root: format!("0x{}", hex::encode(computed_seen_bitmap_root)),
             seen_bitmap,
@@ -345,8 +303,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if computed_included_bitmap_root == output.included_bitmap_root {
         let bitmap_artifact = JsonIncludedBitmapArtifact {
-            schema: "stark-ballot.included_bitmap".to_string(),
-            version: "1.0".to_string(),
+            schema: INCLUDED_BITMAP_ARTIFACT_SCHEMA.to_string(),
+            version: INCLUDED_BITMAP_ARTIFACT_VERSION.to_string(),
             tree_size: aggregator_input.tree_size,
             included_bitmap_root: format!("0x{}", hex::encode(computed_included_bitmap_root)),
             included_bitmap,
@@ -363,7 +321,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Save receipt to file with ImageID included
-    let receipt_file = input_path.replace(".json", "-receipt.json");
+    let receipt_file = input_path.replace(".json", HOST_RECEIPT_FILE_SUFFIX);
 
     // Create a custom structure for the receipt with ImageID
     #[derive(Debug, Clone, Serialize)]
@@ -489,71 +447,35 @@ fn json_to_aggregator_input(
 ) -> Result<AggregatorInput, Box<dyn std::error::Error>> {
     let timestamp = UnixTimestampMillis::new(json_input.timestamp)
         .map_err(|_| String::from("timestamp must be positive Unix timestamp milliseconds"))?;
-    let mut votes = Vec::with_capacity(json_input.votes.len());
-
-    // Convert all votes
-    for json_vote in &json_input.votes {
-        let mut merkle_path = Vec::with_capacity(json_vote.merkle_path.len());
-        for path_node in &json_vote.merkle_path {
-            merkle_path.push(vec_to_bytes32(path_node)?);
-        }
-
-        let vote = VoteWithProof {
-            commitment: vec_to_bytes32(&json_vote.commitment)?,
-            choice: json_vote.choice,
-            random: vec_to_bytes32(&json_vote.random)?,
-            index: json_vote.index,
-            merkle_path,
-        };
-        votes.push(vote);
-    }
+    let votes = json_input
+        .votes
+        .iter()
+        .map(|vote| VoteWithProof {
+            commitment: vote.commitment,
+            choice: vote.choice,
+            random: vote.random,
+            index: vote.index,
+            merkle_path: vote.merkle_path.clone(),
+        })
+        .collect();
 
     Ok(AggregatorInput {
-        election_id: vec_to_bytes16(&json_input.election_id)?,
-        bulletin_root: vec_to_bytes32(&json_input.bulletin_root)?,
+        election_id: json_input.election_id,
+        bulletin_root: json_input.bulletin_root,
         tree_size: json_input.tree_size,
-        log_id: vec_to_bytes32(&json_input.log_id)?,
+        log_id: json_input.log_id,
         timestamp: timestamp.get(),
         total_expected: json_input.total_expected,
-        election_config_hash: vec_to_bytes32(&json_input.election_config_hash)?,
+        election_config_hash: json_input.election_config_hash,
         votes,
     })
-}
-
-/// Convert vec to 16-byte array
-fn vec_to_bytes16(data: &[u8]) -> Result<[u8; 16], Box<dyn std::error::Error>> {
-    if data.len() == 16 {
-        let mut result = [0u8; 16];
-        result.copy_from_slice(data);
-        Ok(result)
-    } else {
-        Err(format!(
-            "Invalid byte array length for 16-byte value: got {}",
-            data.len()
-        )
-        .into())
-    }
-}
-
-/// Convert vec to 32-byte array
-fn vec_to_bytes32(data: &[u8]) -> Result<[u8; 32], Box<dyn std::error::Error>> {
-    if data.len() == 32 {
-        let mut result = [0u8; 32];
-        result.copy_from_slice(data);
-        Ok(result)
-    } else {
-        Err(format!(
-            "Invalid byte array length for 32-byte value: got {}",
-            data.len()
-        )
-        .into())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use contract_core::{hash_internal, hash_leaf};
+    use serde_json::json;
     #[cfg(feature = "production")]
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -569,27 +491,28 @@ mod tests {
     #[test]
     fn test_json_to_aggregator_input() {
         let input = JsonInput {
-            election_id: vec![1u8; 16],
-            bulletin_root: vec![2u8; 32],
+            election_id: [1u8; 16],
+            bulletin_root: [2u8; 32],
             tree_size: 4,
-            log_id: vec![3u8; 32],
+            log_id: [3u8; 32],
             timestamp: 1_234_567_890_000,
             total_expected: 4,
-            election_config_hash: vec![4u8; 32],
+            election_config_hash: [4u8; 32],
+            election_config: None,
             votes: vec![
                 JsonVoteWithProof {
                     choice: 0,
-                    commitment: vec![100; 32],
-                    random: vec![42; 32],
+                    commitment: [100; 32],
+                    random: [42; 32],
                     index: 0,
                     merkle_path: vec![],
                 },
                 JsonVoteWithProof {
                     choice: 1,
-                    commitment: vec![101; 32],
-                    random: vec![1; 32],
+                    commitment: [101; 32],
+                    random: [1; 32],
                     index: 1,
-                    merkle_path: vec![vec![5u8; 32]],
+                    merkle_path: vec![[5u8; 32]],
                 },
             ],
         };
@@ -603,13 +526,14 @@ mod tests {
     #[test]
     fn test_json_to_aggregator_input_rejects_zero_timestamp() {
         let input = JsonInput {
-            election_id: vec![1u8; 16],
-            bulletin_root: vec![2u8; 32],
+            election_id: [1u8; 16],
+            bulletin_root: [2u8; 32],
             tree_size: 4,
-            log_id: vec![3u8; 32],
+            log_id: [3u8; 32],
             timestamp: 0,
             total_expected: 4,
-            election_config_hash: vec![4u8; 32],
+            election_config_hash: [4u8; 32],
+            election_config: None,
             votes: vec![],
         };
 
@@ -618,6 +542,68 @@ mod tests {
             error,
             "timestamp must be positive Unix timestamp milliseconds"
         );
+    }
+
+    #[test]
+    fn exact_json_input_rejects_unknown_fields_and_admits_artifact_config() {
+        let input = json!({
+            "election_id": vec![1u8; 16],
+            "bulletin_root": vec![2u8; 32],
+            "tree_size": 1,
+            "log_id": vec![3u8; 32],
+            "timestamp": 1_700_000_000_000_u64,
+            "total_expected": 1,
+            "election_config_hash": vec![4u8; 32],
+            "votes": [{
+                "commitment": vec![5u8; 32],
+                "choice": 0,
+                "random": vec![6u8; 32],
+                "index": 0,
+                "merkle_path": [],
+            }],
+            "election_config": {
+                "totalExpected": 1,
+                "choices": ["A", "B", "C", "D", "E"],
+                "version": "v1.0",
+                "botCount": 0,
+                "merkleTreeDepth": 1,
+            },
+        });
+
+        serde_json::from_value::<JsonInput>(input.clone())
+            .expect("the current artifact-augmented input should be admitted");
+
+        let mut unknown_top_level = input.clone();
+        unknown_top_level["compatibilityMarker"] = json!("retired");
+        serde_json::from_value::<JsonInput>(unknown_top_level)
+            .expect_err("unknown top-level input fields must fail closed");
+
+        for field in [
+            "election_id",
+            "bulletin_root",
+            "log_id",
+            "election_config_hash",
+        ] {
+            let mut wrong_length = input.clone();
+            wrong_length[field] = json!([0]);
+            serde_json::from_value::<JsonInput>(wrong_length)
+                .expect_err("fixed-length input bytes must be rejected during JSON admission");
+        }
+        for field in ["commitment", "random"] {
+            let mut wrong_length = input.clone();
+            wrong_length["votes"][0][field] = json!([0]);
+            serde_json::from_value::<JsonInput>(wrong_length)
+                .expect_err("fixed-length vote bytes must be rejected during JSON admission");
+        }
+        let mut wrong_path_length = input.clone();
+        wrong_path_length["votes"][0]["merkle_path"] = json!([[0]]);
+        serde_json::from_value::<JsonInput>(wrong_path_length)
+            .expect_err("Merkle siblings must have the exact hash width");
+
+        let mut unknown_vote_field = input;
+        unknown_vote_field["votes"][0]["merklePath"] = json!([]);
+        serde_json::from_value::<JsonInput>(unknown_vote_field)
+            .expect_err("unknown nested vote fields must fail closed");
     }
 
     #[test]
@@ -810,35 +796,195 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_json_output_includes_image_id() {
-        let json_output = JsonOutput {
-            election_id: vec![1u8; 16],
-            election_config_hash: vec![2u8; 32],
-            bulletin_root: vec![3u8; 32],
-            tree_size: 4,
-            total_expected: 4,
-            sth_digest: vec![4u8; 32],
-            verified_tally: [10, 20, 15, 12, 7],
-            total_votes: 64,
-            valid_votes: 64,
+    fn current_input_sentinel() -> AggregatorInput {
+        AggregatorInput {
+            election_id: [0, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15],
+            bulletin_root: [0x20; 32],
+            tree_size: 5,
+            log_id: [0x30; 32],
+            timestamp: 1_234_567_890_000,
+            total_expected: 5,
+            election_config_hash: [0x40; 32],
+            votes: vec![VoteWithProof {
+                commitment: [0x50; 32],
+                choice: 4,
+                random: [0x60; 32],
+                index: 3,
+                merkle_path: vec![[0x70; 32], [0x80; 32]],
+            }],
+        }
+    }
+
+    fn assert_aggregator_input_eq(actual: &AggregatorInput, expected: &AggregatorInput) {
+        assert_eq!(actual.election_id, expected.election_id);
+        assert_eq!(actual.bulletin_root, expected.bulletin_root);
+        assert_eq!(actual.tree_size, expected.tree_size);
+        assert_eq!(actual.log_id, expected.log_id);
+        assert_eq!(actual.timestamp, expected.timestamp);
+        assert_eq!(actual.total_expected, expected.total_expected);
+        assert_eq!(actual.election_config_hash, expected.election_config_hash);
+        assert_eq!(actual.votes.len(), expected.votes.len());
+        for (actual_vote, expected_vote) in actual.votes.iter().zip(&expected.votes) {
+            assert_eq!(actual_vote.commitment, expected_vote.commitment);
+            assert_eq!(actual_vote.choice, expected_vote.choice);
+            assert_eq!(actual_vote.random, expected_vote.random);
+            assert_eq!(actual_vote.index, expected_vote.index);
+            assert_eq!(actual_vote.merkle_path, expected_vote.merkle_path);
+        }
+    }
+
+    fn current_journal_sentinel() -> VerificationOutput {
+        VerificationOutput {
+            election_id: [0, 1, 2, 3, 4, 5, 0x46, 7, 0x88, 9, 10, 11, 12, 13, 14, 15],
+            election_config_hash: [0x10; 32],
+            bulletin_root: [0x20; 32],
+            tree_size: 5,
+            total_expected: 5,
+            sth_digest: [0x30; 32],
+            verified_tally: [1, 1, 1, 1, 1],
+            total_votes: 5,
+            valid_votes: 5,
             invalid_votes: 0,
-            seen_indices_count: 64,
+            seen_indices_count: 5,
             missing_slots: 0,
             invalid_presented_slots: 0,
             rejected_records: 0,
-            seen_bitmap_root: vec![5u8; 32],
-            included_bitmap_root: vec![5u8; 32],
+            seen_bitmap_root: [0x40; 32],
+            included_bitmap_root: [0x40; 32],
             excluded_slots: 0,
-            input_commitment: vec![6u8; 32],
+            input_commitment: [0x60; 32],
             method_version: CURRENT_METHOD_VERSION,
-            image_id: String::from(
-                "0x7a1fe95465f1511edf5aa9e1a85ec7fcf0e0d06dcc079680c408a13b45096db2",
-            ),
-        };
+        }
+    }
 
-        // Now JsonOutput includes imageId field - test should pass
-        assert!(!json_output.image_id.is_empty());
+    fn assert_verification_output_eq(actual: &VerificationOutput, expected: &VerificationOutput) {
+        assert_eq!(actual.election_id, expected.election_id);
+        assert_eq!(actual.election_config_hash, expected.election_config_hash);
+        assert_eq!(actual.bulletin_root, expected.bulletin_root);
+        assert_eq!(actual.tree_size, expected.tree_size);
+        assert_eq!(actual.total_expected, expected.total_expected);
+        assert_eq!(actual.sth_digest, expected.sth_digest);
+        assert_eq!(actual.verified_tally, expected.verified_tally);
+        assert_eq!(actual.total_votes, expected.total_votes);
+        assert_eq!(actual.valid_votes, expected.valid_votes);
+        assert_eq!(actual.invalid_votes, expected.invalid_votes);
+        assert_eq!(actual.seen_indices_count, expected.seen_indices_count);
+        assert_eq!(actual.missing_slots, expected.missing_slots);
+        assert_eq!(
+            actual.invalid_presented_slots,
+            expected.invalid_presented_slots
+        );
+        assert_eq!(actual.rejected_records, expected.rejected_records);
+        assert_eq!(actual.seen_bitmap_root, expected.seen_bitmap_root);
+        assert_eq!(actual.included_bitmap_root, expected.included_bitmap_root);
+        assert_eq!(actual.excluded_slots, expected.excluded_slots);
+        assert_eq!(actual.input_commitment, expected.input_commitment);
+        assert_eq!(actual.method_version, expected.method_version);
+    }
+
+    #[test]
+    fn current_input_round_trips_through_risc0_serde() {
+        let expected = current_input_sentinel();
+        let encoded_words = risc0_zkvm::serde::to_vec(&expected)
+            .expect("current input sentinel should serialize through RISC Zero serde");
+        let decoded: AggregatorInput = risc0_zkvm::serde::from_slice(&encoded_words)
+            .expect("current input sentinel should decode through the guest input boundary");
+
+        assert_aggregator_input_eq(&decoded, &expected);
+    }
+
+    #[test]
+    fn current_journal_round_trips_through_risc0_serde() {
+        let expected = current_journal_sentinel();
+        let encoded_words = risc0_zkvm::serde::to_vec(&expected)
+            .expect("current journal sentinel should serialize through RISC Zero serde");
+        eprintln!(
+            "non-normative RISC Zero serde journal sentinel length: {} bytes",
+            encoded_words.len() * std::mem::size_of::<u32>()
+        );
+        let encoded_bytes = encoded_words
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        let decoded: VerificationOutput = risc0_zkvm::Journal::new(encoded_bytes)
+            .decode()
+            .expect("current journal sentinel should decode through the host journal boundary");
+
+        assert_verification_output_eq(&decoded, &expected);
+    }
+
+    #[test]
+    fn current_journal_host_json_matches_rust_owned_sentinel() {
+        let output = HostJsonOutput::from_verification_output(
+            current_journal_sentinel(),
+            "0xabababababababababababababababababababababababababababababababab".to_string(),
+        );
+        let actual =
+            serde_json::to_value(output).expect("host journal projection should serialize");
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../contract-core/testdata/current-journal-host-json-sentinel.json"
+        ))
+        .expect("current host JSON sentinel should parse");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn host_json_projection_matches_current_semantic_descriptor() {
+        let output = HostJsonOutput::from_verification_output(
+            current_journal_sentinel(),
+            "0xabababababababababababababababababababababababababababababababab".to_string(),
+        );
+        let serialized =
+            serde_json::to_string(&output).expect("host journal projection should serialize");
+        let fields = contract_core::current_semantic_contract()
+            .host_json_projection
+            .fields;
+        let positions: Vec<usize> = fields
+            .iter()
+            .map(|field| {
+                serialized
+                    .find(&format!("\"{}\":", field.name))
+                    .unwrap_or_else(|| panic!("host JSON projection is missing {}", field.name))
+            })
+            .collect();
+
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "host JSON projection field order drifted"
+        );
+    }
+
+    #[test]
+    fn current_bitmap_artifacts_match_rust_owned_sentinel() {
+        let included_bitmap = vec![true, false, true, true, false, false, true, false];
+        let seen_bitmap = vec![
+            true, false, false, true, false, false, false, false, false, false, false, true,
+        ];
+        let included_bitmap_root = compute_bitmap_merkle_root(&included_bitmap);
+        let seen_bitmap_root = compute_bitmap_merkle_root(&seen_bitmap);
+        let actual = serde_json::json!({
+            "included": JsonIncludedBitmapArtifact {
+                schema: INCLUDED_BITMAP_ARTIFACT_SCHEMA.to_string(),
+                version: INCLUDED_BITMAP_ARTIFACT_VERSION.to_string(),
+                tree_size: included_bitmap.len() as u32,
+                included_bitmap_root: format!("0x{}", hex::encode(included_bitmap_root)),
+                included_bitmap,
+            },
+            "seen": JsonSeenBitmapArtifact {
+                schema: SEEN_BITMAP_ARTIFACT_SCHEMA.to_string(),
+                version: SEEN_BITMAP_ARTIFACT_VERSION.to_string(),
+                tree_size: seen_bitmap.len() as u32,
+                seen_bitmap_root: format!("0x{}", hex::encode(seen_bitmap_root)),
+                seen_bitmap,
+            },
+        });
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../contract-core/testdata/current-bitmap-artifacts-sentinel.json"
+        ))
+        .expect("current bitmap artifact sentinel should parse");
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -1008,40 +1154,5 @@ mod tests {
         assert_eq!(guest_output.invalid_presented_slots, 0);
         assert_eq!(guest_output.rejected_records, 1);
         assert_eq!(guest_output.excluded_slots, 0);
-    }
-
-    #[test]
-    fn test_receipt_file_contains_image_id() {
-        // Testing that the saved receipt file would contain imageId
-
-        use std::fs;
-        use std::path::Path;
-
-        // Create a test receipt file path
-        let test_file = "test-receipt.json";
-
-        // GUEST_ID is now available
-        assert_eq!(GUEST_ID.len(), 8, "GUEST_ID should be [u32; 8]");
-
-        // Convert GUEST_ID to hex string
-        let guest_id_bytes: Vec<u8> = GUEST_ID
-            .iter()
-            .flat_map(|&word| word.to_le_bytes())
-            .collect();
-        let image_id = format!("0x{}", hex::encode(&guest_id_bytes));
-
-        // Test that we can create a receipt structure with ImageID
-        let receipt_with_id = serde_json::json!({
-            "receipt": {},
-            "image_id": image_id
-        });
-
-        // Verify the JSON structure
-        assert!(receipt_with_id["image_id"].as_str().is_some());
-
-        // Clean up test file if it exists
-        if Path::new(test_file).exists() {
-            fs::remove_file(test_file).ok();
-        }
     }
 }

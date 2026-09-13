@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from '@stark-ballot/web/hooks';
+import type { TranslationKey } from '@stark-ballot/web/i18n';
 import {
   captureSessionIdentity,
   getSessionData,
@@ -13,8 +14,11 @@ import {
   SESSION_HEARTBEAT_INTERVAL_MS,
 } from '@stark-ballot/web/session';
 import { setProofBundleStatus } from '@stark-ballot/web/knowledge';
-import { useKnowledgeHighlight } from '@stark-ballot/web/components/knowledge';
-import { UnifiedVerificationCard } from '@stark-ballot/web/components/verification/UnifiedVerificationCard';
+import { VERIFY_MY_KNOWLEDGE_KEYS } from '@stark-ballot/web/knowledge';
+import {
+  UnifiedVerificationCard,
+  type UnifiedVerificationCardProps,
+} from '@stark-ballot/web/components/verification/UnifiedVerificationCard';
 import { InlineAlert } from '@stark-ballot/web/components/ui/InlineAlert';
 import { Button } from '@stark-ballot/web/components/ui/Button';
 import { ApiClientError } from '@stark-ballot/web/api/client';
@@ -23,7 +27,6 @@ import { downloadBundle, fetchVerificationReport } from '@stark-ballot/web/api/a
 import { readBrowserPublicEnv } from '@stark-ballot/runtime-config/env/browserPublic';
 import { resolveConfiguredSthSources } from '@stark-ballot/web/verification/sthSources';
 import { detectTampering } from '@stark-ballot/verification/tamper-detection';
-import type { TamperDetectionResult } from '@stark-ballot/verification/types';
 import type { VerificationSummaryStatus } from '@stark-ballot/verification/summary';
 import {
   deriveVerificationPresentationPolicy,
@@ -43,7 +46,6 @@ import {
   resolveReportCandidate,
   resolveStarkStatus,
 } from './lib/verification-data';
-import { resolveHighlightedKnowledge } from './lib/verification-highlights';
 import { resolveEligibleRenderedVerificationStatus } from './lib/verification-presentation';
 import { isStarkTimeoutError } from './lib/stark-timeout';
 import { useAppRouter } from '@stark-ballot/web/navigation/appNavigation';
@@ -56,7 +58,7 @@ type OverallStatusOverride = {
   subMessage?: string;
 };
 
-const SUMMARY_MAIN_MESSAGE_KEYS: Record<VerificationSummaryStatus, string> = {
+const SUMMARY_MAIN_MESSAGE_KEYS = {
   fully_verified: 'pages.verify.resultSummary.fullyVerifiedMain',
   demo_only: 'pages.verify.resultSummary.demoOnlyMain',
   in_progress: 'pages.verify.resultSummary.inProgressMain',
@@ -70,9 +72,9 @@ const SUMMARY_MAIN_MESSAGE_KEYS: Record<VerificationSummaryStatus, string> = {
   counted_integrity_failed: 'pages.verify.resultSummary.countedIntegrityFailedMain',
   cast_integrity_failed: 'pages.verify.resultSummary.castIntegrityFailedMain',
   proof_verification_failed: 'pages.verify.resultSummary.proofVerificationFailedMain',
-};
+} satisfies Record<VerificationSummaryStatus, TranslationKey>;
 
-const SUMMARY_SUB_MESSAGE_KEYS: Partial<Record<VerificationSummaryStatus, string>> = {
+const SUMMARY_SUB_MESSAGE_KEYS: Partial<Record<VerificationSummaryStatus, TranslationKey>> = {
   fully_verified: 'pages.verify.resultSummary.fullyVerifiedSub',
   demo_only: 'pages.verify.resultSummary.demoOnlySub',
   in_progress: 'pages.verify.resultSummary.inProgressSub',
@@ -93,10 +95,7 @@ export default function VerifyPage(): React.ReactElement {
   const expectedSessionId = expectedSessionIdentity?.sessionId;
   const [downloadState, setDownloadState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [downloadError, setDownloadError] = useState<string | null>(null);
-  const [_tamperResult, setTamperResult] = useState<TamperDetectionResult | null>(null);
   const [tamperError, setTamperError] = useState<string | null>(null);
-  void _tamperResult; // Keep state for async effect, value unused after unified card refactor
-  const { setHighlightedKeys } = useKnowledgeHighlight();
 
   const getExpectedSession = useCallback(
     () => getSessionDataForIdentity(expectedSessionIdentityRef.current),
@@ -248,61 +247,11 @@ export default function VerifyPage(): React.ReactElement {
     return () => window.clearInterval(interval);
   }, []);
 
-  const stepBlueprints = useMemo(
-    () => [
-      {
-        id: 'cast_as_intended' as const,
-        title: t('pages.verify.stepsCard.categories.castAsIntended.title'),
-        description: t('pages.verify.stepsCard.categories.castAsIntended.description'),
-        highlightedKnowledge: resolveHighlightedKnowledge('cast_as_intended', data?.verificationSteps),
-      },
-      {
-        id: 'recorded_as_cast' as const,
-        title: t('pages.verify.stepsCard.categories.recordedAsCast.title'),
-        description: t('pages.verify.stepsCard.categories.recordedAsCast.description'),
-        highlightedKnowledge: resolveHighlightedKnowledge('recorded_as_cast', data?.verificationSteps),
-      },
-      {
-        id: 'counted_as_recorded' as const,
-        title: t('pages.verify.stepsCard.categories.countedAsRecorded.title'),
-        description: t('pages.verify.stepsCard.categories.countedAsRecorded.description'),
-        highlightedKnowledge: resolveHighlightedKnowledge('counted_as_recorded', data?.verificationSteps),
-      },
-      {
-        id: 'stark_verification' as const,
-        title: t('pages.verify.stepsCard.categories.starkVerification.title'),
-        description: t('pages.verify.stepsCard.categories.starkVerification.description'),
-        highlightedKnowledge: resolveHighlightedKnowledge('stark_verification', data?.verificationSteps),
-      },
-    ],
-    [data?.verificationSteps, t],
-  );
-
-  useEffect(() => {
-    if (!verificationStarted) {
-      setHighlightedKeys([]);
-      return;
-    }
-
-    const runningStepId = Object.entries(stepStatusMap).find(([, state]) => state.status === 'running')?.[0];
-    const activeStep =
-      stepBlueprints.find((step) => step.id === runningStepId) ??
-      stepBlueprints[Math.max(0, Math.min(visibleStepCount - 1, stepBlueprints.length - 1))];
-    setHighlightedKeys(activeStep?.highlightedKnowledge ?? []);
-  }, [verificationStarted, stepStatusMap, stepBlueprints, visibleStepCount, setHighlightedKeys]);
-
-  useEffect(() => {
-    return () => {
-      setHighlightedKeys([]);
-    };
-  }, [setHighlightedKeys]);
-
   useEffect(() => {
     const cancelledRef: { current: boolean } = { current: false };
 
     void (async () => {
       if (!data) {
-        setTamperResult(null);
         setTamperError(null);
         return;
       }
@@ -310,24 +259,21 @@ export default function VerifyPage(): React.ReactElement {
       const receipt = buildDetectionReceipt(data);
       const vote = buildDetectionVote(data, getExpectedSession());
       if (!receipt || !vote) {
-        setTamperResult(null);
         setTamperError(null);
         return;
       }
 
       try {
-        const result = await detectTampering(receipt, vote, {
+        await detectTampering(receipt, vote, {
           ...omitUndefinedProperties({ expectedTotalVotes: data.totalExpected }),
           ...omitUndefinedProperties({ scenarios: data.scenarioId ? [data.scenarioId] : undefined }),
         });
         if (!cancelledRef.current) {
-          setTamperResult(result);
           setTamperError(null);
         }
       } catch (err) {
         if (!cancelledRef.current) {
           const message = err instanceof Error ? err.message : String(err);
-          setTamperResult(null);
           setTamperError(message);
         }
       }
@@ -423,9 +369,7 @@ export default function VerifyPage(): React.ReactElement {
             rejectedRecords: data?.rejectedRecords,
             excludedSlots: data?.excludedSlots,
             devModeEvidence:
-              data?.verificationReport?.dev_mode_receipt === true ||
-              data?.verificationStatus === 'dev_mode' ||
-              data?.verificationReport?.status === 'dev_mode',
+              data?.verificationReport?.dev_mode_receipt === true || data?.verificationStatus === 'dev_mode',
           }),
           sthSourcesConfigured,
         },
@@ -520,20 +464,27 @@ export default function VerifyPage(): React.ReactElement {
 
   const showResults = presentationPolicy.display.readiness === 'ready';
   const renderedOverallStatus = resolveEligibleRenderedVerificationStatus(presentationPolicy);
+  let summary: UnifiedVerificationCardProps['summary'] = null;
+  if (renderedOverallStatus && overallStatusOverride) {
+    const text = {
+      message: overallStatusOverride.message,
+      ...omitUndefinedProperties({ subMessage: overallStatusOverride.subMessage }),
+    };
+    if (renderedOverallStatus === 'verified') {
+      if (presentationPolicy.fullyVerifiedLabelEligible) {
+        summary = { ...text, status: renderedOverallStatus, verifiedPresentation: presentationPolicy };
+      }
+    } else {
+      summary = { ...text, status: renderedOverallStatus };
+    }
+  }
   const showBotTab = data?.scenarioId === 'S3' || data?.scenarioId === 'S4';
   const botTabTooltip = t('verification.tabs.botDisabledTooltip');
   const verificationContent = (
     <>
       <UnifiedVerificationCard
-        summary={
-          renderedOverallStatus && overallStatusOverride
-            ? {
-                status: renderedOverallStatus,
-                message: overallStatusOverride.message,
-                ...omitUndefinedProperties({ subMessage: overallStatusOverride.subMessage }),
-              }
-            : null
-        }
+        knowledgeFilterKeys={verificationStarted ? VERIFY_MY_KNOWLEDGE_KEYS : []}
+        summary={summary}
         {...omitUndefinedProperties({ verificationChecks: data?.verificationChecks })}
         starkGateStatus={starkGateStatus}
         visibleStepCount={visibleStepCount}
@@ -554,13 +505,11 @@ export default function VerifyPage(): React.ReactElement {
   );
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 px-4 md:px-6 py-8">
+    <div className="verify-page">
       {/* Page Header */}
-      <div className="mb-8">
-        <h1 className="font-display text-[var(--text-display)] font-bold text-ink-900 mb-3 tracking-[var(--tracking-display)] leading-[var(--leading-display)]">
-          {t('pages.verify.title')}
-        </h1>
-        <p className="font-secondary text-text-secondary leading-relaxed">{t('pages.verify.subtitle')}</p>
+      <div className="page-intro">
+        <h1 className="page-title">{t('pages.verify.title')}</h1>
+        <p className="font-secondary leading-relaxed text-text-secondary">{t('pages.verify.subtitle')}</p>
       </div>
 
       {loading && <InlineAlert message={t('pages.verify.loading')} variant="info" />}
@@ -590,7 +539,7 @@ export default function VerifyPage(): React.ReactElement {
                   id="tab-my"
                   role="tab"
                   aria-selected="true"
-                  className="relative px-4 py-2.5 text-sm font-medium text-ink-900 border-be-2 border-ink-700 -mbe-px transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ink-500"
+                  className="relative -mbe-px border-be-2 border-ink-700 px-4 py-2.5 font-medium text-sm text-ink-900 transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ink-500"
                 >
                   {t('verification.tabs.my')}
                 </button>
@@ -602,7 +551,7 @@ export default function VerifyPage(): React.ReactElement {
                   aria-disabled="true"
                   tabIndex={-1}
                   title={botTabTooltip}
-                  className="relative px-4 py-2.5 text-sm font-medium text-text-disabled cursor-not-allowed transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ink-500"
+                  className="relative cursor-not-allowed px-4 py-2.5 font-medium text-sm text-text-disabled transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ink-500"
                 >
                   {t('verification.tabs.bot')}
                 </button>

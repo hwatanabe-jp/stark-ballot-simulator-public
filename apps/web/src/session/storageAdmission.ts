@@ -2,10 +2,11 @@ import { isValidHexString } from '@stark-ballot/crypto-primitives';
 import { resolveCanonicalFinalizationPayload } from '@stark-ballot/web/finalize/client-finalization-result';
 import { isValidVoteId } from '@stark-ballot/web/vote/voteIdValidation';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
-import type { SessionData, VoteChoice } from './types';
+import { VOTE_CHOICES } from '@stark-ballot/verification/shared/constants';
+import type { SessionData } from './types';
 
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const VOTE_CHOICES = new Set<VoteChoice>(['A', 'B', 'C', 'D', 'E']);
+const VOTE_CHOICE_SET: ReadonlySet<unknown> = new Set(VOTE_CHOICES);
 const SESSION_RECORD_KEYS = new Set([
   'sessionId',
   'capabilityToken',
@@ -98,7 +99,7 @@ function hasValidPrivateOpening(value: Record<string, unknown>): boolean {
   if (!hasOwn(value, 'myVote')) {
     return true;
   }
-  return VOTE_CHOICES.has(value['myVote'] as VoteChoice) && isHex32(value['myCommit']) && isHex32(value['myRand']);
+  return VOTE_CHOICE_SET.has(value['myVote']) && isHex32(value['myCommit']) && isHex32(value['myRand']);
 }
 
 function hasValidCastReceipt(value: Record<string, unknown>): boolean {

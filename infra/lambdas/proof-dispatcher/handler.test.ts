@@ -5,7 +5,9 @@ import type {
   FinalizationScenarioContext,
   FinalizationState,
 } from '@stark-ballot/application/finalize/finalization-types';
-import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 
 const sfnSendMock = vi.hoisted(() => vi.fn());
 const getCurrentFinalizationRecordMock = vi.hoisted(() => vi.fn());
@@ -58,7 +60,6 @@ vi.mock('@stark-ballot/runtime-config/env/validate', () => ({
 }));
 
 vi.mock('@stark-ballot/runtime-config/env/observability', () => ({
-  collectInvalidTargetObservabilityEnvNames: vi.fn(() => []),
   validateTargetObservabilityEnv: vi.fn(),
 }));
 
@@ -118,8 +119,8 @@ const { logger } = await import('@stark-ballot/diagnostics/logger');
 const { hashSessionIdForLogging } = await import('@stark-ballot/diagnostics/logging');
 const { handler } = await import('./handler');
 
-const DEFAULT_SESSION_ID = '550e8400-e29b-41d4-a716-446655440000';
-const DEFAULT_EXECUTION_ID = '01HZ3JQ4ABXYZ7890DEF123456';
+const DEFAULT_SESSION_ID = asSessionId('550e8400-e29b-41d4-a716-446655440000');
+const DEFAULT_EXECUTION_ID = asFinalizationId('01HZ3JQ4ABXYZ7890DEF123456');
 const DEFAULT_QUEUED_AT = 1_700_000_000_000;
 const DEFAULT_SCENARIO_CONTEXT: FinalizationScenarioContext = {
   scenarios: [],
@@ -303,7 +304,7 @@ describe('target proof-dispatcher handler', () => {
     getCurrentFinalizationRecordMock.mockResolvedValueOnce(
       buildFinalizationRecord({
         status: 'failed',
-        finalizationId: message.finalizationId,
+        finalizationId: asFinalizationId(message.finalizationId),
         queuedAtMs: message.queuedAtMs,
         failedAtMs: message.queuedAtMs + 1_000,
         error: {
@@ -327,7 +328,7 @@ describe('target proof-dispatcher handler', () => {
     getCurrentFinalizationRecordMock.mockResolvedValueOnce(
       buildFinalizationRecord({
         status: 'pending',
-        finalizationId: '01HZ3JQ4ABXYZ7890DEF999999',
+        finalizationId: asFinalizationId('01HZ3JQ4ABXYZ7890DEF999999'),
         queuedAtMs: message.queuedAtMs,
       }),
     );
@@ -346,7 +347,7 @@ describe('target proof-dispatcher handler', () => {
     getCurrentFinalizationRecordMock.mockResolvedValueOnce(
       buildFinalizationRecord({
         status: 'running',
-        finalizationId: message.finalizationId,
+        finalizationId: asFinalizationId(message.finalizationId),
         queuedAtMs: message.queuedAtMs,
         startedAtMs: message.queuedAtMs + 1_000,
       }),
@@ -403,7 +404,7 @@ describe('target proof-dispatcher handler', () => {
     getCurrentFinalizationRecordMock.mockResolvedValueOnce(
       buildFinalizationRecord({
         status: 'pending',
-        finalizationId: message.finalizationId,
+        finalizationId: asFinalizationId(message.finalizationId),
         queuedAtMs: message.queuedAtMs,
       }),
     );
@@ -425,14 +426,14 @@ describe('target proof-dispatcher handler', () => {
       .mockResolvedValueOnce(
         buildFinalizationRecord({
           status: 'pending',
-          finalizationId: message.finalizationId,
+          finalizationId: asFinalizationId(message.finalizationId),
           queuedAtMs: message.queuedAtMs,
         }),
       )
       .mockResolvedValueOnce(
         buildFinalizationRecord({
           status: 'failed',
-          finalizationId: message.finalizationId,
+          finalizationId: asFinalizationId(message.finalizationId),
           queuedAtMs: message.queuedAtMs,
           failedAtMs: message.queuedAtMs + 2_000,
           error: {
@@ -470,7 +471,7 @@ describe('target proof-dispatcher handler', () => {
     getCurrentFinalizationRecordMock.mockResolvedValue(
       buildFinalizationRecord({
         status: 'pending',
-        finalizationId: message.finalizationId,
+        finalizationId: asFinalizationId(message.finalizationId),
         queuedAtMs: message.queuedAtMs,
       }),
     );
@@ -503,7 +504,7 @@ describe('target proof-dispatcher handler', () => {
       getCurrentFinalizationRecordMock.mockResolvedValue(
         buildFinalizationRecord({
           status: 'pending',
-          finalizationId: message.finalizationId,
+          finalizationId: asFinalizationId(message.finalizationId),
           queuedAtMs: message.queuedAtMs,
         }),
       );
@@ -730,7 +731,7 @@ describe('target proof-dispatcher handler', () => {
     getCurrentFinalizationRecordMock.mockResolvedValueOnce(
       buildFinalizationRecord({
         status: 'pending',
-        finalizationId: message.finalizationId,
+        finalizationId: asFinalizationId(message.finalizationId),
         queuedAtMs: message.queuedAtMs,
       }),
     );

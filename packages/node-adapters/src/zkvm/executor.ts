@@ -3,8 +3,6 @@
  * This executor uses a zkVM that has no knowledge of tamper scenarios
  */
 
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { Buffer } from 'buffer';
 import fs from 'fs/promises';
 import path from 'path';
@@ -17,7 +15,7 @@ import {
 } from '@stark-ballot/zkvm-contract/zkvm/host-io';
 import { validateGuestWorkBudget } from '@stark-ballot/zkvm-contract/zkvm/work-budget';
 import { assertZkvmWireNumericPreflight } from '@stark-ballot/zkvm-contract/zkvm/wire-numeric-preflight';
-import { getRecordProperty, getStringProperty, isRecord } from '@stark-ballot/zkvm-contract/zkvm/guards';
+import { getRecordProperty, isRecord } from '@stark-ballot/zkvm-contract/zkvm/guards';
 import {
   parseIncludedBitmapArtifact,
   parseSeenBitmapArtifact,
@@ -25,15 +23,13 @@ import {
 import { logger } from './logger';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import type { Risc0ProofProfile } from './executor-factory';
+import { HostProcessError, runHostProcess } from './host-process';
 
-const execAsync = promisify(exec);
+export { HOST_RESPONSE_TIMEOUT_MS, shutdownHostProcesses } from './host-process';
 
 // Paths
 const HOST_BINARY = path.resolve('zkvm', 'target', 'release', 'host');
 const TEMP_DIR = path.resolve('.zkvm-temp');
-
-// Timeout for zkVM execution (~366s for 64 votes, set to 10 minutes with buffer)
-const ZKVM_TIMEOUT = 600000; // 600秒 = 10分
 
 /**
  * Execute the zkVM to generate proof
@@ -45,9 +41,6 @@ export async function executeZkVM(input: ZkVMInput, proofProfile: Risc0ProofProf
   // Generate unique ID for this execution
   const executionId = crypto.randomBytes(16).toString('hex');
   const inputFile = path.join(TEMP_DIR, `input-${executionId}.json`);
-  // Output files are created by the zkVM host with predictable names
-  // const outputFile = path.join(TEMP_DIR, `output-${executionId}.json`)
-  // const receiptFile = path.join(TEMP_DIR, `receipt-${executionId}.json`)
 
   try {
     assertZkvmWireNumericPreflight(input);
@@ -62,56 +55,47 @@ export async function executeZkVM(input: ZkVMInput, proofProfile: Risc0ProofProf
     await fs.writeFile(inputFile, inputPayload);
 
     // Execute zkVM host
-    const command = `${HOST_BINARY} ${inputFile}`;
     logger.info('[zkVM] Host execution starting');
 
     if (proofProfile.evidence === 'development') {
       logger.info('[zkVM] Running in DEV mode (Fake receipts, fast execution)');
     } else {
-      logger.info('[zkVM] Running in PRODUCTION mode (Real STARK proofs, ~366s for 64 votes)');
+      logger.info('[zkVM] Running in PRODUCTION mode (Real STARK proofs)');
     }
 
-    const startTime = Date.now();
-    let stderr: string | undefined;
-    try {
-      const childEnvironment = { ...process.env };
-      if (proofProfile.evidence === 'development') {
-        childEnvironment['RISC0_DEV_MODE'] = '1';
-      } else {
-        delete childEnvironment['RISC0_DEV_MODE'];
-      }
-
-      ({ stderr } = await execAsync(command, {
-        timeout: ZKVM_TIMEOUT,
-        env: childEnvironment,
-      }));
-    } catch (error) {
-      const durationMs = Date.now() - startTime;
-      logger.error('zkvm execution failed', {
-        event: 'prover_failed',
-        prover: {
-          duration_ms: durationMs,
-          result: 'failure',
-          input_votes: input.votes.length,
-        },
-      });
-      if (isTimeoutError(error)) {
-        throw new Error('zkVM execution timeout');
-      }
-      throw error;
+    const childEnvironment = { ...process.env };
+    if (proofProfile.evidence === 'development') {
+      childEnvironment['RISC0_DEV_MODE'] = '1';
+    } else {
+      delete childEnvironment['RISC0_DEV_MODE'];
     }
-
-    const executionTime = Date.now() - startTime;
-    logger.info('zkvm execution completed', {
-      event: 'prover_completed',
+    const execution = await runHostProcess(HOST_BINARY, [inputFile], {
+      env: childEnvironment,
+      onStage: (stage) => logger.info('zkvm execution progress', { event: 'prover_progress', prover: { stage } }),
+    });
+    const executionLog = {
+      event: execution.outcome === 'success' ? 'prover_completed' : 'prover_failed',
       prover: {
-        duration_ms: executionTime,
-        result: 'success',
+        started_at: execution.startedAt,
+        duration_ms: execution.durationMs,
+        timeout_ms: execution.timeoutMs,
+        result: execution.outcome === 'success' ? 'success' : 'failure',
+        reason: execution.outcome,
+        stage: execution.stage,
+        exit_code: execution.exitCode,
+        signal: execution.signal,
+        error_code: execution.errorCode,
+        cleanup: execution.cleanup,
         input_votes: input.votes.length,
       },
-    });
+    };
+    if (execution.outcome !== 'success') {
+      logger.error('zkvm execution failed', executionLog);
+      throw new HostProcessError(execution);
+    }
+    logger.info('zkvm execution completed', executionLog);
 
-    if (stderr) {
+    if (execution.stderrPresent) {
       logger.warn('[zkVM] Host stderr was present', { stderr_present: true });
     }
 
@@ -181,56 +165,14 @@ export async function executeZkVM(input: ZkVMInput, proofProfile: Risc0ProofProf
 
     return result;
   } finally {
-    // Clean up temp files
-    try {
-      await fs.unlink(inputFile);
-      await fs.unlink(inputFile.replace('.json', '-output.json'));
-      await fs.unlink(inputFile.replace('.json', '-receipt.json'));
-      await fs.unlink(inputFile.replace('.json', '-seen-bitmap.json'));
-      await fs.unlink(inputFile.replace('.json', '-bitmap.json'));
-    } catch {
-      // Ignore cleanup errors
+    for (const suffix of ['', '-output', '-receipt', '-seen-bitmap', '-bitmap']) {
+      try {
+        await fs.unlink(inputFile.replace('.json', `${suffix}.json`));
+      } catch (error) {
+        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) {
+          logger.warn('[zkVM] Temporary artifact cleanup failed', { error_code: 'artifact_cleanup_failed' });
+        }
+      }
     }
   }
-}
-
-function isTimeoutError(error: unknown): boolean {
-  if (error instanceof Error && error.message.toLowerCase().includes('timed out')) {
-    return true;
-  }
-  if (!isRecord(error)) {
-    return false;
-  }
-  const code = getStringProperty(error, 'code');
-  return code === 'ETIMEDOUT';
-}
-
-/**
- * Check if zkVM binary exists
- */
-export async function checkZkVMBinary(): Promise<boolean> {
-  try {
-    await fs.access(HOST_BINARY, fs.constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Build zkVM binary if not exists
- */
-export async function buildZkVM(): Promise<void> {
-  logger.info('[zkVM] Building zkVM binary...');
-
-  const zkvmDir = path.dirname(path.dirname(path.dirname(HOST_BINARY)));
-  const { stderr } = await execAsync('cargo build --release', {
-    cwd: zkvmDir,
-  });
-
-  if (stderr) {
-    logger.warn('[zkVM] Build warnings were present', { stderr_present: true });
-  }
-
-  logger.info('[zkVM] Build completed');
 }

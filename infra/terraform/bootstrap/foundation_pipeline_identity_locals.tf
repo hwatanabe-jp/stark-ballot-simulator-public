@@ -15,18 +15,9 @@ locals {
   foundation_pipeline_artifact_bucket_name = local.foundation_lane_authority.names.artifactBucket
   foundation_artifact_kms_alias            = local.foundation_lane_authority.names.artifactKmsAlias
   foundation_artifact_kms_alias_arn        = "arn:aws:kms:${var.aws_region}:${var.aws_account_id}:${local.foundation_artifact_kms_alias}"
-  foundation_runtime_name_prefix           = local.deployment_shared_names.runtimeNamePrefix
   foundation_release_manifest_bucket_name  = local.deployment_shared_names.releaseManifestBucket
   foundation_release_manifest_bucket_arn   = "arn:aws:s3:::${local.foundation_release_manifest_bucket_name}"
   foundation_release_manifest_objects_arn  = "${local.foundation_release_manifest_bucket_arn}/*"
-  foundation_app_networking_key            = local.deployment_shared_names.foundationAppNetworkingKey
-  foundation_app_networking_object_arn = (
-    "${local.foundation_release_manifest_bucket_arn}/${local.foundation_app_networking_key}"
-  )
-  foundation_image_signing_authority_prefix = local.deployment_shared_names.foundationSigningAuthorityPrefix
-  foundation_image_signing_authority_objects_arn = (
-    "${local.foundation_release_manifest_bucket_arn}/${local.foundation_image_signing_authority_prefix}/*"
-  )
   foundation_risc0_toolchain_ecr_repository_arn = (
     "arn:aws:ecr:${var.aws_region}:${var.aws_account_id}:repository/${local.deployment_shared_names.toolchainRepository}"
   )
@@ -34,6 +25,7 @@ locals {
   foundation_prover_ecr_repository_arn = (
     "arn:aws:ecr:${var.aws_region}:${var.aws_account_id}:repository/${local.deployment_shared_names.proverRepository}"
   )
+  foundation_prover_ecr_repository_name = local.deployment_shared_names.proverRepository
   foundation_ecr_repository_arns = [
     local.foundation_risc0_toolchain_ecr_repository_arn,
     local.foundation_prover_ecr_repository_arn,
@@ -46,8 +38,11 @@ locals {
   foundation_ecr_retention_role_arn       = "arn:aws:iam::${var.aws_account_id}:role/${local.foundation_ecr_retention_role_name}"
   foundation_ecr_retention_schedule_name  = local.deployment_shared_names.ecrRetentionSchedule
   foundation_ecr_retention_schedule_arn   = "arn:aws:events:${var.aws_region}:${var.aws_account_id}:rule/${local.foundation_ecr_retention_schedule_name}"
+  foundation_ecr_retention_app_pipeline_arn = (
+    "arn:aws:codepipeline:${var.aws_region}:${var.aws_account_id}:${local.app_lane_authority.names.pipeline}"
+  )
   foundation_ecr_retention_pipeline_arns = [
-    local.app_pipeline_arn,
+    local.foundation_ecr_retention_app_pipeline_arn,
     local.foundation_pipeline_arn,
     local.prover_release_pipeline_arn,
     local.toolchain_release_pipeline_arn,
@@ -63,20 +58,28 @@ locals {
   )
   foundation_ecr_retention_app_authority_object_arns = [
     "${local.foundation_ecr_retention_app_authority_bucket_arn}/${local.deployment_shared_names.acceptedDeploymentPointerKey}",
-    "${local.foundation_ecr_retention_app_authority_bucket_arn}/${local.deployment_shared_names.acceptedDeploymentPrefix}/executions/*",
+    "${local.foundation_ecr_retention_app_authority_bucket_arn}/${local.deployment_shared_names.acceptedDeploymentPrefix}/acceptances/*",
   ]
   foundation_ecr_retention_release_authority_object_arns = [
     "${local.foundation_release_manifest_bucket_arn}/${local.deployment_shared_names.toolchainAcceptedPointerKey}",
     "${local.foundation_release_manifest_bucket_arn}/${local.deployment_shared_names.proverAcceptedPointerKey}",
-    "${local.foundation_release_manifest_bucket_arn}/${local.deployment_shared_names.toolchainArtifactPrefix}/*",
-    "${local.foundation_release_manifest_bucket_arn}/${local.deployment_shared_names.proverReleasePrefix}/*",
+    local.foundation_toolchain_candidate_records_objects_arn,
+    local.foundation_toolchain_release_records_objects_arn,
+    local.foundation_prover_candidate_records_objects_arn,
+    local.foundation_prover_release_records_objects_arn,
   ]
+  foundation_prover_candidate_records_objects_arn = (
+    "${local.foundation_release_manifest_bucket_arn}/${local.deployment_shared_names.proverReleasePrefix}/candidates/*"
+  )
   foundation_prover_release_records_objects_arn = (
-    "${local.foundation_release_manifest_bucket_arn}/${local.deployment_shared_names.proverReleasePrefix}/*"
+    "${local.foundation_release_manifest_bucket_arn}/${local.deployment_shared_names.proverReleasePrefix}/releases/*"
   )
   foundation_prover_accepted_pointer_object_arn = "${local.foundation_release_manifest_bucket_arn}/${local.deployment_shared_names.proverAcceptedPointerKey}"
-  foundation_toolchain_artifact_records_objects_arn = (
-    "${local.foundation_release_manifest_bucket_arn}/${local.deployment_shared_names.toolchainArtifactPrefix}/*"
+  foundation_toolchain_candidate_records_objects_arn = (
+    "${local.foundation_release_manifest_bucket_arn}/${local.deployment_shared_names.toolchainArtifactPrefix}/candidates/*"
+  )
+  foundation_toolchain_release_records_objects_arn = (
+    "${local.foundation_release_manifest_bucket_arn}/${local.deployment_shared_names.toolchainArtifactPrefix}/releases/*"
   )
   foundation_toolchain_accepted_pointer_object_arn = (
     "${local.foundation_release_manifest_bucket_arn}/${local.deployment_shared_names.toolchainAcceptedPointerKey}"
@@ -105,6 +108,9 @@ locals {
   foundation_terraform_plan_role_name                                  = local.foundation_lane_authority.names.terraformPlanRole
   foundation_terraform_apply_role_name                                 = local.foundation_lane_authority.names.terraformApplyRole
   foundation_terraform_smoke_role_name                                 = local.foundation_lane_authority.names.terraformSmokeRole
+  foundation_terraform_smoke_role_arn = (
+    "arn:aws:iam::${var.aws_account_id}:role/${local.foundation_terraform_smoke_role_name}"
+  )
 
   foundation_deploy_permissions_boundary_policy_name = (
     "${var.project_name}-foundation-deploy-boundary-${var.account_alias}-${var.deployment_environment}-foundation"
@@ -155,7 +161,6 @@ locals {
     "arn:aws:iam::${var.aws_account_id}:policy/${local.foundation_terraform_apply_role_name}-workload"
   )
 
-  foundation_validate_project_name                         = local.foundation_lane_authority.names.validateProject
   foundation_terraform_plan_project_name                   = local.foundation_lane_authority.names.terraformPlanProject
   foundation_terraform_apply_project_name                  = local.foundation_lane_authority.names.terraformApplyProject
   foundation_smoke_project_name                            = local.foundation_lane_authority.names.smokeProject
@@ -171,7 +176,6 @@ locals {
   toolchain_release_candidate_project_name               = local.deployment_shared_names.toolchainCandidateProject
   toolchain_release_update_accepted_pointer_project_name = local.deployment_shared_names.toolchainPointerProject
   foundation_routine_codebuild_project_names = [
-    local.foundation_validate_project_name,
     local.foundation_terraform_plan_project_name,
     local.foundation_terraform_apply_project_name,
     local.foundation_smoke_project_name,
@@ -203,10 +207,10 @@ locals {
     "${local.toolchain_release_pipeline_arn}*"
   )
   foundation_pipeline_artifact_bucket_arn = "arn:aws:s3:::${local.foundation_pipeline_artifact_bucket_name}"
-  foundation_source_connection_arns = [
+  foundation_source_connection_arns = local.foundation_pipeline_enabled ? [
     aws_codeconnections_connection.source[0].arn,
     replace(aws_codeconnections_connection.source[0].arn, ":codeconnections:", ":codestar-connections:"),
-  ]
+  ] : []
   foundation_bootstrap_managed_codebuild_log_group_arns = [
     for name in local.foundation_bootstrap_managed_codebuild_project_names :
     "arn:aws:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/codebuild/${name}"
@@ -236,12 +240,16 @@ locals {
     "arn:aws:iam::${var.aws_account_id}:role/${local.foundation_terraform_apply_role_name}",
     "arn:aws:iam::${var.aws_account_id}:role/${local.foundation_terraform_smoke_role_name}",
   ]
-  foundation_bootstrap_managed_role_name_arns = local.foundation_routine_role_name_arns
+  foundation_bootstrap_managed_role_name_arns = concat(
+    local.foundation_routine_role_name_arns,
+    [local.foundation_terraform_acceptance_publisher_role_arn],
+  )
   foundation_bootstrap_managed_role_arn_patterns = [
     "arn:aws:iam::${var.aws_account_id}:role/${local.foundation_lane_authority.names.pipelineRole}",
     "arn:aws:iam::${var.aws_account_id}:role/sbs-*-${var.account_alias}-${var.deployment_environment}",
     "arn:aws:iam::${var.aws_account_id}:role/stark-ballot-sim-tf-*-${var.account_alias}-${var.deployment_environment}-foundation",
     "arn:aws:iam::${var.aws_account_id}:role/${var.project_name}-release-candidate-build-${var.account_alias}-${var.deployment_environment}",
+    local.foundation_terraform_acceptance_publisher_role_arn,
   ]
   foundation_pipeline_role_arn_pattern = "arn:aws:iam::${var.aws_account_id}:role/*-${var.account_alias}-${var.deployment_environment}-foundation"
 

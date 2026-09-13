@@ -1,5 +1,6 @@
 use verifier_service::{
-    parse_args, serialize_report, verify_bundle, write_report, Command, ServiceError,
+    decode_bundle_journal, parse_args, serialize_decoded_journal, serialize_report, verify_bundle,
+    write_decoded_journal, write_report, Command, DecodeJournalCommand, ServiceError,
     VerificationStatus, VerifyCommand,
 };
 
@@ -23,7 +24,19 @@ fn main() {
 fn dispatch(command: Command) -> Result<(), ServiceError> {
     match command {
         Command::Verify(command) => handle_verify(command),
+        Command::DecodeJournal(command) => handle_decode_journal(command),
     }
+}
+
+fn handle_decode_journal(command: DecodeJournalCommand) -> Result<(), ServiceError> {
+    let journal = decode_bundle_journal(&command)?;
+    if !command.quiet {
+        println!("{}", serialize_decoded_journal(&journal)?);
+    }
+    if let Some(path) = &command.output_path {
+        write_decoded_journal(path, &journal)?;
+    }
+    Ok(())
 }
 
 fn handle_verify(command: VerifyCommand) -> Result<(), ServiceError> {
@@ -38,7 +51,7 @@ fn handle_verify(command: VerifyCommand) -> Result<(), ServiceError> {
         write_report(path, &report)?;
     }
 
-    if report.status == VerificationStatus::Success {
+    if report.status() == VerificationStatus::Success {
         Ok(())
     } else {
         Err(ServiceError::VerificationDidNotSucceed(Box::new(report)))
@@ -47,15 +60,15 @@ fn handle_verify(command: VerifyCommand) -> Result<(), ServiceError> {
 
 fn report_error_and_exit(error: ServiceError) -> ! {
     match &error {
-        ServiceError::VerificationDidNotSucceed(report) => match report.status {
+        ServiceError::VerificationDidNotSucceed(report) => match report.status() {
             VerificationStatus::DevMode => {
                 eprintln!("verification completed in dev mode (receipt rejected)");
                 std::process::exit(2);
             }
             VerificationStatus::Failed => {
                 eprintln!("verification failed");
-                if !report.errors.is_empty() {
-                    for err in &report.errors {
+                if !report.errors().is_empty() {
+                    for err in report.errors() {
                         eprintln!("  - {err}");
                     }
                 }

@@ -1,4 +1,9 @@
-import type { FinalizationScenarioContext } from '@stark-ballot/application/finalize/finalization-types';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+import type {
+  FinalizationId,
+  FinalizationScenarioContext,
+} from '@stark-ballot/application/finalize/finalization-types';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 import type { ElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import type { ZkVMInput, VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { assertZkvmWireNumericPreflight } from '@stark-ballot/zkvm-contract/zkvm/wire-numeric-preflight';
@@ -10,8 +15,8 @@ type ScenarioCode = `S${0 | 1 | 2 | 3 | 4 | 5}`;
 
 type ProverWorkMessageCommon = {
   recordType: typeof PROVER_WORK_RECORD_TYPE;
-  sessionId: string;
-  finalizationId: string;
+  sessionId: SessionId;
+  finalizationId: FinalizationId;
   queuedAtMs: number;
   expectedImageId: string;
   scenarios: ScenarioCode[];
@@ -291,8 +296,8 @@ export function parseProverWorkMessage(input: unknown): ProverWorkMessage {
   const common = {
     recordType: PROVER_WORK_RECORD_TYPE,
     inputSource,
-    sessionId: parseSafeSegment(record['sessionId'], 'sessionId', { uuid: true }),
-    finalizationId: parseSafeSegment(record['finalizationId'], 'finalizationId', { minLength: 10 }),
+    sessionId: asSessionId(parseSafeSegment(record['sessionId'], 'sessionId', { uuid: true })),
+    finalizationId: asFinalizationId(parseSafeSegment(record['finalizationId'], 'finalizationId', { minLength: 10 })),
     queuedAtMs: parseInteger(record['queuedAtMs'], 'queuedAtMs', { min: 0 }),
     expectedImageId: parseHexString(record['expectedImageId'], 32, 'expectedImageId'),
     scenarios: parseScenarioCodes(record['scenarios']),

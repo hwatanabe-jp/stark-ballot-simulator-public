@@ -9,7 +9,7 @@ fi
 
 book_directory="${1:-public-book}"
 required_mdbook_version='mdbook v0.5.4'
-required_mermaid_version='mdbook-mermaid 0.17.0'
+required_mermaid_version='mdbook-mermaid 0.17.1'
 compatible_warning="Warning: The mdbook-mermaid preprocessor was built against version 0.5.0 of mdbook, but we're being called from version 0.5.4"
 
 observed_mdbook_version="$(mdbook --version)"

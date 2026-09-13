@@ -8,6 +8,7 @@ import { VOTE_CHOICES } from '@stark-ballot/verification/shared/constants';
 import {
   CURRENT_METHOD_VERSION,
   type CurrentZkVMJournal,
+  type VerifiedTally,
   computeCommitment,
 } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { computeIncludedBitmapRootHex } from '@stark-ballot/zkvm-contract/zkvm/bitmap-core';
@@ -21,6 +22,13 @@ import {
   type VerificationCheckId,
 } from '@stark-ballot/verification/checks';
 import { deriveVerificationPresentationPolicy } from '@stark-ballot/verification/presentation-policy';
+import { resolveFailClosedVerificationStatus } from '@stark-ballot/verification/fail-closed-status';
+import { isCheckStatusZkGateControlled, resolveZkGateStatus } from '@stark-ballot/verification/check-evaluator';
+import {
+  sanitizeVerificationReportForPublicResponse,
+  type PublicVerificationReport,
+} from '@stark-ballot/verification/public-result';
+import type { VerificationReport } from '@stark-ballot/verification/shared/types';
 import { deriveFinalizationProgress } from '@stark-ballot/application/finalize/finalization-progress';
 import type { MockState } from './state';
 import type { ScenarioId } from './types';
@@ -126,12 +134,7 @@ const verifyFixtures: Record<ScenarioId, unknown> = {
   S5: verifyS5Fixture,
 };
 
-const cloneFixture = <T>(value: T): T => {
-  if (typeof structuredClone === 'function') {
-    return structuredClone(value);
-  }
-  return JSON.parse(JSON.stringify(value)) as T;
-};
+const cloneFixture = <T>(value: T): T => structuredClone(value);
 
 const ensureRecord = (value: unknown): Record<string, unknown> => (isRecord(value) ? value : {});
 
@@ -161,7 +164,7 @@ const getAffectedBotIds = (scenarioId: ScenarioId): number[] => {
 };
 
 const getTamperedCount = (scenarioId: ScenarioId): number => {
-  return getVerifyFixtureData(scenarioId).presentation.tally.tamperedCount ?? 0;
+  return getVerifyFixtureData(scenarioId).presentation.tally.tamperedCount;
 };
 
 const getTamperSummary = (scenarioId: ScenarioId): Record<string, unknown> => {
@@ -176,8 +179,12 @@ const resolveScenarioTally = (scenarioId: ScenarioId): { counts: Record<VoteChoi
   };
 };
 
-const resolveScenarioVerifiedTally = (scenarioId: ScenarioId): number[] => {
-  return [...getVerifyFixtureData(scenarioId).proofAuthority.verifiedTally];
+function cloneVerifiedTally(tally: VerifiedTally): VerifiedTally {
+  return [tally[0], tally[1], tally[2], tally[3], tally[4]];
+}
+
+const resolveScenarioVerifiedTally = (scenarioId: ScenarioId): VerifiedTally => {
+  return cloneVerifiedTally(getVerifyFixtureData(scenarioId).proofAuthority.verifiedTally);
 };
 
 const resolveScenarioMetrics = (
@@ -336,6 +343,50 @@ const normalizeVerificationStatus = (value: unknown): VerificationStatus => {
   return 'not_run';
 };
 
+function buildMockPublicVerificationReport(
+  status: Exclude<VerificationStatus, 'not_run' | 'running'>,
+  imageId: string,
+  now: number,
+  overrides?: MockState['verificationReport'],
+): PublicVerificationReport {
+  const common = {
+    verifier_version: 'mock-verifier-service',
+    verified_at: new Date(now).toISOString(),
+    duration_ms: overrides?.duration_ms ?? 0,
+    expected_image_id: imageId,
+  };
+  let report: VerificationReport;
+  switch (status) {
+    case 'success':
+      report = {
+        status,
+        ...common,
+        receipt_image_id: imageId,
+        dev_mode_receipt: false,
+      };
+      break;
+    case 'dev_mode':
+      report = {
+        status,
+        ...common,
+        receipt_image_id: imageId,
+        dev_mode_receipt: true,
+        ...(overrides?.errors && overrides.errors.length > 0 ? { errors: overrides.errors } : {}),
+      };
+      break;
+    case 'failed':
+      report = {
+        status,
+        ...common,
+        receipt_image_id: null,
+        dev_mode_receipt: false,
+        errors: overrides?.errors && overrides.errors.length > 0 ? overrides.errors : ['Verification failed'],
+      };
+      break;
+  }
+  return sanitizeVerificationReportForPublicResponse(report);
+}
+
 export const buildSessionResponse = (state: MockState): Record<string, unknown> => {
   const payload = cloneFixture(sessionFixture) as Record<string, unknown>;
   const data = ensureData(payload);
@@ -403,7 +454,7 @@ function buildFinalizationSyncData(state: MockState, now: number): Record<string
   data['inputCommitment'] = journal.inputCommitment;
   data['imageId'] = imageId;
   data['verificationStatus'] = data['verificationStatus'] ?? 'success';
-  data['verifiedTally'] = [...journal.verifiedTally];
+  data['verifiedTally'] = cloneVerifiedTally(journal.verifiedTally);
   const voteReceipt = ensureRecord(data['voteReceipt']);
   voteReceipt['voteId'] = vote.voteId;
   voteReceipt['commitment'] = vote.commitment;
@@ -424,6 +475,8 @@ function buildFinalizationSyncData(state: MockState, now: number): Record<string
   proof['bulletinRootAtCast'] = vote.bulletinRootAtCast;
   userVote['proof'] = proof;
   data['userVote'] = userVote;
+  data['tamperDetected'] = getVerifyFixtureData(state.scenarioId).presentation.tamperDetected;
+  data['scenarios'] = state.scenarioId === 'S0' ? [] : [state.scenarioId];
   data['tamperSummary'] = getTamperSummary(state.scenarioId);
   delete data['s3BundleKey'];
   delete data['s3BundleUrl'];
@@ -447,14 +500,20 @@ function buildSucceededFinalizationResult(state: MockState, now: number): Record
   const result = buildFinalizationSyncData(state, now);
   const journal = result['journal'] as CurrentZkVMJournal;
   const imageId = typeof result['imageId'] === 'string' ? result['imageId'] : createHex('4');
-  const resolvedStatus = normalizeVerificationStatus(state.verificationStatus ?? result['verificationStatus']);
-  const verificationReport = state.verificationReport
-    ? omitUndefinedProperties({
-        status: state.verificationReport.status,
-        duration_ms: state.verificationReport.duration_ms,
-        errors: state.verificationReport.errors,
-      })
-    : undefined;
+  const candidateStatus = normalizeVerificationStatus(state.verificationStatus ?? result['verificationStatus']);
+  const candidateReport =
+    state.verificationReport && candidateStatus !== 'not_run' && candidateStatus !== 'running'
+      ? buildMockPublicVerificationReport(candidateStatus, imageId, now, state.verificationReport)
+      : undefined;
+  const resolvedStatus =
+    resolveFailClosedVerificationStatus({
+      currentStatus: candidateStatus,
+      journal,
+      claimedImageId: imageId,
+      ...(journal.imageId === undefined ? {} : { comparisonImageId: journal.imageId }),
+      ...(candidateReport === undefined ? {} : { verificationReport: candidateReport }),
+    }) ?? 'not_run';
+  const verificationReport = resolvedStatus === candidateStatus ? candidateReport : undefined;
 
   return {
     authority: {
@@ -468,7 +527,7 @@ function buildSucceededFinalizationResult(state: MockState, now: number): Record
     },
     presentation: {
       tally: result['tally'],
-      verifiedTally: [...journal.verifiedTally],
+      verifiedTally: cloneVerifiedTally(journal.verifiedTally),
       ...omitUndefinedProperties({
         tamperDetected: result['tamperDetected'],
         scenarios: result['scenarios'],
@@ -498,7 +557,7 @@ function buildSucceededFinalizationResult(state: MockState, now: number): Record
     },
     artifactAvailability: {
       bundle: 'available',
-      report: 'available',
+      report: verificationReport ? 'available' : 'unavailable',
       includedBitmap: 'available',
       seenBitmap: journal.seenBitmapRoot ? 'available' : 'unavailable',
     },
@@ -593,21 +652,18 @@ export const buildVerificationResourceResponse = (
   tally.totalVotes = scenarioTally.totalVotes;
   tally.tamperedCount = getTamperedCount(state.scenarioId);
 
-  const resolvedStatus = normalizeVerificationStatus(state.verificationStatus ?? fixtureData.verifierResult.status);
-  const report = fixtureData.verifierResult.report;
-  const resolvedReport = state.verificationReport
-    ? omitUndefinedProperties({
-        status: state.verificationReport.status,
-        duration_ms: state.verificationReport.duration_ms,
-        errors: state.verificationReport.errors,
-      })
-    : {
-        status: resolvedStatus,
-        ...omitUndefinedProperties({
-          duration_ms: report?.duration_ms,
-          errors: report?.errors,
-        }),
-      };
+  const resolvedStatus = normalizeVerificationStatus(
+    state.verificationStatus ?? state.verificationReport?.status ?? fixtureData.verifierResult.status,
+  );
+  const resolvedReport =
+    resolvedStatus === 'not_run' || resolvedStatus === 'running'
+      ? undefined
+      : buildMockPublicVerificationReport(
+          resolvedStatus,
+          fixtureData.proofAuthority.imageId,
+          now,
+          state.verificationReport,
+        );
 
   const stepStatusMap: Record<VerificationStepId, VerificationStepStatus> = {
     cast_as_intended: 'not_run',
@@ -624,19 +680,25 @@ export const buildVerificationResourceResponse = (
   stepStatusMap.stark_verification = mapStarkStepStatus(resolvedStatus);
 
   const failedCheckIds = FAILED_CHECK_IDS_BY_SCENARIO[state.scenarioId];
+  const scenarioMetrics = resolveScenarioMetrics(state.scenarioId);
+  const zkGateStatus = resolveZkGateStatus(stepStatusMap.stark_verification);
   const verificationChecks: VerificationCheck[] = VERIFICATION_CHECK_DEFINITIONS.map((definition) => {
     let status: VerificationStepStatus;
     if (definition.category === 'cast_as_intended') {
       status = 'not_run';
     } else if (definition.category === 'stark_verification') {
       status = stepStatusMap.stark_verification;
+    } else if (definition.id === 'counted_missing_indices_zero') {
+      status = scenarioMetrics.excludedSlots > 0 ? 'failed' : (zkGateStatus ?? 'success');
+    } else if (zkGateStatus !== undefined && isCheckStatusZkGateControlled(definition.id)) {
+      status = zkGateStatus;
     } else {
       status = failedCheckIds.has(definition.id) ? 'failed' : 'success';
     }
     return {
       id: definition.id,
       status,
-      evidence: definition.evidence,
+      evidence: resolvedStatus === 'dev_mode' && definition.evidence === 'zk' ? 'demo' : definition.evidence,
       inputs: [...definition.inputs],
       ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
     };
@@ -644,7 +706,6 @@ export const buildVerificationResourceResponse = (
 
   const imageId = fixtureData.proofAuthority.imageId;
   const journal = buildScenarioJournal(state, snapshot, state.scenarioId, imageId);
-  const scenarioMetrics = resolveScenarioMetrics(state.scenarioId);
   const treeSizeAtCast = Math.min(snapshot.treeSize, vote.bulletinIndex + 1);
   const inclusion = snapshot.tree.getInclusionProof(vote.bulletinIndex, treeSizeAtCast);
   const policy = deriveVerificationPresentationPolicy({
@@ -655,10 +716,10 @@ export const buildVerificationResourceResponse = (
       invalidPresentedSlots: scenarioMetrics.invalidPresentedSlots,
       rejectedRecords: scenarioMetrics.rejectedRecords,
       excludedSlots: scenarioMetrics.excludedSlots,
-      devModeEvidence: resolvedStatus === 'dev_mode' || resolvedReport['status'] === 'dev_mode',
+      devModeEvidence: resolvedStatus === 'dev_mode',
     },
     verificationStatus: resolvedStatus,
-    verificationReportStatus: normalizeVerificationStatus(resolvedReport['status']),
+    ...(resolvedReport ? { verificationReportStatus: resolvedReport.status } : {}),
   });
   const stepsById = new Map(fixtureSteps.map((step) => [step.id, step] as const));
   const verificationSteps = (
@@ -669,7 +730,7 @@ export const buildVerificationResourceResponse = (
       id,
       status: policy.stageStatuses[id],
       ...(step?.inputs ? { inputs: [...step.inputs] } : {}),
-      ...(step?.error ? { error: step.error } : {}),
+      ...(step?.error && policy.stageStatuses[id] === 'failed' ? { error: step.error } : {}),
     };
   });
   const botVotesSummary = fixtureData.presentation.botVotesSummary
@@ -688,7 +749,7 @@ export const buildVerificationResourceResponse = (
       logId: state.logId,
       imageId,
       bulletinRoot: journal.bulletinRoot,
-      verifiedTally: [...journal.verifiedTally],
+      verifiedTally: cloneVerifiedTally(journal.verifiedTally),
       missingSlots: journal.missingSlots,
       invalidPresentedSlots: journal.invalidPresentedSlots,
       rejectedRecords: journal.rejectedRecords,
@@ -709,10 +770,7 @@ export const buildVerificationResourceResponse = (
       tamperSummary,
       policy,
     },
-    verifierResult: {
-      status: resolvedStatus,
-      report: resolvedReport,
-    },
+    verifierResult: resolvedReport ? { status: resolvedStatus, report: resolvedReport } : { status: resolvedStatus },
     verification: {
       checks: verificationChecks,
       steps: verificationSteps,

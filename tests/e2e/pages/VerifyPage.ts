@@ -29,12 +29,10 @@ export interface VerificationResult {
 }
 
 export class VerifyPage extends BasePage {
-  readonly title: Locator;
   readonly summaryBanner: Locator;
 
   constructor(page: Page) {
     super(page);
-    this.title = page.locator('h1');
     this.summaryBanner = page.getByTestId('result-summary');
   }
 
@@ -112,14 +110,5 @@ export class VerifyPage extends BasePage {
     const locator = this.page.getByTestId(testId);
     await expect(locator).toBeVisible({ timeout: 20000 });
     await expect(locator).toHaveAttribute('data-status', /^(success|failed)$/, { timeout: 20000 });
-  }
-
-  async getPageTitle(): Promise<string> {
-    return (await this.title.textContent()) || '';
-  }
-
-  isOnVerifyPage(): Promise<boolean> {
-    const url = this.page.url();
-    return Promise.resolve(url.includes('/verify'));
   }
 }

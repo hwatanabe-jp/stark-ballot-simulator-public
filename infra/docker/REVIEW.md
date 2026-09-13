@@ -24,6 +24,7 @@ Plan 03 readiness.
 - `infra/docker/Dockerfile.fargate-prover`
 - `infra/docker/entrypoint.sh`
 - `infra/docker/prover-failure-marker-contract.json`
+- `zkvm/contract-core/src/current-zkvm-semantic-contract.json`
 - root `.dockerignore` for the repository-root Docker build context
 - `buildspec.yml`
 - `buildspec-risc0-toolchain.yml`
@@ -52,9 +53,15 @@ prover flow:
 - S3 input and output orchestration
 - input JSON validation before invoking the Rust host
 - bounded zkVM execution with `ZKVM_TIMEOUT_SECONDS` (default 900s)
+- a checked `prover-artifacts` Rust binary for exact public-audit projection,
+  canonical hashes, duplicate-index rejection, and cross-artifact admission
 - S3 upload retry logic
 - public `bundle.zip` creation
 - private bitmap sidecar preservation outside `bundle.zip`
+- read-only inclusion of the Rust-owned exact-current zkVM semantic descriptor
+  under `/opt/zkvm/share/current-zkvm-semantic-contract.json`
+- Rust-owned public-input filename/schema/version projection; the entrypoint
+  has no independent public-input contract literals
 
 Read-only AWS CLI checks on 2026-04-26 confirmed that the then-expected
 legacy/shared ECR repositories, CodeBuild projects, ECS clusters, lifecycle
@@ -125,7 +132,8 @@ the older private-subnet-plus-NAT model.
 
 - Uses a required `RISC0_TOOLCHAIN_IMAGE` build arg instead of embedding private ECR
   URLs in the Dockerfile.
-- Builds the Rust host in a dedicated build stage and copies only runtime essentials.
+- Builds the Rust host and bounded artifact tool in a dedicated build stage and
+  copies only runtime essentials.
 - Uses Cargo `--quiet` for the production host/guest build so successful
   dependency progress does not dominate candidate logs; warnings and errors
   remain visible.
@@ -164,7 +172,8 @@ is promoted and the app task definition is applied.
   - `close-statement.json`
   - `journal.json`
   - `receipt.json`
-- consistency validation across public audit artifacts before bundling
+- exact Rust admission and consistency validation across public audit artifacts
+  before bundling; embedded shell Python does not own conversion or hashing
 - S3 upload retry via `upload_with_retry`
 
 ### Failure Marker Contract
@@ -216,8 +225,9 @@ for authenticated restore/report paths, not as public bundle members.
 The previous review drifted in several places:
 
 - `entrypoint.sh` was listed with a brittle line count. This review no longer
-  treats line counts as an implementation contract; the entrypoint contains
-  bundle generation and public audit artifact logic.
+  treats line counts as an implementation contract; the entrypoint orchestrates
+  bundle generation while `zkvm/host/src/artifacts.rs` owns typed projection
+  and canonical hashing.
 - Upload retry, input validation, and execution timeout were listed as future
   improvements; they are now implemented.
 - The planned GitHub Actions build path is no longer the retained
@@ -280,9 +290,10 @@ Focused local verification:
 pnpm test:entrypoint-bundle
 ```
 
-This test checks the public bundle allowlist, private bitmap sidecar handling, public
-audit artifact consistency checks, legacy output rejection, method-version rejection,
-and timeout error reporting.
+This test checks the public bundle allowlist, private bitmap sidecar handling,
+the checked Rust public-audit projection and consistency checks, duplicate-index
+rejection, legacy output rejection, method-version rejection, and timeout error
+reporting.
 
 ## Recommendation
 

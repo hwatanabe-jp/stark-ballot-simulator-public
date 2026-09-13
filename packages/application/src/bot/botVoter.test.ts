@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BotVoter } from './botVoter';
 import { generateBotVote } from '@stark-ballot/domain/bot/voteGenerator';
-import { createMockVoteStore, type MockVoteStore } from '../finalize/__tests__/support/mockVoteStore';
+import { createMockVoteStore, type MockVoteStore } from '../finalize/test-support/mockVoteStore';
 import type {
   SessionIdentityRecord,
   SessionVotingRecord,
@@ -14,6 +14,9 @@ import {
   buildDefaultElectionConfig,
   getDefaultElectionConfigHash,
 } from '@stark-ballot/zkvm-contract/zkvm/election-config';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+import { createUnavailableFinalizationArtifacts } from '@stark-ballot/application/finalize/finalization-types';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -24,10 +27,9 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
 
 vi.mock('@stark-ballot/domain/bot/voteGenerator', () => ({
   generateBotVote: vi.fn(),
-  generateBotId: vi.fn<(index: number) => number>((index) => index + 1),
 }));
 
-const SESSION_ID = 'test-session-123';
+const SESSION_ID = asSessionId('test-session-123');
 const ELECTION_ID = '550e8400-e29b-41d4-a716-446655440000';
 const LOG_ID = `0x${'a'.repeat(64)}`;
 
@@ -53,8 +55,8 @@ function createVotes(botCount: number): Map<number, StoredVoteRecord> {
   return votes;
 }
 
-function createSucceededFinalization(sessionId: string): FinalizationRecord {
-  const finalizationId = 'finalization-1';
+function createSucceededFinalization(sessionId: SessionId): FinalizationRecord {
+  const finalizationId = asFinalizationId('finalization-1');
   return {
     sessionId,
     finalizationId,
@@ -81,13 +83,14 @@ function createSucceededFinalization(sessionId: string): FinalizationRecord {
       },
       imageId: `0x${'c'.repeat(64)}`,
       journal: createTestJournal(),
+      artifacts: createUnavailableFinalizationArtifacts(),
     },
   };
 }
 
 function createSessionRecords(
   overrides: {
-    sessionId?: string;
+    sessionId?: SessionId;
     electionId?: string;
     votes?: Map<number, StoredVoteRecord>;
     botCount?: number;
@@ -139,7 +142,7 @@ describe('BotVoter', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    addBotVotesMock = vi.fn<MockVoteStore['addBotVotes']>().mockResolvedValue(undefined);
+    addBotVotesMock = vi.fn<MockVoteStore['addBotVotes']>().mockResolvedValue({ ok: true, value: undefined });
     getSessionIdentityMock = vi.fn<MockVoteStore['getSessionIdentity']>();
     getVotingRecordMock = vi.fn<MockVoteStore['getVotingRecord']>();
     getCurrentFinalizationRecordMock = vi.fn<MockVoteStore['getCurrentFinalizationRecord']>();
@@ -157,8 +160,6 @@ describe('BotVoter', () => {
       vi.mocked(generateBotVote).mockResolvedValue({
         vote: 'A',
         rand: `0x${'1'.repeat(64)}`,
-        commit: `0x${'2'.repeat(64)}`,
-        path: [],
       });
       admit(createSessionRecords());
 
@@ -166,17 +167,16 @@ describe('BotVoter', () => {
 
       expect(generateBotVote).toHaveBeenCalledTimes(63);
       expect(addBotVotesMock).toHaveBeenCalled();
-      for (let index = 1; index <= 63; index += 1) {
-        expect(generateBotVote).toHaveBeenCalledWith(index, ELECTION_ID);
-      }
+      expect(generateBotVote).toHaveBeenCalledWith();
+      const submittedBatch = addBotVotesMock.mock.calls[0]?.[1];
+      expect(submittedBatch).toHaveLength(63);
+      expect(submittedBatch?.every((vote) => Object.keys(vote).sort().join(',') === 'rand,vote')).toBe(true);
     });
 
     it('should add bot votes in a single batch for speed', async () => {
       vi.mocked(generateBotVote).mockResolvedValue({
         vote: 'A',
         rand: `0x${'1'.repeat(64)}`,
-        commit: `0x${'2'.repeat(64)}`,
-        path: [],
       });
       admit(createSessionRecords());
 
@@ -189,8 +189,6 @@ describe('BotVoter', () => {
       vi.mocked(generateBotVote).mockResolvedValue({
         vote: 'A',
         rand: `0x${'1'.repeat(64)}`,
-        commit: `0x${'2'.repeat(64)}`,
-        path: [],
       });
       admit(createSessionRecords({ votes: createVotes(30), botCount: 30 }));
 
@@ -199,20 +197,16 @@ describe('BotVoter', () => {
       expect(generateBotVote).toHaveBeenCalledTimes(33);
     });
 
-    it('derives remaining bot votes from canonical vote count when metadata is stale', async () => {
+    it('rejects inconsistent bot count metadata', async () => {
       vi.mocked(generateBotVote).mockResolvedValue({
         vote: 'A',
         rand: `0x${'1'.repeat(64)}`,
-        commit: `0x${'2'.repeat(64)}`,
-        path: [],
       });
       admit(createSessionRecords({ votes: createVotes(2), botCount: 0 }));
 
-      await botVoter.startBotVoting(SESSION_ID);
+      await expect(botVoter.startBotVoting(SESSION_ID)).rejects.toThrow('Invalid bot vote count');
 
-      expect(generateBotVote).toHaveBeenCalledTimes(61);
-      expect(generateBotVote).toHaveBeenNthCalledWith(1, 3, ELECTION_ID);
-      expect(generateBotVote).toHaveBeenLastCalledWith(63, ELECTION_ID);
+      expect(generateBotVote).not.toHaveBeenCalled();
     });
 
     it('should not start if session is finalized', async () => {
@@ -227,7 +221,7 @@ describe('BotVoter', () => {
     it('should not start if all bots have voted', async () => {
       admit(createSessionRecords({ votes: createVotes(63), botCount: 63 }));
 
-      await expect(botVoter.startBotVoting(SESSION_ID)).rejects.toThrow('ALL_BOTS_VOTED');
+      await expect(botVoter.startBotVoting(SESSION_ID)).resolves.toBeUndefined();
 
       expect(generateBotVote).not.toHaveBeenCalled();
       expect(addBotVotesMock).not.toHaveBeenCalled();
@@ -238,6 +232,40 @@ describe('BotVoter', () => {
       admit(createSessionRecords());
 
       await expect(botVoter.startBotVoting(SESSION_ID)).rejects.toThrow('Generation failed');
+    });
+
+    it('bounds retries when repeated store conflicts cannot establish completion', async () => {
+      vi.mocked(generateBotVote).mockResolvedValue({ vote: 'A', rand: `0x${'1'.repeat(64)}` });
+      addBotVotesMock.mockResolvedValue({ ok: false, error: { code: 'ALREADY_VOTED' } });
+      admit(createSessionRecords());
+      await expect(botVoter.startBotVoting(SESSION_ID)).rejects.toThrow('Bot voting contention limit exceeded');
+      expect(addBotVotesMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('recognizes completion by a competing invocation after a typed conflict', async () => {
+      vi.mocked(generateBotVote).mockResolvedValue({ vote: 'A', rand: `0x${'1'.repeat(64)}` });
+      admit(createSessionRecords());
+      addBotVotesMock.mockImplementationOnce(() => {
+        admit(
+          createSessionRecords({
+            votes: createVotes(63),
+            botCount: 63,
+            currentFinalization: createSucceededFinalization(SESSION_ID),
+          }),
+        );
+        return Promise.resolve({ ok: false, error: { code: 'SESSION_FINALIZED' } });
+      });
+      await expect(botVoter.startBotVoting(SESSION_ID)).resolves.toBeUndefined();
+      expect(addBotVotesMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('propagates infrastructure errors without interpreting them as completion', async () => {
+      vi.mocked(generateBotVote).mockResolvedValue({ vote: 'A', rand: `0x${'1'.repeat(64)}` });
+      admit(createSessionRecords());
+      const failure = new Error('Access denied');
+      addBotVotesMock.mockRejectedValueOnce(failure);
+      await expect(botVoter.startBotVoting(SESSION_ID)).rejects.toBe(failure);
+      expect(addBotVotesMock).toHaveBeenCalledTimes(1);
     });
 
     it('fails closed when the identity record is unavailable', async () => {
@@ -311,7 +339,7 @@ describe('BotVoter', () => {
     it('should return null for non-existent session', async () => {
       getVotingRecordMock.mockResolvedValue(null);
 
-      const progress = await botVoter.getProgress('non-existent');
+      const progress = await botVoter.getProgress(asSessionId('non-existent'));
 
       expect(progress).toBeNull();
     });

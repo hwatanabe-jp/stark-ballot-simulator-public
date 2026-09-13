@@ -17,7 +17,7 @@ import {
   localRuntimeProfile,
   targetRuntimeProfile,
   targetRuntimeProfileEnv,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import {
   clearRuntimeConfigReferenceResolver,
   installStaticRuntimeConfigReferenceResolver,
@@ -27,7 +27,7 @@ import { getNumberProperty, getRecordProperty, getStringProperty } from '@stark-
 import { createHonoApp } from '../routes/hono';
 
 const botVoterMocks = vi.hoisted(() => ({
-  startBotVoting: vi.fn(() => Promise.resolve()),
+  startBotVoting: vi.fn((_sessionId: import('@stark-ballot/domain/types/identifiers').SessionId) => Promise.resolve()),
 }));
 
 vi.mock('@stark-ballot/application/bot/botVoter', () => ({
@@ -174,6 +174,7 @@ describe('submitVoteHandler', () => {
     clearRuntimeConfigReferenceResolver();
     vi.unstubAllEnvs();
     vi.clearAllMocks();
+    botVoterMocks.startBotVoting.mockReset().mockResolvedValue(undefined);
     vi.restoreAllMocks();
   });
 
@@ -218,8 +219,94 @@ describe('submitVoteHandler', () => {
     expectUnauthorizedRequestLog(loggerWarnSpy);
   });
 
+  it('waits for bot persistence and recovers the original receipt after a failed attempt', async () => {
+    const session = await store.createSession();
+    const capabilityToken = createSessionCapabilityToken(
+      { sessionId: session.sessionId, nowMs: Date.now(), ttlSeconds: 300 },
+      capabilitySecret,
+    );
+    vi.mocked(getGlobalStore).mockReturnValue(store);
+    const app = createLocalVoteTestApp();
+    const request = () =>
+      buildVoteRequest({ sessionId: session.sessionId, electionId: session.electionId, capabilityToken });
+    const pending = Promise.withResolvers<void>();
+    botVoterMocks.startBotVoting.mockReturnValueOnce(pending.promise);
+    let responded = false;
+    const first = Promise.resolve(app.request(request())).then((response) => {
+      responded = true;
+      return response;
+    });
+    await vi.waitFor(() => expect(botVoterMocks.startBotVoting).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(responded).toBe(false);
+    pending.reject(new Error('Bot storage unavailable'));
+    expect((await first).status).toBe(500);
+    const saved = await store.getVotingRecord(session.sessionId);
+    const original = saved?.votes.get(0);
+    expect(original).toBeDefined();
+    const retry = await app.request(request());
+    expect(retry.status).toBe(200);
+    const data = requireDataRecord(await readJsonRecord(retry, 'retried vote'), 'receipt');
+    expect(data).toMatchObject({
+      voteId: original?.voteId,
+      castAtMs: original?.timestamp,
+      bulletinRootAtCast: original?.rootAtCast,
+    });
+    expect((await store.getVotingRecord(session.sessionId))?.votes.size).toBe(1);
+    const replay = await app.request(request());
+    expect(replay.status).toBe(200);
+    expect(requireDataRecord(await readJsonRecord(replay, 'replayed vote'), 'receipt')).toEqual(data);
+  });
+
+  it('recovers a stored user vote after bot failure and admits concurrent identical requests', async () => {
+    const { BotVoter } = await vi.importActual<typeof import('@stark-ballot/application/bot/botVoter')>(
+      '@stark-ballot/application/bot/botVoter',
+    );
+    botVoterMocks.startBotVoting.mockImplementation((sessionId) => new BotVoter(store).startBotVoting(sessionId));
+    const session = await store.createSession();
+    const capabilityToken = createSessionCapabilityToken(
+      { sessionId: session.sessionId, nowMs: Date.now(), ttlSeconds: 300 },
+      capabilitySecret,
+    );
+    vi.mocked(getGlobalStore).mockReturnValue(store);
+    const app = createLocalVoteTestApp();
+    const request = () =>
+      buildVoteRequest({ sessionId: session.sessionId, electionId: session.electionId, capabilityToken });
+    vi.spyOn(store, 'addBotVotes').mockRejectedValueOnce(new Error('Interrupted bot write'));
+    expect((await app.request(request())).status).toBe(500);
+    const original = (await store.getVotingRecord(session.sessionId))?.votes.get(0);
+    const responses = await Promise.all([app.request(request()), app.request(request())]);
+    for (const response of responses) {
+      expect(response.status).toBe(200);
+      expect(requireDataRecord(await readJsonRecord(response, 'completed submission'), 'receipt')).toMatchObject({
+        voteId: original?.voteId,
+        castAtMs: original?.timestamp,
+      });
+    }
+    const complete = await store.getVotingRecord(session.sessionId);
+    expect(complete?.votes.size).toBe(64);
+    expect(complete?.botCount).toBe(63);
+    const different = request();
+    const body: unknown = await different.json();
+    if (!body || typeof body !== 'object') throw new Error('Expected request');
+    const changed = new Request(different.url, {
+      method: 'POST',
+      headers: different.headers,
+      body: JSON.stringify({
+        ...body,
+        vote: 'B',
+        commitment: computeCommitment(session.electionId, 1, `0x${'11'.repeat(32)}`),
+      }),
+    });
+    const conflict = await app.request(changed);
+    expect(conflict.status).toBe(400);
+    expect(getApiErrorCode(await readJsonRecord(conflict, 'different opening'))).toBe('ALREADY_VOTED');
+    expect((await store.getVotingRecord(session.sessionId))?.votes).toEqual(complete?.votes);
+  });
+
   it('accepts vote submission when the session capability is valid', async () => {
     const session = await store.createSession();
+    const addVoteSpy = vi.spyOn(store, 'addVote');
     const capabilityToken = createSessionCapabilityToken(
       {
         sessionId: session.sessionId,
@@ -245,6 +332,8 @@ describe('submitVoteHandler', () => {
     expect(typeof data['castAtMs']).toBe('number');
     expect(data).not.toHaveProperty('timestamp');
     expect(payload).toHaveProperty('meta.requestId', expect.any(String));
+    const submittedCommand = addVoteSpy.mock.calls[0]?.[1];
+    expect(Object.keys(submittedCommand ?? {}).sort()).toEqual(['rand', 'timestamp', 'vote', 'voteId']);
 
     const persisted = await store.getVotingRecord(session.sessionId);
     if (!persisted || persisted.userParticipation.status !== 'cast') {
@@ -253,6 +342,38 @@ describe('submitVoteHandler', () => {
     const persistedVote = persisted.votes.get(persisted.userParticipation.voteIndex);
     expect(persistedVote?.timestamp).toEqual(expect.any(Number));
     expect(persistedVote).not.toHaveProperty('castAtMs');
+  });
+
+  it('projects a typed persistence race through the declared duplicate-vote response', async () => {
+    const session = await store.createSession();
+    const capabilityToken = createSessionCapabilityToken(
+      {
+        sessionId: session.sessionId,
+        nowMs: Date.now(),
+        ttlSeconds: 300,
+      },
+      capabilitySecret,
+    );
+    vi.spyOn(store, 'addVote').mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'DUPLICATE_VOTE', details: { duplicateKind: 'voteId' } },
+    });
+    vi.mocked(getGlobalStore).mockReturnValue(store);
+
+    const response = await createLocalVoteTestApp().request(
+      buildVoteRequest({
+        sessionId: session.sessionId,
+        capabilityToken,
+        electionId: session.electionId,
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    const payload = await readJsonRecord(response, 'vote persistence race');
+    expect(getApiErrorCode(payload)).toBe(ErrorCode.DUPLICATE_VOTE);
+    expect(getStringProperty(getRecordProperty(payload, 'error'), 'message')).toBe(
+      'Vote ID already exists. This may be a system error. Please try again.',
+    );
   });
 
   it('allows operator-gated develop vote submission without a Turnstile token after origin verification', async () => {

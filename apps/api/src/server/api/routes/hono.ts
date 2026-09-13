@@ -1,18 +1,31 @@
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { matchedRoutes } from 'hono/route';
 import type { Context } from 'hono';
-import { API_ROUTES, type ApiRouteContract, type RouteInput } from '@stark-ballot/api-contract/routes';
-import type { SchemaTypeAny } from '@stark-ballot/validation/schema';
+import { API_ROUTES, type ApiRoute, type ApiRouteContract, type RouteInput } from '@stark-ballot/api-contract/routes';
+import type { AnySchema } from '@stark-ballot/validation/schema';
 import { ErrorCode, ApiError } from '@stark-ballot/api-contract/errors/apiErrors';
 import { getGlobalStore } from '@stark-ballot/aws-adapters/store/storeInstance';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
 import type { SessionReadModel } from '@stark-ballot/application/session/session-read-model';
 import { resolveRuntimeProfile, type ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { validateEnv } from '@stark-ballot/runtime-config/env/validate';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
-import type { ApiHandler, ApiHandlerContext, ApiContextStore } from '../context';
+import type { ApiHandler, ApiHandlerContext, ApiContextStore, RawApiHandler } from '../context';
+import {
+  admitBodylessRouteInput,
+  admitJsonBodyRouteInput,
+  admitRouteFinalizationId,
+  admitRouteHead,
+  admitRouteLocation,
+  admitRouteSessionId,
+  type RouteHead,
+  type RouteLocation,
+} from './honoRouteAdapter';
 import { enforceFinalizeRateLimit, enforceSessionCreateRateLimit, enforceVoteRateLimit } from '../middleware/rateLimit';
 import { validateSessionById, validateSessionCapabilityForSession } from '../middleware/session';
 import { parseJsonBody, parseSessionCreateRequest } from '../middleware/validation';
@@ -53,7 +66,7 @@ import { getVerifyHandler } from '../handlers/verify';
 import { submitVoteHandler } from '../handlers/vote';
 import { getCurrentFinalizationInputCommitmentHandler } from '../handlers/inputCommitment';
 import { admitPublicRouteErrorResponse } from '../utils/publicErrorAdmission';
-import { getApiRouteDefinitions, type ApiMethod, type ApiRouteMode } from './definitions';
+import { getApiRouteDefinitions, type ApiRouteMode } from './definitions';
 import {
   createArtifactDeliveryDependencies,
   type ArtifactDeliveryDependencies,
@@ -66,8 +79,6 @@ import {
 } from '../../composition/finalizationDependencies';
 
 export { ORIGIN_VERIFY_HEADER } from '../security/developOperatorGate';
-
-type RouteHead<TRoute extends ApiRouteContract> = Omit<RouteInput<TRoute>, 'body' | 'rawBody'>;
 
 interface ParsedRequestHead {
   locations: Record<string, unknown>;
@@ -93,7 +104,88 @@ type RoutePreparation<TRoute extends ApiRouteContract, TContext extends ApiHandl
   state: RoutePreparationState<TRoute>,
 ) => Promise<PreparedRoute<TRoute, TContext>> | PreparedRoute<TRoute, TContext>;
 
-const mountedRouteIdsByApp = new WeakMap<Hono, Set<string>>();
+export interface ApiHonoEnv {
+  Variables: {
+    trustedRequestId: string;
+  };
+}
+
+export type ApiHonoApp = Hono<ApiHonoEnv>;
+
+interface RouteHandlerBinding<TRoute extends ApiRouteContract, TContext extends ApiHandlerContext> {
+  readonly route: TRoute;
+  readonly handler: RawApiHandler<TRoute, TContext>;
+}
+
+export function defineRouteHandler<TRoute extends ApiRouteContract, TContext extends ApiHandlerContext>(
+  route: TRoute,
+  handler: ApiHandler<TRoute, TContext>,
+): RouteHandlerBinding<TRoute, TContext> {
+  return { route, handler };
+}
+
+function defineRawRouteHandler<TRoute extends ApiRouteContract, TContext extends ApiHandlerContext>(
+  route: TRoute,
+  handler: RawApiHandler<TRoute, TContext>,
+): RouteHandlerBinding<TRoute, TContext> {
+  return { route, handler };
+}
+
+export type RouteMountRegistry = {
+  readonly [TRoute in ApiRoute as TRoute['routeId']]: {
+    readonly route: TRoute;
+    readonly handler: unknown;
+  };
+};
+
+export const routeMountRegistry = {
+  [API_ROUTES.progress.routeId]: defineRouteHandler(API_ROUTES.progress, getProgressHandler),
+  [API_ROUTES.verification.routeId]: defineRouteHandler(API_ROUTES.verification, getVerifyHandler),
+  [API_ROUTES.currentFinalization.routeId]: defineRouteHandler(
+    API_ROUTES.currentFinalization,
+    getCurrentFinalizationHandler,
+  ),
+  [API_ROUTES.finalizationArtifactBundle.routeId]: defineRawRouteHandler(
+    API_ROUTES.finalizationArtifactBundle,
+    getVerificationBundleHandler,
+  ),
+  [API_ROUTES.finalizationArtifactReport.routeId]: defineRawRouteHandler(
+    API_ROUTES.finalizationArtifactReport,
+    getVerificationReportHandler,
+  ),
+  [API_ROUTES.sessionBulletin.routeId]: defineRouteHandler(API_ROUTES.sessionBulletin, getSessionBulletinHandler),
+  [API_ROUTES.sessionBulletinConsistencyProof.routeId]: defineRouteHandler(
+    API_ROUTES.sessionBulletinConsistencyProof,
+    getSessionBulletinConsistencyProofHandler,
+  ),
+  [API_ROUTES.sessionVoteInclusionProof.routeId]: defineRouteHandler(
+    API_ROUTES.sessionVoteInclusionProof,
+    getSessionVoteInclusionProofHandler,
+  ),
+  [API_ROUTES.currentFinalizationBitmapProof.routeId]: defineRawRouteHandler(
+    API_ROUTES.currentFinalizationBitmapProof,
+    getCurrentFinalizationBitmapProofHandler,
+  ),
+  [API_ROUTES.sessionBulletinSth.routeId]: defineRouteHandler(
+    API_ROUTES.sessionBulletinSth,
+    getSessionBulletinSthHandler,
+  ),
+  [API_ROUTES.currentFinalizationInputCommitment.routeId]: defineRouteHandler(
+    API_ROUTES.currentFinalizationInputCommitment,
+    getCurrentFinalizationInputCommitmentHandler,
+  ),
+  [API_ROUTES.createSession.routeId]: defineRouteHandler(API_ROUTES.createSession, createSessionHandler),
+  [API_ROUTES.submitVote.routeId]: defineRouteHandler(API_ROUTES.submitVote, submitVoteHandler),
+  [API_ROUTES.createFinalization.routeId]: defineRouteHandler(API_ROUTES.createFinalization, finalizeSessionHandler),
+  [API_ROUTES.cancelFinalization.routeId]: defineRouteHandler(API_ROUTES.cancelFinalization, cancelFinalizationHandler),
+  [API_ROUTES.recordVerificationObservation.routeId]: defineRouteHandler(
+    API_ROUTES.recordVerificationObservation,
+    submitVerificationObservationHandler,
+  ),
+  [API_ROUTES.runVerification.routeId]: defineRouteHandler(API_ROUTES.runVerification, runVerificationHandler),
+} as const satisfies RouteMountRegistry;
+
+const mountedRouteIdsByApp = new WeakMap<ApiHonoApp, Set<string>>();
 
 function collectQueryParams(requestUrl: string): Record<string, unknown> {
   const params: Record<string, string | string[]> = {};
@@ -112,7 +204,7 @@ function collectQueryParams(requestUrl: string): Record<string, unknown> {
   return params;
 }
 
-function schemaShapeKeys(schema: SchemaTypeAny): string[] {
+function schemaShapeKeys(schema: AnySchema): string[] {
   if (!('shape' in schema) || typeof schema.shape !== 'object' || schema.shape === null) {
     throw new Error('Declared header schema must expose an object shape');
   }
@@ -180,9 +272,7 @@ function parseDeclaredHeaders<TRoute extends ApiRouteContract>(
     }
     values['headers'] = parsed.data;
   }
-  // Each location above was admitted by the corresponding declaration. TypeScript
-  // cannot reconstruct the conditional RouteInput intersection from dynamic keys.
-  return values as RouteHead<TRoute>;
+  return admitRouteHead(state.route, values);
 }
 
 async function parseDeclaredBody<TRoute extends ApiRouteContract>(
@@ -190,8 +280,7 @@ async function parseDeclaredBody<TRoute extends ApiRouteContract>(
   head: RouteHead<TRoute>,
 ): Promise<RouteInput<TRoute> | Response> {
   if (state.route.request.body === undefined) {
-    // For bodyless declarations RouteInput and the admitted request head coincide.
-    return head as RouteInput<TRoute>;
+    return admitBodylessRouteInput(state.route, head);
   }
   const parsed =
     'emptyBody' in state.route.request
@@ -200,39 +289,42 @@ async function parseDeclaredBody<TRoute extends ApiRouteContract>(
   if (parsed instanceof Response) {
     return parsed;
   }
-  // The declared body schema supplies the conditional body member of RouteInput.
-  return { ...head, body: parsed.data } as unknown as RouteInput<TRoute>;
+  return admitJsonBodyRouteInput(state.route, head, parsed.data);
 }
 
 function normalizedHeaders(values: Record<string, string>): Headers {
   return new Headers(values);
 }
 
-type RouteLocation<TRoute extends ApiRouteContract, TLocation extends 'params' | 'query'> =
-  RouteInput<TRoute> extends Record<TLocation, infer TValue> ? TValue : never;
-
 function parsedLocation<TRoute extends ApiRouteContract, TLocation extends 'params' | 'query'>(
   state: RoutePreparationState<TRoute>,
   location: TLocation,
 ): RouteLocation<TRoute, TLocation> {
-  // parseRequestHead populated this value through the route's location schema.
-  return state.head.locations[location] as RouteLocation<TRoute, TLocation>;
+  return admitRouteLocation(state.route, state.head.locations, location);
 }
 
 function authenticateSessionIdentity(
   profile: ResolvedRuntimeProfile,
   headerValues: Record<string, string>,
-  sessionId: string,
-): string | Response {
+  wireSessionId: string,
+): SessionId | Response {
+  const sessionId = admitRouteSessionId(wireSessionId);
+  if (!sessionId) {
+    return errorResponse(ErrorCode.INVALID_REQUEST);
+  }
   const headers = normalizedHeaders(headerValues);
   const capability = validateSessionCapabilityForSession(profile, headers, sessionId);
   return capability instanceof Response ? capability : sessionId;
 }
 
+function admitFinalizationIdentity(wireFinalizationId: string): FinalizationId | Response {
+  return admitRouteFinalizationId(wireFinalizationId) ?? errorResponse(ErrorCode.INVALID_REQUEST);
+}
+
 async function authenticateAndLoadSession<TRoute extends ApiRouteContract>(
   state: RoutePreparationState<TRoute>,
   sessionId: string,
-): Promise<{ sessionId: string; session: SessionReadModel } | Response> {
+): Promise<{ sessionId: SessionId; session: SessionReadModel } | Response> {
   const authenticatedSessionId = authenticateSessionIdentity(
     state.baseContext.runtimeProfile,
     state.head.headers,
@@ -278,7 +370,7 @@ function validateTargetOriginVerifyHeader(profile: ResolvedRuntimeProfile, reque
       });
 }
 
-function currentRequestId(context: Context<{ Variables: { trustedRequestId: string } }>): string {
+function currentRequestId(context: Context<ApiHonoEnv>): string {
   const value = context.get('trustedRequestId');
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error('Trusted request ID missing from Hono context');
@@ -291,13 +383,13 @@ function isRouteEnabled(route: ApiRouteContract, mode: ApiRouteMode): boolean {
 }
 
 function mountRoute<TRoute extends ApiRouteContract, TContext extends ApiHandlerContext>(
-  app: Hono,
+  app: ApiHonoApp,
   mode: ApiRouteMode,
   runtimeProfile: ResolvedRuntimeProfile,
-  route: TRoute,
-  handler: ApiHandler<TRoute, TContext>,
+  binding: RouteHandlerBinding<TRoute, TContext>,
   prepare: RoutePreparation<TRoute, TContext>,
 ): void {
+  const { route, handler } = binding;
   if (!isRouteEnabled(route, mode)) {
     return;
   }
@@ -309,8 +401,7 @@ function mountRoute<TRoute extends ApiRouteContract, TContext extends ApiHandler
     throw new Error(`Duplicate API route mount: ${route.routeId}`);
   }
   mountedRouteIds.add(route.routeId);
-  const method = route.method.toLowerCase() as Lowercase<ApiMethod>;
-  app[method](route.path, async (honoContext) => {
+  app.on(route.method, route.path, async (honoContext) => {
     const admit = (response: Response): Promise<Response> => admitPublicRouteErrorResponse(route, response);
     try {
       const request = honoContext.req.raw;
@@ -329,7 +420,7 @@ function mountRoute<TRoute extends ApiRouteContract, TContext extends ApiHandler
         context: honoContext,
         runtimeProfile,
         store,
-        requestId: currentRequestId(honoContext as unknown as Context<{ Variables: { trustedRequestId: string } }>),
+        requestId: currentRequestId(honoContext),
         operatorGatedDevelop: isOperatorGatedDevelopRequest(runtimeProfile, request),
       });
       const prepared = await prepare({
@@ -348,7 +439,7 @@ function mountRoute<TRoute extends ApiRouteContract, TContext extends ApiHandler
 }
 
 function registerRoutes(
-  app: Hono,
+  app: ApiHonoApp,
   mode: ApiRouteMode,
   runtimeProfile: ResolvedRuntimeProfile,
   finalizationDependencies: FinalizationDependencies,
@@ -356,7 +447,7 @@ function registerRoutes(
 ): void {
   const mountedRouteIds = new Set<string>();
   mountedRouteIdsByApp.set(app, mountedRouteIds);
-  mountRoute(app, mode, runtimeProfile, API_ROUTES.progress, getProgressHandler, (state) => {
+  mountRoute(app, mode, runtimeProfile, routeMountRegistry[API_ROUTES.progress.routeId], (state) => {
     const params = parsedLocation(state, 'params');
     const sessionId = authenticateSessionIdentity(runtimeProfile, state.head.headers, params.sessionId);
     if (sessionId instanceof Response) return sessionId;
@@ -365,7 +456,68 @@ function registerRoutes(
     return { input: input, context: { ...state.baseContext, sessionId } };
   });
 
-  mountRoute(app, mode, runtimeProfile, API_ROUTES.verification, getVerifyHandler, async (state) => {
+  mountRoute(app, mode, runtimeProfile, routeMountRegistry[API_ROUTES.verification.routeId], async (state) => {
+    const params = parsedLocation(state, 'params');
+    const finalizationId = admitFinalizationIdentity(params.finalizationId);
+    if (finalizationId instanceof Response) return finalizationId;
+    const admitted = await authenticateAndLoadSession(state, params.sessionId);
+    if (admitted instanceof Response) return admitted;
+    const input = parseDeclaredHeaders(state);
+    if (input instanceof Response) return input;
+    return { input: input, context: { ...state.baseContext, ...admitted, finalizationId } };
+  });
+
+  mountRoute(app, mode, runtimeProfile, routeMountRegistry[API_ROUTES.currentFinalization.routeId], async (state) => {
+    const params = parsedLocation(state, 'params');
+    const admitted = await authenticateAndLoadSession(state, params.sessionId);
+    if (admitted instanceof Response) return admitted;
+    const input = parseDeclaredHeaders(state);
+    if (input instanceof Response) return input;
+    return {
+      input: input,
+      context: { ...state.baseContext, ...admitted, finalizationDependencies },
+    };
+  });
+
+  mountRoute(app, mode, runtimeProfile, routeMountRegistry[API_ROUTES.finalizationArtifactBundle.routeId], (state) => {
+    const params = parsedLocation(state, 'params');
+    if (!isSafeVerifierSegment(params.sessionId) || !isSafeVerifierSegment(params.finalizationId)) {
+      return errorResponse(new ApiError(ErrorCode.INVALID_BUNDLE_REFERENCE, 400, 'Invalid bundle reference'));
+    }
+    const finalizationId = admitRouteFinalizationId(params.finalizationId);
+    if (!finalizationId) {
+      return errorResponse(new ApiError(ErrorCode.INVALID_BUNDLE_REFERENCE, 400, 'Invalid bundle reference'));
+    }
+    const sessionId = authenticateSessionIdentity(runtimeProfile, state.head.headers, params.sessionId);
+    if (sessionId instanceof Response) return sessionId;
+    const input = parseDeclaredHeaders(state);
+    if (input instanceof Response) return input;
+    return {
+      input,
+      context: { ...state.baseContext, sessionId, finalizationId, artifactDeliveryDependencies },
+    };
+  });
+
+  mountRoute(app, mode, runtimeProfile, routeMountRegistry[API_ROUTES.finalizationArtifactReport.routeId], (state) => {
+    const params = parsedLocation(state, 'params');
+    if (!isSafeVerifierSegment(params.sessionId) || !isSafeVerifierSegment(params.finalizationId)) {
+      return errorResponse(new ApiError(ErrorCode.INVALID_BUNDLE_REFERENCE, 400, 'Invalid bundle reference'));
+    }
+    const finalizationId = admitRouteFinalizationId(params.finalizationId);
+    if (!finalizationId) {
+      return errorResponse(new ApiError(ErrorCode.INVALID_BUNDLE_REFERENCE, 400, 'Invalid bundle reference'));
+    }
+    const sessionId = authenticateSessionIdentity(runtimeProfile, state.head.headers, params.sessionId);
+    if (sessionId instanceof Response) return sessionId;
+    const input = parseDeclaredHeaders(state);
+    if (input instanceof Response) return input;
+    return {
+      input,
+      context: { ...state.baseContext, sessionId, finalizationId, artifactDeliveryDependencies },
+    };
+  });
+
+  mountRoute(app, mode, runtimeProfile, routeMountRegistry[API_ROUTES.sessionBulletin.routeId], async (state) => {
     const params = parsedLocation(state, 'params');
     const admitted = await authenticateAndLoadSession(state, params.sessionId);
     if (admitted instanceof Response) return admitted;
@@ -378,80 +530,7 @@ function registerRoutes(
     app,
     mode,
     runtimeProfile,
-    API_ROUTES.currentFinalization,
-    getCurrentFinalizationHandler,
-    async (state) => {
-      const params = parsedLocation(state, 'params');
-      const admitted = await authenticateAndLoadSession(state, params.sessionId);
-      if (admitted instanceof Response) return admitted;
-      const input = parseDeclaredHeaders(state);
-      if (input instanceof Response) return input;
-      return {
-        input: input,
-        context: { ...state.baseContext, ...admitted, finalizationDependencies },
-      };
-    },
-  );
-
-  mountRoute(
-    app,
-    mode,
-    runtimeProfile,
-    API_ROUTES.finalizationArtifactBundle,
-    getVerificationBundleHandler,
-    (state) => {
-      const params = parsedLocation(state, 'params');
-      if (!isSafeVerifierSegment(params.sessionId) || !isSafeVerifierSegment(params.finalizationId)) {
-        return errorResponse(new ApiError(ErrorCode.INVALID_BUNDLE_REFERENCE, 400, 'Invalid bundle reference'));
-      }
-      const sessionId = authenticateSessionIdentity(runtimeProfile, state.head.headers, params.sessionId);
-      if (sessionId instanceof Response) return sessionId;
-      const input = parseDeclaredHeaders(state);
-      if (input instanceof Response) return input;
-      return {
-        input,
-        context: { ...state.baseContext, sessionId, artifactDeliveryDependencies },
-      };
-    },
-  );
-
-  mountRoute(
-    app,
-    mode,
-    runtimeProfile,
-    API_ROUTES.finalizationArtifactReport,
-    getVerificationReportHandler,
-    (state) => {
-      const params = parsedLocation(state, 'params');
-      if (!isSafeVerifierSegment(params.sessionId) || !isSafeVerifierSegment(params.finalizationId)) {
-        return errorResponse(new ApiError(ErrorCode.INVALID_BUNDLE_REFERENCE, 400, 'Invalid bundle reference'));
-      }
-      const sessionId = authenticateSessionIdentity(runtimeProfile, state.head.headers, params.sessionId);
-      if (sessionId instanceof Response) return sessionId;
-      const input = parseDeclaredHeaders(state);
-      if (input instanceof Response) return input;
-      return {
-        input,
-        context: { ...state.baseContext, sessionId, artifactDeliveryDependencies },
-      };
-    },
-  );
-
-  mountRoute(app, mode, runtimeProfile, API_ROUTES.sessionBulletin, getSessionBulletinHandler, async (state) => {
-    const params = parsedLocation(state, 'params');
-    const admitted = await authenticateAndLoadSession(state, params.sessionId);
-    if (admitted instanceof Response) return admitted;
-    const input = parseDeclaredHeaders(state);
-    if (input instanceof Response) return input;
-    return { input: input, context: { ...state.baseContext, ...admitted } };
-  });
-
-  mountRoute(
-    app,
-    mode,
-    runtimeProfile,
-    API_ROUTES.sessionBulletinConsistencyProof,
-    getSessionBulletinConsistencyProofHandler,
+    routeMountRegistry[API_ROUTES.sessionBulletinConsistencyProof.routeId],
     async (state) => {
       const params = parsedLocation(state, 'params');
       const admitted = await authenticateAndLoadSession(state, params.sessionId);
@@ -469,8 +548,7 @@ function registerRoutes(
     app,
     mode,
     runtimeProfile,
-    API_ROUTES.sessionVoteInclusionProof,
-    getSessionVoteInclusionProofHandler,
+    routeMountRegistry[API_ROUTES.sessionVoteInclusionProof.routeId],
     async (state) => {
       const params = parsedLocation(state, 'params');
       if (!isValidBulletinVoteId(params.voteId)) {
@@ -491,8 +569,7 @@ function registerRoutes(
     app,
     mode,
     runtimeProfile,
-    API_ROUTES.currentFinalizationBitmapProof,
-    getCurrentFinalizationBitmapProofHandler,
+    routeMountRegistry[API_ROUTES.currentFinalizationBitmapProof.routeId],
     async (state) => {
       const params = parsedLocation(state, 'params');
       const admitted = await authenticateAndLoadSession(state, params.sessionId);
@@ -506,7 +583,7 @@ function registerRoutes(
     },
   );
 
-  mountRoute(app, mode, runtimeProfile, API_ROUTES.sessionBulletinSth, getSessionBulletinSthHandler, async (state) => {
+  mountRoute(app, mode, runtimeProfile, routeMountRegistry[API_ROUTES.sessionBulletinSth.routeId], async (state) => {
     const originFailure = requireSameOrigin(state.head.headers, state.baseContext.requestOrigin);
     if (originFailure) return originFailure;
     const params = parsedLocation(state, 'params');
@@ -521,8 +598,7 @@ function registerRoutes(
     app,
     mode,
     runtimeProfile,
-    API_ROUTES.currentFinalizationInputCommitment,
-    getCurrentFinalizationInputCommitmentHandler,
+    routeMountRegistry[API_ROUTES.currentFinalizationInputCommitment.routeId],
     async (state) => {
       const params = parsedLocation(state, 'params');
       const admitted = await authenticateAndLoadSession(state, params.sessionId);
@@ -536,7 +612,7 @@ function registerRoutes(
     },
   );
 
-  mountRoute(app, mode, runtimeProfile, API_ROUTES.createSession, createSessionHandler, async (state) => {
+  mountRoute(app, mode, runtimeProfile, routeMountRegistry[API_ROUTES.createSession.routeId], async (state) => {
     if (
       shouldBlockTargetPublicSessionCreate(state.baseContext.runtimeProfile, state.baseContext.operatorGatedDevelop)
     ) {
@@ -565,7 +641,7 @@ function registerRoutes(
     };
   });
 
-  mountRoute(app, mode, runtimeProfile, API_ROUTES.submitVote, submitVoteHandler, async (state) => {
+  mountRoute(app, mode, runtimeProfile, routeMountRegistry[API_ROUTES.submitVote.routeId], async (state) => {
     const rate = await enforceVoteRateLimit(runtimeProfile, state.baseContext.clientIp);
     if (rate instanceof Response) return rate;
     const params = parsedLocation(state, 'params');
@@ -589,7 +665,7 @@ function registerRoutes(
     };
   });
 
-  mountRoute(app, mode, runtimeProfile, API_ROUTES.createFinalization, finalizeSessionHandler, async (state) => {
+  mountRoute(app, mode, runtimeProfile, routeMountRegistry[API_ROUTES.createFinalization.routeId], async (state) => {
     const rate = await finalizationDependencies.enforceFinalizeRateLimit(state.baseContext.clientIp);
     if (rate instanceof Response) return rate;
     const params = parsedLocation(state, 'params');
@@ -618,11 +694,13 @@ function registerRoutes(
     };
   });
 
-  mountRoute(app, mode, runtimeProfile, API_ROUTES.cancelFinalization, cancelFinalizationHandler, async (state) => {
+  mountRoute(app, mode, runtimeProfile, routeMountRegistry[API_ROUTES.cancelFinalization.routeId], async (state) => {
     if (runtimeProfile.finalization.mode !== 'async') {
       return errorResponse(new ApiError(ErrorCode.ASYNC_FINALIZATION_DISABLED, 404, 'Async finalization disabled'));
     }
     const params = parsedLocation(state, 'params');
+    const finalizationId = admitFinalizationIdentity(params.finalizationId);
+    if (finalizationId instanceof Response) return finalizationId;
     const admitted = await authenticateAndLoadSession(state, params.sessionId);
     if (admitted instanceof Response) return admitted;
     const rate = await finalizationDependencies.enforceFinalizeCancelRateLimit(state.baseContext.clientIp);
@@ -636,6 +714,7 @@ function registerRoutes(
       context: {
         ...state.baseContext,
         ...admitted,
+        finalizationId,
         rateLimitClientIp: rate.clientIp,
         finalizationDependencies,
       },
@@ -646,22 +725,25 @@ function registerRoutes(
     app,
     mode,
     runtimeProfile,
-    API_ROUTES.recordVerificationObservation,
-    submitVerificationObservationHandler,
+    routeMountRegistry[API_ROUTES.recordVerificationObservation.routeId],
     async (state) => {
       const params = parsedLocation(state, 'params');
+      const finalizationId = admitFinalizationIdentity(params.finalizationId);
+      if (finalizationId instanceof Response) return finalizationId;
       const admitted = await authenticateAndLoadSession(state, params.sessionId);
       if (admitted instanceof Response) return admitted;
       const head = parseDeclaredHeaders(state);
       if (head instanceof Response) return head;
       const input = await parseDeclaredBody(state, head);
       if (input instanceof Response) return input;
-      return { input, context: { ...state.baseContext, ...admitted } };
+      return { input, context: { ...state.baseContext, ...admitted, finalizationId } };
     },
   );
 
-  mountRoute(app, mode, runtimeProfile, API_ROUTES.runVerification, runVerificationHandler, async (state) => {
+  mountRoute(app, mode, runtimeProfile, routeMountRegistry[API_ROUTES.runVerification.routeId], async (state) => {
     const params = parsedLocation(state, 'params');
+    const finalizationId = admitFinalizationIdentity(params.finalizationId);
+    if (finalizationId instanceof Response) return finalizationId;
     const admitted = await authenticateAndLoadSession(state, params.sessionId);
     if (admitted instanceof Response) return admitted;
     if (admitted.session.finalization?.state.status !== 'succeeded') {
@@ -675,7 +757,7 @@ function registerRoutes(
     if (input instanceof Response) return input;
     return {
       input,
-      context: { ...state.baseContext, ...admitted, finalizeRateLimit: rate },
+      context: { ...state.baseContext, ...admitted, finalizationId, finalizeRateLimit: rate },
     };
   });
 
@@ -702,11 +784,11 @@ function getCorsOrigins(): string[] {
   return envOrigins ? envOrigins.split(',').map((origin) => origin.trim()) : ['http://localhost:3000'];
 }
 
-export function createHonoApp(options: HonoAppOptions = {}): Hono {
+export function createHonoApp(options: HonoAppOptions = {}): ApiHonoApp {
   const { basePath = '/api', mode = 'full' } = options;
   const runtimeProfile = options.runtimeProfile ?? resolveRuntimeProfile(process.env);
   validateEnv(runtimeProfile);
-  const app = new Hono().basePath(basePath);
+  const app = new Hono<ApiHonoEnv>().basePath(basePath);
   const finalizationDependencies = createFinalizationDependencies(
     runtimeProfile,
     options.finalizationDependencyOverrides,
@@ -720,9 +802,11 @@ export function createHonoApp(options: HonoAppOptions = {}): Hono {
     const startedAt = Date.now();
     const request = context.req.raw;
     const requestId = resolveAwsRequestId(context) ?? randomUUID();
-    (context as unknown as Context<{ Variables: { trustedRequestId: string } }>).set('trustedRequestId', requestId);
+    context.set('trustedRequestId', requestId);
     const clientRequestId = resolveUntrustedClientRequestId(request.headers);
-    const matchedRoutePath = context.req.matchedRoutes.at(-1)?.path;
+    // Hono 4.13's helper accepts a Context whose public declaration erases the environment generics.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    const matchedRoutePath = matchedRoutes(context).at(-1)?.path;
     const safeRoutePath = matchedRoutePath && matchedRoutePath !== '*' ? matchedRoutePath : `${basePath}/*`;
 
     await withRequestLogContext(

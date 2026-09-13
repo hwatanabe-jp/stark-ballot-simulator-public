@@ -16,7 +16,7 @@ resource "terraform_data" "skeletal_app_lane" {
   lifecycle {
     precondition {
       condition     = local.deployment_target_inputs_exact
-      error_message = "App inputs must match the exact reviewed stark-dev/develop target and lane configuration."
+      error_message = "App inputs must match the exact reviewed caller target and lane configuration."
     }
 
     precondition {
@@ -43,8 +43,12 @@ resource "terraform_data" "skeletal_app_lane" {
     }
 
     precondition {
-      condition     = !local.target_public_session_create_enabled || length(local.operator_gate_trusted_key_groups) > 0
-      error_message = "Public session creation requires a configured develop operator-gate key group."
+      condition = (
+        !local.target_public_session_create_enabled
+        || (var.deployment_environment == "main" && local.session_create_turnstile_required)
+        || (var.deployment_environment == "develop" && length(local.operator_gate_trusted_key_groups) > 0)
+      )
+      error_message = "Public session creation requires main with server-side Turnstile or a configured develop operator-gate key group."
     }
 
     precondition {
@@ -63,9 +67,7 @@ resource "terraform_data" "skeletal_app_lane" {
   }
 }
 
-data "aws_caller_identity" "current" {}
 
-data "aws_region" "current" {}
 
 check "target_public_session_turnstile_gate" {
   assert {

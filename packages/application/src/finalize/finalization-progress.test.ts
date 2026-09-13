@@ -1,18 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import type { FinalizationState } from '@stark-ballot/application/finalize/finalization-types';
 import {
-  calculateProgressState,
   deriveFinalizationProgress,
   interpolateProgress,
 } from '@stark-ballot/application/finalize/finalization-progress';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 
 const TOTAL_MS = 360_000;
 const NOW_MS = Date.parse('2026-01-10T00:01:00.000Z');
+const FINALIZATION_ID = asFinalizationId('finalization-1');
 
 function runningState(startedAtMs: number): FinalizationState {
   return {
     status: 'running',
-    finalizationId: 'finalization-1',
+    finalizationId: FINALIZATION_ID,
     queuedAtMs: startedAtMs - 10_000,
     startedAtMs,
   };
@@ -96,87 +97,16 @@ describe('interpolateProgress', () => {
   });
 });
 
-describe('calculateProgressState', () => {
-  it('projects a missing start timestamp as queue waiting', () => {
-    expect(
-      calculateProgressState({
-        queuedAt: null,
-        startedAt: null,
-        now: NOW_MS,
-      }),
-    ).toEqual({
-      percent: 0,
-      isComplete: false,
-      isWaiting: true,
-    });
-  });
-
-  it('projects the completion signal as exactly 100 percent', () => {
-    expect(
-      calculateProgressState({
-        queuedAt: null,
-        startedAt: '2026-01-10T00:00:00.000Z',
-        isComplete: true,
-        now: NOW_MS,
-      }),
-    ).toEqual({
-      percent: 100,
-      isComplete: true,
-      isWaiting: false,
-    });
-  });
-
-  it('projects a running timestamp with the injected current time', () => {
-    expect(
-      calculateProgressState({
-        queuedAt: null,
-        startedAt: '2026-01-10T00:00:00.000Z',
-        estimatedDurationMs: TOTAL_MS,
-        now: NOW_MS,
-      }),
-    ).toEqual({
-      percent: Math.floor(interpolateProgress(60_000, TOTAL_MS)),
-      isComplete: false,
-      isWaiting: false,
-    });
-  });
-
-  it('preserves invalid and future timestamp behavior', () => {
-    expect(
-      calculateProgressState({
-        queuedAt: null,
-        startedAt: 'not-a-timestamp',
-        now: NOW_MS,
-      }),
-    ).toEqual({
-      percent: 99,
-      isComplete: false,
-      isWaiting: false,
-    });
-    expect(
-      calculateProgressState({
-        queuedAt: null,
-        startedAt: '2026-01-10T00:02:00.000Z',
-        now: NOW_MS,
-      }),
-    ).toEqual({
-      percent: 0,
-      isComplete: false,
-      isWaiting: false,
-    });
-  });
-});
-
 describe('deriveFinalizationProgress', () => {
   it('returns null when state is missing or not running', () => {
     const pending: FinalizationState = {
       status: 'pending',
-      finalizationId: 'finalization-1',
+      finalizationId: FINALIZATION_ID,
       queuedAtMs: NOW_MS - 1_000,
     };
     const succeeded: FinalizationState = {
       status: 'succeeded',
-      finalizationId: 'finalization-1',
+      finalizationId: FINALIZATION_ID,
       queuedAtMs: NOW_MS - 10_000,
       startedAtMs: NOW_MS - 9_000,
       completedAtMs: NOW_MS,

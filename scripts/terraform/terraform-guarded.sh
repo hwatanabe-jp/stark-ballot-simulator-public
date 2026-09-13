@@ -91,12 +91,15 @@ is_target_identity() {
   [[ "$value" =~ ^[a-z][a-z0-9-]*/(develop|main)/(bootstrap|foundation|app)$ ]]
 }
 
-require_develop_bootstrap_identity() {
+require_reviewed_bootstrap_identity() {
   local identity="$1"
 
+  if [ "$reviewed_target_environment_id" != "develop" ]; then
+    echo "Production Bootstrap requires its explicit bounded initializer or the managed saved-plan lane." >&2
+    exit 2
+  fi
   if [ "$reviewed_target_scope" != "bootstrap" ] || [ "$identity" != "$reviewed_target_state_identity" ]; then
-    echo "This bootstrap helper is authorized only for stark-dev/develop/bootstrap." >&2
-    echo "Production bootstrap and app state identities require a later authorization record." >&2
+    echo "This bootstrap helper requires the exact reviewed Bootstrap state identity." >&2
     exit 2
   fi
 }
@@ -177,7 +180,6 @@ resolve_reviewed_target_root() {
             $root.names.terraformSmokeRole,
             $target.sharedNames.appSignaturePreflightPlanRole,
             $target.sharedNames.appSignaturePreflightApplyRole,
-            $target.sharedNames.appSignatureStateRefreshApplyRole,
             $target.sharedNames.terraformStateBucket,
             $target.sharedNames.terraformStateKmsAlias
           ] as $values
@@ -212,7 +214,6 @@ resolve_reviewed_target_root() {
     reviewed_terraform_smoke_role \
     reviewed_app_signature_preflight_plan_role \
     reviewed_app_signature_preflight_apply_role \
-    reviewed_app_signature_state_refresh_apply_role \
     reviewed_target_state_bucket \
     reviewed_target_state_kms_alias \
     <<< "$resolved"
@@ -459,7 +460,7 @@ require_target_caller() {
   if [ -z "$required_pattern" ]; then
     case "$state_scope" in
       bootstrap)
-        required_pattern="^arn:aws:sts::${expected_account_id}:assumed-role/AWSReservedSSO_AdministratorAccess_[A-Za-z0-9]+/.+$"
+        required_pattern="^arn:aws:sts::${expected_account_id}:assumed-role/AWSReservedSSO_AdministratorAccess_[0-9a-f]{16}/[A-Za-z0-9+=,.@_-]+$"
         ;;
       *)
         echo "TERRAFORM_ALLOWED_PRINCIPAL_ARN_PATTERN is required for target state scope ${state_scope}." >&2
@@ -536,7 +537,6 @@ require_app_caller_for_command() {
         "$reviewed_terraform_apply_role"
         "$reviewed_app_signature_preflight_plan_role"
         "$reviewed_app_signature_preflight_apply_role"
-        "$reviewed_app_signature_state_refresh_apply_role"
       )
       role_label="plan or apply"
       ;;
@@ -551,7 +551,6 @@ require_app_caller_for_command() {
       allowed_role_names=(
         "$reviewed_terraform_apply_role"
         "$reviewed_app_signature_preflight_apply_role"
-        "$reviewed_app_signature_state_refresh_apply_role"
       )
       role_label="apply"
       ;;
@@ -753,30 +752,27 @@ require_app_plan_args() {
 
   if is_app_signature_preflight_plan_caller; then
     local -a actual_args=("$@")
-    local -a expected_args
-    if [ "${1:-}" = "-refresh-only" ]; then
-      expected_args=(
-        "-refresh-only"
-        "-out=tfplan"
-        "-var-file=pipeline.auto.tfvars"
-        "-target=terraform_data.image_signature_verifier_permissions_boundary_authority"
-        "-target=aws_cloudwatch_log_group.image_signature_verifier"
-        "-target=aws_iam_role.image_signature_verifier"
-        "-target=aws_iam_role_policy.image_signature_verifier"
-        "-target=aws_lambda_function.image_signature_verifier"
-        "-target=aws_lambda_alias.image_signature_verifier_preflight"
-      )
-    else
-      expected_args=(
-        "-out=tfplan"
-        "-var-file=pipeline.auto.tfvars"
-        "-target=terraform_data.image_signature_verifier_permissions_boundary_authority"
-        "-target=aws_cloudwatch_log_group.image_signature_verifier"
-        "-target=aws_iam_role.image_signature_verifier"
-        "-target=aws_iam_role_policy.image_signature_verifier"
-        "-target=aws_lambda_function.image_signature_verifier"
-        "-target=aws_lambda_alias.image_signature_verifier_preflight"
-      )
+    local -a expected_args=(
+      "-out=tfplan"
+      "-var-file=pipeline.auto.tfvars"
+      "-target=terraform_data.image_signature_verifier_reconciliation_authority"
+      "-target=aws_lambda_alias.image_signature_verifier_preflight"
+    )
+    if [ "$reviewed_target_environment_id" = "main" ] && [ "$#" -eq 10 ]; then
+      require_target_tfvars_value "$terraform_working_dir/pipeline.auto.tfvars" verifier_phase prerequisite
+      local initialization_targets
+      initialization_targets="$(node --input-type=module --eval '
+        const { resolveAppVerifierInitializationScope } = await import(process.argv[1]);
+        const scope = resolveAppVerifierInitializationScope("prerequisite", process.argv[2]);
+        process.stdout.write(scope.resourceAddresses.map((address) => `-target=${address}`).join("\n"));
+      ' "${terraform_guard_script_dir}/../../packages/deployment-authority/src/app-verifier-initialization.js" "${reviewed_target_account_label}/${reviewed_target_environment_id}")"
+      local -a prerequisite_targets
+      mapfile -t prerequisite_targets <<< "$initialization_targets"
+      if [ "${#prerequisite_targets[@]}" -ne 8 ]; then
+        echo "Initial verifier plan requires the exact canonical resource scope." >&2
+        exit 2
+      fi
+      expected_args=("-out=tfplan" "-var-file=pipeline.auto.tfvars" "${prerequisite_targets[@]}")
     fi
     if [ "$#" -ne "${#expected_args[@]}" ]; then
       echo "signature preflight plan accepts only the exact verifier-only saved-plan target set." >&2
@@ -1038,7 +1034,7 @@ require_expected_app_backend_value() {
 
   value="$(first_nonempty "$@" || true)"
   if [ -z "$value" ]; then
-    echo "Missing expected app backend ${label} for stark-dev/develop/app init." >&2
+    echo "Missing expected app backend ${label} for the reviewed App init." >&2
     exit 2
   fi
 
@@ -1137,7 +1133,7 @@ else
   elif [ "$reviewed_target_scope" = "foundation" ]; then
     require_foundation_caller_for_command "$expected_account_id" "$1"
   else
-    require_develop_bootstrap_identity "$identity_arg"
+    require_reviewed_bootstrap_identity "$identity_arg"
     require_target_caller "$expected_account_id" "$target_state_scope"
   fi
   if [ "$reviewed_target_scope" = "app" ] && [ "$1" = "apply" ]; then

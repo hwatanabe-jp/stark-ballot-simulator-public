@@ -9,46 +9,47 @@ const translations = {
   en,
 } as const;
 
-export function getTranslations(language: Language): (typeof translations)[Language] {
+function getTranslations(language: Language): (typeof translations)[Language] {
   return translations[language];
 }
 
 type Path<T> = T extends object
   ? {
-      [K in keyof T]: K extends string ? (T[K] extends object ? `${K}` | `${K}.${Path<T[K]>}` : `${K}`) : never;
+      [K in keyof T]: K extends string
+        ? T[K] extends string
+          ? K
+          : T[K] extends object
+            ? `${K}.${Path<T[K]>}`
+            : never
+        : never;
     }[keyof T]
   : never;
 
-type TranslationParams = Record<string, string | number | undefined>;
+export type TranslationKey = Path<Translations>;
+export type TranslationParams = Record<string, string | number | undefined>;
 
 function isTranslationRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function t(language: Language, key: Path<Translations>, params?: TranslationParams): string;
-export function t(language: Language, key: readonly string[], params?: TranslationParams): string;
-export function t(language: Language, key: string, params?: TranslationParams): string;
-export function t(language: Language, key: string | readonly string[], params?: TranslationParams): string {
+export function t(language: Language, key: TranslationKey, params?: TranslationParams): string {
   const trans = getTranslations(language);
 
-  // Convert array to dot notation
-  const keyString = Array.isArray(key) ? key.join('.') : String(key);
-
   // Navigate to the translation value
-  const keys = keyString.split('.');
+  const keys = key.split('.');
   let value: unknown = trans;
 
   for (const k of keys) {
     if (isTranslationRecord(value) && k in value) {
       value = value[k];
     } else {
-      return keyString; // Return key if not found
+      return key; // Retain the fallback for untyped callers.
     }
   }
 
   // If value is not a string, return the key
   if (typeof value !== 'string') {
-    return keyString;
+    return key;
   }
 
   // Handle interpolation

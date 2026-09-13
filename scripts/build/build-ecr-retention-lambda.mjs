@@ -17,8 +17,26 @@ const manifestPath = path.join(outRoot, 'manifest.json');
 const checksumPath = path.join(outRoot, 'ecr_retention.zip.sha256');
 const tsconfigPath = path.join(repoRoot, 'tooling/tsconfig/paths.json');
 
-const tsconfig = JSON.parse(await readFile(tsconfigPath, 'utf8'));
-const aliasEntries = Object.entries(tsconfig.compilerOptions?.paths ?? {})
+/**
+ * @typedef {{
+ *   readonly pattern: string;
+ *   readonly prefix: string;
+ *   readonly suffix: string;
+ *   readonly replacement: string;
+ *   readonly wildcard: boolean;
+ * }} AliasEntry
+ */
+
+/** @param {unknown} value @returns {value is Readonly<Record<string, unknown>>} */
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+const tsconfig = /** @type {unknown} */ (JSON.parse(await readFile(tsconfigPath, 'utf8')));
+const compilerOptions = isRecord(tsconfig) && isRecord(tsconfig['compilerOptions']) ? tsconfig['compilerOptions'] : {};
+const paths = isRecord(compilerOptions['paths']) ? compilerOptions['paths'] : {};
+/** @type {AliasEntry[]} */
+const aliasEntries = Object.entries(paths)
   .flatMap(([pattern, replacements]) => {
     if (!Array.isArray(replacements) || typeof replacements[0] !== 'string') return [];
     const replacement = replacements[0];
@@ -37,6 +55,7 @@ const aliasEntries = Object.entries(tsconfig.compilerOptions?.paths ?? {})
   })
   .sort((left, right) => right.prefix.length - left.prefix.length);
 
+/** @param {string} importPath */
 function resolveAliasPath(importPath) {
   for (const entry of aliasEntries) {
     if (!entry.wildcard && importPath === entry.pattern) {
@@ -50,6 +69,7 @@ function resolveAliasPath(importPath) {
   return undefined;
 }
 
+/** @param {string} importPath */
 async function resolveSourcePath(importPath) {
   const basePath = resolveAliasPath(importPath);
   if (!basePath) return undefined;
@@ -71,6 +91,7 @@ async function resolveSourcePath(importPath) {
   return basePath;
 }
 
+/** @type {import('esbuild').Plugin} */
 const aliasPlugin = {
   name: 'stark-ballot-path-alias',
   setup(buildApi) {
@@ -81,6 +102,7 @@ const aliasPlugin = {
   },
 };
 
+/** @param {string} filePath */
 async function sha256(filePath) {
   return createHash('sha256')
     .update(await readFile(filePath))
@@ -98,7 +120,7 @@ async function writeDeterministicZip() {
     zip.outputStream.on('error', reject);
     zip.outputStream
       .pipe(createWriteStream(zipPath, { mode: 0o600 }))
-      .on('close', resolve)
+      .on('close', () => resolve(undefined))
       .on('error', reject);
     zip.end();
   });

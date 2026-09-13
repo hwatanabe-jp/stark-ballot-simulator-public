@@ -1,4 +1,4 @@
-import type { KnowledgeData } from './types';
+import { BOT_KNOWLEDGE_KEYS, type KnowledgeData } from './types';
 
 export const PUBLIC_KNOWLEDGE_KEYS: ReadonlyArray<keyof KnowledgeData> = [
   'tally.counts',
@@ -35,16 +35,7 @@ export const VERIFY_MY_KNOWLEDGE_KEYS: ReadonlyArray<keyof KnowledgeData> = [
 ];
 
 export const VERIFY_BOT_KNOWLEDGE_KEYS: ReadonlyArray<keyof KnowledgeData> = [
-  'bot.id',
-  'bot.choice',
-  'bot.random',
-  'bot.commitment',
-  'bot.voteId',
-  'bot.bulletinIndex',
-  'bot.bulletinRootAtCast',
-  'bot.voteTimestamp',
-  'bot.merklePath',
-  'bot.verification.steps',
+  ...BOT_KNOWLEDGE_KEYS,
   ...PUBLIC_KNOWLEDGE_KEYS,
 ];
 

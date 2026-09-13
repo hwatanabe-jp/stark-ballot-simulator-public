@@ -7,6 +7,7 @@ import {
   type SessionCapabilityPayload,
   verifySessionCapabilityToken,
 } from '@stark-ballot/domain/security/sessionCapabilityToken';
+import { parseCapabilityToken, type CapabilityToken, type SessionId } from '@stark-ballot/domain/types/identifiers';
 import {
   resolveSessionCapabilitySecret,
   resolveSessionCapabilityTtlSeconds,
@@ -18,7 +19,7 @@ import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/ru
  */
 export interface SessionValidationResult {
   session: SessionReadModel;
-  sessionId: string;
+  sessionId: SessionId;
 }
 
 /**
@@ -44,8 +45,8 @@ function resolveSessionOptions(options?: SessionValidationOptions): Required<Ses
 /**
  * Require a session capability token header.
  */
-export function requireSessionCapability(headers: Headers): string | Response {
-  const token = headers.get(SESSION_CAPABILITY_HEADER);
+export function requireSessionCapability(headers: Headers): CapabilityToken | Response {
+  const token = parseCapabilityToken(headers.get(SESSION_CAPABILITY_HEADER));
   if (!token) {
     return errorResponse(ErrorCode.SESSION_CAPABILITY_REQUIRED);
   }
@@ -58,7 +59,7 @@ export function requireSessionCapability(headers: Headers): string | Response {
 export function validateSessionCapabilityForSession(
   profile: ResolvedRuntimeProfile,
   headers: Headers,
-  sessionId: string,
+  sessionId: SessionId,
 ): SessionCapabilityPayload | Response {
   const tokenResult = requireSessionCapability(headers);
   if (tokenResult instanceof Response) {
@@ -91,7 +92,7 @@ export function validateSessionCapabilityForSession(
  * Validate session existence by ID and optionally update activity.
  */
 export async function validateSessionById(
-  sessionId: string,
+  sessionId: SessionId,
   store: SessionValidationStore,
   options?: SessionValidationOptions,
 ): Promise<SessionValidationResult | Response> {

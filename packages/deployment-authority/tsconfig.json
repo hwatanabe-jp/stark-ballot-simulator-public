@@ -1,5 +1,9 @@
 {
   "extends": "../../tooling/tsconfig/node.json",
-  "include": ["src/**/*.js", "src/**/*.d.ts"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts", "src/**/__tests__/**"]
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true
+  },
+  "include": ["src/**/*.js", "src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts", "src/**/test-support/**"]
 }

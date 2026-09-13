@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useEffect, useRef } from 'react';
@@ -109,6 +109,62 @@ describe('VoteForm', () => {
     clearBrowserPublicEnvForTests();
   });
 
+  it('reuses the opening after an uncertain response and obtains a fresh CAPTCHA', async () => {
+    const user = userEvent.setup();
+    vi.mocked(submitVote).mockRejectedValueOnce(new Error('Network error'));
+    render(<VoteForm onVoteComplete={onVoteComplete} />);
+    await user.click(screen.getByTestId('vote-option-A'));
+    await user.click(screen.getByTestId('submit-vote'));
+    await waitFor(() => expect(screen.getByTestId('submit-vote')).toBeEnabled());
+    expect(screen.getByTestId('vote-option-B').querySelector('input')).toBeDisabled();
+    await user.click(screen.getByTestId('submit-vote'));
+    await waitFor(() => expect(onVoteComplete).toHaveBeenCalledTimes(1));
+    expect(generateCommitment).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(submitVote).mock.calls[1]?.[1]).toEqual(vi.mocked(submitVote).mock.calls[0]?.[1]);
+  });
+
+  it('replays the saved opening after reload without generating another commitment', async () => {
+    const user = userEvent.setup();
+    const saved = getSessionData();
+    if (!saved) throw new Error('Expected session');
+    vi.mocked(getSessionDataForIdentity).mockReturnValue({
+      ...saved,
+      myVote: 'A',
+      myCommit: `0x${'1'.repeat(64)}`,
+      myRand: `0x${'2'.repeat(64)}`,
+    });
+    render(<VoteForm onVoteComplete={onVoteComplete} />);
+    await waitFor(() => expect(screen.getByTestId('submit-vote')).toBeEnabled());
+    await user.click(screen.getByTestId('submit-vote'));
+    await waitFor(() => expect(onVoteComplete).toHaveBeenCalledTimes(1));
+    expect(generateCommitment).not.toHaveBeenCalled();
+    expect(submitVote).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ vote: 'A', commitment: `0x${'1'.repeat(64)}`, rand: `0x${'2'.repeat(64)}` }),
+      expect.anything(),
+    );
+  });
+
+  it('rejects a response bound to another opening', async () => {
+    const user = userEvent.setup();
+    vi.mocked(submitVote).mockResolvedValueOnce({
+      voteId: '550e8400-e29b-41d4-a716-446655440000',
+      commitment: `0x${'3'.repeat(64)}`,
+      bulletinIndex: 0,
+      bulletinRootAtCast: `0x${'4'.repeat(64)}`,
+      castAtMs: 10,
+    });
+    render(<VoteForm onVoteComplete={onVoteComplete} />);
+    await user.click(screen.getByTestId('vote-option-A'));
+    await user.click(screen.getByTestId('submit-vote'));
+    await screen.findByText('errors.generic');
+    expect(onVoteComplete).not.toHaveBeenCalled();
+    expect(saveSessionDataForIdentity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ voteId: expect.anything() }),
+    );
+  });
+
   it('keeps submit button disabled after successful vote submission', async () => {
     const user = userEvent.setup();
     render(<VoteForm onVoteComplete={onVoteComplete} />);
@@ -127,7 +183,7 @@ describe('VoteForm', () => {
     expect(screen.getByTestId('submit-vote')).toBeDisabled();
   });
 
-  it('scrolls to the bottom after selecting a vote option', async () => {
+  it('keeps the current scroll position after selecting a vote option', async () => {
     const scrollToSpy = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
     const user = userEvent.setup();
 
@@ -136,12 +192,53 @@ describe('VoteForm', () => {
 
       await user.click(screen.getByTestId('vote-option-A'));
 
-      await waitFor(() => {
-        expect(scrollToSpy).toHaveBeenCalled();
-      });
+      expect(screen.getByTestId('vote-option-A').querySelector('input')).toBeChecked();
+      expect(scrollToSpy).not.toHaveBeenCalled();
     } finally {
       scrollToSpy.mockRestore();
     }
+  });
+
+  it('does not submit after leaving while commitment generation is pending', async () => {
+    const user = userEvent.setup();
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof generateCommitment>>>();
+    vi.mocked(generateCommitment).mockReturnValue(pending.promise);
+    const { unmount } = render(<VoteForm onVoteComplete={onVoteComplete} />);
+    await user.click(screen.getByTestId('vote-option-A'));
+    await user.click(screen.getByTestId('submit-vote'));
+    unmount();
+
+    await act(async () => {
+      pending.resolve({ commitment: `0x${'1'.repeat(64)}`, randomValue: `0x${'2'.repeat(64)}` });
+    });
+    expect(submitVote).not.toHaveBeenCalled();
+    expect(saveSessionDataForIdentity).not.toHaveBeenCalled();
+    expect(onVoteComplete).not.toHaveBeenCalled();
+  });
+
+  it('aborts the request and ignores a late vote response after leaving', async () => {
+    const user = userEvent.setup();
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof submitVote>>>();
+    vi.mocked(submitVote).mockReturnValue(pending.promise);
+    const { unmount } = render(<VoteForm onVoteComplete={onVoteComplete} />);
+    await user.click(screen.getByTestId('vote-option-A'));
+    await user.click(screen.getByTestId('submit-vote'));
+    const signal = vi.mocked(submitVote).mock.calls[0]?.[2]?.signal;
+    expect(saveSessionDataForIdentity).toHaveBeenCalledOnce();
+    unmount();
+    expect(signal?.aborted).toBe(true);
+
+    await act(async () => {
+      pending.resolve({
+        voteId: '550e8400-e29b-41d4-a716-446655440000',
+        commitment: `0x${'1'.repeat(64)}`,
+        bulletinIndex: 1,
+        bulletinRootAtCast: `0x${'1'.repeat(64)}`,
+        castAtMs: 1234567890,
+      });
+    });
+    expect(saveSessionDataForIdentity).toHaveBeenCalledOnce();
+    expect(onVoteComplete).not.toHaveBeenCalled();
   });
 
   it('allows operator-gated develop vote submission without a browser Turnstile token', async () => {

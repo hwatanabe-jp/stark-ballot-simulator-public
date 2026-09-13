@@ -5,6 +5,7 @@ import {
   parseImageIdMapping,
   resolveConfirmedImageIdVariant,
 } from './image-id-mapping.js';
+import { resolveConfiguredImageIdVariant } from './image-id-policy.js';
 
 const X86_IMAGE_ID = `0x${'a'.repeat(64)}`;
 
@@ -106,5 +107,15 @@ describe('ImageID mapping semantic contract', () => {
     defaultVariant['imageId'] = `0x${'b'.repeat(64)}`;
 
     expect(() => parseImageIdMapping(contradictory)).toThrow(/unconfirmed variant.*semantic contract keys/u);
+  });
+});
+
+describe('ImageID selection policy', () => {
+  it('rejects non-string selector values instead of coercing them', () => {
+    expect(() =>
+      resolveConfiguredImageIdVariant({
+        toString: () => 'default',
+      }),
+    ).toThrow('Unsupported ImageID variant value');
   });
 });

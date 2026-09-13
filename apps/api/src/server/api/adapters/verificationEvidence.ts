@@ -1,9 +1,11 @@
 import type {
-  FinalizationBitmapData,
+  FinalizationBitmapRecord,
   FinalizationBitmapStore,
 } from '@stark-ballot/application/finalize/finalization-store';
 import type { SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
 import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
 import { asBitmapBitIndex } from '@stark-ballot/verification/bitmap-proof-types';
 import type {
   AdmittedConsistencyProof,
@@ -72,8 +74,8 @@ export interface BitmapProofEvidence {
 
 export interface AcquireBitmapProofEvidenceOptions {
   store: BitmapEvidenceStore;
-  sessionId: string;
-  finalizationId: string;
+  sessionId: SessionId;
+  finalizationId: FinalizationId;
   finalizationResult: BitmapProofFinalizationResult;
   voteIndex?: number;
 }
@@ -113,7 +115,7 @@ export async function acquireBitmapProofEvidence({
     };
   }
 
-  let bitmapData: FinalizationBitmapData | null;
+  let bitmapData: FinalizationBitmapRecord | null;
   try {
     bitmapData = await store.getBitmapData(sessionId, finalizationId);
   } catch (error) {

@@ -1,6 +1,6 @@
+import { parseSync, Visitor, type Node } from 'oxc-parser';
 import fs from 'fs';
 import path from 'path';
-import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { ja } from './translations/ja';
 import { en } from './translations/en';
@@ -84,7 +84,7 @@ function collectSourceFiles(rootDir: string): string[] {
   for (const entry of entries) {
     const fullPath = path.join(rootDir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name === '__tests__') {
+      if (entry.name === 'test-support') {
         continue;
       }
       if (fullPath.includes(`${path.sep}src${path.sep}lib${path.sep}i18n${path.sep}translations`)) {
@@ -102,7 +102,7 @@ function collectSourceFiles(rootDir: string): string[] {
     if (fullPath.endsWith('.d.ts')) {
       continue;
     }
-    if (fullPath.includes('.test.') || fullPath.includes('.spec.')) {
+    if (fullPath.includes('.test.') || fullPath.includes('.spec.') || fullPath.endsWith('.type-test.ts')) {
       continue;
     }
     files.push(fullPath);
@@ -110,33 +110,30 @@ function collectSourceFiles(rootDir: string): string[] {
   return files;
 }
 
-function isLanguageArgument(node: ts.Expression): boolean {
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-    return LANGUAGE_CODES.has(node.text);
-  }
-  if (ts.isIdentifier(node)) {
-    return node.text === 'language' || node.text === 'lang';
-  }
-  if (ts.isPropertyAccessExpression(node)) {
-    return node.name.text === 'language' || node.name.text === 'lang';
-  }
-  return false;
+function literalKey(node: Node | null | undefined): string | undefined {
+  if (node?.type === 'Literal' && typeof node.value === 'string') return node.value;
+  if (node?.type === 'TemplateLiteral' && node.expressions.length === 0)
+    return node.quasis[0]?.value.cooked ?? undefined;
+  return undefined;
 }
 
-function extractLiteralKeysFromExpression(node: ts.Expression): string[] {
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-    return [node.text];
-  }
-  if (ts.isArrayLiteralExpression(node)) {
-    const parts = node.elements.map((element) => {
-      if (ts.isStringLiteral(element) || ts.isNoSubstitutionTemplateLiteral(element)) {
-        return element.text;
-      }
-      return undefined;
-    });
-    if (parts.every((part) => typeof part === 'string')) {
-      return [parts.join('.')];
-    }
+function isLanguageArgument(node: Node): boolean {
+  const literal = literalKey(node);
+  if (literal !== undefined) return LANGUAGE_CODES.has(literal);
+  const name =
+    node.type === 'Identifier'
+      ? node.name
+      : node.type === 'MemberExpression' && !node.computed && node.property.type === 'Identifier'
+        ? node.property.name
+        : undefined;
+  return name === 'language' || name === 'lang';
+}
+function extractLiteralKeysFromExpression(node: Node): string[] {
+  const literal = literalKey(node);
+  if (literal !== undefined) return [literal];
+  if (node.type === 'ArrayExpression') {
+    const parts = node.elements.map(literalKey);
+    if (parts.every((part) => typeof part === 'string')) return [parts.join('.')];
   }
   return [];
 }
@@ -150,40 +147,30 @@ function collectUsedKeys(): Set<string> {
 
   for (const filePath of sourceFiles) {
     const content = fs.readFileSync(filePath, 'utf8');
-    const scriptKind = filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-    const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true, scriptKind);
-
-    const visit = (node: ts.Node) => {
-      if (ts.isCallExpression(node)) {
-        const expression = node.expression;
-        const isTCall =
-          (ts.isIdentifier(expression) && TRANSLATION_FN_NAMES.has(expression.text)) ||
-          (ts.isPropertyAccessExpression(expression) && TRANSLATION_FN_NAMES.has(expression.name.text));
-        if (isTCall && node.arguments.length > 0) {
-          const keyArgIndex = node.arguments.length > 1 && isLanguageArgument(strictDefined(node.arguments[0])) ? 1 : 0;
-          if (node.arguments.length <= keyArgIndex) {
-            return;
-          }
-          const keyArg = node.arguments[keyArgIndex];
-          if (!keyArg) {
-            return;
-          }
-          for (const key of extractLiteralKeysFromExpression(keyArg)) {
-            usedKeys.add(key);
-          }
-        }
-      }
-
-      if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-        if (isLikelyTranslationKey(node.text)) {
-          usedKeys.add(node.text);
-        }
-      }
-
-      ts.forEachChild(node, visit);
-    };
-
-    visit(sourceFile);
+    const parsed = parseSync(filePath, content);
+    if (parsed.errors.length > 0)
+      throw new Error(`Cannot parse ${filePath}: ${parsed.errors.map((error) => error.message).join('; ')}`);
+    function addLiteral(node: Node): void {
+      const key = literalKey(node);
+      if (key !== undefined && isLikelyTranslationKey(key)) usedKeys.add(key);
+    }
+    new Visitor({
+      CallExpression(node) {
+        const callee = node.callee;
+        const name =
+          callee.type === 'Identifier'
+            ? callee.name
+            : callee.type === 'MemberExpression' && !callee.computed && callee.property.type === 'Identifier'
+              ? callee.property.name
+              : undefined;
+        if (!name || !TRANSLATION_FN_NAMES.has(name) || node.arguments.length === 0) return;
+        const keyArgIndex = node.arguments.length > 1 && isLanguageArgument(strictDefined(node.arguments[0])) ? 1 : 0;
+        const keyArg = node.arguments[keyArgIndex];
+        if (keyArg) for (const key of extractLiteralKeysFromExpression(keyArg)) usedKeys.add(key);
+      },
+      Literal: addLiteral,
+      TemplateLiteral: addLiteral,
+    }).visit(parsed.program);
   }
 
   for (const key of INFOGRAPHIC_STEP_KEYS) {

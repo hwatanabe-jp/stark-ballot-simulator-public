@@ -1,99 +1,46 @@
-# 公開境界
+# 公開できる証拠と、手元に残す情報
 
-検証アーティファクトは、`bundle.zip` に入れる公開可能データと、保護対象として残すデータに分かれます。
+選択肢と乱数を公開すれば、第三者は一票ずつ集計をやり直せます。しかし、それでは誰かのコミットメントがどの候補への票かも分かってしまいます。そこで `bundle.zip` には、投票内容を開かずに計算や入力のつながりを確認するための証拠を収めます。
 
-ここでいう `public` は、「秘密を含まず、第三者検証に使える公開可能データ」という機密性の分類です。
-「無認証で誰でも取得できること」は意味しません。
-通常のブラウザと CLI では、`bundle.zip` も検証レポートも session capability で保護された API から取得します。
+公開入力には、ゲストに渡した票のインデックス、コミットメント、Merkle パスが含まれます。個々の記録を公開監査に使う設計ですが、選択肢と乱数は収めません。なお、このデモではサーバーが投票時に選択肢と乱数を受け取ります。公開アーカイブから秘密を除くことと、運営者から秘密を隠すことは別です。
 
-## 境界の原則
+## 公開可能と、誰でもダウンロード可能の違い
 
-`bundle.zip` は、公開可能アーティファクトだけを含む監査用アーカイブです。
-zkVM の witness、投票内容を復元し得る入力、個票状態を細かく説明する private bitmap、検証サービスの protected report artifact は含めません。
+本書の「公開可能」や `public` は、第三者へ渡せる内容であるというデータの分類です。無認証のダウンロードを意味しません。
 
-この境界は利便性より優先します。
-`bundle.zip` 単体で `/verify` 画面の最終判定を完全再現できない場合でも、private artifact を公開アーカイブへ混ぜません。
-UI の最終判定には、session-scoped な自票 proof、bitmap proof、設定時の third-party STH evidence、サーバー側の STARK receipt verification 結果も関わります。
-
-## public bundle の default-deny manifest
-
-同期生成の `bundle.zip` は次の member に限定されます。async bundle は共通の必須 5 member
-だけを含みます。
-
-| ファイル                 | 扱い | 役割                                                            |
-| ------------------------ | ---- | --------------------------------------------------------------- |
-| `public-input.json`      | 必須 | 秘密値を除いた zkVM 入力側の公開監査レコード                    |
-| `election-manifest.json` | 必須 | 選挙設定と `electionConfigHash` を照合するための公開レコード    |
-| `close-statement.json`   | 必須 | 集計締切時点の `logId` / `treeSize` / `bulletinRoot` 境界       |
-| `receipt.json`           | 必須 | production 検証で実証明として検証する STARK receipt payload     |
-| `journal.json`           | 必須 | tally、root、count、commitment などを含む zkVM の公開出力       |
-| `metadata.json`          | 必須 | sync bundle の作成時刻、session ID、method version など         |
-| `sth.json`               | 任意 | STH snapshot を bundle に保存する場合の公開可能 evidence        |
-| `consistency-proof.json` | 任意 | CT-style append-only consistency proof を保存する場合の公開証拠 |
-
-`receipt.json` が含まれていても、それだけで production STARK proof として成功扱いにはなりません。
-開発モードの receipt は production STARK proof ではなく、production 検証では fail-closed に扱います。
-
-新しい artifact は、生成された時点では private です。公開可能かどうかを各 builder
-や配信 handler が個別に推測せず、canonical manifest に明示的に追加され、sync/async
-member set と completed-archive admission の review を通過した場合にだけ
-`bundle.zip` へ入れられます。この default-private / allowlist-driven 方針により、
-新しい内部 artifact の追加が意図しない公開へ直結することを防ぎます。
-
-manifest にない member は private が既定です。required member の欠落、private/unknown member、
-duplicate/case conflict、traversal・absolute・非 canonical path を含む completed ZIP は
-publication/delivery より前に拒否されます。
+ブラウザと CLI は、セッションへのアクセス権を示す capability を使って証拠を取得します。取得した `bundle.zip` を第三者へ渡し、その人が [ローカルで検証する](../reproducibility/index.md)ことができます。レポートは別の保護対象で、ZIP と同じ公開範囲には含めません。
 
 ## bundle.zip に入れないファイル
 
-次のファイルは `bundle.zip` のメンバーではありません。
+| ファイル               | 保護する理由                                                                     |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| `input.json`           | ゲストの秘密入力。投票の選択肢と乱数を含み得る                                   |
+| `verification.json`    | 検証サービスの完全なレポート。公開 ZIP に同梱せず、専用の認証付き API で取得する |
+| `included-bitmap.json` | どのインデックスを計上したかを表す完全なビットマップ                             |
+| `seen-bitmap.json`     | どのインデックスをゲストへ提示したかを表す完全なビットマップ                     |
+| `failure-marker.json`  | 非同期プローバーが失敗時に残す、限定された失敗分類の内部診断情報                 |
 
-| ファイル               | 理由                                                           |
-| ---------------------- | -------------------------------------------------------------- |
-| `input.json`           | 投票選択や乱数を含み得る zkVM witness 付き private input       |
-| `verification.json`    | 検証サービスの protected report artifact                       |
-| `included-bitmap.json` | counted された index を説明する private bitmap artifact        |
-| `seen-bitmap.json`     | prover に提示された index を説明する private bitmap artifact   |
-| `failure-marker.json`  | async prover の bounded category だけを持つ private diagnostic |
+最初の四つは同期・非同期のどちらでも保護対象です。`failure-marker.json` は非同期実行時だけ生成され得る診断用ファイルで、レポートの取得 API からも配布しません。
 
-`input.json`、`verification.json`、`included-bitmap.json`、`seen-bitmap.json` の 4 つは、モードに依存しない保護対象です。
-`verification.json` は必要な場合に `bundle.zip` とは別の report endpoint から取得します。
-`failure-marker.json` は非同期モードのみで生成され得る private diagnostic で、report endpoint からも配布しません。ライフサイクル契約の詳細は [非同期プローバー](../aws/async-prover.md) を参照してください。
+ビットマップのファイル全体は ZIP に含めず、画面は自票の位置について証明を取得します。ただし、その証明には自票を含む 32 バイトの区画が入ります。このデモの全 64 位置は同じ区画に収まるため、他の位置の採用・提示状況も読み取れます。通常の API は証明の対象インデックスをそのセッションのユーザー票に限定しますが、区画内の他のビットを隠すものではありません。完全なビットマップや投票時の手元データが ZIP にないため、ZIP 単体では検証画面の最終判定を完全には再現できません。
+
+## 許可したファイルだけを収める
+
+新しい内部ファイルが増えたとき、それが自動的に ZIP へ入ると、秘密の公開につながります。そのため、アーカイブの構成は一つのマニフェストで明示します。登録されていないファイルは、既定で非公開です。同期・非同期それぞれの正確なメンバーは [バンドル構造](bundle-structure.md)に示します。
+
+生成処理はファイル一覧を選ぶだけでなく、完成した ZIP を検査します。必須ファイルの欠落、保護対象・未知のファイル、同名重複、大文字小文字だけが違う衝突、絶対パス、親ディレクトリへの移動、正規の名前でないエントリを拒否します。同期・非同期の公開前にこの規則を適用し、ローカル配信時にもアーカイブ全体を再検査します。
+
+S3 配信では、公開前に検査済みのオブジェクトを読み出します。配信時に ZIP を再解析する代わりに、HEAD で固定した同一オブジェクト表現に結びつけて全体または範囲のバイト列を返します。
 
 ## bundle と report の取得経路
 
-通常のブラウザと CLI の contract は、次の capability 保護 API です。
+| API                                                                           | 内容                           |
+| ----------------------------------------------------------------------------- | ------------------------------ |
+| `GET /api/sessions/:sessionId/finalizations/:finalizationId/artifacts/bundle` | 公開可能な `bundle.zip`        |
+| `GET /api/sessions/:sessionId/finalizations/:finalizationId/artifacts/report` | 保護対象の `verification.json` |
 
-| エンドポイント                                                                | 返すもの                                      |
-| ----------------------------------------------------------------------------- | --------------------------------------------- |
-| `GET /api/sessions/:sessionId/finalizations/:finalizationId/artifacts/bundle` | public `bundle.zip`                           |
-| `GET /api/sessions/:sessionId/finalizations/:finalizationId/artifacts/report` | protected `verification.json` report artifact |
+どちらもセッション capability と、現在成功済みの集計に一致する `finalizationId` が必要です。API が権限と対象を確認してから、選択されたローカル保存先または S3 を読みます。利用者への通常配信には、生の S3 URL や署名付き URL を使いません。
 
-どちらも session capability によって保護されます。
-`finalizationId` は、その session の現在の succeeded finalization record が持つ
-`finalizationId` と一致している必要があります。
-
-S3-backed 実行でも、ブラウザと CLI は raw S3 URL や presigned URL を通常契約として使いません。
-API handler が権限と finalization scope を確認したうえで、ローカル保存または S3 から artifact を読み出して返します。
-大きい S3 bundle は、同じ API 経由の range response で配信されます。
-
-## sync mode と async mode の差分
-
-公開境界(何を入れないか)は sync mode と async mode で同じです。
-モードごとの実際のメンバー構成、生成環境、生成フローの差分は [バンドル構造](bundle-structure.md) を参照してください。
-
-## 実装上の照合点
-
-この境界を確認するときは、次の実装を合わせて参照します。
-
-- mode-aware manifest and archive admission:
-  `packages/verification/src/verification/public-bundle-manifest.{json,ts}`
-- sync/async builders: `packages/verification/src/verification/verification-bundle.ts`,
-  `infra/docker/entrypoint.sh`
-- async prover failure marker: `infra/docker/prover-failure-marker-contract.json`, `packages/aws-adapters/src/finalize/async-prover-artifacts.ts`
-- authenticated bundle/report delivery: `apps/api/src/server/api/handlers/verificationBundles.ts`
-- 現行 verification flow notes: `docs/verification/README.md`
-
-詳細なファイル構造とローカル監査手順は、[バンドル構造](bundle-structure.md) と [第三者検証ガイド](../reproducibility/index.md) を参照してください。
+大きい ZIP は同じ API のバイト範囲取得でダウンロードします。保存先に対象がない場合は別の保存方式を探しに行かず、取得失敗として返します。HTTP の範囲取得とエラーの契約は [API エンドポイント](../api/endpoints.md#artifact-取得-api)に示します。
 
 <!-- source: packages/verification/src/verification/public-bundle-manifest.json, packages/verification/src/verification/public-bundle-manifest.ts, packages/verification/src/verification/verification-bundle.ts, packages/aws-adapters/src/finalize/async-prover-artifacts.ts, infra/docker/entrypoint.sh, infra/docker/prover-failure-marker-contract.json, apps/api/src/server/api/handlers/verificationBundles.ts, docs/verification/README.md -->

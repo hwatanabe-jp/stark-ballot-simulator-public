@@ -1,3 +1,48 @@
+import {
+  type IdentityItem,
+  type PersistedVotingRecord,
+  type VotingItem,
+  type VoteItem,
+  type CurrentFinalizationItem,
+  type PersistedFinalizationItem,
+  type VerificationItem,
+  type VerificationRollbackItem,
+  type ObservationItem,
+  type BitmapItem,
+  type RuntimeMetadataItem,
+  type DeliveryMetadataItem,
+  type ReceiptItem,
+  type ReceiptCounterItem,
+  isRecord,
+  isExpiredItem,
+  normalizeStrictHex32,
+  identityKey,
+  votingKey,
+  currentFinalizationKey,
+  finalizationKey,
+  verificationKey,
+  verificationRollbackKey,
+  observationKey,
+  bitmapKey,
+  runtimeMetadataKey,
+  deliveryMetadataKey,
+  receiptKey,
+  encodeLifecycleRevision,
+  decodeLifecycleRevision,
+  parseIdentityItem,
+  parseVotingItem,
+  parseVoteItem,
+  parseCurrentFinalizationItem,
+  parseFinalizationItem,
+  parseVerificationItem,
+  parseRollbackItem,
+  parseObservationItem,
+  parseBitmapItem,
+  parseRuntimeMetadataItem,
+  parseDeliveryMetadataItem,
+  parseReceiptItem,
+  parseReceiptCounterItem,
+} from './dynamo-records';
 /**
  * DynamoDB-backed exact-record session store.
  *
@@ -23,24 +68,27 @@ import {
   type FinalizationTransitionCoordinationResult,
 } from '@stark-ballot/application/finalize/finalization-transition-coordinator';
 import {
-  parseFinalizationRecord,
+  finalizationRecordCodec,
   type FinalizationRecord,
 } from '@stark-ballot/application/finalize/finalization-record';
+import { finalizationBitmapDataCodec } from '@stark-ballot/application/finalize/finalization-storage';
 import {
   parseVerificationResultRecord,
   type VerificationResultRecord,
   type VerificationResultStore,
 } from '@stark-ballot/application/finalize/finalization-result-store';
-import type {
-  FinalizationBitmapData,
-  FinalizationFailedPayload,
-  FinalizationQueuedPayload,
-  FinalizationRunningPayload,
-  FinalizationStore,
-  SuccessfulFinalizationCommitInput,
-  SuccessfulFinalizationCommitResult,
-  FinalizationSucceededPayload,
-  FinalizationTimedOutPayload,
+import {
+  buildFinalizationCommand,
+  requestedFinalizationStatus,
+  type FinalizationBitmapRecord,
+  type FinalizationFailedPayload,
+  type FinalizationQueuedPayload,
+  type FinalizationRunningPayload,
+  type FinalizationStore,
+  type SuccessfulFinalizationCommitInput,
+  type SuccessfulFinalizationCommitResult,
+  type FinalizationSucceededPayload,
+  type FinalizationTimedOutPayload,
 } from '@stark-ballot/application/finalize/finalization-store';
 import {
   admitFinalizationBitmapDisposition,
@@ -68,6 +116,11 @@ import {
   buildSessionRecords,
   evaluateSessionVoteMutation,
 } from '@stark-ballot/application/session/session-mutation-policy';
+import type {
+  SessionVoteMutationStore,
+  SessionVoteStoreError,
+} from '@stark-ballot/application/session/session-vote-store';
+import { ApplicationErrorCode, type Result } from '@stark-ballot/application';
 import {
   type AwsFinalizationDeliveryMetadataStore,
   type AwsVerificationDeliveryMetadataInput,
@@ -91,21 +144,23 @@ import { recordFinalizationStorePersistenceOutcome } from '@stark-ballot/aws-ada
 import { decryptVoteSecret, encryptVoteSecret } from '@stark-ballot/aws-adapters/security/voteSecretCipher';
 import { deriveExactCtProof } from '@stark-ballot/aws-adapters/store/ct-proof';
 import { computeSuccessfulFinalizationReceiptHash } from './successfulFinalizationReceipt';
-import { isValidHexString } from '@stark-ballot/crypto-primitives';
+
 import { isFinalizationEventReason } from '@stark-ballot/diagnostics/canonicalEvents';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import { VOTE_CHOICES, type VoteChoice } from '@stark-ballot/domain/shared/constants';
 import type {
   AddVoteResult,
+  BotVoteCommand,
   RootSnapshot,
   SessionIdentityRecord,
   SessionVotingRecord,
   StoredVoteRecord,
-  UserParticipation,
-  VoteData,
+  UserVoteCommand,
 } from '@stark-ballot/domain/types/sessionRecords';
 import { parseSessionIdentityRecord } from '@stark-ballot/domain/types/sessionRecords';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
+import { parseFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type { SessionVotingSummary, VoteStore } from '@stark-ballot/domain/types/voteStore';
 import {
   parseVerificationObservation,
@@ -117,7 +172,7 @@ import {
 } from '@stark-ballot/domain/types/verificationObservation';
 import { normalizeHex } from '@stark-ballot/domain/utils/hex';
 import { generateVoteId } from '@stark-ballot/domain/vote/voteId';
-import type { VerificationReport, VerificationResult } from '@stark-ballot/verification/shared/types';
+import type { VerificationResult } from '@stark-ballot/verification/shared/types';
 import {
   buildDefaultElectionConfig,
   getDefaultElectionConfigHash,
@@ -133,142 +188,11 @@ export interface DynamoSessionStoreConfig {
 
 type TransactionItems = NonNullable<TransactWriteCommandInput['TransactItems']>;
 
-interface IdentityItem {
-  sessionId: string;
-  itemType: 'SESSION_IDENTITY';
-  identity: SessionIdentityRecord;
-  expiresAt: number;
-}
-
-interface PersistedVotingRecord {
-  sessionId: string;
-  bulletinRootHistory: RootSnapshot[];
-  botCount: number;
-  userParticipation: UserParticipation;
-  lastActivityMs: number;
-}
-
-interface VotingItem {
-  sessionId: string;
-  itemType: 'SESSION_VOTING';
-  record: PersistedVotingRecord;
-  revision: number;
-  expiresAt: number;
-}
-
-interface VoteItem {
-  sessionId: string;
-  voteIndex: number;
-  itemType: 'VOTE';
-  voteId: string;
-  vote: string;
-  rand: string;
-  commit: string;
-  timestamp: number;
-  rootAtCast: string;
-  isUserVote: boolean;
-  expiresAt: number;
-}
-
-interface CurrentFinalizationItem {
-  sessionId: string;
-  itemType: 'FINALIZATION_CURRENT';
-  ownerSessionId: string;
-  currentFinalizationId: string;
-  revision: number;
-  expiresAt: number;
-}
-
-interface FinalizationItem {
-  sessionId: string;
-  itemType: 'FINALIZATION';
-  ownerSessionId: string;
-  finalizationId: string;
-  record: FinalizationRecord;
-  revision: number;
-  expiresAt: number;
-}
-
-interface VerificationItem {
-  sessionId: string;
-  itemType: 'VERIFICATION_RESULT';
-  ownerSessionId: string;
-  finalizationId: string;
-  record: VerificationResultRecord;
-  revision: number;
-  expiresAt: number;
-}
-
-interface VerificationRollbackItem {
-  sessionId: string;
-  itemType: 'VERIFICATION_ROLLBACK';
-  ownerSessionId: string;
-  finalizationId: string;
-  record: VerificationResultRecord | null;
-  expiresAt: number;
-}
-
-interface ObservationItem {
-  sessionId: string;
-  itemType: 'VERIFICATION_OBSERVATION';
-  ownerSessionId: string;
-  finalizationId: string;
-  observation: VerificationObservation;
-  expiresAt: number;
-}
-
-interface BitmapItem {
-  sessionId: string;
-  itemType: 'FINALIZATION_BITMAP';
-  ownerSessionId: string;
-  finalizationId: string;
-  bitmap: FinalizationBitmapData;
-  expiresAt: number;
-}
-
-interface RuntimeMetadataItem {
-  sessionId: string;
-  itemType: 'FINALIZATION_RUNTIME';
-  ownerSessionId: string;
-  finalizationId: string;
-  metadata: AwsFinalizationRuntimeMetadata;
-  revision: number;
-  expiresAt: number;
-}
-
-interface DeliveryMetadataItem {
-  sessionId: string;
-  itemType: 'VERIFICATION_DELIVERY';
-  ownerSessionId: string;
-  finalizationId: string;
-  metadata: AwsVerificationDeliveryMetadataInput;
-  revision: number;
-  expiresAt: number;
-}
-
-interface ReceiptItem {
-  sessionId: string;
-  itemType: 'FINALIZATION_RECEIPT';
-  ownerSessionId: string;
-  finalizationId: string;
-  receiptHash: string;
-  boardIndex: number;
-  receipt: {
-    receipt: string;
-    timestamp: number;
-  };
-  expiresAt: number;
-}
-
-interface ReceiptCounterItem {
-  sessionId: 'RECEIPT_BOARD_COUNTER';
-  itemType: 'RECEIPT_COUNTER';
-  nextBoardIndex: number;
-}
-
-interface EncodedLifecycleRevision {
-  currentFinalizationId: string | null;
-  revision: number;
+class SessionNotFoundError extends Error {
+  constructor() {
+    super('Session not found');
+    this.name = 'SessionNotFoundError';
+  }
 }
 
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
@@ -276,95 +200,6 @@ const MAX_DYNAMODB_TRANSACTION_ITEMS = 100;
 const MAX_CONDITIONAL_RETRIES = 3;
 const FIRST_RECEIPT_BOARD_INDEX = 100;
 
-const IDENTITY_ITEM_KEYS = new Set(['sessionId', 'itemType', 'identity', 'expiresAt']);
-const VOTING_ITEM_KEYS = new Set(['sessionId', 'itemType', 'record', 'revision', 'expiresAt']);
-const PERSISTED_VOTING_KEYS = new Set([
-  'sessionId',
-  'bulletinRootHistory',
-  'botCount',
-  'userParticipation',
-  'lastActivityMs',
-]);
-const VOTE_ITEM_KEYS = new Set([
-  'sessionId',
-  'voteIndex',
-  'itemType',
-  'voteId',
-  'vote',
-  'rand',
-  'commit',
-  'timestamp',
-  'rootAtCast',
-  'isUserVote',
-  'expiresAt',
-]);
-const CURRENT_FINALIZATION_ITEM_KEYS = new Set([
-  'sessionId',
-  'itemType',
-  'ownerSessionId',
-  'currentFinalizationId',
-  'revision',
-  'expiresAt',
-]);
-const FINALIZATION_ITEM_KEYS = new Set([
-  'sessionId',
-  'itemType',
-  'ownerSessionId',
-  'finalizationId',
-  'record',
-  'revision',
-  'expiresAt',
-]);
-const VERIFICATION_ITEM_KEYS = new Set([
-  'sessionId',
-  'itemType',
-  'ownerSessionId',
-  'finalizationId',
-  'record',
-  'revision',
-  'expiresAt',
-]);
-const ROLLBACK_ITEM_KEYS = new Set([
-  'sessionId',
-  'itemType',
-  'ownerSessionId',
-  'finalizationId',
-  'record',
-  'expiresAt',
-]);
-const OBSERVATION_ITEM_KEYS = new Set([
-  'sessionId',
-  'itemType',
-  'ownerSessionId',
-  'finalizationId',
-  'observation',
-  'expiresAt',
-]);
-const BITMAP_ITEM_KEYS = new Set(['sessionId', 'itemType', 'ownerSessionId', 'finalizationId', 'bitmap', 'expiresAt']);
-const METADATA_ITEM_KEYS = new Set([
-  'sessionId',
-  'itemType',
-  'ownerSessionId',
-  'finalizationId',
-  'metadata',
-  'revision',
-  'expiresAt',
-]);
-const RECEIPT_ITEM_KEYS = new Set([
-  'sessionId',
-  'itemType',
-  'ownerSessionId',
-  'finalizationId',
-  'receiptHash',
-  'boardIndex',
-  'receipt',
-  'expiresAt',
-]);
-const RECEIPT_COUNTER_KEYS = new Set(['sessionId', 'itemType', 'nextBoardIndex']);
-const ROOT_SNAPSHOT_KEYS = new Set(['timestamp', 'root', 'treeSize']);
-const ROOT_SNAPSHOT_WITH_SIGNATURE_KEYS = new Set(['timestamp', 'root', 'treeSize', 'signature']);
-const USER_NOT_CAST_KEYS = new Set(['status']);
-const USER_CAST_KEYS = new Set(['status', 'voteIndex']);
 const FINALIZATION_QUEUED_PAYLOAD_KEYS = new Set(['finalizationId', 'queuedAtMs', 'scenarioContext', 'observability']);
 const FINALIZATION_RUNNING_PAYLOAD_KEYS = new Set([
   'finalizationId',
@@ -428,627 +263,6 @@ function readPositiveIntegerEnv(name: string, fallback: number): number {
   return parsed;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function hasExactKeys(value: Record<string, unknown>, expected: ReadonlySet<string>): boolean {
-  const keys = Object.keys(value);
-  return keys.length === expected.size && keys.every((key) => expected.has(key));
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return isNonNegativeSafeInteger(value) && value > 0;
-}
-
-function isExpiredItem(value: unknown): boolean {
-  return (
-    isRecord(value) && typeof value['expiresAt'] === 'number' && value['expiresAt'] <= Math.floor(Date.now() / 1000)
-  );
-}
-
-function normalizeStrictHex32(value: unknown): string {
-  if (typeof value !== 'string' || !isValidHexString(value, 32)) {
-    throw new Error('CT_PROOF_UNAVAILABLE');
-  }
-  return normalizeHex(value, { allowOddLength: false });
-}
-
-function identityKey(sessionId: string): string {
-  return sessionId;
-}
-
-function votingKey(sessionId: string): string {
-  return `VOTING#${sessionId}`;
-}
-
-function currentFinalizationKey(sessionId: string): string {
-  return `FINALIZATION_CURRENT#${sessionId}`;
-}
-
-function finalizationKey(sessionId: string, finalizationId: string): string {
-  return `FINALIZATION#${sessionId}#${finalizationId}`;
-}
-
-function verificationKey(sessionId: string, finalizationId: string): string {
-  return `VERIFICATION#${sessionId}#${finalizationId}`;
-}
-
-function verificationRollbackKey(sessionId: string, finalizationId: string): string {
-  return `VERIFICATION_ROLLBACK#${sessionId}#${finalizationId}`;
-}
-
-function observationKey(sessionId: string, finalizationId: string): string {
-  return `OBSERVATION#${sessionId}#${finalizationId}`;
-}
-
-function bitmapKey(sessionId: string, finalizationId: string): string {
-  return `BITMAP#${sessionId}#${finalizationId}`;
-}
-
-function runtimeMetadataKey(sessionId: string, finalizationId: string): string {
-  return `FINALIZATION_RUNTIME#${sessionId}#${finalizationId}`;
-}
-
-function deliveryMetadataKey(sessionId: string, finalizationId: string): string {
-  return `VERIFICATION_DELIVERY#${sessionId}#${finalizationId}`;
-}
-
-function receiptKey(sessionId: string, finalizationId: string): string {
-  return `RECEIPT#${sessionId}#${finalizationId}`;
-}
-
-function encodeLifecycleRevision(value: EncodedLifecycleRevision): FinalizationLifecycleRevision {
-  return JSON.stringify(value);
-}
-
-function decodeLifecycleRevision(value: FinalizationLifecycleRevision): EncodedLifecycleRevision | undefined {
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (
-      !isRecord(parsed) ||
-      !hasExactKeys(parsed, new Set(['currentFinalizationId', 'revision'])) ||
-      (parsed['currentFinalizationId'] !== null && typeof parsed['currentFinalizationId'] !== 'string') ||
-      !isNonNegativeSafeInteger(parsed['revision'])
-    ) {
-      return undefined;
-    }
-    return {
-      currentFinalizationId: parsed['currentFinalizationId'],
-      revision: parsed['revision'],
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-function parseRootSnapshot(value: unknown): RootSnapshot | undefined {
-  if (
-    !isRecord(value) ||
-    (!hasExactKeys(value, ROOT_SNAPSHOT_KEYS) && !hasExactKeys(value, ROOT_SNAPSHOT_WITH_SIGNATURE_KEYS))
-  ) {
-    return undefined;
-  }
-  const timestamp = value['timestamp'];
-  const root = value['root'];
-  const treeSize = value['treeSize'];
-  const signature = value['signature'];
-  if (
-    !isNonNegativeSafeInteger(timestamp) ||
-    !isPositiveSafeInteger(treeSize) ||
-    typeof root !== 'string' ||
-    !isValidHexString(root, 32) ||
-    (signature !== undefined && typeof signature !== 'string')
-  ) {
-    return undefined;
-  }
-  return {
-    timestamp,
-    root: normalizeHex(root, { allowOddLength: false }),
-    treeSize,
-    ...(signature === undefined ? {} : { signature }),
-  };
-}
-
-function parseUserParticipation(value: unknown): UserParticipation | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  if (value['status'] === 'not_cast' && hasExactKeys(value, USER_NOT_CAST_KEYS)) {
-    return { status: 'not_cast' };
-  }
-  if (
-    value['status'] === 'cast' &&
-    hasExactKeys(value, USER_CAST_KEYS) &&
-    isNonNegativeSafeInteger(value['voteIndex'])
-  ) {
-    return { status: 'cast', voteIndex: value['voteIndex'] };
-  }
-  return undefined;
-}
-
-function parseIdentityItem(value: unknown, expectedSessionId?: string): IdentityItem | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, IDENTITY_ITEM_KEYS) ||
-    value['itemType'] !== 'SESSION_IDENTITY' ||
-    typeof value['sessionId'] !== 'string' ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
-    return undefined;
-  }
-  const identity = parseSessionIdentityRecord(value['identity']);
-  if (
-    !identity ||
-    identity.sessionId !== value['sessionId'] ||
-    (expectedSessionId !== undefined && identity.sessionId !== expectedSessionId)
-  ) {
-    return undefined;
-  }
-  return {
-    sessionId: value['sessionId'],
-    itemType: 'SESSION_IDENTITY',
-    identity,
-    expiresAt: value['expiresAt'],
-  };
-}
-
-function parsePersistedVotingRecord(value: unknown, expectedSessionId: string): PersistedVotingRecord | undefined {
-  if (!isRecord(value) || !hasExactKeys(value, PERSISTED_VOTING_KEYS)) {
-    return undefined;
-  }
-  const sessionId = value['sessionId'];
-  const history = value['bulletinRootHistory'];
-  const botCount = value['botCount'];
-  const userParticipation = parseUserParticipation(value['userParticipation']);
-  const lastActivityMs = value['lastActivityMs'];
-  if (
-    sessionId !== expectedSessionId ||
-    !Array.isArray(history) ||
-    !isNonNegativeSafeInteger(botCount) ||
-    !userParticipation ||
-    !isNonNegativeSafeInteger(lastActivityMs)
-  ) {
-    return undefined;
-  }
-  const bulletinRootHistory: RootSnapshot[] = [];
-  for (const entry of history) {
-    const snapshot = parseRootSnapshot(entry);
-    if (!snapshot) {
-      return undefined;
-    }
-    bulletinRootHistory.push(snapshot);
-  }
-  return {
-    sessionId: expectedSessionId,
-    bulletinRootHistory,
-    botCount,
-    userParticipation,
-    lastActivityMs,
-  };
-}
-
-function parseVotingItem(value: unknown, expectedSessionId: string): VotingItem | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, VOTING_ITEM_KEYS) ||
-    value['itemType'] !== 'SESSION_VOTING' ||
-    value['sessionId'] !== votingKey(expectedSessionId) ||
-    !isNonNegativeSafeInteger(value['revision']) ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
-    return undefined;
-  }
-  const record = parsePersistedVotingRecord(value['record'], expectedSessionId);
-  if (!record) {
-    return undefined;
-  }
-  return {
-    sessionId: value['sessionId'],
-    itemType: 'SESSION_VOTING',
-    record,
-    revision: value['revision'],
-    expiresAt: value['expiresAt'],
-  };
-}
-
-function parseVoteItem(value: unknown, expectedSessionId: string): VoteItem | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, VOTE_ITEM_KEYS) ||
-    value['itemType'] !== 'VOTE' ||
-    value['sessionId'] !== expectedSessionId ||
-    !isNonNegativeSafeInteger(value['voteIndex']) ||
-    typeof value['voteId'] !== 'string' ||
-    typeof value['vote'] !== 'string' ||
-    typeof value['rand'] !== 'string' ||
-    typeof value['commit'] !== 'string' ||
-    !isNonNegativeSafeInteger(value['timestamp']) ||
-    typeof value['rootAtCast'] !== 'string' ||
-    typeof value['isUserVote'] !== 'boolean' ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
-    return undefined;
-  }
-  return {
-    sessionId: expectedSessionId,
-    voteIndex: value['voteIndex'],
-    itemType: 'VOTE',
-    voteId: value['voteId'],
-    vote: value['vote'],
-    rand: value['rand'],
-    commit: value['commit'],
-    timestamp: value['timestamp'],
-    rootAtCast: value['rootAtCast'],
-    isUserVote: value['isUserVote'],
-    expiresAt: value['expiresAt'],
-  };
-}
-
-function parseCurrentFinalizationItem(value: unknown, expectedSessionId: string): CurrentFinalizationItem | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, CURRENT_FINALIZATION_ITEM_KEYS) ||
-    value['itemType'] !== 'FINALIZATION_CURRENT' ||
-    value['sessionId'] !== currentFinalizationKey(expectedSessionId) ||
-    value['ownerSessionId'] !== expectedSessionId ||
-    typeof value['currentFinalizationId'] !== 'string' ||
-    !isPositiveSafeInteger(value['revision']) ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
-    return undefined;
-  }
-  return {
-    sessionId: value['sessionId'],
-    itemType: 'FINALIZATION_CURRENT',
-    ownerSessionId: expectedSessionId,
-    currentFinalizationId: value['currentFinalizationId'],
-    revision: value['revision'],
-    expiresAt: value['expiresAt'],
-  };
-}
-
-function parseFinalizationItem(
-  value: unknown,
-  expectedSessionId: string,
-  expectedFinalizationId: string,
-): FinalizationItem | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, FINALIZATION_ITEM_KEYS) ||
-    value['itemType'] !== 'FINALIZATION' ||
-    value['sessionId'] !== finalizationKey(expectedSessionId, expectedFinalizationId) ||
-    value['ownerSessionId'] !== expectedSessionId ||
-    value['finalizationId'] !== expectedFinalizationId ||
-    !isPositiveSafeInteger(value['revision']) ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
-    return undefined;
-  }
-  const record = parseFinalizationRecord(value['record']);
-  if (!record || record.sessionId !== expectedSessionId || record.finalizationId !== expectedFinalizationId) {
-    return undefined;
-  }
-  return {
-    sessionId: value['sessionId'],
-    itemType: 'FINALIZATION',
-    ownerSessionId: expectedSessionId,
-    finalizationId: expectedFinalizationId,
-    record,
-    revision: value['revision'],
-    expiresAt: value['expiresAt'],
-  };
-}
-
-function parseVerificationItem(
-  value: unknown,
-  expectedSessionId: string,
-  expectedFinalizationId: string,
-): VerificationItem | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, VERIFICATION_ITEM_KEYS) ||
-    value['itemType'] !== 'VERIFICATION_RESULT' ||
-    value['sessionId'] !== verificationKey(expectedSessionId, expectedFinalizationId) ||
-    value['ownerSessionId'] !== expectedSessionId ||
-    value['finalizationId'] !== expectedFinalizationId ||
-    !isPositiveSafeInteger(value['revision']) ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
-    return undefined;
-  }
-  const record = parseVerificationResultRecord(value['record']);
-  if (!record || record.sessionId !== expectedSessionId || record.finalizationId !== expectedFinalizationId) {
-    return undefined;
-  }
-  return {
-    sessionId: value['sessionId'],
-    itemType: 'VERIFICATION_RESULT',
-    ownerSessionId: expectedSessionId,
-    finalizationId: expectedFinalizationId,
-    record,
-    revision: value['revision'],
-    expiresAt: value['expiresAt'],
-  };
-}
-
-function parseRollbackItem(
-  value: unknown,
-  expectedSessionId: string,
-  expectedFinalizationId: string,
-): VerificationRollbackItem | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, ROLLBACK_ITEM_KEYS) ||
-    value['itemType'] !== 'VERIFICATION_ROLLBACK' ||
-    value['sessionId'] !== verificationRollbackKey(expectedSessionId, expectedFinalizationId) ||
-    value['ownerSessionId'] !== expectedSessionId ||
-    value['finalizationId'] !== expectedFinalizationId ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
-    return undefined;
-  }
-  const rawRecord = value['record'];
-  const record = rawRecord === null ? null : parseVerificationResultRecord(rawRecord);
-  if (
-    record === undefined ||
-    (record !== null && (record.sessionId !== expectedSessionId || record.finalizationId !== expectedFinalizationId))
-  ) {
-    return undefined;
-  }
-  return {
-    sessionId: value['sessionId'],
-    itemType: 'VERIFICATION_ROLLBACK',
-    ownerSessionId: expectedSessionId,
-    finalizationId: expectedFinalizationId,
-    record,
-    expiresAt: value['expiresAt'],
-  };
-}
-
-function parseObservationItem(
-  value: unknown,
-  expectedSessionId: string,
-  expectedFinalizationId: string,
-): ObservationItem | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, OBSERVATION_ITEM_KEYS) ||
-    value['itemType'] !== 'VERIFICATION_OBSERVATION' ||
-    value['sessionId'] !== observationKey(expectedSessionId, expectedFinalizationId) ||
-    value['ownerSessionId'] !== expectedSessionId ||
-    value['finalizationId'] !== expectedFinalizationId ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
-    return undefined;
-  }
-  const observation = parseVerificationObservation(value['observation']);
-  if (!observation || observation.finalizationId !== expectedFinalizationId) {
-    return undefined;
-  }
-  return {
-    sessionId: value['sessionId'],
-    itemType: 'VERIFICATION_OBSERVATION',
-    ownerSessionId: expectedSessionId,
-    finalizationId: expectedFinalizationId,
-    observation,
-    expiresAt: value['expiresAt'],
-  };
-}
-
-function parseBitmapRecord(
-  value: unknown,
-  expectedSessionId: string,
-  expectedFinalizationId: string,
-): FinalizationBitmapData | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const expectedKeys = new Set([
-    'sessionId',
-    'finalizationId',
-    'includedBitmap',
-    'includedBitmapRoot',
-    'treeSize',
-    'finalizedAtMs',
-    ...(Object.prototype.hasOwnProperty.call(value, 'seenBitmap') ? ['seenBitmap'] : []),
-    ...(Object.prototype.hasOwnProperty.call(value, 'seenBitmapRoot') ? ['seenBitmapRoot'] : []),
-  ]);
-  if (!hasExactKeys(value, expectedKeys)) {
-    return undefined;
-  }
-  const includedBitmap = value['includedBitmap'];
-  const seenBitmap = value['seenBitmap'];
-  if (
-    value['sessionId'] !== expectedSessionId ||
-    value['finalizationId'] !== expectedFinalizationId ||
-    !Array.isArray(includedBitmap) ||
-    !includedBitmap.every((bit) => typeof bit === 'boolean') ||
-    typeof value['includedBitmapRoot'] !== 'string' ||
-    !isNonNegativeSafeInteger(value['treeSize']) ||
-    !isNonNegativeSafeInteger(value['finalizedAtMs']) ||
-    (seenBitmap !== undefined &&
-      (!Array.isArray(seenBitmap) || !seenBitmap.every((bit) => typeof bit === 'boolean'))) ||
-    (value['seenBitmapRoot'] !== undefined && typeof value['seenBitmapRoot'] !== 'string')
-  ) {
-    return undefined;
-  }
-  return {
-    sessionId: expectedSessionId,
-    finalizationId: expectedFinalizationId,
-    includedBitmap: [...includedBitmap],
-    includedBitmapRoot: value['includedBitmapRoot'],
-    ...(Array.isArray(seenBitmap) ? { seenBitmap: [...seenBitmap] } : {}),
-    ...(typeof value['seenBitmapRoot'] === 'string' ? { seenBitmapRoot: value['seenBitmapRoot'] } : {}),
-    treeSize: value['treeSize'],
-    finalizedAtMs: value['finalizedAtMs'],
-  };
-}
-
-function parseBitmapItem(
-  value: unknown,
-  expectedSessionId: string,
-  expectedFinalizationId: string,
-): BitmapItem | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, BITMAP_ITEM_KEYS) ||
-    value['itemType'] !== 'FINALIZATION_BITMAP' ||
-    value['sessionId'] !== bitmapKey(expectedSessionId, expectedFinalizationId) ||
-    value['ownerSessionId'] !== expectedSessionId ||
-    value['finalizationId'] !== expectedFinalizationId ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
-    return undefined;
-  }
-  const bitmap = parseBitmapRecord(value['bitmap'], expectedSessionId, expectedFinalizationId);
-  if (!bitmap) {
-    return undefined;
-  }
-  return {
-    sessionId: value['sessionId'],
-    itemType: 'FINALIZATION_BITMAP',
-    ownerSessionId: expectedSessionId,
-    finalizationId: expectedFinalizationId,
-    bitmap,
-    expiresAt: value['expiresAt'],
-  };
-}
-
-function parseRuntimeMetadataItem(
-  value: unknown,
-  expectedSessionId: string,
-  expectedFinalizationId: string,
-): RuntimeMetadataItem | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, METADATA_ITEM_KEYS) ||
-    value['itemType'] !== 'FINALIZATION_RUNTIME' ||
-    value['sessionId'] !== runtimeMetadataKey(expectedSessionId, expectedFinalizationId) ||
-    value['ownerSessionId'] !== expectedSessionId ||
-    value['finalizationId'] !== expectedFinalizationId ||
-    !isPositiveSafeInteger(value['revision']) ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
-    return undefined;
-  }
-  const metadata = parseAwsFinalizationRuntimeMetadata(value['metadata']);
-  return metadata
-    ? {
-        sessionId: value['sessionId'],
-        itemType: 'FINALIZATION_RUNTIME',
-        ownerSessionId: expectedSessionId,
-        finalizationId: expectedFinalizationId,
-        metadata,
-        revision: value['revision'],
-        expiresAt: value['expiresAt'],
-      }
-    : undefined;
-}
-
-function parseDeliveryMetadataItem(
-  value: unknown,
-  expectedSessionId: string,
-  expectedFinalizationId: string,
-): DeliveryMetadataItem | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, METADATA_ITEM_KEYS) ||
-    value['itemType'] !== 'VERIFICATION_DELIVERY' ||
-    value['sessionId'] !== deliveryMetadataKey(expectedSessionId, expectedFinalizationId) ||
-    value['ownerSessionId'] !== expectedSessionId ||
-    value['finalizationId'] !== expectedFinalizationId ||
-    !isPositiveSafeInteger(value['revision']) ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
-    return undefined;
-  }
-  const metadata = parseAwsVerificationDeliveryMetadata(value['metadata']);
-  return metadata
-    ? {
-        sessionId: value['sessionId'],
-        itemType: 'VERIFICATION_DELIVERY',
-        ownerSessionId: expectedSessionId,
-        finalizationId: expectedFinalizationId,
-        metadata,
-        revision: value['revision'],
-        expiresAt: value['expiresAt'],
-      }
-    : undefined;
-}
-
-function parseReceiptItem(
-  value: unknown,
-  expectedSessionId: string,
-  expectedFinalizationId: string,
-): ReceiptItem | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, RECEIPT_ITEM_KEYS) ||
-    value['itemType'] !== 'FINALIZATION_RECEIPT' ||
-    value['sessionId'] !== receiptKey(expectedSessionId, expectedFinalizationId) ||
-    value['ownerSessionId'] !== expectedSessionId ||
-    value['finalizationId'] !== expectedFinalizationId ||
-    typeof value['receiptHash'] !== 'string' ||
-    !isNonNegativeSafeInteger(value['boardIndex']) ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
-    return undefined;
-  }
-  let receipt: ReturnType<typeof admitSuccessfulFinalizationReceipt>;
-  try {
-    receipt = admitSuccessfulFinalizationReceipt(value['receipt']);
-  } catch {
-    return undefined;
-  }
-  if (!receipt || value['receiptHash'] !== computeSuccessfulFinalizationReceiptHash(receipt)) {
-    return undefined;
-  }
-  return {
-    sessionId: value['sessionId'],
-    itemType: 'FINALIZATION_RECEIPT',
-    ownerSessionId: expectedSessionId,
-    finalizationId: expectedFinalizationId,
-    receiptHash: value['receiptHash'],
-    boardIndex: value['boardIndex'],
-    receipt,
-    expiresAt: value['expiresAt'],
-  };
-}
-
-function parseReceiptCounterItem(value: unknown): ReceiptCounterItem | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, RECEIPT_COUNTER_KEYS) ||
-    value['sessionId'] !== 'RECEIPT_BOARD_COUNTER' ||
-    value['itemType'] !== 'RECEIPT_COUNTER' ||
-    !isNonNegativeSafeInteger(value['nextBoardIndex'])
-  ) {
-    return undefined;
-  }
-  return {
-    sessionId: 'RECEIPT_BOARD_COUNTER',
-    itemType: 'RECEIPT_COUNTER',
-    nextBoardIndex: value['nextBoardIndex'],
-  };
-}
-
 function toPersistedVotingRecord(record: SessionVotingRecord): PersistedVotingRecord {
   return {
     sessionId: record.sessionId,
@@ -1060,7 +274,7 @@ function toPersistedVotingRecord(record: SessionVotingRecord): PersistedVotingRe
 }
 
 function toVoteItem(
-  sessionId: string,
+  sessionId: SessionId,
   voteIndex: number,
   record: StoredVoteRecord,
   isUserVote: boolean,
@@ -1182,127 +396,62 @@ function restoreVotingRecord(
   };
 }
 
-function requestedStatus(command: FinalizationTransitionCommand): FinalizationState['status'] {
-  switch (command.kind) {
-    case 'queue':
-      return 'pending';
-    case 'start':
-      return 'running';
-    case 'succeed':
-      return 'succeeded';
-    case 'fail':
-    case 'cancel':
-      return 'failed';
-    case 'time_out':
-      return 'timeout';
-  }
-}
-
 function assertAllowedPayloadKeys(value: object, allowed: ReadonlySet<string>, label: string): void {
   if (Object.keys(value).some((key) => !allowed.has(key))) {
     throw new Error(`Invalid ${label} payload`);
   }
 }
 
-function buildFinalizationCommand(
-  sessionId: string,
-  payload:
-    | FinalizationQueuedPayload
-    | FinalizationRunningPayload
-    | FinalizationSucceededPayload
-    | FinalizationFailedPayload
-    | FinalizationTimedOutPayload,
-  kind: 'queue' | 'start' | 'succeed' | 'fail' | 'time_out',
-): FinalizationTransitionCommand {
-  const reason = payload.observability?.reason;
-  switch (kind) {
-    case 'queue': {
-      const queued = payload as FinalizationQueuedPayload;
-      return {
-        kind,
-        sessionId,
-        finalizationId: queued.finalizationId,
-        queuedAtMs: queued.queuedAtMs,
-        scenarioContext: queued.scenarioContext,
-        ...(reason ? { reason } : {}),
-      };
-    }
-    case 'start': {
-      const running = payload as FinalizationRunningPayload;
-      return {
-        kind,
-        sessionId,
-        finalizationId: running.finalizationId,
-        queuedAtMs: running.queuedAtMs,
-        startedAtMs: running.startedAtMs,
-        ...(running.scenarioContext ? { scenarioContext: running.scenarioContext } : {}),
-        ...(reason ? { reason } : {}),
-      };
-    }
-    case 'succeed': {
-      const succeeded = payload as FinalizationSucceededPayload;
-      return {
-        kind,
-        sessionId,
-        finalizationId: succeeded.finalizationId,
-        queuedAtMs: succeeded.queuedAtMs,
-        startedAtMs: succeeded.startedAtMs,
-        completedAtMs: succeeded.completedAtMs,
-        finalizationResult: succeeded.finalizationResult,
-        ...(succeeded.scenarioContext ? { scenarioContext: succeeded.scenarioContext } : {}),
-        ...(reason ? { reason } : {}),
-      };
-    }
-    case 'fail': {
-      const failed = payload as FinalizationFailedPayload;
-      if (failed.error.code === 'USER_CANCELLED') {
-        return {
-          kind: 'cancel',
-          sessionId,
-          finalizationId: failed.finalizationId,
-          queuedAtMs: failed.queuedAtMs,
-          ...(failed.startedAtMs === undefined ? {} : { startedAtMs: failed.startedAtMs }),
-          failedAtMs: failed.failedAtMs,
-          message: failed.error.message,
-          ...(failed.scenarioContext ? { scenarioContext: failed.scenarioContext } : {}),
-          ...(reason ? { reason } : {}),
-        };
-      }
-      return {
-        kind,
-        sessionId,
-        finalizationId: failed.finalizationId,
-        queuedAtMs: failed.queuedAtMs,
-        ...(failed.startedAtMs === undefined ? {} : { startedAtMs: failed.startedAtMs }),
-        failedAtMs: failed.failedAtMs,
-        error: failed.error,
-        ...(failed.scenarioContext ? { scenarioContext: failed.scenarioContext } : {}),
-        ...(reason ? { reason } : {}),
-      };
-    }
-    case 'time_out': {
-      const timedOut = payload as FinalizationTimedOutPayload;
-      return {
-        kind,
-        sessionId,
-        finalizationId: timedOut.finalizationId,
-        queuedAtMs: timedOut.queuedAtMs,
-        ...(timedOut.startedAtMs === undefined ? {} : { startedAtMs: timedOut.startedAtMs }),
-        timeoutAtMs: timedOut.timeoutAtMs,
-        ...(timedOut.scenarioContext ? { scenarioContext: timedOut.scenarioContext } : {}),
-        ...(reason ? { reason } : {}),
-      };
-    }
+class ConditionalTransactionConflict extends Error {
+  constructor(cause: unknown) {
+    super('Conditional transaction write conflict', { cause });
+    this.name = 'ConditionalTransactionConflict';
   }
 }
 
 function isConditionalFailure(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    (error.name === 'ConditionalCheckFailedException' ||
-      error.name === 'TransactionCanceledException' ||
-      error.message.includes('ConditionalCheckFailedException'))
-  );
+  return error instanceof ConditionalTransactionConflict;
+}
+
+function isConditionalPutFailure(error: unknown): boolean {
+  return error instanceof Error && error.name === 'ConditionalCheckFailedException';
+}
+
+function isConditionalTransactionFailure(error: unknown, items: TransactionItems): boolean {
+  if (
+    !(error instanceof Error) ||
+    error.name !== 'TransactionCanceledException' ||
+    !('CancellationReasons' in error) ||
+    !Array.isArray(error.CancellationReasons) ||
+    error.CancellationReasons.length !== items.length
+  ) {
+    return false;
+  }
+
+  let conditionalFailure = false;
+  // The SDK orders reasons exactly like TransactItems and uses the literal
+  // code "None" for an unaffected item. Missing/unknown reasons cannot prove CAS contention.
+  for (const [index, item] of items.entries()) {
+    const reason: unknown = error.CancellationReasons[index];
+    if (
+      !reason ||
+      typeof reason !== 'object' ||
+      Array.isArray(reason) ||
+      !('Code' in reason) ||
+      ('Message' in reason && reason.Message !== undefined && typeof reason.Message !== 'string')
+    ) {
+      return false;
+    }
+    if (reason.Code === 'None') {
+      continue;
+    }
+    const operation = item.Put ?? item.Update ?? item.Delete ?? item.ConditionCheck;
+    if (reason.Code !== 'ConditionalCheckFailed' || !operation?.ConditionExpression) {
+      return false;
+    }
+    conditionalFailure = true;
+  }
+  return conditionalFailure;
 }
 
 function isTerminalVerificationStatus(status: VerificationResult['status']): boolean {
@@ -1351,6 +500,7 @@ type PostCommitActivityOperation =
 export class DynamoSessionStore
   implements
     VoteStore,
+    SessionVoteMutationStore,
     FinalizationStore,
     VerificationResultStore,
     AwsFinalizationRuntimeTransitionStore,
@@ -1386,15 +536,15 @@ export class DynamoSessionStore
     return result.Item;
   }
 
-  private async requireIdentity(sessionId: string): Promise<SessionIdentityRecord> {
+  private async requireIdentity(sessionId: SessionId): Promise<SessionIdentityRecord> {
     const identity = await this.getSessionIdentity(sessionId);
     if (!identity) {
-      throw new Error('Session not found');
+      throw new SessionNotFoundError();
     }
     return identity;
   }
 
-  private async loadVotingItem(sessionId: string): Promise<VotingItem | null> {
+  private async loadVotingItem(sessionId: SessionId): Promise<VotingItem | null> {
     const raw = await this.getSessionItem(votingKey(sessionId));
     if (raw === undefined || isExpiredItem(raw)) {
       return null;
@@ -1406,7 +556,7 @@ export class DynamoSessionStore
     return item;
   }
 
-  private async loadVoteItems(sessionId: string): Promise<VoteItem[]> {
+  private async loadVoteItems(sessionId: SessionId): Promise<VoteItem[]> {
     const items: VoteItem[] = [];
     let exclusiveStartKey: Record<string, unknown> | undefined;
     do {
@@ -1440,7 +590,7 @@ export class DynamoSessionStore
     return items;
   }
 
-  private async loadSessionTtlAuthority(sessionId: string): Promise<{
+  private async loadSessionTtlAuthority(sessionId: SessionId): Promise<{
     identity: IdentityItem;
     voting: VotingItem;
     votes: VoteItem[];
@@ -1449,7 +599,7 @@ export class DynamoSessionStore
     const identityRaw = await this.getSessionItem(identityKey(sessionId));
     const identity = parseIdentityItem(identityRaw, sessionId);
     if (!identity) {
-      throw new Error('Session not found');
+      throw new SessionNotFoundError();
     }
     const voting = await this.loadVotingItem(sessionId);
     if (!voting) {
@@ -1473,7 +623,7 @@ export class DynamoSessionStore
   }
 
   private buildSessionTtlUpdates(
-    sessionId: string,
+    sessionId: SessionId,
     authority: {
       identity: IdentityItem;
       votes: readonly VoteItem[];
@@ -1521,7 +671,7 @@ export class DynamoSessionStore
   }
 
   private async buildArtifactTtlUpdatePlan(
-    sessionId: string,
+    sessionId: SessionId,
     requestedExpiresAt: number,
   ): Promise<{ expiresAt: number; items: TransactionItems }> {
     const authority = await this.loadSessionTtlAuthority(sessionId);
@@ -1552,15 +702,24 @@ export class DynamoSessionStore
     };
   }
 
-  private assertTransactionSize(items: TransactionItems): void {
+  private async writeTransaction(items: TransactionItems): Promise<void> {
     if (items.length > MAX_DYNAMODB_TRANSACTION_ITEMS) {
       throw new Error('DynamoDB transaction item limit exceeded');
+    }
+    try {
+      await this.client.send(new TransactWriteCommand({ TransactItems: items }));
+    } catch (error) {
+      if (isConditionalTransactionFailure(error, items)) {
+        throw new ConditionalTransactionConflict(error);
+      }
+      throw error;
     }
   }
 
   async createSession(): Promise<SessionIdentityRecord> {
-    const sessionId =
-      typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+    const sessionId = asSessionId(
+      typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'),
+    );
     const nowMs = Date.now();
     const records = buildSessionRecords({
       sessionId,
@@ -1581,7 +740,7 @@ export class DynamoSessionStore
         Put: {
           TableName: this.sessionsTableName,
           Item: {
-            sessionId: identityKey(sessionId),
+            sessionId,
             itemType: 'SESSION_IDENTITY',
             identity,
             expiresAt,
@@ -1605,11 +764,11 @@ export class DynamoSessionStore
         },
       },
     ];
-    await this.client.send(new TransactWriteCommand({ TransactItems: items }));
+    await this.writeTransaction(items);
     return cloneIdentity(identity);
   }
 
-  async getSessionIdentity(sessionId: string): Promise<SessionIdentityRecord | null> {
+  async getSessionIdentity(sessionId: SessionId): Promise<SessionIdentityRecord | null> {
     const raw = await this.getSessionItem(identityKey(sessionId));
     if (raw === undefined || isExpiredItem(raw)) {
       return null;
@@ -1621,7 +780,7 @@ export class DynamoSessionStore
     return cloneIdentity(item.identity);
   }
 
-  async getVotingRecord(sessionId: string): Promise<SessionVotingRecord | null> {
+  async getVotingRecord(sessionId: SessionId): Promise<SessionVotingRecord | null> {
     const identity = await this.getSessionIdentity(sessionId);
     if (!identity) {
       return null;
@@ -1645,7 +804,7 @@ export class DynamoSessionStore
     return cloneVoting(record);
   }
 
-  async getSessionVotingSummary(sessionId: string): Promise<SessionVotingSummary | null> {
+  async getSessionVotingSummary(sessionId: SessionId): Promise<SessionVotingSummary | null> {
     const voting = await this.getVotingRecord(sessionId);
     return voting
       ? {
@@ -1657,7 +816,7 @@ export class DynamoSessionStore
   }
 
   private async persistVoteMutation(
-    sessionId: string,
+    sessionId: SessionId,
     authority: {
       identity: IdentityItem;
       voting: VotingItem;
@@ -1712,11 +871,10 @@ export class DynamoSessionStore
         },
       })),
     ];
-    this.assertTransactionSize(items);
-    await this.client.send(new TransactWriteCommand({ TransactItems: items }));
+    await this.writeTransaction(items);
   }
 
-  private async loadVoteMutationAuthority(sessionId: string): Promise<{
+  private async loadVoteMutationAuthority(sessionId: SessionId): Promise<{
     identity: SessionIdentityRecord;
     identityItem: IdentityItem;
     votingItem: VotingItem;
@@ -1740,10 +898,21 @@ export class DynamoSessionStore
     };
   }
 
-  async addVote(sessionId: string, voteData: VoteData): Promise<AddVoteResult> {
+  async addVote(
+    sessionId: SessionId,
+    voteData: UserVoteCommand,
+  ): Promise<Result<AddVoteResult, SessionVoteStoreError>> {
     for (let attempt = 0; attempt < MAX_CONDITIONAL_RETRIES; attempt += 1) {
-      const authority = await this.loadVoteMutationAuthority(sessionId);
-      const mutation = evaluateSessionVoteMutation(
+      let authority: Awaited<ReturnType<DynamoSessionStore['loadVoteMutationAuthority']>>;
+      try {
+        authority = await this.loadVoteMutationAuthority(sessionId);
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return { ok: false, error: { code: ApplicationErrorCode.SESSION_NOT_FOUND } };
+        }
+        throw error;
+      }
+      const outcome = evaluateSessionVoteMutation(
         {
           identity: authority.identity,
           voting: authority.voting,
@@ -1752,6 +921,13 @@ export class DynamoSessionStore
         { kind: 'append_user_vote', vote: voteData },
         { generateVoteId, nowMs: Date.now },
       );
+      if (!outcome.ok) {
+        return outcome;
+      }
+      const mutation = outcome.value;
+      if (mutation.kind === 'user_vote_replayed') {
+        return { ok: true, value: mutation.castResult };
+      }
       if (mutation.kind !== 'user_vote_appended') {
         throw new Error('Session vote mutation invariant violated');
       }
@@ -1766,7 +942,7 @@ export class DynamoSessionStore
           },
           mutation.nextVoting,
         );
-        return mutation.castResult;
+        return { ok: true, value: mutation.castResult };
       } catch (error) {
         if (!isConditionalFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
           throw error;
@@ -1776,10 +952,21 @@ export class DynamoSessionStore
     throw new Error('Vote mutation contention limit exceeded');
   }
 
-  async addBotVotes(sessionId: string, votes: VoteData[]): Promise<void> {
+  async addBotVotes(
+    sessionId: SessionId,
+    votes: readonly BotVoteCommand[],
+  ): Promise<Result<void, SessionVoteStoreError>> {
     for (let attempt = 0; attempt < MAX_CONDITIONAL_RETRIES; attempt += 1) {
-      const authority = await this.loadVoteMutationAuthority(sessionId);
-      const mutation = evaluateSessionVoteMutation(
+      let authority: Awaited<ReturnType<DynamoSessionStore['loadVoteMutationAuthority']>>;
+      try {
+        authority = await this.loadVoteMutationAuthority(sessionId);
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return { ok: false, error: { code: ApplicationErrorCode.SESSION_NOT_FOUND } };
+        }
+        throw error;
+      }
+      const outcome = evaluateSessionVoteMutation(
         {
           identity: authority.identity,
           voting: authority.voting,
@@ -1788,6 +975,10 @@ export class DynamoSessionStore
         { kind: 'append_bot_votes', votes },
         { generateVoteId, nowMs: Date.now },
       );
+      if (!outcome.ok) {
+        return outcome;
+      }
+      const mutation = outcome.value;
       if (mutation.kind !== 'bot_votes_appended') {
         throw new Error('Session vote mutation invariant violated');
       }
@@ -1802,7 +993,7 @@ export class DynamoSessionStore
           },
           mutation.nextVoting,
         );
-        return;
+        return { ok: true, value: undefined };
       } catch (error) {
         if (!isConditionalFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
           throw error;
@@ -1812,7 +1003,7 @@ export class DynamoSessionStore
     throw new Error('Vote mutation contention limit exceeded');
   }
 
-  async touchSession(sessionId: string): Promise<void> {
+  async touchSession(sessionId: SessionId): Promise<void> {
     for (let attempt = 0; attempt < MAX_CONDITIONAL_RETRIES; attempt += 1) {
       const authority = await this.loadSessionTtlAuthority(sessionId);
       const next: VotingItem = {
@@ -1839,9 +1030,8 @@ export class DynamoSessionStore
           },
         },
       ];
-      this.assertTransactionSize(items);
       try {
-        await this.client.send(new TransactWriteCommand({ TransactItems: items }));
+        await this.writeTransaction(items);
         return;
       } catch (error) {
         if (!isConditionalFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
@@ -1852,7 +1042,7 @@ export class DynamoSessionStore
     throw new Error('Session activity contention limit exceeded');
   }
 
-  private async touchSessionAfterCommit(sessionId: string, operation: PostCommitActivityOperation): Promise<void> {
+  private async touchSessionAfterCommit(sessionId: SessionId, operation: PostCommitActivityOperation): Promise<void> {
     try {
       await this.touchSession(sessionId);
     } catch (error) {
@@ -1895,7 +1085,10 @@ export class DynamoSessionStore
     return count;
   }
 
-  async getVoteById(sessionId: string, voteId: string): Promise<{ voteData: StoredVoteRecord; index: number } | null> {
+  async getVoteById(
+    sessionId: SessionId,
+    voteId: string,
+  ): Promise<{ voteData: StoredVoteRecord; index: number } | null> {
     if (!(await this.getSessionIdentity(sessionId))) {
       return null;
     }
@@ -1908,7 +1101,7 @@ export class DynamoSessionStore
   }
 
   async getVoteByIdWithProof(
-    sessionId: string,
+    sessionId: SessionId,
     voteId: string,
   ): Promise<{
     voteData: StoredVoteRecord;
@@ -1949,8 +1142,8 @@ export class DynamoSessionStore
   };
 
   private async loadFinalizationLifecycle(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId | null,
   ): Promise<FinalizationLifecycleLoadResult> {
     try {
       if (!(await this.getSessionIdentity(sessionId))) {
@@ -1992,13 +1185,13 @@ export class DynamoSessionStore
   }
 
   private async applyFinalizationLifecycleMutation(input: {
-    sessionId: string;
-    finalizationId: string;
+    sessionId: SessionId;
+    finalizationId: FinalizationId;
     expectedRevision: FinalizationLifecycleRevision;
     mutations: { nextRecord: FinalizationRecord };
   }): Promise<FinalizationLifecycleApplyResult> {
     const expected = decodeLifecycleRevision(input.expectedRevision);
-    const nextRecord = parseFinalizationRecord(input.mutations.nextRecord);
+    const nextRecord = finalizationRecordCodec.admit(input.mutations.nextRecord);
     if (
       !expected ||
       !nextRecord ||
@@ -2062,17 +1255,16 @@ export class DynamoSessionStore
               itemType: 'FINALIZATION',
               ownerSessionId: input.sessionId,
               finalizationId: input.finalizationId,
-              record: nextRecord,
+              record: finalizationRecordCodec.encode(nextRecord),
               revision: nextRevision,
               expiresAt,
-            } satisfies FinalizationItem,
+            } satisfies PersistedFinalizationItem,
             ...recordCondition,
           },
         },
         ...ttlPlan.items,
       ];
-      this.assertTransactionSize(items);
-      await this.client.send(new TransactWriteCommand({ TransactItems: items }));
+      await this.writeTransaction(items);
       return {
         status: 'applied',
         lifecycle: {
@@ -2167,7 +1359,7 @@ export class DynamoSessionStore
     recordFinalizationStorePersistenceOutcome({
       sessionId: command.sessionId,
       requestedFinalizationId: command.finalizationId,
-      requestedTo: requestedStatus(command),
+      requestedTo: requestedFinalizationStatus(command),
       ...(observed.before ? { before: observed.before.state } : {}),
       actual: record.state,
       ...(policyReason && isFinalizationEventReason(policyReason) ? { semanticReason: policyReason } : {}),
@@ -2177,8 +1369,8 @@ export class DynamoSessionStore
     return { record, coordination, before: observed.before };
   }
 
-  async getCurrentFinalizationRecord(sessionId: string): Promise<FinalizationRecord | null> {
-    const loaded = await this.loadFinalizationLifecycle(sessionId, '');
+  async getCurrentFinalizationRecord(sessionId: SessionId): Promise<FinalizationRecord | null> {
+    const loaded = await this.loadFinalizationLifecycle(sessionId, null);
     if (loaded.status === 'missing') {
       return null;
     }
@@ -2190,7 +1382,10 @@ export class DynamoSessionStore
     return loaded.lifecycle.authority.currentRecord;
   }
 
-  async getFinalizationRecord(sessionId: string, finalizationId: FinalizationId): Promise<FinalizationRecord | null> {
+  async getFinalizationRecord(
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
+  ): Promise<FinalizationRecord | null> {
     if (!(await this.getSessionIdentity(sessionId))) {
       return null;
     }
@@ -2205,30 +1400,33 @@ export class DynamoSessionStore
     return item.record;
   }
 
-  async markFinalizationQueued(sessionId: string, payload: FinalizationQueuedPayload): Promise<FinalizationRecord> {
+  async markFinalizationQueued(sessionId: SessionId, payload: FinalizationQueuedPayload): Promise<FinalizationRecord> {
     assertAllowedPayloadKeys(payload, FINALIZATION_QUEUED_PAYLOAD_KEYS, 'queued finalization');
     return (
-      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, payload, 'queue'), payload.observability)
+      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, 'queue', payload), payload.observability)
     ).record;
   }
 
-  async markFinalizationRunning(sessionId: string, payload: FinalizationRunningPayload): Promise<FinalizationRecord> {
+  async markFinalizationRunning(
+    sessionId: SessionId,
+    payload: FinalizationRunningPayload,
+  ): Promise<FinalizationRecord> {
     assertAllowedPayloadKeys(payload, FINALIZATION_RUNNING_PAYLOAD_KEYS, 'running finalization');
     assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
     return (
-      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, payload, 'start'), payload.observability)
+      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, 'start', payload), payload.observability)
     ).record;
   }
 
   async markFinalizationSucceeded(
-    sessionId: string,
+    sessionId: SessionId,
     payload: FinalizationSucceededPayload,
   ): Promise<FinalizationRecord> {
     assertAllowedPayloadKeys(payload, FINALIZATION_SUCCEEDED_PAYLOAD_KEYS, 'succeeded finalization');
     assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
     assertDirectSuccessfulFinalizationPayload(payload);
     const current = await this.getCurrentFinalizationRecord(sessionId);
-    const command = buildFinalizationCommand(sessionId, payload, 'succeed');
+    const command = buildFinalizationCommand(sessionId, 'succeed', payload);
     const admission = evaluateFinalizationTransition({
       authority: { currentRecord: current },
       command,
@@ -2253,28 +1451,31 @@ export class DynamoSessionStore
     return committed.record;
   }
 
-  async markFinalizationFailed(sessionId: string, payload: FinalizationFailedPayload): Promise<FinalizationRecord> {
+  async markFinalizationFailed(sessionId: SessionId, payload: FinalizationFailedPayload): Promise<FinalizationRecord> {
     assertAllowedPayloadKeys(payload, FINALIZATION_FAILED_PAYLOAD_KEYS, 'failed finalization');
     assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
     return (
-      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, payload, 'fail'), payload.observability)
+      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, 'fail', payload), payload.observability)
     ).record;
   }
 
-  async markFinalizationTimedOut(sessionId: string, payload: FinalizationTimedOutPayload): Promise<FinalizationRecord> {
+  async markFinalizationTimedOut(
+    sessionId: SessionId,
+    payload: FinalizationTimedOutPayload,
+  ): Promise<FinalizationRecord> {
     assertAllowedPayloadKeys(payload, FINALIZATION_TIMED_OUT_PAYLOAD_KEYS, 'timed-out finalization');
     assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
     return (
       await this.applyFinalizationCommand(
-        buildFinalizationCommand(sessionId, payload, 'time_out'),
+        buildFinalizationCommand(sessionId, 'time_out', payload),
         payload.observability,
       )
     ).record;
   }
 
   private async mergeRuntimeMetadata(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
     patch: AwsFinalizationRuntimeMetadata,
   ): Promise<void> {
     const admittedPatch = parseAwsFinalizationRuntimeMetadata(patch);
@@ -2321,7 +1522,7 @@ export class DynamoSessionStore
         );
         return;
       } catch (error) {
-        if (!isConditionalFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
+        if (!isConditionalPutFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
           throw error;
         }
       }
@@ -2337,8 +1538,8 @@ export class DynamoSessionStore
   }
 
   private async mergeDeliveryMetadata(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
     patch: AwsVerificationDeliveryMetadataInput,
   ): Promise<void> {
     const admittedPatch = parseAwsVerificationDeliveryMetadata(patch);
@@ -2375,7 +1576,7 @@ export class DynamoSessionStore
         );
         return;
       } catch (error) {
-        if (!isConditionalFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
+        if (!isConditionalPutFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
           throw error;
         }
       }
@@ -2383,7 +1584,7 @@ export class DynamoSessionStore
   }
 
   async markAwsFinalizationRunning(
-    sessionId: string,
+    sessionId: SessionId,
     payload: AwsFinalizationRunningPayload,
   ): Promise<FinalizationState> {
     assertAllowedPayloadKeys(payload, AWS_RUNNING_PAYLOAD_KEYS, 'AWS running finalization');
@@ -2391,7 +1592,7 @@ export class DynamoSessionStore
     const runtimeMetadata =
       stepFunctionsArn === undefined ? undefined : this.admitRuntimeMetadata({ stepFunctionsArn });
     const applied = await this.applyFinalizationCommand(
-      buildFinalizationCommand(sessionId, semanticPayload, 'start'),
+      buildFinalizationCommand(sessionId, 'start', semanticPayload),
       semanticPayload.observability,
     );
     if (
@@ -2405,7 +1606,7 @@ export class DynamoSessionStore
   }
 
   async markAwsFinalizationSucceeded(
-    sessionId: string,
+    sessionId: SessionId,
     payload: AwsFinalizationSucceededPayload,
   ): Promise<FinalizationState> {
     assertAllowedPayloadKeys(payload, AWS_SUCCEEDED_PAYLOAD_KEYS, 'AWS succeeded finalization');
@@ -2427,8 +1628,11 @@ export class DynamoSessionStore
             ...(stepFunctionsArn === undefined ? {} : { stepFunctionsArn }),
             ...(bundleMetadata === undefined ? {} : { bundleMetadata }),
           });
-    const { bitmapData, ...semanticFinalizationResult } = finalizationResult;
-    const requested = parseFinalizationRecord({
+    const bitmap =
+      finalizationResult.artifacts.bitmap.availability === 'available'
+        ? { availability: 'available' as const, data: finalizationResult.artifacts.bitmap.data }
+        : { availability: 'unavailable' as const };
+    const requested = finalizationRecordCodec.admit({
       sessionId,
       finalizationId: payload.finalizationId,
       scenarioContext: common.scenarioContext ?? current?.scenarioContext,
@@ -2441,7 +1645,7 @@ export class DynamoSessionStore
       },
       finalizationResult: {
         finalizationId: payload.finalizationId,
-        ...semanticFinalizationResult,
+        ...finalizationResult,
       },
     });
     if (!requested || requested.state.status !== 'succeeded') {
@@ -2449,7 +1653,7 @@ export class DynamoSessionStore
     }
     const committed = await this.commitSuccessfulFinalization({
       record: requested as Extract<FinalizationRecord, { state: { status: 'succeeded' } }>,
-      bitmap: bitmapData ? { availability: 'available', data: bitmapData } : { availability: 'unavailable' },
+      bitmap,
       ...(runtimeMetadata ? { runtimeMetadata } : {}),
       ...(common.observability ? { observability: common.observability } : {}),
     });
@@ -2457,7 +1661,7 @@ export class DynamoSessionStore
   }
 
   async markAwsFinalizationFailed(
-    sessionId: string,
+    sessionId: SessionId,
     payload: AwsFinalizationFailedPayload,
   ): Promise<FinalizationState> {
     assertAllowedPayloadKeys(payload, AWS_FAILED_PAYLOAD_KEYS, 'AWS failed finalization');
@@ -2465,7 +1669,7 @@ export class DynamoSessionStore
     const runtimeMetadata =
       stepFunctionsArn === undefined ? undefined : this.admitRuntimeMetadata({ stepFunctionsArn });
     const applied = await this.applyFinalizationCommand(
-      buildFinalizationCommand(sessionId, semanticPayload, 'fail'),
+      buildFinalizationCommand(sessionId, 'fail', semanticPayload),
       semanticPayload.observability,
     );
     if (
@@ -2479,7 +1683,7 @@ export class DynamoSessionStore
   }
 
   async markAwsFinalizationTimedOut(
-    sessionId: string,
+    sessionId: SessionId,
     payload: AwsFinalizationTimedOutPayload,
   ): Promise<FinalizationState> {
     assertAllowedPayloadKeys(payload, AWS_TIMED_OUT_PAYLOAD_KEYS, 'AWS timed-out finalization');
@@ -2487,7 +1691,7 @@ export class DynamoSessionStore
     const runtimeMetadata =
       stepFunctionsArn === undefined ? undefined : this.admitRuntimeMetadata({ stepFunctionsArn });
     const applied = await this.applyFinalizationCommand(
-      buildFinalizationCommand(sessionId, semanticPayload, 'time_out'),
+      buildFinalizationCommand(sessionId, 'time_out', semanticPayload),
       semanticPayload.observability,
     );
     if (
@@ -2501,8 +1705,8 @@ export class DynamoSessionStore
   }
 
   async getAwsFinalizationRuntimeMetadata(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
   ): Promise<AwsFinalizationRuntimeMetadata | undefined> {
     const raw = await this.getSessionItem(runtimeMetadataKey(sessionId, finalizationId));
     if (raw === undefined || isExpiredItem(raw)) {
@@ -2516,24 +1720,24 @@ export class DynamoSessionStore
   }
 
   recordAwsProofBundlePublication(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
     metadata: AwsVerificationDeliveryMetadataInput,
   ): Promise<void> {
     return this.mergeDeliveryMetadata(sessionId, finalizationId, metadata);
   }
 
   recordAwsVerificationDeliveryMetadata(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
     metadata: AwsVerificationDeliveryMetadataInput,
   ): Promise<void> {
     return this.mergeDeliveryMetadata(sessionId, finalizationId, metadata);
   }
 
   async getAwsVerificationDeliveryMetadata(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
   ): Promise<AwsVerificationDeliveryMetadataInput | undefined> {
     const raw = await this.getSessionItem(deliveryMetadataKey(sessionId, finalizationId));
     if (raw === undefined || isExpiredItem(raw)) {
@@ -2547,8 +1751,8 @@ export class DynamoSessionStore
   }
 
   private async requireSucceededFinalization(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
   ): Promise<Extract<FinalizationRecord, { state: { status: 'succeeded' } }>> {
     const record = await this.getFinalizationRecord(sessionId, finalizationId);
     if (!record || !isSucceededFinalizationRecord(record)) {
@@ -2558,7 +1762,7 @@ export class DynamoSessionStore
   }
 
   async getVerificationResultRecord(
-    sessionId: string,
+    sessionId: SessionId,
     finalizationId: FinalizationId,
   ): Promise<VerificationResultRecord | null> {
     await this.requireIdentity(sessionId);
@@ -2574,8 +1778,8 @@ export class DynamoSessionStore
   }
 
   private async putVerificationRecord(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
     record: VerificationResultRecord,
     current: VerificationItem | undefined,
     extraItems: TransactionItems = [],
@@ -2600,11 +1804,13 @@ export class DynamoSessionStore
       },
       ...extraItems,
     ];
-    this.assertTransactionSize(items);
-    await this.client.send(new TransactWriteCommand({ TransactItems: items }));
+    await this.writeTransaction(items);
   }
 
-  private async loadVerificationItem(sessionId: string, finalizationId: string): Promise<VerificationItem | undefined> {
+  private async loadVerificationItem(
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
+  ): Promise<VerificationItem | undefined> {
     const raw = await this.getSessionItem(verificationKey(sessionId, finalizationId));
     if (raw === undefined || isExpiredItem(raw)) {
       return undefined;
@@ -2617,9 +1823,8 @@ export class DynamoSessionStore
   }
 
   async markVerificationRunning(
-    sessionId: string,
+    sessionId: SessionId,
     finalizationId: FinalizationId,
-    report?: VerificationReport,
   ): Promise<VerificationResultRecord> {
     await this.requireSucceededFinalization(sessionId, finalizationId);
     for (let attempt = 0; attempt < MAX_CONDITIONAL_RETRIES; attempt += 1) {
@@ -2632,7 +1837,6 @@ export class DynamoSessionStore
         finalizationId,
         verificationResult: {
           status: 'running',
-          ...(report ? { report } : {}),
         },
       });
       if (!record) {
@@ -2679,7 +1883,7 @@ export class DynamoSessionStore
     throw new Error('Verification result contention limit exceeded');
   }
 
-  async rollbackVerificationResult(sessionId: string, finalizationId: FinalizationId): Promise<void> {
+  async rollbackVerificationResult(sessionId: SessionId, finalizationId: FinalizationId): Promise<void> {
     await this.requireSucceededFinalization(sessionId, finalizationId);
     const current = await this.loadVerificationItem(sessionId, finalizationId);
     const rollbackRaw = await this.getSessionItem(verificationRollbackKey(sessionId, finalizationId));
@@ -2734,12 +1938,12 @@ export class DynamoSessionStore
         },
       },
     ];
-    await this.client.send(new TransactWriteCommand({ TransactItems: items }));
+    await this.writeTransaction(items);
     await this.touchSessionAfterCommit(sessionId, 'verification_rollback');
   }
 
   async completeVerificationResult(
-    sessionId: string,
+    sessionId: SessionId,
     finalizationId: FinalizationId,
     verificationResult: VerificationResult,
   ): Promise<VerificationResultRecord> {
@@ -2780,11 +1984,15 @@ export class DynamoSessionStore
   }
 
   async recordVerificationObservation(
-    sessionId: string,
+    sessionId: SessionId,
     finalizationId: string,
     input: VerificationObservationWrite,
   ): Promise<RecordVerificationObservationResult> {
     await this.requireIdentity(sessionId);
+    const admittedFinalizationId = parseFinalizationId(finalizationId);
+    if (!admittedFinalizationId) {
+      throw new Error('Invalid verification observation finalization identifier');
+    }
     const write = parseVerificationObservationWrite(input);
     const requested = write ? parseVerificationObservation({ finalizationId, ...write }) : undefined;
     if (!requested) {
@@ -2792,7 +2000,7 @@ export class DynamoSessionStore
     }
     for (let attempt = 0; attempt < MAX_CONDITIONAL_RETRIES; attempt += 1) {
       const current = await this.getCurrentFinalizationRecord(sessionId);
-      const existing = await this.getVerificationObservation(sessionId, finalizationId);
+      const existing = await this.getVerificationObservation(sessionId, admittedFinalizationId);
       const resolution = resolveVerificationObservationRecord(
         current?.finalizationId,
         existing ?? undefined,
@@ -2802,39 +2010,35 @@ export class DynamoSessionStore
         return resolution;
       }
       const item: ObservationItem = {
-        sessionId: observationKey(sessionId, finalizationId),
+        sessionId: observationKey(sessionId, admittedFinalizationId),
         itemType: 'VERIFICATION_OBSERVATION',
         ownerSessionId: sessionId,
-        finalizationId,
+        finalizationId: admittedFinalizationId,
         observation: requested,
         expiresAt: this.artifactExpiresAt(),
       };
       try {
-        await this.client.send(
-          new TransactWriteCommand({
-            TransactItems: [
-              {
-                Put: {
-                  TableName: this.sessionsTableName,
-                  Item: item,
-                  ConditionExpression: 'attribute_not_exists(#sessionId)',
-                  ExpressionAttributeNames: { '#sessionId': 'sessionId' },
-                },
+        await this.writeTransaction([
+          {
+            Put: {
+              TableName: this.sessionsTableName,
+              Item: item,
+              ConditionExpression: 'attribute_not_exists(#sessionId)',
+              ExpressionAttributeNames: { '#sessionId': 'sessionId' },
+            },
+          },
+          {
+            ConditionCheck: {
+              TableName: this.sessionsTableName,
+              Key: { sessionId: currentFinalizationKey(sessionId) },
+              ConditionExpression: '#currentFinalizationId = :finalizationId',
+              ExpressionAttributeNames: {
+                '#currentFinalizationId': 'currentFinalizationId',
               },
-              {
-                ConditionCheck: {
-                  TableName: this.sessionsTableName,
-                  Key: { sessionId: currentFinalizationKey(sessionId) },
-                  ConditionExpression: '#currentFinalizationId = :finalizationId',
-                  ExpressionAttributeNames: {
-                    '#currentFinalizationId': 'currentFinalizationId',
-                  },
-                  ExpressionAttributeValues: { ':finalizationId': finalizationId },
-                },
-              },
-            ],
-          }),
-        );
+              ExpressionAttributeValues: { ':finalizationId': admittedFinalizationId },
+            },
+          },
+        ]);
       } catch (error) {
         if (!isConditionalFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
           throw error;
@@ -2847,19 +2051,26 @@ export class DynamoSessionStore
     throw new Error('Verification observation contention limit exceeded');
   }
 
-  async getVerificationObservation(sessionId: string, finalizationId: string): Promise<VerificationObservation | null> {
-    const raw = await this.getSessionItem(observationKey(sessionId, finalizationId));
+  async getVerificationObservation(
+    sessionId: SessionId,
+    finalizationId: string,
+  ): Promise<VerificationObservation | null> {
+    const admittedFinalizationId = parseFinalizationId(finalizationId);
+    if (!admittedFinalizationId) {
+      return null;
+    }
+    const raw = await this.getSessionItem(observationKey(sessionId, admittedFinalizationId));
     if (raw === undefined || isExpiredItem(raw)) {
       return null;
     }
-    const item = parseObservationItem(raw, sessionId, finalizationId);
+    const item = parseObservationItem(raw, sessionId, admittedFinalizationId);
     if (!item) {
       throw new Error('Invalid persisted verification observation');
     }
     return { ...item.observation };
   }
 
-  async getBitmapData(sessionId: string, finalizationId: FinalizationId): Promise<FinalizationBitmapData | null> {
+  async getBitmapData(sessionId: SessionId, finalizationId: FinalizationId): Promise<FinalizationBitmapRecord | null> {
     const finalization = await this.getFinalizationRecord(sessionId, finalizationId);
     if (!finalization || !isSucceededFinalizationRecord(finalization)) {
       return null;
@@ -2996,11 +2207,16 @@ export class DynamoSessionStore
         receipt && receiptHash !== undefined && boardIndex !== undefined
           ? { receiptHash, boardIndex, timestamp: receipt.timestamp }
           : undefined;
-      const committed = parseFinalizationRecord({
+      const committed = finalizationRecordCodec.admit({
         ...requested,
         finalizationResult: {
           ...requested.finalizationResult,
-          ...(receiptPublication ? { receiptPublication } : {}),
+          artifacts: {
+            ...requested.finalizationResult.artifacts,
+            ...(receiptPublication
+              ? { receiptPublication: { availability: 'available' as const, publication: receiptPublication } }
+              : {}),
+          },
         },
       });
       if (!committed || committed.state.status !== 'succeeded') {
@@ -3087,10 +2303,10 @@ export class DynamoSessionStore
               itemType: 'FINALIZATION',
               ownerSessionId: requested.sessionId,
               finalizationId: requested.finalizationId,
-              record: committed,
+              record: finalizationRecordCodec.encode(committed),
               revision: nextRevision,
               expiresAt,
-            } satisfies FinalizationItem,
+            } satisfies PersistedFinalizationItem,
             ConditionExpression:
               revision.currentFinalizationId === null
                 ? 'attribute_not_exists(#sessionId)'
@@ -3184,7 +2400,7 @@ export class DynamoSessionStore
                     bitmap: {
                       sessionId: requested.sessionId,
                       finalizationId: requested.finalizationId,
-                      ...bitmap.data,
+                      ...finalizationBitmapDataCodec.encode(bitmap.data),
                     },
                     expiresAt,
                   } satisfies BitmapItem,
@@ -3259,9 +2475,8 @@ export class DynamoSessionStore
           : []),
         ...ttlPlan.items,
       ];
-      this.assertTransactionSize(items);
       try {
-        await this.client.send(new TransactWriteCommand({ TransactItems: items }));
+        await this.writeTransaction(items);
         recordFinalizationStorePersistenceOutcome({
           sessionId: requested.sessionId,
           requestedFinalizationId: requested.finalizationId,

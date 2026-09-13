@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import type { ApiHandlerContext } from '@stark-ballot/api/server';
+import { finalizationIdSchema } from '@stark-ballot/api-contract/schemas/primitives';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
-import { createTestPublicInputArtifact } from '@stark-ballot/test-support/testing/public-input-artifact';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
+import type { CurrentZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
 import type {
   MountedBehaviorCoverageEntry,
   MountedBehaviorProbe,
@@ -74,13 +76,13 @@ const MOUNTED_BEHAVIOR_COVERAGE: MountedBehaviorCoverageEntry[] = [
     caseId: 'vote-success-flow',
     status: 'exempt',
     exemption:
-      'Successful POST /api/sessions/:sessionId/votes depends on issued session state, Turnstile/rate-limit mutable state, and vote-store mutation; success and admission are covered by `apps/api/src/server/api/handlers/vote.test.ts`, `apps/web/src/components/vote/VoteForm.test.tsx`, and `scripts/api-contract/public-contract-baseline.test.ts`.',
+      'Successful POST /api/sessions/:sessionId/votes depends on issued session state, Turnstile/rate-limit mutable state, and vote-store mutation; success waits for bot persistence; identical-opening retries recover the original receipt, including after bot failure or response loss. These intentional replay semantics and admission are covered by `apps/api/src/server/api/handlers/vote.test.ts`, `apps/web/src/components/vote/VoteForm.test.tsx`, and `scripts/api-contract/public-contract-baseline.test.ts`.',
   },
   {
     caseId: 'progress-read-flow',
     status: 'exempt',
     exemption:
-      'GET /api/sessions/:sessionId/progress requires bot-progress mutation state that the mounted comparator does not create; projection, browser consumption, and CLI handling are covered by `apps/api/src/server/api/routes/hono.test.ts`, `apps/web/src/components/vote/BotVotingProgress.test.tsx`, and `packages/test-support/src/testing/__tests__/cli-test-helpers.progress.test.ts`.',
+      'GET /api/sessions/:sessionId/progress requires bot-progress mutation state that the mounted comparator does not create; projection, browser consumption, and CLI handling are covered by `apps/api/src/server/api/routes/hono.test.ts`, `apps/web/src/components/vote/BotVotingProgress.test.tsx`, and `packages/test-support/src/testing/cli-test-helpers.progress.test.ts`.',
   },
   {
     caseId: 'finalization-create-success-flow',
@@ -97,19 +99,19 @@ const MOUNTED_BEHAVIOR_COVERAGE: MountedBehaviorCoverageEntry[] = [
     caseId: 'verification-resource-flow',
     status: 'exempt',
     exemption:
-      'GET /api/sessions/:sessionId/finalizations/:finalizationId/verification success and fail-closed projections require full finalized artifacts that the mounted comparator avoids duplicating; both projections are exercised by `apps/api/src/server/api/routes/hono.public-contract.test.ts`, with CLI response admission covered by `packages/test-support/src/testing/__tests__/cli-test-helpers.finalize.test.ts` and browser polling by `apps/web/src/verification/stark-verification-polling.test.ts`.',
+      'GET /api/sessions/:sessionId/finalizations/:finalizationId/verification success and fail-closed projections require full finalized artifacts that the mounted comparator avoids duplicating; both projections are exercised by `apps/api/src/server/api/routes/hono.public-contract.test.ts`, with CLI response admission covered by `packages/test-support/src/testing/cli-test-helpers.finalize.test.ts` and browser polling by `apps/web/src/verification/stark-verification-polling.test.ts`.',
   },
   {
     caseId: 'verification-run-flow',
     status: 'exempt',
     exemption:
-      'POST /api/sessions/:sessionId/finalizations/:finalizationId/verification invokes verifier-service orchestration and verifier-result persistence; idempotent, queued, completed, rollback, and fail-closed cases are covered by `apps/api/src/server/api/handlers/verificationRun.test.ts`, the gated CLI contract by `scripts/__tests__/develop-gated-smoke.test.ts`, and both direct browser POST callers by `scripts/api-contract/public-contract-baseline.test.ts`.',
+      'POST /api/sessions/:sessionId/finalizations/:finalizationId/verification invokes verifier-service orchestration and verifier-result persistence; idempotent, queued, completed, rollback, and fail-closed cases are covered by `apps/api/src/server/api/handlers/verificationRun.test.ts`, the gated CLI contract by `scripts/tests/develop-gated-smoke.test.ts`, and both direct browser POST callers by `scripts/api-contract/public-contract-baseline.test.ts`.',
   },
   {
     caseId: 'verification-observation-flow',
     status: 'exempt',
     exemption:
-      'POST /api/sessions/:sessionId/finalizations/:finalizationId/verification/observations rebuilds server verification authority and performs a durable exact-finalization CAS; strict handler and integration behavior is covered by `apps/api/src/server/api/handlers/verificationObservation.test.ts` and `apps/api/src/server/api/routes/hono.public-contract.test.ts`, while browser and mock admission are covered by `apps/web/src/routes/verify/hooks/useVerificationObservation.test.tsx` and `apps/web/src/mock-api/__tests__/fetcher.test.ts`.',
+      'POST /api/sessions/:sessionId/finalizations/:finalizationId/verification/observations rebuilds server verification authority and performs a durable exact-finalization CAS; strict handler and integration behavior is covered by `apps/api/src/server/api/handlers/verificationObservation.test.ts` and `apps/api/src/server/api/routes/hono.public-contract.test.ts`, while browser and mock admission are covered by `apps/web/src/routes/verify/hooks/useVerificationObservation.test.tsx` and `apps/web/src/mock-api/fetcher.test.ts`.',
   },
   {
     caseId: 'cross-session-cross-capability-denial',
@@ -120,7 +122,7 @@ const MOUNTED_BEHAVIOR_COVERAGE: MountedBehaviorCoverageEntry[] = [
     caseId: 'private-artifact-boundary',
     status: 'exempt',
     exemption:
-      'Mounted probes record only response shape and hashes; public/private archive membership is covered by `packages/verification/src/verification/__tests__/verification-bundle.test.ts`, `scripts/tests/entrypoint-bundle.test.sh`, and `scripts/security/scan-public-safety.sh`.',
+      'Mounted probes record only response shape and hashes; public/private archive membership is covered by `packages/node-adapters/src/verification-bundle.test.ts`, `scripts/tests/entrypoint-bundle.test.sh`, and `scripts/security/scan-public-safety.sh`.',
   },
   {
     caseId: 'report-size-failure-413',
@@ -138,7 +140,7 @@ const MOUNTED_BEHAVIOR_COVERAGE: MountedBehaviorCoverageEntry[] = [
     caseId: 'include-journal-query',
     status: 'exempt',
     exemption:
-      'The include=journal representation selector is covered by mounted verification-resource success/fail-closed cases in `apps/api/src/server/api/routes/hono.public-contract.test.ts`, malformed-query admission in `apps/api/src/server/api/routes/hono.test.ts`, and CLI response handling in `packages/test-support/src/testing/__tests__/cli-test-helpers.finalize.test.ts`.',
+      'The include=journal representation selector is covered by mounted verification-resource success/fail-closed cases in `apps/api/src/server/api/routes/hono.public-contract.test.ts`, malformed-query admission in `apps/api/src/server/api/routes/hono.test.ts`, and CLI response handling in `packages/test-support/src/testing/cli-test-helpers.finalize.test.ts`.',
   },
   {
     caseId: 'turnstile-rate-limit-source-ip-target-admission',
@@ -178,6 +180,7 @@ type ApiContextStore = ApiHandlerContext['store'];
 type ProbeSessionIdentityRecord = NonNullable<Awaited<ReturnType<ApiContextStore['getSessionIdentity']>>>;
 type ProbeSessionVotingRecord = NonNullable<Awaited<ReturnType<ApiContextStore['getVotingRecord']>>>;
 type ProbeFinalizationRecord = NonNullable<Awaited<ReturnType<ApiContextStore['getFinalizationRecord']>>>;
+type ProbeFinalizationId = Parameters<ApiContextStore['getFinalizationRecord']>[1];
 type ProbeSucceededFinalizationRecord = Extract<ProbeFinalizationRecord, { state: { status: 'succeeded' } }>;
 type ProbeFinalizationResult = NonNullable<ProbeSucceededFinalizationRecord['finalizationResult']>;
 type ProbeVerificationResultRecord = NonNullable<Awaited<ReturnType<ApiContextStore['getVerificationResultRecord']>>>;
@@ -186,8 +189,12 @@ type ProbeVerificationDeliveryMetadata = NonNullable<
   Awaited<ReturnType<ApiContextStore['getAwsVerificationDeliveryMetadata']>>
 >;
 
-function buildProbeFinalizationResult(finalizationId: string): ProbeFinalizationResult {
-  const journal = {
+function admitProbeFinalizationId(value: string): ProbeFinalizationId {
+  return finalizationIdSchema.parse(value) as ProbeFinalizationId;
+}
+
+function buildProbeFinalizationResult(finalizationId: ProbeFinalizationId): ProbeFinalizationResult {
+  const journal: CurrentZkVMJournal = {
     ...createTestJournal({
       electionId: PROBE_ELECTION_ID,
       validVotes: 1,
@@ -209,21 +216,15 @@ function buildProbeFinalizationResult(finalizationId: string): ProbeFinalization
       tamperedCount: 0,
     },
     imageId: `0x${'12'.repeat(32)}`,
+    tamperDetected: false,
+    scenarios: [],
     journal,
-    publicInputArtifact: createTestPublicInputArtifact({
-      source: 'generated',
-      finalizationId,
-      typedAuthority: {
-        electionId: journal.electionId,
-        electionConfigHash: journal.electionConfigHash,
-        methodVersion: journal.methodVersion,
-        bulletinRoot: journal.bulletinRoot,
-        treeSize: journal.treeSize,
-        totalExpected: journal.totalExpected,
-        votesCount: journal.validVotes,
-        recomputedInputCommitment: journal.inputCommitment,
-      },
-    }),
+    artifacts: {
+      publicAudit: { availability: 'unavailable' },
+      receipt: { availability: 'unavailable' },
+      receiptPublication: { availability: 'unavailable' },
+      bitmap: { availability: 'unavailable' },
+    },
   };
 }
 
@@ -236,7 +237,7 @@ interface ProbeRecords {
   delivery: ProbeVerificationDeliveryMetadata;
 }
 
-function buildProbeRecords(sessionId: string, finalizationId: string): ProbeRecords {
+function buildProbeRecords(sessionId: SessionId, finalizationId: ProbeFinalizationId): ProbeRecords {
   const timestamp = Date.UTC(2026, 5, 17, 0, 0, 0);
   const logId = `0x${'90'.repeat(32)}`;
   const identity: ProbeSessionIdentityRecord = {
@@ -274,21 +275,22 @@ function buildProbeRecords(sessionId: string, finalizationId: string): ProbeReco
     userParticipation: { status: 'cast' as const, voteIndex: 0 },
     lastActivityMs: timestamp,
   };
+  const scenarioContext: ProbeSucceededFinalizationRecord['scenarioContext'] = {
+    scenarios: [],
+    tamperMode: 'none' as const,
+    claimedCounts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
+    claimedTotalVotes: 1,
+    summary: {
+      ignoredCount: 0,
+      recountedCount: 0,
+      userRecountChoice: null,
+    },
+  };
   const finalizationResult = buildProbeFinalizationResult(finalizationId);
   const finalization: ProbeRecords['finalization'] = {
     sessionId,
     finalizationId,
-    scenarioContext: {
-      scenarios: [],
-      tamperMode: 'none' as const,
-      claimedCounts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
-      claimedTotalVotes: 1,
-      summary: {
-        ignoredCount: 0,
-        recountedCount: 0,
-        userRecountChoice: null,
-      },
-    },
+    scenarioContext,
     state: {
       status: 'succeeded' as const,
       finalizationId,
@@ -344,10 +346,12 @@ export function buildProbeStore(
   finalizationId: string,
   options: { bitmapEvidence?: 'available' | 'unavailable' } = {},
 ): PublicContractProbeStore {
-  const records = buildProbeRecords(sessionId, finalizationId);
-  const isCurrentSession = (requestedSessionId: string): boolean => requestedSessionId === sessionId;
+  const admittedSessionId = asSessionId(sessionId);
+  const admittedFinalizationId = admitProbeFinalizationId(finalizationId);
+  const records = buildProbeRecords(admittedSessionId, admittedFinalizationId);
+  const isCurrentSession = (requestedSessionId: string): boolean => requestedSessionId === admittedSessionId;
   const isCurrentFinalization = (requestedSessionId: string, requestedFinalizationId: string): boolean =>
-    isCurrentSession(requestedSessionId) && requestedFinalizationId === finalizationId;
+    isCurrentSession(requestedSessionId) && requestedFinalizationId === admittedFinalizationId;
 
   return {
     getSessionIdentity: (requestedSessionId: string) =>

@@ -6,10 +6,10 @@ import {
 } from '@stark-ballot/domain/bulletin/ctSessionState';
 import { normalizeHex } from '@stark-ballot/domain/utils/hex';
 import type {
+  PreparedVote,
   RootSnapshot,
   SessionVotingRecord,
   StoredVoteRecord,
-  VoteData,
 } from '@stark-ballot/domain/types/sessionRecords';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
@@ -20,7 +20,7 @@ export type CtVoteWriteAuthority = Pick<
 
 export interface IndexedVoteWrite {
   index: number;
-  vote: VoteData;
+  vote: PreparedVote;
 }
 
 export interface StagedVoteWrite {
@@ -84,9 +84,6 @@ export function stageCtVoteWrites(
       throw new Error(NON_CANONICAL_CT_VOTE_INDICES);
     }
     const voteId = vote.voteId;
-    if (!voteId) {
-      throw new Error('Vote ID missing after formatting');
-    }
 
     const appendResult = stagedBulletin.appendVote(voteId, vote.commit.slice(2));
     bulletinRootHistory.push({

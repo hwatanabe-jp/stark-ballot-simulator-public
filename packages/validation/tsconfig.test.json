@@ -1,11 +1,15 @@
 {
   "extends": "../../tooling/tsconfig/test-node.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true
+  },
   "include": [
     "src/**/*.test.ts",
     "src/**/*.test.tsx",
     "src/**/*.spec.ts",
     "src/**/*.spec.tsx",
-    "src/**/__tests__/**/*.ts",
-    "src/**/__tests__/**/*.tsx"
+    "src/**/test-support/**/*.ts",
+    "src/**/test-support/**/*.tsx"
   ]
 }

@@ -1,9 +1,11 @@
 import { renderHook, act } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { MutableRefObject } from 'react';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
+import type { RefObject } from 'react';
 import type { VerificationPayload } from '../lib/verification-data';
 import type { VerificationStepStatus } from '@stark-ballot/web/knowledge';
 import type { SessionIdentity } from '@stark-ballot/web/session';
+import { saveKnowledgeData } from '@stark-ballot/web/knowledge';
+import { VerificationClientApiError } from '@stark-ballot/web/verification/client-api-errors';
 import { useVerificationSequence } from './useVerificationSequence';
 
 vi.mock('@stark-ballot/web/session', () => ({
@@ -13,10 +15,16 @@ vi.mock('@stark-ballot/web/session', () => ({
   isSessionReplacedForIdentity: vi.fn(() => false),
 }));
 
+vi.mock('@stark-ballot/web/knowledge', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@stark-ballot/web/knowledge')>()),
+  saveKnowledgeData: vi.fn(),
+}));
+
 const sessionModule = await import('@stark-ballot/web/session');
 const mockGetSessionData = vi.mocked(sessionModule.getSessionData);
 const mockGetSessionDataForIdentity = vi.mocked(sessionModule.getSessionDataForIdentity);
 const mockIsSessionReplacedForIdentity = vi.mocked(sessionModule.isSessionReplacedForIdentity);
+const mockSaveKnowledgeData = vi.mocked(saveKnowledgeData);
 
 const ACTIVE_SESSION = {
   sessionId: 'test-session',
@@ -36,40 +44,69 @@ const buildSteps = (status: VerificationStepStatus): NonNullable<VerificationPay
   { id: 'stark_verification', status },
 ];
 
+const voterEvidence = {
+  voteReceipt: {
+    voteId: 'vote-1',
+    commitment: `0x${'c'.repeat(64)}`,
+    bulletinIndex: 0,
+    bulletinRootAtCast: `0x${'d'.repeat(64)}`,
+    timestamp: 1,
+  },
+  userVote: {
+    commitment: `0x${'c'.repeat(64)}`,
+    voteId: 'vote-1',
+    proof: { leafIndex: 0, treeSize: 1, merklePath: [], bulletinRootAtCast: `0x${'d'.repeat(64)}` },
+  },
+} satisfies Pick<VerificationPayload, 'voteReceipt' | 'userVote'>;
+
 const setup = (
   data: VerificationPayload,
-  fetchVerification?: ReturnType<typeof vi.fn>,
+  fetchVerification?: Mock<() => Promise<VerificationPayload>>,
   triggerStarkVerificationRun?: () => Promise<void>,
 ) => {
-  const fetchFn = fetchVerification ?? vi.fn().mockResolvedValue(data);
+  const fetchFn = fetchVerification ?? vi.fn<() => Promise<VerificationPayload>>().mockResolvedValue(data);
   const fetchVerificationRef = {
     current: fetchFn,
-  } as MutableRefObject<() => Promise<VerificationPayload>>;
-  const verificationStartedRef = { current: false } as MutableRefObject<boolean>;
+  } satisfies RefObject<() => Promise<VerificationPayload>>;
+  const verificationStartedRef = { current: false } satisfies RefObject<boolean>;
   const sessionIdentityRef = {
     current: {
       sessionId: 'test-session',
       capabilityToken: 'test-capability-token',
     },
-  } as MutableRefObject<SessionIdentity | null>;
+  } satisfies RefObject<SessionIdentity | null>;
   const triggerRunMock = triggerStarkVerificationRun ?? (() => Promise.resolve());
   const triggerRunFn = async (): Promise<void> => {
     await triggerRunMock();
   };
+  const onError = vi.fn();
+  const visibilityHistory: Array<{ visibleStepCount: number; sequenceComplete: boolean }> = [];
 
-  const hook = renderHook(() =>
-    useVerificationSequence({
+  const hook = renderHook(() => {
+    const sequence = useVerificationSequence({
       data,
       t: (key) => key,
       fetchVerificationRef,
-      onError: vi.fn(),
+      onError,
       verificationStartedRef,
       triggerStarkVerificationRun: triggerRunFn,
       sessionIdentityRef,
-    }),
-  );
+    });
+    visibilityHistory.push({
+      visibleStepCount: sequence.visibleStepCount,
+      sequenceComplete: sequence.sequenceComplete,
+    });
+    return sequence;
+  });
 
-  return { ...hook, fetchVerificationRef, fetchVerification: fetchFn, triggerStarkVerificationRun: triggerRunMock };
+  return {
+    ...hook,
+    fetchVerificationRef,
+    fetchVerification: fetchFn,
+    triggerStarkVerificationRun: triggerRunMock,
+    onError,
+    visibilityHistory,
+  };
 };
 
 describe('useVerificationSequence', () => {
@@ -87,23 +124,25 @@ describe('useVerificationSequence', () => {
     vi.unstubAllEnvs();
   });
 
-  it('completes without an extra STARK delay when status already succeeded', async () => {
+  it('publishes all resolved stages together without display timers', async () => {
     const data: VerificationPayload = {
       verificationStatus: 'success',
       verificationSteps: buildSteps('success'),
     };
 
-    const { result, fetchVerification } = setup(data);
-
-    act(() => {
-      void result.current.startVerification();
-    });
+    const { result, fetchVerification, visibilityHistory } = setup(data);
 
     await act(async () => {
-      await vi.runAllTimersAsync();
+      await result.current.startVerification();
     });
 
     expect(result.current.sequenceComplete).toBe(true);
+    expect(result.current.visibleStepCount).toBe(4);
+    expect(visibilityHistory).toEqual([
+      { visibleStepCount: 0, sequenceComplete: false },
+      { visibleStepCount: 4, sequenceComplete: true },
+    ]);
+    expect(vi.getTimerCount()).toBe(0);
     expect(result.current.stepStatusMap.stark_verification.status).toBe('success');
     expect(fetchVerification).not.toHaveBeenCalled();
   });
@@ -332,9 +371,9 @@ describe('useVerificationSequence', () => {
     expect(result.current.stepStatusMap.stark_verification.status).toBe('success');
   });
 
-  it('waits for STARK to resolve before showing any steps', async () => {
-    // Given: STARK verification is running (not yet complete)
+  it('waits for STARK before publishing evidence and all four stages', async () => {
     const data: VerificationPayload = {
+      ...voterEvidence,
       verificationStatus: 'running',
       verificationSteps: buildSteps('success'),
     };
@@ -347,28 +386,93 @@ describe('useVerificationSequence', () => {
     const fetchVerification = vi.fn().mockReturnValue(starkPromise);
     const { result } = setup(data, fetchVerification);
 
-    // When: verification sequence starts
     act(() => {
       void result.current.startVerification();
     });
 
-    // Then: no steps should be visible while STARK is being polled
-    // (cascade display should wait for STARK to complete)
     await act(async () => {
       await vi.advanceTimersByTimeAsync(100);
     });
 
     expect(result.current.visibleStepCount).toBe(0);
     expect(result.current.verificationStarted).toBe(true);
+    expect(result.current.sequenceComplete).toBe(false);
+    expect(mockSaveKnowledgeData).not.toHaveBeenCalled();
 
-    // When: STARK resolves
     await act(async () => {
       resolveRef.resolve({ ...data, verificationStatus: 'success' });
-      await vi.runAllTimersAsync();
     });
 
-    // Then: steps should become visible and sequence should complete
-    expect(result.current.visibleStepCount).toBeGreaterThan(0);
+    expect(result.current.visibleStepCount).toBe(4);
     expect(result.current.sequenceComplete).toBe(true);
+    expect(mockSaveKnowledgeData).toHaveBeenCalledExactlyOnceWith(
+      { 'user.voteReceipt': voterEvidence.voteReceipt, 'user.merklePath': voterEvidence.userVote.proof },
+      { expectedSessionId: ACTIVE_SESSION.sessionId },
+    );
+    expect(vi.getTimerCount()).toBe(0);
   });
+
+  it.each(['unmounted', 'session_replaced'] as const)(
+    'does not publish resolved evidence or completion after the view is %s',
+    async (invalidation) => {
+      const data: VerificationPayload = {
+        ...voterEvidence,
+        verificationStatus: 'running',
+        verificationSteps: buildSteps('success'),
+      };
+      const pending = Promise.withResolvers<VerificationPayload>();
+      const fetchVerification = vi.fn<() => Promise<VerificationPayload>>().mockReturnValue(pending.promise);
+      const { result, unmount, onError } = setup(data, fetchVerification);
+      let completion: Promise<void> | undefined;
+      act(() => {
+        completion = result.current.startVerification();
+      });
+      if (invalidation === 'unmounted') {
+        unmount();
+      } else {
+        mockGetSessionDataForIdentity.mockReturnValue(null);
+        mockIsSessionReplacedForIdentity.mockReturnValue(true);
+      }
+
+      await act(async () => {
+        pending.resolve({ ...data, verificationStatus: 'success' });
+        await completion;
+      });
+
+      expect(mockSaveKnowledgeData).not.toHaveBeenCalled();
+      expect(result.current.sequenceComplete).toBe(false);
+      expect(result.current.visibleStepCount).toBe(0);
+      if (invalidation === 'session_replaced') {
+        expect(onError).toHaveBeenCalledExactlyOnceWith('pages.verify.sessionReplaced');
+      }
+    },
+  );
+
+  it.each(['trigger', 'poll'] as const)(
+    'stops without publishing stale evidence when the %s invalidates verification authority',
+    async (boundary) => {
+      const data: VerificationPayload = {
+        ...voterEvidence,
+        verificationStatus: boundary === 'trigger' ? 'not_run' : 'running',
+        verificationSteps: buildSteps('success'),
+      };
+      const error = new VerificationClientApiError('Finalization is no longer current', {
+        invalidation: 'clear_finalized_projection',
+        responseStatus: 409,
+      });
+      const trigger = vi.fn<() => Promise<void>>().mockRejectedValue(error);
+      const fetchVerification = vi.fn<() => Promise<VerificationPayload>>().mockRejectedValue(error);
+      const { result, onError } = setup(data, fetchVerification, trigger);
+
+      await act(async () => {
+        await result.current.startVerification();
+      });
+
+      expect(onError).toHaveBeenCalledExactlyOnceWith(error.message);
+      expect(mockSaveKnowledgeData).not.toHaveBeenCalled();
+      expect(result.current.sequenceComplete).toBe(false);
+      expect(result.current.visibleStepCount).toBe(0);
+      expect(fetchVerification).toHaveBeenCalledTimes(boundary === 'poll' ? 1 : 0);
+    },
+  );
 });

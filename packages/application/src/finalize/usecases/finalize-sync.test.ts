@@ -14,13 +14,15 @@ import {
   getDefaultElectionConfigHash,
 } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import { finalizeSync } from '@stark-ballot/application/finalize/usecases/finalize-sync';
-import { ApplicationErrorCode } from '@stark-ballot/application/finalize/finalization-types';
-import { parseFinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-storage';
-import { parseFinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
-import { createMockVoteStore, type MockVoteStore } from '../__tests__/support/mockVoteStore';
+import { ApplicationErrorCode } from '@stark-ballot/application';
+import { admitFinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-storage';
+import { finalizationRecordCodec } from '@stark-ballot/application/finalize/finalization-record';
+import { createMockVoteStore, type MockVoteStore } from '../test-support/mockVoteStore';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -30,7 +32,8 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
 }
 
 const TEST_ELECTION_ID = '550e8400-e29b-41d4-a716-446655440000';
-const FINALIZATION_ID = '01JCGXZ8M00000000000000000';
+const SESSION_ID = asSessionId('session-1');
+const FINALIZATION_ID = asFinalizationId('01JCGXZ8M00000000000000000');
 const QUEUED_AT_MS = 1_730_000_000_000;
 
 const { buildUserVoteArtifactsMock, UserVoteArtifactsUnavailableErrorMock } = vi.hoisted(() => ({
@@ -86,7 +89,7 @@ const createVote = (vote: StoredVoteRecord['vote']): StoredVoteRecord => ({
 });
 
 const createSession = (votes: Map<number, StoredVoteRecord>): SessionVotingRecord => ({
-  sessionId: 'session-1',
+  sessionId: SESSION_ID,
   votes,
   bulletin: new SimpleBulletinBoard('0x' + 'b'.repeat(64)),
   bulletinRootHistory: [],
@@ -136,6 +139,7 @@ const createZkvmResult = (): ZkVMExecutionResult => ({
   missingSlots: 0,
   invalidPresentedSlots: 0,
   rejectedRecords: 0,
+  seenBitmapRoot: '0x' + 'cc'.repeat(32),
   includedBitmapRoot: '0x' + 'cc'.repeat(32),
   excludedSlots: 0,
   inputCommitment: '0x' + 'dd'.repeat(32),
@@ -152,9 +156,7 @@ const createZkvmResult = (): ZkVMExecutionResult => ({
   },
 });
 
-const createVerificationResult = (
-  overrides: Partial<ProofBundleVerificationResult> = {},
-): ProofBundleVerificationResult => ({
+const createVerificationResult = (): ProofBundleVerificationResult => ({
   status: 'dev_mode' as const,
   report: {
     status: 'dev_mode' as const,
@@ -164,28 +166,26 @@ const createVerificationResult = (
     expected_image_id: '0x' + 'ee'.repeat(32),
     receipt_image_id: '0x' + 'ee'.repeat(32),
     dev_mode_receipt: true,
-    errors: [],
   },
-  ...overrides,
 });
 
 const createProofBundleSuccess = (
-  verificationOverrides: Partial<ProofBundleVerificationResult> = {},
+  verificationResult: ProofBundleVerificationResult = createVerificationResult(),
   finalizationId = FINALIZATION_ID,
 ): Awaited<ReturnType<ProofBundleService['createBundle']>> => ({
   ok: true,
-  verificationResult: createVerificationResult(verificationOverrides),
+  verificationResult,
   finalizationId,
 });
 
 function assertAuthorityResult(result: unknown): asserts result is FinalizationResultAuthority {
-  if (!parseFinalizationResultAuthority(result)?.journal) {
+  if (!admitFinalizationResultAuthority(result)?.journal) {
     throw new Error('Expected canonical finalization result payload');
   }
 }
 
 function readStoredAuthority(record: unknown): FinalizationResultAuthority {
-  const parsed = parseFinalizationRecord(record);
+  const parsed = finalizationRecordCodec.admit(record);
   if (!parsed || parsed.state.status !== 'succeeded' || !parsed.finalizationResult) {
     throw new Error('Expected exact succeeded finalization record');
   }
@@ -224,7 +224,7 @@ describe('finalizeSync (scenario overrides)', () => {
 
     const result = await finalizeSync(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         finalizationId: FINALIZATION_ID,
         queuedAtMs: QUEUED_AT_MS,
         voting: session,
@@ -280,7 +280,7 @@ describe('finalizeSync (scenario overrides)', () => {
 
     const result = await finalizeSync(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         finalizationId: FINALIZATION_ID,
         queuedAtMs: QUEUED_AT_MS,
         voting: session,
@@ -308,7 +308,7 @@ describe('finalizeSync (scenario overrides)', () => {
       expect(result.value.finalizationResult).not.toHaveProperty('verificationResult');
       expect(result.value.finalizationResult.tally.counts).toEqual(scenario.claimedCounts);
     }
-    await expect(store.getVerificationResultRecord('session-1', FINALIZATION_ID)).resolves.toMatchObject({
+    await expect(store.getVerificationResultRecord(SESSION_ID, FINALIZATION_ID)).resolves.toMatchObject({
       verificationResult: { status: 'dev_mode' },
     });
   });
@@ -330,7 +330,7 @@ describe('finalizeSync (scenario overrides)', () => {
 
     const result = await finalizeSync(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         finalizationId: FINALIZATION_ID,
         queuedAtMs: QUEUED_AT_MS,
         voting: session,
@@ -362,7 +362,7 @@ describe('finalizeSync (scenario overrides)', () => {
     );
 
     expect(result.ok).toBe(true);
-    const storedRecord = strictDefined(await store.getCurrentFinalizationRecord('session-1'));
+    const storedRecord = strictDefined(await store.getCurrentFinalizationRecord(SESSION_ID));
     const calledResult = readStoredAuthority(storedRecord);
     expect(storedRecord.sessionId).toBe('session-1');
     expect(calledResult.tamperDetected).toBe(true);
@@ -387,7 +387,10 @@ describe('finalizeSync (scenario overrides)', () => {
             ...input.record,
             finalizationResult: {
               ...input.record.finalizationResult,
-              receiptPublication,
+              artifacts: {
+                ...input.record.finalizationResult.artifacts,
+                receiptPublication: { availability: 'available', publication: receiptPublication },
+              },
             },
           },
           bitmap: input.bitmap,
@@ -400,7 +403,7 @@ describe('finalizeSync (scenario overrides)', () => {
 
     const result = await finalizeSync(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         finalizationId: FINALIZATION_ID,
         queuedAtMs: QUEUED_AT_MS,
         voting: session,
@@ -437,7 +440,7 @@ describe('finalizeSync (scenario overrides)', () => {
     const [commitInput] = strictDefined(commitSuccessfulFinalization.mock.calls[0]);
     const storedRecord = commitInput.record;
     expect(storedRecord).toMatchObject({
-      sessionId: 'session-1',
+      sessionId: SESSION_ID,
       finalizationId: FINALIZATION_ID,
       scenarioContext: {
         scenarios: ['S0'],
@@ -460,10 +463,13 @@ describe('finalizeSync (scenario overrides)', () => {
     });
     readStoredAuthority(storedRecord);
     if (result.ok) {
-      expect(result.value.finalizationResult.receiptPublication).toEqual({
-        receiptHash: '0x' + '12'.repeat(32),
-        boardIndex: 100,
-        timestamp: 1234,
+      expect(result.value.finalizationResult.artifacts.receiptPublication).toEqual({
+        availability: 'available',
+        publication: {
+          receiptHash: '0x' + '12'.repeat(32),
+          boardIndex: 100,
+          timestamp: 1234,
+        },
       });
       expect(result.value.state).toEqual(storedRecord.state);
     }
@@ -498,7 +504,7 @@ describe('finalizeSync (scenario overrides)', () => {
 
     const result = await finalizeSync(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         finalizationId: FINALIZATION_ID,
         queuedAtMs: QUEUED_AT_MS,
         voting: session,
@@ -536,15 +542,7 @@ describe('finalizeSync (scenario overrides)', () => {
     const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
     const zkvmInput = createZkvmInput();
-    const zkvmResult = {
-      ...createZkvmResult(),
-      totalVotes: 63,
-      validVotes: 63,
-      missingSlots: 1,
-      invalidPresentedSlots: 0,
-      rejectedRecords: 0,
-      excludedSlots: 1,
-    } satisfies ZkVMExecutionResult;
+    const zkvmResult = createZkvmResult();
     const createBundle = vi.fn<ProofBundleService['createBundle']>().mockResolvedValue(
       createProofBundleSuccess({
         status: 'success',
@@ -556,7 +554,6 @@ describe('finalizeSync (scenario overrides)', () => {
           expected_image_id: zkvmResult.imageId ?? '',
           receipt_image_id: zkvmResult.imageId ?? '',
           dev_mode_receipt: false,
-          errors: [],
         },
       }),
     );
@@ -564,7 +561,7 @@ describe('finalizeSync (scenario overrides)', () => {
 
     const result = await finalizeSync(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         finalizationId: FINALIZATION_ID,
         queuedAtMs: QUEUED_AT_MS,
         voting: session,
@@ -599,7 +596,7 @@ describe('finalizeSync (scenario overrides)', () => {
     if (result.ok) {
       expect(result.value.finalizationResult).not.toHaveProperty('verificationResult');
     }
-    await expect(store.getVerificationResultRecord('session-1', FINALIZATION_ID)).resolves.toMatchObject({
+    await expect(store.getVerificationResultRecord(SESSION_ID, FINALIZATION_ID)).resolves.toMatchObject({
       verificationResult: { status: 'success' },
     });
   });
@@ -626,7 +623,7 @@ describe('finalizeSync (scenario overrides)', () => {
 
     const result = await finalizeSync(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         finalizationId: FINALIZATION_ID,
         queuedAtMs: QUEUED_AT_MS,
         voting: session,
@@ -675,7 +672,7 @@ describe('finalizeSync (scenario overrides)', () => {
 
     const result = await finalizeSync(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         finalizationId: FINALIZATION_ID,
         queuedAtMs: QUEUED_AT_MS,
         voting: session,
@@ -735,7 +732,7 @@ describe('finalizeSync (scenario overrides)', () => {
 
     const result = await finalizeSync(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         finalizationId: FINALIZATION_ID,
         queuedAtMs: QUEUED_AT_MS,
         voting: session,
@@ -789,7 +786,7 @@ describe('finalizeSync (scenario overrides)', () => {
       ok: false,
       error: {
         type: 'verifier_failed',
-        finalizationId: 'exec-1',
+        finalizationId: asFinalizationId('exec-1'),
         status: 'failed',
         report: {
           status: 'failed',
@@ -806,7 +803,7 @@ describe('finalizeSync (scenario overrides)', () => {
 
     const result = await finalizeSync(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         finalizationId: FINALIZATION_ID,
         queuedAtMs: QUEUED_AT_MS,
         voting: session,
@@ -844,7 +841,7 @@ describe('finalizeSync (scenario overrides)', () => {
         expect(result.error.code).toBe(ApplicationErrorCode.VERIFICATION_FAILED);
         expect(result.error.details).toMatchObject({
           status: 'failed',
-          finalizationId: 'exec-1',
+          finalizationId: asFinalizationId('exec-1'),
           verificationReport: {
             status: 'failed',
             verifier_version: '0.1.0',
@@ -871,7 +868,9 @@ describe('finalizeSync (scenario overrides)', () => {
     const zkvmResult = {
       ...createZkvmResult(),
       treeSize: exactBitmap.length,
+      verifiedTally: [3, 0, 0, 0, 0],
       validVotes: 3,
+      invalidVotes: 1,
       totalVotes: 4,
       seenIndicesCount: 4,
       missingSlots: 0,
@@ -897,7 +896,7 @@ describe('finalizeSync (scenario overrides)', () => {
 
     const result = await finalizeSync(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         finalizationId: FINALIZATION_ID,
         queuedAtMs: QUEUED_AT_MS,
         voting: session,
@@ -923,7 +922,7 @@ describe('finalizeSync (scenario overrides)', () => {
     );
 
     expect(result.ok).toBe(true);
-    await expect(store.getBitmapData('session-1', FINALIZATION_ID)).resolves.toMatchObject({
+    await expect(store.getBitmapData(SESSION_ID, FINALIZATION_ID)).resolves.toMatchObject({
       includedBitmap: exactBitmap,
       includedBitmapRoot: computeIncludedBitmapRoot(exactBitmap),
       seenBitmap,
@@ -935,12 +934,13 @@ describe('finalizeSync (scenario overrides)', () => {
     }
   });
 
-  it('stores a sanitized journal while keeping bitmap data separate', async () => {
+  it('stores a sanitized journal while keeping bitmap authority aligned with its sidecar', async () => {
     const votes = new Map<number, StoredVoteRecord>([[0, createVote('A')]]);
     const session = createSession(votes);
     const exactBitmap = [true];
     const zkvmResult = {
       ...createZkvmResult(),
+      seenBitmapRoot: computeIncludedBitmapRoot(exactBitmap),
       includedBitmapRoot: computeIncludedBitmapRoot(exactBitmap),
       includedBitmap: exactBitmap,
     } satisfies ZkVMExecutionResult;
@@ -959,7 +959,7 @@ describe('finalizeSync (scenario overrides)', () => {
 
     const result = await finalizeSync(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         finalizationId: FINALIZATION_ID,
         queuedAtMs: QUEUED_AT_MS,
         voting: session,
@@ -983,7 +983,7 @@ describe('finalizeSync (scenario overrides)', () => {
     );
 
     expect(result.ok).toBe(true);
-    const storedRecord = strictDefined(await store.getCurrentFinalizationRecord('session-1'));
+    const storedRecord = strictDefined(await store.getCurrentFinalizationRecord(SESSION_ID));
     expect(storedRecord.sessionId).toBe('session-1');
     const authority = readStoredAuthority(storedRecord);
     expect(authority.journal.includedBitmapRoot).toBe(computeIncludedBitmapRoot(exactBitmap));
@@ -996,8 +996,15 @@ describe('finalizeSync (scenario overrides)', () => {
     if (result.ok) {
       expect(result.value.finalizationId).toBe(FINALIZATION_ID);
     }
-    expect(authority.bitmapData).toBeUndefined();
-    await expect(store.getBitmapData('session-1', FINALIZATION_ID)).resolves.toMatchObject({
+    expect(authority.artifacts.bitmap).toMatchObject({
+      availability: 'available',
+      proofSource: 'mock',
+      data: {
+        includedBitmap: exactBitmap,
+        includedBitmapRoot: computeIncludedBitmapRoot(exactBitmap),
+      },
+    });
+    await expect(store.getBitmapData(SESSION_ID, FINALIZATION_ID)).resolves.toMatchObject({
       includedBitmap: exactBitmap,
       includedBitmapRoot: computeIncludedBitmapRoot(exactBitmap),
     });
@@ -1010,11 +1017,11 @@ describe('finalizeSync (scenario overrides)', () => {
     const commitSuccessfulFinalization = vi.fn<MockVoteStore['commitSuccessfulFinalization']>();
     const createBundle = vi
       .fn<ProofBundleService['createBundle']>()
-      .mockResolvedValue(createProofBundleSuccess({}, ''));
+      .mockResolvedValue(createProofBundleSuccess(undefined, '' as typeof FINALIZATION_ID));
 
     const result = await finalizeSync(
       {
-        sessionId: 'session-1',
+        sessionId: SESSION_ID,
         finalizationId: FINALIZATION_ID,
         queuedAtMs: QUEUED_AT_MS,
         voting: session,

@@ -1,8 +1,23 @@
+import type * as ESTree from 'oxc-parser';
+import {
+  forEachChild,
+  isBinaryOperation,
+  isComputedMember,
+  isNode,
+  isNumericLiteral,
+  isStaticMember,
+  isStringLiteral,
+  lineAt,
+  nodeText,
+  parseSource,
+  sourceLine,
+  sourceText,
+  staticText,
+} from '../source-analysis/source';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import ts from 'typescript';
 import {
   renderDeploymentLaneContext,
   resolveAllowedDeploymentTarget,
@@ -37,8 +52,8 @@ export interface DeploymentAuthorityBoundaryViolation {
 }
 
 interface FunctionImplementation {
-  readonly body: ts.ConciseBody;
-  readonly declaration: ts.Node;
+  readonly body: ESTree.Node;
+  readonly declaration: ESTree.Node;
   readonly name: string;
 }
 
@@ -54,9 +69,10 @@ const CANONICAL_CONTEXT_RENDERER_PATH = 'packages/deployment-authority/src/index
 const CANONICAL_CONTEXT_RENDERER_NAME = 'renderDeploymentLaneContext';
 const FRAMEWORK_CONTEXT_RENDERER_PATH = 'packages/deployment-authority/src/framework.js';
 const FRAMEWORK_CONTEXT_RENDERER_NAME = 'renderFrameworkLaneContext';
-const CANONICAL_TERRAFORM_BASELINE_PATH = 'packages/deployment-authority/src/terraform-baseline.js';
+const CANONICAL_TERRAFORM_AUTHORITY_PATH = 'packages/deployment-authority/src/terraform-authority.js';
 const CANONICAL_TERRAFORM_DRIFT_PATH = 'packages/deployment-authority/src/terraform-drift.js';
-const TEST_PATH_PATTERN = /(?:^|\/)(?:__tests__|tests)\/|(?:\.test|\.spec)\.[cm]?[jt]sx?$/u;
+// The packages/test-support workspace is runtime source; only local helper directories are fixtures.
+const TEST_PATH_PATTERN = /(?:^|\/)(?:(?<!^packages\/)test-support|tests)\/|(?:\.test|\.spec)\.[cm]?[jt]sx?$/u;
 const JAVASCRIPT_LIKE_EXTENSIONS = new Set(['.cjs', '.js', '.jsx', '.mjs', '.ts', '.tsx']);
 const ACTIVE_SCRIPT_PREFIXES = [
   '.github/workflows/',
@@ -267,67 +283,69 @@ function isGenericImmutableAuthority(name: string): boolean {
   return GENERIC_IMMUTABLE_AUTHORITY_NAME_PATTERN.test(name);
 }
 
-function propertyNameText(name: ts.PropertyName): string | undefined {
-  if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name)) {
-    return name.text;
+function propertyNameText(name: ESTree.Node): string | undefined {
+  if (isNode(name, 'Identifier') || isNode(name, 'PrivateIdentifier')) {
+    return staticText(name);
   }
-  if (ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
-    return name.text;
+  if (isStringLiteral(name) || isNumericLiteral(name)) {
+    return staticText(name);
   }
   return undefined;
 }
 
-function implementationFunctions(sourceFile: ts.SourceFile): readonly FunctionImplementation[] {
+function implementationFunctions(sourceFile: ESTree.Program): readonly FunctionImplementation[] {
   const implementations: FunctionImplementation[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isFunctionDeclaration(node) && node.name !== undefined && node.body !== undefined) {
-      implementations.push({ body: node.body, declaration: node, name: node.name.text });
-    } else if (ts.isMethodDeclaration(node) && node.body !== undefined) {
-      const name = propertyNameText(node.name);
+  const visit = (node: ESTree.Node): void => {
+    if (isNode(node, 'FunctionDeclaration') && node.id !== null && node.body !== null) {
+      implementations.push({ body: node.body, declaration: node, name: staticText(node.id) });
+    } else if (isNode(node, 'MethodDefinition') && node.value.body !== null) {
+      const name = propertyNameText(node.key);
       if (name !== undefined) {
-        implementations.push({ body: node.body, declaration: node, name });
+        implementations.push({ body: node.value.body, declaration: node, name });
       }
     } else if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer !== undefined &&
-      (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+      isNode(node, 'VariableDeclarator') &&
+      isNode(node.id, 'Identifier') &&
+      node.init !== null &&
+      (isNode(node.init, 'ArrowFunctionExpression') || isNode(node.init, 'FunctionExpression')) &&
+      node.init.body !== null
     ) {
-      implementations.push({ body: node.initializer.body, declaration: node, name: node.name.text });
+      implementations.push({ body: node.init.body, declaration: node, name: staticText(node.id) });
     } else if (
-      ts.isPropertyAssignment(node) &&
-      (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+      isNode(node, 'Property') &&
+      !node.shorthand &&
+      (isNode(node.value, 'ArrowFunctionExpression') || isNode(node.value, 'FunctionExpression')) &&
+      node.value.body !== null
     ) {
-      const name = propertyNameText(node.name);
+      const name = propertyNameText(node.key);
       if (name !== undefined) {
-        implementations.push({ body: node.initializer.body, declaration: node, name });
+        implementations.push({ body: node.value.body, declaration: node, name });
       }
     }
-    ts.forEachChild(node, visit);
+    forEachChild(node, visit);
   };
   visit(sourceFile);
   return implementations;
 }
 
-function sourceLine(sourceFile: ts.SourceFile, node: ts.Node): number {
-  return sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
-}
-
 function semanticImplementationsFromSourceFile(
-  sourceFile: ts.SourceFile,
+  sourceFile: ESTree.Program,
   implementations: readonly FunctionImplementation[],
 ): readonly SemanticImplementation[] {
   return implementations.map((implementation) => ({
-    endLine: sourceFile.getLineAndCharacterOfPosition(implementation.declaration.end).line + 1,
-    line: sourceLine(sourceFile, implementation.declaration),
+    endLine: lineAt(sourceFile, implementation.declaration.end),
+    line: sourceLine(implementation.declaration),
     name: implementation.name,
-    text: implementation.declaration.getText(sourceFile),
+    text: nodeText(implementation.declaration),
   }));
 }
 
 function lexicalSemanticImplementations(contents: string): readonly SemanticImplementation[] {
   const lines = contents.split(/\r?\n/u);
-  const declarations: Array<{ readonly lineIndex: number; readonly name: string }> = [];
+  const declarations: Array<{
+    readonly lineIndex: number;
+    readonly name: string;
+  }> = [];
   for (const [lineIndex, line] of lines.entries()) {
     const declaration = line.match(SEMANTIC_FUNCTION_DECLARATION_PATTERN);
     const name = declaration?.[1] ?? declaration?.[2] ?? declaration?.[3];
@@ -584,7 +602,7 @@ function terraformContractOwnerViolations(
 ): readonly DeploymentAuthorityBoundaryViolation[] {
   const violations: DeploymentAuthorityBoundaryViolation[] = [];
   if (
-    relativePath !== CANONICAL_TERRAFORM_BASELINE_PATH &&
+    relativePath !== CANONICAL_TERRAFORM_AUTHORITY_PATH &&
     isTerraformBaselineValidator(implementation.name, implementation.text)
   ) {
     violations.push({
@@ -677,30 +695,32 @@ function semanticImplementationViolations(
 
 function contextFieldViolations(
   relativePath: string,
-  sourceFile: ts.SourceFile,
+  _sourceFile: ESTree.Program,
   implementation: FunctionImplementation,
 ): readonly DeploymentAuthorityBoundaryViolation[] {
   const violations: DeploymentAuthorityBoundaryViolation[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isSpreadAssignment(node)) {
+  const visit = (node: ESTree.Node): void => {
+    if (isNode(node, 'SpreadElement') && node.parent?.type === 'ObjectExpression') {
       violations.push({
         path: relativePath,
-        line: sourceLine(sourceFile, node),
+        line: sourceLine(node),
         rule: 'context-unbounded-extension',
         token: 'object-spread',
       });
     } else if (
-      (ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node) || ts.isMethodDeclaration(node)) &&
-      ts.isComputedPropertyName(node.name)
+      ((isNode(node, 'Property') && !node.shorthand) ||
+        (isNode(node, 'Property') && node.shorthand) ||
+        isNode(node, 'MethodDefinition')) &&
+      node.computed
     ) {
       violations.push({
         path: relativePath,
-        line: sourceLine(sourceFile, node),
+        line: sourceLine(node),
         rule: 'context-unbounded-extension',
         token: 'computed-property',
       });
-    } else if (ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) {
-      const field = propertyNameText(node.name);
+    } else if ((isNode(node, 'Property') && !node.shorthand) || (isNode(node, 'Property') && node.shorthand)) {
+      const field = propertyNameText(node.key);
       if (field !== undefined) {
         const normalizedField = normalizeIdentifier(field);
         if (
@@ -710,7 +730,7 @@ function contextFieldViolations(
         ) {
           violations.push({
             path: relativePath,
-            line: sourceLine(sourceFile, node),
+            line: sourceLine(node),
             rule: 'context-secret-field',
             token: field,
           });
@@ -718,31 +738,17 @@ function contextFieldViolations(
         if (UNBOUNDED_CONTEXT_FIELDS.has(normalizedField)) {
           violations.push({
             path: relativePath,
-            line: sourceLine(sourceFile, node),
+            line: sourceLine(node),
             rule: 'context-unbounded-extension',
             token: field,
           });
         }
       }
     }
-    ts.forEachChild(node, visit);
+    forEachChild(node, visit);
   };
   visit(implementation.body);
   return violations;
-}
-
-function scriptKind(relativePath: string): ts.ScriptKind {
-  const extension = path.extname(relativePath);
-  if (extension === '.tsx') {
-    return ts.ScriptKind.TSX;
-  }
-  if (extension === '.jsx') {
-    return ts.ScriptKind.JSX;
-  }
-  if (extension === '.ts') {
-    return ts.ScriptKind.TS;
-  }
-  return ts.ScriptKind.JS;
 }
 
 function isGovernedAuthorityIdentifier(identifier: string): boolean {
@@ -793,7 +799,12 @@ function isBroadFallbackAuthorityIdentifier(identifier: string): boolean {
   );
 }
 
-function assignmentOnLine(line: string): { readonly name: string; readonly right: string } | undefined {
+function assignmentOnLine(line: string):
+  | {
+      readonly name: string;
+      readonly right: string;
+    }
+  | undefined {
   const codeAssignment = line.match(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*:[^=;]+)?\s*=\s*(.+)$/u);
   if (codeAssignment?.[1] !== undefined && codeAssignment[2] !== undefined) {
     return { name: codeAssignment[1], right: codeAssignment[2] };
@@ -980,67 +991,67 @@ function looksLikeGovernedReconstruction(right: string): boolean {
   return /^['"`]/u.test(trimmed) || /\$\{/u.test(trimmed) || /(?:['"`]\s*\+|\+\s*['"`])/u.test(trimmed);
 }
 
-function authorityNameFromExpression(expression: ts.Expression): string | undefined {
-  if (ts.isIdentifier(expression)) {
-    return expression.text;
+function authorityNameFromExpression(expression: ESTree.Node): string | undefined {
+  if (isNode(expression, 'Identifier')) {
+    return staticText(expression);
   }
-  if (ts.isPropertyAccessExpression(expression)) {
-    return expression.name.text;
+  if (isStaticMember(expression)) {
+    return staticText(expression.property);
   }
-  if (ts.isElementAccessExpression(expression) && ts.isStringLiteral(expression.argumentExpression)) {
-    return expression.argumentExpression.text;
+  if (isComputedMember(expression) && isStringLiteral(expression.property)) {
+    return staticText(expression.property);
   }
   return undefined;
 }
 
-function assignedAuthorityName(expression: ts.BinaryExpression): string | undefined {
-  if (ts.isVariableDeclaration(expression.parent) && ts.isIdentifier(expression.parent.name)) {
-    return expression.parent.name.text;
+function assignedAuthorityName(
+  expression: ESTree.BinaryExpression | ESTree.LogicalExpression | ESTree.AssignmentExpression,
+): string | undefined {
+  if (isNode(expression.parent, 'VariableDeclarator') && isNode(expression.parent.id, 'Identifier')) {
+    return staticText(expression.parent.id);
   }
-  if (ts.isPropertyAssignment(expression.parent)) {
-    return propertyNameText(expression.parent.name);
+  if (isNode(expression.parent, 'Property') && !expression.parent.shorthand) {
+    return propertyNameText(expression.parent.key);
   }
   return authorityNameFromExpression(expression.left);
 }
 
-function isAllowedFallbackRight(right: ts.Expression, sourceFile: ts.SourceFile): boolean {
+function isAllowedFallbackRight(right: ESTree.Node): boolean {
   if (
-    right.kind === ts.SyntaxKind.NullKeyword ||
-    (ts.isIdentifier(right) && right.text === 'undefined') ||
-    (ts.isStringLiteral(right) && right.text === '')
+    (right.type === 'Literal' && right.value === null) ||
+    (isNode(right, 'Identifier') && staticText(right) === 'undefined') ||
+    (isStringLiteral(right) && staticText(right) === '')
   ) {
     return true;
   }
-  return isCanonicalAuthorityReference(right.getText(sourceFile));
+  return isCanonicalAuthorityReference(nodeText(right));
 }
 
-function authorityProperty(
-  expression: ts.Expression,
-  sourceFile: ts.SourceFile,
-): { readonly name: string; readonly root: string } | undefined {
-  if (ts.isPropertyAccessExpression(expression)) {
-    return { name: expression.name.text, root: expression.expression.getText(sourceFile) };
+function authorityProperty(expression: ESTree.Node):
+  | {
+      readonly name: string;
+      readonly root: string;
+    }
+  | undefined {
+  if (isStaticMember(expression)) {
+    return { name: staticText(expression.property), root: nodeText(expression.object) };
   }
-  if (ts.isElementAccessExpression(expression) && ts.isStringLiteral(expression.argumentExpression)) {
-    return { name: expression.argumentExpression.text, root: expression.expression.getText(sourceFile) };
+  if (isComputedMember(expression) && isStringLiteral(expression.property)) {
+    return { name: staticText(expression.property), root: nodeText(expression.object) };
   }
   return undefined;
 }
 
 function codeFallbackViolations(
   relativePath: string,
-  sourceFile: ts.SourceFile,
+  sourceFile: ESTree.Program,
 ): readonly DeploymentAuthorityBoundaryViolation[] {
   const violations: DeploymentAuthorityBoundaryViolation[] = [];
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isBinaryExpression(node) &&
-      (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
-        node.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-    ) {
+  const visit = (node: ESTree.Node): void => {
+    if (isBinaryOperation(node) && (node.operator === '??' || node.operator === '||')) {
       const authorityName = assignedAuthorityName(node);
-      const leftProperty = authorityProperty(node.left, sourceFile);
-      const rightProperty = authorityProperty(node.right, sourceFile);
+      const leftProperty = authorityProperty(node.left);
+      const rightProperty = authorityProperty(node.right);
       if (
         leftProperty !== undefined &&
         rightProperty !== undefined &&
@@ -1050,7 +1061,7 @@ function codeFallbackViolations(
       ) {
         violations.push({
           path: relativePath,
-          line: sourceLine(sourceFile, node),
+          line: sourceLine(node),
           rule: 'alternate-authority-reader',
           token: `${leftProperty.name}|${rightProperty.name}`,
         });
@@ -1058,17 +1069,17 @@ function codeFallbackViolations(
       if (
         authorityName !== undefined &&
         isBroadFallbackAuthorityIdentifier(authorityName) &&
-        !isAllowedFallbackRight(node.right, sourceFile)
+        !isAllowedFallbackRight(node.right)
       ) {
         violations.push({
           path: relativePath,
-          line: sourceLine(sourceFile, node),
+          line: sourceLine(node),
           rule: 'broad-authority-fallback',
           token: authorityName,
         });
       }
     }
-    ts.forEachChild(node, visit);
+    forEachChild(node, visit);
   };
   visit(sourceFile);
   return violations;
@@ -1132,7 +1143,7 @@ function isExternallyDocumentedAwsFieldShape(relativePath: string, line: string)
 }
 
 function ignoredLiteralLines(
-  sourceFile: ts.SourceFile | undefined,
+  sourceFile: ESTree.Program | undefined,
   implementations: readonly SemanticImplementation[],
 ): ReadonlySet<number> {
   const ignored = new Set<number>();
@@ -1149,18 +1160,14 @@ function ignoredLiteralLines(
   if (sourceFile === undefined) {
     return ignored;
   }
-  const visit = (node: ts.Node): void => {
-    const isErrorConstruction = ts.isNewExpression(node) && /Error$/u.test(node.expression.getText(sourceFile));
+  const visit = (node: ESTree.Node): void => {
+    const isErrorConstruction = isNode(node, 'NewExpression') && /Error$/u.test(nodeText(node.callee));
     const isErrorOutput =
-      ts.isCallExpression(node) &&
-      /^(?:console\.error|process\.stderr\.write)$/u.test(node.expression.getText(sourceFile));
-    if (ts.isThrowStatement(node) || isErrorConstruction || isErrorOutput) {
-      addRange(
-        sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
-        sourceFile.getLineAndCharacterOfPosition(node.end).line + 1,
-      );
+      isNode(node, 'CallExpression') && /^(?:console\.error|process\.stderr\.write)$/u.test(nodeText(node.callee));
+    if (isNode(node, 'ThrowStatement') || isErrorConstruction || isErrorOutput) {
+      addRange(sourceLine(node), lineAt(sourceFile, node.end));
     }
-    ts.forEachChild(node, visit);
+    forEachChild(node, visit);
   };
   visit(sourceFile);
   return ignored;
@@ -1200,47 +1207,43 @@ function governedTargetLiteralViolations(
   return violations;
 }
 
-function hasTopLevelFallback(expression: ts.Expression): boolean {
-  return (
-    ts.isBinaryExpression(expression) &&
-    (expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
-      expression.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-  );
+function hasTopLevelFallback(expression: ESTree.Node): boolean {
+  return isBinaryOperation(expression) && (expression.operator === '??' || expression.operator === '||');
 }
 
 function codeGovernedTargetViolations(
   relativePath: string,
-  sourceFile: ts.SourceFile,
+  sourceFile: ESTree.Program,
 ): readonly DeploymentAuthorityBoundaryViolation[] {
   if (isAuthorityOwnerPath(relativePath)) {
     return [];
   }
   const violations: DeploymentAuthorityBoundaryViolation[] = [];
-  const inspect = (name: string | undefined, initializer: ts.Expression): void => {
-    const initializerLine = sourceFile.text.split(/\r?\n/u)[sourceLine(sourceFile, initializer) - 1] ?? '';
+  const inspect = (name: string | undefined, initializer: ESTree.Node): void => {
+    const initializerLine = sourceText(sourceFile).split(/\r?\n/u)[sourceLine(initializer) - 1] ?? '';
     if (
       name !== undefined &&
       isGovernedAuthorityIdentifier(name) &&
       !hasTopLevelFallback(initializer) &&
-      !CLOSED_TARGET_SELECTOR_PATTERN.test(initializer.getText(sourceFile)) &&
+      !CLOSED_TARGET_SELECTOR_PATTERN.test(nodeText(initializer)) &&
       !isProtectedProductionContractLine(initializerLine) &&
-      looksLikeGovernedReconstruction(initializer.getText(sourceFile))
+      looksLikeGovernedReconstruction(nodeText(initializer))
     ) {
       violations.push({
         path: relativePath,
-        line: sourceLine(sourceFile, initializer),
+        line: sourceLine(initializer),
         rule: 'governed-target-reconstruction',
         token: name,
       });
     }
   };
-  const visit = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer !== undefined) {
-      inspect(node.name.text, node.initializer);
-    } else if (ts.isPropertyAssignment(node)) {
-      inspect(propertyNameText(node.name), node.initializer);
+  const visit = (node: ESTree.Node): void => {
+    if (isNode(node, 'VariableDeclarator') && isNode(node.id, 'Identifier') && node.init !== null) {
+      inspect(staticText(node.id), node.init);
+    } else if (isNode(node, 'Property') && !node.shorthand) {
+      inspect(propertyNameText(node.key), node.value);
     }
-    ts.forEachChild(node, visit);
+    forEachChild(node, visit);
   };
   visit(sourceFile);
   return violations;
@@ -1321,11 +1324,17 @@ function governedTargetViolations(
   return violations;
 }
 
-function hexWidthsInParserLine(line: string): ReadonlyArray<{ readonly index: number; readonly width: 40 | 64 }> {
+function hexWidthsInParserLine(line: string): ReadonlyArray<{
+  readonly index: number;
+  readonly width: 40 | 64;
+}> {
   if (!/(?:\/|grep\s+-[^\n]*E|=~|RegExp|pattern|\.test\s*\(|\.match\s*\()/iu.test(line)) {
     return [];
   }
-  const widths: Array<{ readonly index: number; readonly width: 40 | 64 }> = [];
+  const widths: Array<{
+    readonly index: number;
+    readonly width: 40 | 64;
+  }> = [];
   for (const match of line.matchAll(/\[([0-9A-Fa-f-]+)\]\{(40|64)\}/gu)) {
     const characterClass = match[1]?.toLowerCase();
     const widthText = match[2];
@@ -1544,24 +1553,18 @@ export function findDeploymentAuthorityBoundaryViolationsInText(
   contents: string,
 ): readonly DeploymentAuthorityBoundaryViolation[] {
   const violations: DeploymentAuthorityBoundaryViolation[] = [...lexicalFunctionViolations(relativePath, contents)];
-  let semanticImplementations: readonly SemanticImplementation[] = [];
+  let semanticImplementations: readonly SemanticImplementation[];
   if (JAVASCRIPT_LIKE_EXTENSIONS.has(path.extname(relativePath)) && !relativePath.endsWith('.d.ts')) {
-    const sourceFile = ts.createSourceFile(
-      relativePath,
-      contents,
-      ts.ScriptTarget.Latest,
-      true,
-      scriptKind(relativePath),
-    );
+    const sourceFile = parseSource(relativePath, contents);
     const implementations = implementationFunctions(sourceFile);
     semanticImplementations = semanticImplementationsFromSourceFile(sourceFile, implementations);
     for (const implementation of implementations) {
-      const bodyText = implementation.body.getText(sourceFile);
+      const bodyText = nodeText(implementation.body);
       if (isContextRenderer(implementation.name, bodyText)) {
         if (!isCanonicalContextRenderer(relativePath, implementation.name)) {
           violations.push({
             path: relativePath,
-            line: sourceLine(sourceFile, implementation.declaration),
+            line: sourceLine(implementation.declaration),
             rule: 'duplicate-context-renderer',
             token: implementation.name,
           });
@@ -1571,7 +1574,7 @@ export function findDeploymentAuthorityBoundaryViolationsInText(
       if (isGenericImmutableAuthority(implementation.name) && !isAuthorityOwnerPath(relativePath)) {
         violations.push({
           path: relativePath,
-          line: sourceLine(sourceFile, implementation.declaration),
+          line: sourceLine(implementation.declaration),
           rule: 'duplicate-immutable-authority',
           token: implementation.name,
         });

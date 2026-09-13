@@ -21,12 +21,19 @@ const ATTEMPT_MULTIPLIER = getRateLimitAttemptMultiplier();
 
 export class VoteRateLimiter {
   private readonly buckets = new Map<string, VoteWindow>();
+  private readonly limit: number;
+  private readonly windowMs: number;
+  private readonly maxBuckets: number;
 
   constructor(
-    private readonly limit = DEFAULT_CONFIG.limit,
-    private readonly windowMs = DEFAULT_CONFIG.windowMs,
-    private readonly maxBuckets = DEFAULT_CONFIG.maxBuckets,
-  ) {}
+    limit = DEFAULT_CONFIG.limit,
+    windowMs = DEFAULT_CONFIG.windowMs,
+    maxBuckets = DEFAULT_CONFIG.maxBuckets,
+  ) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+    this.maxBuckets = maxBuckets;
+  }
 
   check(ipAddress: string): { allowed: boolean; remaining: number; retryAfter?: number } {
     const now = Date.now();

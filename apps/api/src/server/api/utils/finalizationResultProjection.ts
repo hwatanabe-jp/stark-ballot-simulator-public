@@ -2,20 +2,59 @@ import type {
   FinalizationResultAuthority,
   FinalizeSyncPayload,
 } from '@stark-ballot/application/finalize/finalization-types';
-import type { FinalizationBitmapData } from '@stark-ballot/application/finalize/finalization-store';
+import type { FinalizationBitmapRecord } from '@stark-ballot/application/finalize/finalization-store';
 import type { FinalizationResource, FinalizationResult } from '@stark-ballot/api-contract/schemas/finalizations';
+import { scenarioIdSchema, type ScenarioId } from '@stark-ballot/api-contract/schemas/primitives';
 import type { AwsVerificationDeliveryMetadataInput } from '@stark-ballot/aws-adapters/finalize/finalizationDeliveryMetadataStore';
 import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { sanitizeFinalizationResultVerificationStatus } from '@stark-ballot/verification/fail-closed-status';
-import { sanitizeVerificationReportForPublicResponse } from '@stark-ballot/verification/public-result';
+import type {
+  PublicVerificationDevModeReport,
+  PublicVerificationFailedReport,
+  PublicVerificationSuccessReport,
+} from '@stark-ballot/verification/public-result';
+import { projectVerificationResultForPublicResponse } from '@stark-ballot/verification/public-result';
 import type { VerificationResult } from '@stark-ballot/verification/shared/types';
+import type { ReceiptWithImageId } from '@stark-ballot/verification/image-id-types';
 import { toPublicZkvmJournal } from '@stark-ballot/zkvm-contract/zkvm/public-journal';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 interface FinalizationResultProjectionEvidence {
   verificationResult?: VerificationResult;
   deliveryMetadata?: AwsVerificationDeliveryMetadataInput;
-  bitmapData?: FinalizationBitmapData;
+  bitmapData?: FinalizationBitmapRecord;
+}
+
+type PublicFinalizationVerificationState =
+  | { verificationStatus: 'not_run' | 'running'; verificationReport?: undefined }
+  | { verificationStatus: 'success'; verificationReport?: PublicVerificationSuccessReport }
+  | { verificationStatus: 'dev_mode'; verificationReport?: PublicVerificationDevModeReport }
+  | { verificationStatus: 'failed'; verificationReport?: PublicVerificationFailedReport };
+
+function projectPublicFinalizationVerificationState(
+  result: VerificationResult | undefined,
+): PublicFinalizationVerificationState {
+  const projected = projectVerificationResultForPublicResponse(result ?? { status: 'not_run' });
+  switch (projected.status) {
+    case 'not_run':
+    case 'running':
+      return { verificationStatus: projected.status };
+    case 'success':
+      return {
+        verificationStatus: 'success',
+        ...(projected.report ? { verificationReport: projected.report } : {}),
+      };
+    case 'dev_mode':
+      return {
+        verificationStatus: 'dev_mode',
+        ...(projected.report ? { verificationReport: projected.report } : {}),
+      };
+    case 'failed':
+      return {
+        verificationStatus: 'failed',
+        ...(projected.report ? { verificationReport: projected.report } : {}),
+      };
+  }
 }
 
 function normalizeHex32(value: string | undefined, label: string): string {
@@ -31,10 +70,22 @@ function assertSameHex32(left: string, right: string, label: string): void {
   }
 }
 
-function projectPublicReceiptMetadata(
-  metadata: NonNullable<FinalizationResultAuthority['receipt']>['metadata'],
-): { isFake: boolean } | undefined {
+function projectPublicReceiptMetadata(metadata: ReceiptWithImageId['metadata']): { isFake: boolean } | undefined {
   return typeof metadata?.isFake === 'boolean' ? { isFake: metadata.isFake } : undefined;
+}
+
+function admitFinalizationScenarios(values: string[]): ScenarioId[] {
+  const scenarios = values.map((value) => {
+    const admitted = scenarioIdSchema.safeParse(value);
+    if (!admitted.success) {
+      throw new Error('Finalization result contains an unknown scenario');
+    }
+    return admitted.data;
+  });
+  if (scenarios.length > 1 || scenarios[0] === 'S0') {
+    throw new Error('Finalization result contains a non-canonical scenario projection');
+  }
+  return scenarios;
 }
 
 function deriveArtifactAvailability(
@@ -54,26 +105,25 @@ function assertResultMirrorsMatchJournal(result: FinalizationResultAuthority): v
   if (journal.imageId !== undefined) {
     assertSameHex32(result.imageId, journal.imageId, 'imageId');
   }
-  if (result.receipt?.imageId !== undefined) {
-    assertSameHex32(result.imageId, result.receipt.imageId, 'receipt imageId');
+  const receipt = result.artifacts.receipt;
+  if (receipt.availability === 'available' && receipt.receipt.imageId !== undefined) {
+    assertSameHex32(result.imageId, receipt.receipt.imageId, 'receipt imageId');
   }
-  if (result.bitmapData) {
-    assertSameHex32(result.bitmapData.includedBitmapRoot, journal.includedBitmapRoot, 'includedBitmapRoot');
-    if (result.bitmapData.treeSize !== journal.treeSize) {
+  const bitmap = result.artifacts.bitmap;
+  if (bitmap.availability === 'available') {
+    assertSameHex32(bitmap.data.includedBitmapRoot, journal.includedBitmapRoot, 'includedBitmapRoot');
+    if (bitmap.data.treeSize !== journal.treeSize) {
       throw new Error('bitmap treeSize does not match canonical journal authority');
     }
-    if (result.bitmapData.seenBitmapRoot !== undefined) {
-      assertSameHex32(result.bitmapData.seenBitmapRoot, journal.seenBitmapRoot, 'seenBitmapRoot');
+    if (bitmap.data.seenBitmapRoot !== undefined) {
+      assertSameHex32(bitmap.data.seenBitmapRoot, journal.seenBitmapRoot, 'seenBitmapRoot');
     }
   }
 }
 
 export function projectFinalizationResultForPublicResponse(
   result: FinalizationResultAuthority,
-  voterEvidence: FinalizationResult['voterEvidence'] = {
-    state: 'verification-gated',
-    ...omitUndefinedProperties({ receiptPublication: result.receiptPublication }),
-  },
+  voterEvidence?: FinalizationResult['voterEvidence'],
   evidence: FinalizationResultProjectionEvidence = {},
 ): FinalizationResult {
   assertResultMirrorsMatchJournal(result);
@@ -84,39 +134,53 @@ export function projectFinalizationResultForPublicResponse(
   const journal = toPublicZkvmJournal(sanitized.journal);
   const verificationResult = sanitized.verificationResult;
   const imageId = normalizeHex32(sanitized.imageId, 'imageId');
+  const receipt = sanitized.artifacts.receipt;
+  const receiptPublication = sanitized.artifacts.receiptPublication;
+  const publicAudit = sanitized.artifacts.publicAudit;
+  const bitmap = sanitized.artifacts.bitmap;
+  if (sanitized.tamperDetected === undefined || sanitized.scenarios === undefined) {
+    throw new Error('Finalization result is missing admitted scenario presentation authority');
+  }
+  const scenarios = admitFinalizationScenarios(sanitized.scenarios);
+  const resolvedVoterEvidence = voterEvidence ?? {
+    state: 'verification-gated',
+    ...omitUndefinedProperties({
+      receiptPublication: receiptPublication.availability === 'available' ? receiptPublication.publication : undefined,
+    }),
+  };
 
   return {
     authority: {
       imageId,
       journal,
       ...omitUndefinedProperties({
-        receipt: sanitized.receipt
-          ? {
-              imageId: normalizeHex32(sanitized.receipt.imageId ?? sanitized.imageId, 'receipt imageId'),
-              seal: sanitized.receipt.seal,
-              ...omitUndefinedProperties({
-                journal: typeof sanitized.receipt.journal === 'string' ? sanitized.receipt.journal : undefined,
-                metadata: projectPublicReceiptMetadata(sanitized.receipt.metadata),
-              }),
-            }
-          : undefined,
-        electionManifest: sanitized.electionManifest
-          ? {
-              ...sanitized.electionManifest,
-              choices: [...sanitized.electionManifest.choices],
-            }
-          : undefined,
-        closeStatement: sanitized.closeStatement,
+        receipt:
+          receipt.availability === 'available'
+            ? {
+                imageId: normalizeHex32(receipt.receipt.imageId ?? sanitized.imageId, 'receipt imageId'),
+                seal: receipt.receipt.seal,
+                ...omitUndefinedProperties({
+                  journal: typeof receipt.receipt.journal === 'string' ? receipt.receipt.journal : undefined,
+                  metadata: projectPublicReceiptMetadata(receipt.receipt.metadata),
+                }),
+              }
+            : undefined,
+        electionManifest:
+          publicAudit.availability === 'available'
+            ? {
+                ...publicAudit.electionManifest,
+                choices: [...publicAudit.electionManifest.choices],
+              }
+            : undefined,
+        closeStatement: publicAudit.availability === 'available' ? publicAudit.closeStatement : undefined,
       }),
     },
     presentation: {
       tally: sanitized.tally,
       verifiedTally: [...journal.verifiedTally],
-      ...omitUndefinedProperties({
-        tamperDetected: sanitized.tamperDetected,
-        scenarios: sanitized.scenarios,
-        tamperSummary: sanitized.tamperSummary,
-      }),
+      tamperDetected: sanitized.tamperDetected,
+      scenarios,
+      ...omitUndefinedProperties({ tamperSummary: sanitized.tamperSummary }),
       bulletinRoot: normalizeHex32(journal.bulletinRoot, 'bulletinRoot'),
       missingSlots: journal.missingSlots,
       invalidPresentedSlots: journal.invalidPresentedSlots,
@@ -129,13 +193,12 @@ export function projectFinalizationResultForPublicResponse(
       includedBitmapRoot: normalizeHex32(journal.includedBitmapRoot, 'includedBitmapRoot'),
       inputCommitment: normalizeHex32(journal.inputCommitment, 'inputCommitment'),
       seenIndicesCount: journal.seenIndicesCount,
-      ...omitUndefinedProperties({ bitmapProofSource: sanitized.bitmapProofSource }),
-      verificationStatus: verificationResult?.status ?? 'not_run',
       ...omitUndefinedProperties({
-        verificationReport: sanitizeVerificationReportForPublicResponse(verificationResult?.report),
+        bitmapProofSource: bitmap.availability === 'available' ? bitmap.proofSource : undefined,
       }),
+      ...projectPublicFinalizationVerificationState(verificationResult),
     },
-    voterEvidence,
+    voterEvidence: resolvedVoterEvidence,
     artifactAvailability: deriveArtifactAvailability(evidence),
   };
 }
@@ -143,13 +206,16 @@ export function projectFinalizationResultForPublicResponse(
 function projectVoteReceiptForPublicFinalizeResponse(
   voteReceipt: FinalizeSyncPayload['voteReceipt'],
 ): Extract<FinalizationResult['voterEvidence'], { state: 'available' }>['voteReceipt'] {
+  if (voteReceipt.inputCommitment === undefined) {
+    throw new Error('Finalization vote receipt is missing its input commitment');
+  }
   return {
     voteId: voteReceipt.voteId,
     commitment: voteReceipt.commitment,
     bulletinIndex: voteReceipt.bulletinIndex,
     bulletinRootAtCast: voteReceipt.bulletinRootAtCast,
     castAtMs: voteReceipt.timestamp,
-    ...omitUndefinedProperties({ inputCommitment: voteReceipt.inputCommitment }),
+    inputCommitment: voteReceipt.inputCommitment,
   };
 }
 
@@ -168,7 +234,12 @@ export function projectFinalizeSyncPayloadForResponse(payload: FinalizeSyncPaylo
       state: 'available',
       voteReceipt: projectVoteReceiptForPublicFinalizeResponse(payload.voteReceipt),
       userVote: payload.userVote,
-      ...omitUndefinedProperties({ receiptPublication: payload.finalizationResult.receiptPublication }),
+      ...omitUndefinedProperties({
+        receiptPublication:
+          payload.finalizationResult.artifacts.receiptPublication.availability === 'available'
+            ? payload.finalizationResult.artifacts.receiptPublication.publication
+            : undefined,
+      }),
     },
     {
       verificationResult: payload.verificationResult,

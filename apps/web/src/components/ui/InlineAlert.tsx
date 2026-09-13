@@ -11,7 +11,7 @@ interface InlineAlertProps {
  * InlineAlert - Lightweight status message display
  *
  * A simpler alternative to StatusCard for inline feedback within cards.
- * Uses semantic colors from the "Transparent Trust" design system.
+ * Uses the shared semantic status colors.
  */
 export function InlineAlert({
   message,
@@ -35,7 +35,7 @@ export function InlineAlert({
       role={role}
       aria-live={ariaLive}
       aria-atomic="true"
-      className={`rounded-md border px-3 py-2 text-sm font-secondary ${variantStyles[variant]} ${className}`}
+      className={`rounded-md border px-3 py-2 font-secondary text-sm ${variantStyles[variant]} ${className}`}
     >
       {message}
     </div>

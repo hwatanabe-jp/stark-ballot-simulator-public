@@ -2,7 +2,7 @@ import { beforeEach, afterEach, describe, expect, it, vi, type MockInstance } fr
 import { promises as fs } from 'fs';
 import path from 'path';
 import { createHonoApp as createConfiguredHonoApp, ORIGIN_VERIFY_HEADER, type HonoAppOptions } from './hono';
-import { createMockVoteStore, type MockVoteStore } from '../../__tests__/support/mockVoteStore';
+import { createMockVoteStore, type MockVoteStore } from '../../test-support/mockVoteStore';
 import {
   getApiErrorCode,
   readJsonRecord,
@@ -17,6 +17,7 @@ import type {
   SessionVotingRecord,
   StoredVoteRecord,
 } from '@stark-ballot/domain/types/sessionRecords';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
 import { getLogContext } from '@stark-ballot/diagnostics/requestLogContext';
 import { configureLogger, logger } from '@stark-ballot/diagnostics/logger';
 import { hashIpForLogging } from '@stark-ballot/diagnostics/logging';
@@ -24,7 +25,7 @@ import type { ArtifactReader } from '@stark-ballot/application/verification/arti
 import {
   localRuntimeProfile,
   targetRuntimeProfileEnv,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { resolveRuntimeProfile, type ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import {
   clearRuntimeConfigReferenceResolver,
@@ -56,7 +57,7 @@ function createHonoApp(options: HonoAppOptions = {}) {
 function createBaseIdentity(overrides: Partial<SessionIdentityRecord> = {}): SessionIdentityRecord {
   const now = Date.now();
   return {
-    sessionId: 'session-123',
+    sessionId: asSessionId('session-123'),
     electionId: '550e8400-e29b-41d4-a716-446655440000',
     electionConfigHash: '0x' + '1'.repeat(64),
     electionConfig: {
@@ -126,7 +127,7 @@ function createObsoleteSessionIdentityHeaders(sessionId: string = 'session-123')
 
 function createPathSessionAuthHeaders(sessionId: string = 'session-123'): Record<string, string> {
   return {
-    'X-Session-Capability': createSessionCapabilityToken({ sessionId }, capabilitySecret),
+    'X-Session-Capability': createSessionCapabilityToken({ sessionId: asSessionId(sessionId) }, capabilitySecret),
   };
 }
 
@@ -205,6 +206,7 @@ describe('createHonoApp', () => {
   afterEach(() => {
     clearRuntimeConfigReferenceResolver();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     if (originalCapabilitySecret === undefined) {
       delete process.env['SESSION_CAPABILITY_SECRET'];
     } else {
@@ -256,8 +258,8 @@ describe('createHonoApp', () => {
     expect((await app.request('http://localhost/api/progress')).status).toBe(404);
   });
 
-  it('rejects direct target API requests that miss the CloudFront origin verification header', async () => {
-    const profile = configureTargetRuntime('develop');
+  it.each(['develop', 'main'] as const)('rejects direct %s API requests without origin verification', async (env) => {
+    const profile = configureTargetRuntime(env);
     const app = createTargetAdmissionTestApp(profile);
     const response = await app.request('http://localhost/api/sessions', { method: 'POST' });
 
@@ -334,7 +336,7 @@ describe('createHonoApp', () => {
     expect(createSession).not.toHaveBeenCalled();
   });
 
-  it('rejects target session creation under the injected main profile', async () => {
+  it('requires a Turnstile token for main session creation', async () => {
     const profile = configureTargetRuntime('main');
     const createSession = vi.fn().mockResolvedValue(createBaseIdentity());
     vi.mocked(getGlobalStore).mockReturnValue(createMockVoteStore({ createSession }));
@@ -345,10 +347,58 @@ describe('createHonoApp', () => {
       headers: { [ORIGIN_VERIFY_HEADER]: targetOriginVerifyHeader },
     });
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(403);
     const payload = await readJsonRecord(response, 'target session admission response');
-    expect(getApiErrorCode(payload)).toBe('SESSION_NOT_FOUND');
+    expect(getApiErrorCode(payload)).toBe('CAPTCHA_FAILED');
     expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: 'valid session challenge',
+      success: true,
+      action: 'session',
+      hostname: 'stark-ballot-sim.hwatanabe.dev',
+      allowed: true,
+    },
+    {
+      label: 'failed challenge',
+      success: false,
+      action: 'session',
+      hostname: 'stark-ballot-sim.hwatanabe.dev',
+      allowed: false,
+    },
+    {
+      label: 'wrong action',
+      success: true,
+      action: 'vote',
+      hostname: 'stark-ballot-sim.hwatanabe.dev',
+      allowed: false,
+    },
+    { label: 'wrong hostname', success: true, action: 'session', hostname: 'untrusted.example', allowed: false },
+  ])('checks main session admission against $label', async ({ success, action, hostname, allowed }) => {
+    const profile = configureTargetRuntime('main');
+    const createSession = vi.fn().mockResolvedValue(createBaseIdentity());
+    vi.mocked(getGlobalStore).mockReturnValue(createMockVoteStore({ createSession }));
+    const verify = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ success, action, hostname }));
+    vi.stubGlobal('fetch', verify);
+
+    const response = await createTargetAdmissionTestApp(profile).request('http://localhost/api/sessions', {
+      method: 'POST',
+      headers: { [ORIGIN_VERIFY_HEADER]: targetOriginVerifyHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ turnstileToken: 'test-session-token' }),
+    });
+
+    expect(verify).toHaveBeenCalledTimes(1);
+    const request = verify.mock.calls[0];
+    expect(request?.[0]).toBe('https://challenges.cloudflare.com/turnstile/v0/siteverify');
+    expect(request?.[1]?.method).toBe('POST');
+    expect(request?.[1]?.body).toBeInstanceOf(URLSearchParams);
+    expect(response.status).toBe(allowed ? 200 : 403);
+    expect(createSession).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    if (!allowed) {
+      expect(getApiErrorCode(await readJsonRecord(response, 'main challenge rejection'))).toBe('CAPTCHA_FAILED');
+    }
   });
 
   it('returns standardized error payloads when handlers throw', async () => {
@@ -383,6 +433,20 @@ describe('createHonoApp', () => {
     expect(response.status).toBe(401);
     const payload = await readJsonRecord(response, 'progress response');
     expect(getApiErrorCode(payload)).toBe('SESSION_CAPABILITY_REQUIRED');
+  });
+
+  it('rejects a wire session identifier before capability or store access', async () => {
+    const getSessionIdentity = vi.fn(() => Promise.reject(new Error('store should not run')));
+    vi.mocked(getGlobalStore).mockReturnValue(createMockVoteStore({ getSessionIdentity }));
+    const app = createHonoApp({ basePath: '/api', mode: 'lambda' });
+
+    const response = await app.request('http://localhost/api/sessions/session_unsafe/progress');
+
+    expect(response.status).toBe(400);
+    expect(getApiErrorCode(await readJsonRecord(response, 'invalid session identifier response'))).toBe(
+      'INVALID_REQUEST',
+    );
+    expect(getSessionIdentity).not.toHaveBeenCalled();
   });
 
   it('derives progress identity from the path and does not authorize with an obsolete identity header', async () => {

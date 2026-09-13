@@ -266,16 +266,6 @@ export function getLatestCanonicalBulletinSnapshot(
   return rootHistory.length > 0 ? rootHistory[rootHistory.length - 1] : undefined;
 }
 
-export function applyCanonicalCtSessionProjection(
-  voting: Pick<SessionVotingRecord, 'bulletin' | 'bulletinRootHistory' | 'botCount' | 'userParticipation'>,
-  projection: CanonicalCtSessionProjection,
-): void {
-  voting.bulletin = projection.bulletin;
-  voting.bulletinRootHistory = projection.bulletinRootHistory;
-  voting.botCount = projection.botCount;
-  voting.userParticipation = projection.userParticipation;
-}
-
 export function buildCanonicalCtSessionProjection(
   voting: Pick<SessionVotingRecord, 'sessionId' | 'votes' | 'bulletin' | 'bulletinRootHistory' | 'userParticipation'>,
 ): CanonicalCtSessionProjection {

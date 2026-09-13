@@ -4,6 +4,7 @@ import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bullet
 import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sessionCapabilityToken';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
 import type { SessionIdentityRecord, SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 import { getApiErrorCode, readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
 import {
   requireSessionCapability,
@@ -11,17 +12,19 @@ import {
   validateSessionCapabilityForSession,
   type SessionValidationStore,
 } from './session';
-import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 
 const runtimeProfile = localRuntimeProfile();
+const SESSION_1 = asSessionId('session-1');
+const SESSION_2 = asSessionId('session-2');
 
 describe('session middleware', () => {
   const capabilitySecret = 'test-session-capability-secret-0123456789abcdef';
   let identity: SessionIdentityRecord;
   let voting: SessionVotingRecord;
-  let getSessionIdentity: ReturnType<typeof vi.fn<(sessionId: string) => Promise<SessionIdentityRecord | null>>>;
-  let getVotingRecord: ReturnType<typeof vi.fn<(sessionId: string) => Promise<SessionVotingRecord | null>>>;
-  let touchSession: ReturnType<typeof vi.fn<(sessionId: string) => Promise<void>>>;
+  let getSessionIdentity: ReturnType<typeof vi.fn<(sessionId: SessionId) => Promise<SessionIdentityRecord | null>>>;
+  let getVotingRecord: ReturnType<typeof vi.fn<(sessionId: SessionId) => Promise<SessionVotingRecord | null>>>;
+  let touchSession: ReturnType<typeof vi.fn<(sessionId: SessionId) => Promise<void>>>;
   let store: SessionValidationStore;
 
   beforeEach(() => {
@@ -29,7 +32,7 @@ describe('session middleware', () => {
     process.env['SESSION_CAPABILITY_SECRET'] = capabilitySecret;
     const nowMs = Date.now();
     identity = {
-      sessionId: 'session-1',
+      sessionId: SESSION_1,
       electionId: '550e8400-e29b-41d4-a716-446655440000',
       electionConfigHash: `0x${'1'.repeat(64)}`,
       electionConfig: {
@@ -43,7 +46,7 @@ describe('session middleware', () => {
       createdAtMs: nowMs,
     };
     voting = {
-      sessionId: 'session-1',
+      sessionId: SESSION_1,
       votes: new Map(),
       bulletin: new SimpleBulletinBoard(identity.logId),
       bulletinRootHistory: [],
@@ -72,13 +75,13 @@ describe('session middleware', () => {
 
   it('binds a capability token to the exact path session', async () => {
     const token = createSessionCapabilityToken(
-      { sessionId: 'session-1', nowMs: Date.now(), ttlSeconds: 300 },
+      { sessionId: SESSION_1, nowMs: Date.now(), ttlSeconds: 300 },
       capabilitySecret,
     );
     const headers = new Headers({ [SESSION_CAPABILITY_HEADER]: token });
 
-    expect(validateSessionCapabilityForSession(runtimeProfile, headers, 'session-1')).not.toBeInstanceOf(Response);
-    const mismatch = validateSessionCapabilityForSession(runtimeProfile, headers, 'session-2');
+    expect(validateSessionCapabilityForSession(runtimeProfile, headers, SESSION_1)).not.toBeInstanceOf(Response);
+    const mismatch = validateSessionCapabilityForSession(runtimeProfile, headers, SESSION_2);
     expect(mismatch).toBeInstanceOf(Response);
     if (mismatch instanceof Response) {
       expect(getApiErrorCode(await readJsonRecord(mismatch))).toBe(ErrorCode.SESSION_CAPABILITY_INVALID);
@@ -86,7 +89,7 @@ describe('session middleware', () => {
   });
 
   it('loads the path-selected session and updates activity by default', async () => {
-    const result = await validateSessionById('session-1', store);
+    const result = await validateSessionById(SESSION_1, store);
 
     expect(result).toEqual({
       session: { identity, voting, finalization: null },
@@ -98,7 +101,7 @@ describe('session middleware', () => {
   });
 
   it('can read without updating activity', async () => {
-    const result = await validateSessionById('session-1', store, { updateActivity: false });
+    const result = await validateSessionById(SESSION_1, store, { updateActivity: false });
 
     expect(result).toEqual({
       session: { identity, voting, finalization: null },
@@ -109,14 +112,14 @@ describe('session middleware', () => {
 
   it('fails closed for missing or cross-session records', async () => {
     getSessionIdentity.mockResolvedValueOnce(null);
-    const missing = await validateSessionById('session-1', store);
+    const missing = await validateSessionById(SESSION_1, store);
     expect(missing).toBeInstanceOf(Response);
     if (missing instanceof Response) {
       expect(getApiErrorCode(await readJsonRecord(missing))).toBe(ErrorCode.SESSION_NOT_FOUND);
     }
 
-    voting.sessionId = 'session-2';
-    const mismatched = await validateSessionById('session-1', store);
+    voting.sessionId = SESSION_2;
+    const mismatched = await validateSessionById(SESSION_1, store);
     expect(mismatched).toBeInstanceOf(Response);
     expect(touchSession).not.toHaveBeenCalled();
   });

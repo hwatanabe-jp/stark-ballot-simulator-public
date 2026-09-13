@@ -156,14 +156,16 @@ mod tests {
     use serde::Deserialize;
 
     #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct TsGoldenVectors {
         schema: String,
+        #[serde(rename = "generatedBy")]
+        _generated_by: String,
         cases: Vec<TsGoldenCase>,
     }
 
     #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct TsGoldenCase {
         tree_size: u32,
         leaves: Vec<String>,
@@ -172,7 +174,7 @@ mod tests {
     }
 
     #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct TsGoldenProof {
         leaf_index: u32,
         audit_path: Vec<String>,
@@ -316,6 +318,10 @@ mod tests {
     fn ts_generated_rfc6962_golden_vectors_round_trip_in_rust() {
         let vectors = parse_ts_golden_vectors();
         assert_eq!(vectors.schema, "stark-ballot:rfc6962-ts-golden-vectors|v1");
+        assert_eq!(
+            vectors._generated_by,
+            "scripts/tests/generate-rfc6962-golden-vectors.ts"
+        );
 
         let covered_sizes: Vec<u32> = vectors.cases.iter().map(|case| case.tree_size).collect();
         assert_eq!(covered_sizes, vec![1, 2, 3, 5, 7, 8, 9, 64]);
@@ -347,6 +353,25 @@ mod tests {
                     case.tree_size,
                 ));
             }
+        }
+    }
+
+    #[test]
+    fn ts_generated_rfc6962_golden_vectors_reject_unknown_keys_at_every_level() {
+        let source = include_str!("../testdata/rfc6962-ts-golden-vectors.json");
+        for pointer in ["", "/cases/0", "/cases/0/proofs/0"] {
+            let mut value: serde_json::Value =
+                serde_json::from_str(source).expect("RFC6962 fixture should parse as JSON");
+            value
+                .pointer_mut(pointer)
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("reviewed RFC6962 fixture pointer should identify an object")
+                .insert(String::from("retired"), serde_json::Value::Bool(true));
+
+            assert!(
+                serde_json::from_value::<TsGoldenVectors>(value).is_err(),
+                "unknown key at {pointer} must fail closed"
+            );
         }
     }
 

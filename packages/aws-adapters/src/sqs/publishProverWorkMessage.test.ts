@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PROVER_WORK_RECORD_TYPE } from '@stark-ballot/aws-adapters/sqs/proverWorkMessage';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type { FinalizationWorkItem } from '@stark-ballot/application/finalize/finalization-work-item';
 import { buildDefaultElectionConfig, hashElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
-import { targetRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { targetRuntimeProfile } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
 
 const emitCanonicalEventMock = vi.hoisted(() => vi.fn());
 
@@ -50,8 +52,8 @@ const baseElectionConfig = {
 
 const baseMessage: FinalizationWorkItem = {
   inputSource: 'inline',
-  sessionId: '00000000-0000-4000-8000-000000000001',
-  finalizationId: 'EXECUTION12345',
+  sessionId: asSessionId('00000000-0000-4000-8000-000000000001'),
+  finalizationId: asFinalizationId('EXECUTION12345'),
   queuedAtMs: 1730000000000,
   expectedImageId: '0x' + '1'.repeat(64),
   electionConfig: baseElectionConfig,

@@ -15,7 +15,11 @@ export type AwsRuntimeReferenceEnvName =
   | 'EXPECTED_ORIGIN_VERIFY_HEADER_REF';
 
 export type AwsRuntimeEntrypoint =
-  'public_api' | 'finalization_writer' | 'proof_dispatcher' | 'verification_worker' | 'semaphore_janitor';
+  | 'public_api'
+  | 'finalization_writer'
+  | 'proof_dispatcher'
+  | 'verification_worker'
+  | 'semaphore_janitor';
 
 interface AwsRuntimeReferenceDescriptor {
   envName: AwsRuntimeReferenceEnvName;

@@ -20,22 +20,23 @@ data "aws_iam_policy_document" "app_artifact_kms_key" {
 
     principals {
       type = "AWS"
-      identifiers = [
+      identifiers = compact([
         aws_iam_role.app_pipeline[0].arn,
-        aws_iam_role.app_deployment_record[0].arn,
+        local.app_acceptance_publisher_role_arn,
+        local.foundation_app_status_publisher_role_arn,
+        local.app_execution_authority_role_arn,
         aws_iam_role.app_terraform_plan[0].arn,
         aws_iam_role.app_terraform_apply[0].arn,
         aws_iam_role.app_static_deploy[0].arn,
-        aws_iam_role.app_static_fast_static_deploy[0].arn,
-        aws_iam_role.app_terraform_smoke[0].arn,
-        aws_iam_role.app_static_fast_pipeline[0].arn,
-        aws_iam_role.app_static_fast_gate_and_build[0].arn,
-        aws_iam_role.app_static_fast_smoke_lite[0].arn,
+        local.app_static_fast_enabled ? aws_iam_role.app_static_fast_static_deploy[0].arn : null,
+        local.app_terraform_smoke_role_arn,
+        local.app_static_fast_enabled ? aws_iam_role.app_static_fast_pipeline[0].arn : null,
+        local.app_static_fast_enabled ? aws_iam_role.app_static_fast_gate_and_build[0].arn : null,
+        local.app_static_fast_enabled ? aws_iam_role.app_static_fast_smoke_lite[0].arn : null,
         aws_iam_role.app_signature_preflight_plan[0].arn,
         aws_iam_role.app_signature_preflight_apply[0].arn,
-        aws_iam_role.app_signature_state_refresh_apply[0].arn,
         aws_iam_role.app_signature_preflight_invoker[0].arn,
-      ]
+      ])
     }
 
     actions = [
@@ -55,6 +56,11 @@ resource "aws_kms_key" "app_pipeline_artifacts" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   depends_on = [
+    terraform_data.bootstrap_apply_authorization_propagation,
+    aws_iam_role.app_acceptance_publisher,
+    aws_iam_role.app_deployment_status_publisher,
+    aws_iam_role.app_execution_authority,
+    aws_iam_role.app_terraform_smoke,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_pipeline_management,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management,
@@ -84,6 +90,7 @@ resource "aws_s3_bucket" "app_pipeline_artifacts" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   depends_on = [
+    terraform_data.bootstrap_apply_authorization_propagation,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_pipeline_management,
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management,
@@ -232,7 +239,7 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
   }
 
   statement {
-    sid    = "DenyAcceptedDeploymentMarkerWritesOutsideSmokeRole"
+    sid    = "DenyAppAcceptanceWritesOutsidePublisherRole"
     effect = "Deny"
 
     principals {
@@ -246,9 +253,116 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
     ]
 
     condition {
-      test     = "StringNotEquals"
+      test     = "ArnNotEquals"
       variable = "aws:PrincipalArn"
-      values   = [aws_iam_role.app_terraform_smoke[0].arn]
+      values   = [local.app_acceptance_publisher_role_arn]
+    }
+  }
+
+  statement {
+    sid    = "DenyAppStatusWritesOutsidePublisherRole"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = [local.foundation_app_status_object_arn]
+
+    condition {
+      test     = "ArnNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [local.foundation_app_status_publisher_role_arn]
+    }
+  }
+
+  statement {
+    sid    = "DenyUnconditionalAppStatusWrites"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = [local.foundation_app_status_object_arn]
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-match"
+      values   = ["true"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:if-none-match"
+      values   = ["*"]
+    }
+  }
+
+  statement {
+    sid    = "DenyAmbiguousAppStatusWrites"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = [local.foundation_app_status_object_arn]
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-none-match"
+      values   = ["false"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-match"
+      values   = ["false"]
+    }
+  }
+
+  statement {
+    sid    = "DenyNonKmsAppStatusWrites"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = [local.foundation_app_status_object_arn]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = ["aws:kms"]
+    }
+  }
+
+  statement {
+    sid    = "DenyWrongAppStatusKmsKey"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = [local.foundation_app_status_object_arn]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
+      values   = [aws_kms_alias.app_pipeline_artifacts[0].target_key_arn]
     }
   }
 
@@ -272,6 +386,7 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.approvalEvidencePrefix}/*",
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.recoveryManifestPrefix}/*",
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.signaturePreflightPrefix}/*",
+      local.foundation_app_status_object_arn,
     ]
   }
 
@@ -290,9 +405,28 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
     ]
 
     condition {
-      test     = "StringNotEquals"
+      test     = "ArnNotEquals"
       variable = "aws:PrincipalArn"
       values   = [aws_iam_role.app_signature_preflight_invoker[0].arn]
+    }
+  }
+
+  statement {
+    sid    = "DenyRecoveryManifestWritesOutsideOperatorRole"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = [local.app_retained_recovery_manifest_objects_arn]
+
+    condition {
+      test     = "ArnNotLike"
+      variable = "aws:PrincipalArn"
+      values   = [local.app_operator_role_arn_pattern]
     }
   }
 
@@ -307,7 +441,7 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
 
     actions = ["s3:PutObject"]
     resources = [
-      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.app_accepted_marker_path}/*/*",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.acceptedDeploymentPrefix}/*/*",
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.lambdaArtifactPrefix}/*",
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}/*",
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.approvalEvidencePrefix}/*",
@@ -316,18 +450,18 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
     ]
 
     condition {
-      test     = "Null"
+      test     = "StringNotEquals"
       variable = "s3:if-none-match"
-      values   = ["true"]
+      values   = ["*"]
     }
   }
 
   statement {
-    sid    = "DenyUnconditionalAcceptedDeploymentCurrentAuthorityWrites"
+    sid    = "DenyUnconditionalAppAcceptancePointerWrites"
     effect = "Deny"
 
-    # IAM combines these Null conditions with AND: first-create may use
-    # If-None-Match, while later current-authority updates must use If-Match.
+    # First-create must use the exact If-None-Match wildcard. Later updates use
+    # If-Match, and a separate deny rejects requests carrying both headers.
 
     principals {
       type        = "*"
@@ -335,23 +469,23 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
     }
 
     actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.app_accepted_marker_path}/current.json"]
-
-    condition {
-      test     = "Null"
-      variable = "s3:if-none-match"
-      values   = ["true"]
-    }
+    resources = [local.app_retained_accepted_deployment_pointer_object_arn]
 
     condition {
       test     = "Null"
       variable = "s3:if-match"
       values   = ["true"]
     }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:if-none-match"
+      values   = ["*"]
+    }
   }
 
   statement {
-    sid    = "DenyRetiredAcceptedDeploymentIndexWrites"
+    sid    = "DenyAmbiguousAppAcceptancePointerWrites"
     effect = "Deny"
 
     principals {
@@ -359,33 +493,20 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
       identifiers = ["*"]
     }
 
-    actions = [
-      "s3:AbortMultipartUpload",
-      "s3:BypassGovernanceRetention",
-      "s3:DeleteObject",
-      "s3:DeleteObjectAnnotation",
-      "s3:DeleteObjectTagging",
-      "s3:DeleteObjectVersion",
-      "s3:DeleteObjectVersionAnnotation",
-      "s3:DeleteObjectVersionTagging",
-      "s3:ObjectOwnerOverrideToBucketOwner",
-      "s3:PutObject",
-      "s3:PutObjectAcl",
-      "s3:PutObjectAnnotation",
-      "s3:PutObjectLegalHold",
-      "s3:PutObjectRetention",
-      "s3:PutObjectTagging",
-      "s3:PutObjectVersionAcl",
-      "s3:PutObjectVersionAnnotation",
-      "s3:PutObjectVersionTagging",
-      "s3:ReplicateDelete",
-      "s3:ReplicateObject",
-      "s3:ReplicateObjectAnnotation",
-      "s3:ReplicateTags",
-      "s3:RestoreObject",
-      "s3:UpdateObjectEncryption",
-    ]
-    resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.app_accepted_marker_path}/index.json"]
+    actions   = ["s3:PutObject"]
+    resources = [local.app_retained_accepted_deployment_pointer_object_arn]
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-none-match"
+      values   = ["false"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-match"
+      values   = ["false"]
+    }
   }
 
   statement {
@@ -401,7 +522,7 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
     resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.approvalEvidencePrefix}/*"]
 
     condition {
-      test     = "StringNotEquals"
+      test     = "ArnNotEquals"
       variable = "aws:PrincipalArn"
       values   = [aws_iam_role.app_terraform_apply[0].arn]
     }
@@ -420,7 +541,7 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
     resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.lambdaArtifactPrefix}/*"]
 
     condition {
-      test     = "StringNotEquals"
+      test     = "ArnNotEquals"
       variable = "aws:PrincipalArn"
       values = [
         aws_iam_role.app_terraform_plan[0].arn,
@@ -442,12 +563,12 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
     resources = ["${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}/*"]
 
     condition {
-      test     = "StringNotEquals"
+      test     = "ArnNotEquals"
       variable = "aws:PrincipalArn"
-      values = [
+      values = compact([
         aws_iam_role.app_static_deploy[0].arn,
-        aws_iam_role.app_static_fast_static_deploy[0].arn,
-      ]
+        local.app_static_fast_enabled ? aws_iam_role.app_static_fast_static_deploy[0].arn : null,
+      ])
     }
   }
 
@@ -473,6 +594,11 @@ data "aws_iam_policy_document" "app_pipeline_artifacts_bucket" {
 
 resource "aws_s3_bucket_policy" "app_pipeline_artifacts" {
   count = local.app_pipeline_enabled ? 1 : 0
+
+  depends_on = [
+    aws_iam_role.app_acceptance_publisher,
+    aws_iam_role.app_deployment_status_publisher,
+  ]
 
   bucket = aws_s3_bucket.app_pipeline_artifacts[0].id
   policy = data.aws_iam_policy_document.app_pipeline_artifacts_bucket[0].json
@@ -592,7 +718,7 @@ resource "aws_s3_bucket_policy" "app_pipeline_execution_artifacts" {
 }
 
 resource "aws_s3_bucket" "app_static_fast_execution_artifacts" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   depends_on = [
     aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
@@ -612,7 +738,7 @@ resource "aws_s3_bucket" "app_static_fast_execution_artifacts" {
 }
 
 resource "aws_s3_bucket_public_access_block" "app_static_fast_execution_artifacts" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   bucket                  = aws_s3_bucket.app_static_fast_execution_artifacts[0].id
   block_public_acls       = true
@@ -622,7 +748,7 @@ resource "aws_s3_bucket_public_access_block" "app_static_fast_execution_artifact
 }
 
 resource "aws_s3_bucket_versioning" "app_static_fast_execution_artifacts" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   bucket = aws_s3_bucket.app_static_fast_execution_artifacts[0].id
 
@@ -632,7 +758,7 @@ resource "aws_s3_bucket_versioning" "app_static_fast_execution_artifacts" {
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "app_static_fast_execution_artifacts" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   bucket = aws_s3_bucket.app_static_fast_execution_artifacts[0].id
 
@@ -657,7 +783,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "app_static_fast_execution_arti
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "app_static_fast_execution_artifacts" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   bucket = aws_s3_bucket.app_static_fast_execution_artifacts[0].id
 
@@ -672,7 +798,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "app_static_fast_e
 }
 
 data "aws_iam_policy_document" "app_static_fast_execution_artifacts_bucket" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   statement {
     sid    = "DenyInsecureTransport"
@@ -698,7 +824,7 @@ data "aws_iam_policy_document" "app_static_fast_execution_artifacts_bucket" {
 }
 
 resource "aws_s3_bucket_policy" "app_static_fast_execution_artifacts" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   bucket = aws_s3_bucket.app_static_fast_execution_artifacts[0].id
   policy = data.aws_iam_policy_document.app_static_fast_execution_artifacts_bucket[0].json

@@ -2,6 +2,7 @@ import { isValidHexString } from '@stark-ballot/crypto-primitives';
 import type { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
 import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
+import { asSessionId, type SessionId } from './identifiers';
 
 export interface ElectionConfig {
   totalExpected: number;
@@ -15,7 +16,7 @@ export interface ElectionConfig {
  * Stable authority written once when a session is created.
  */
 export interface SessionIdentityRecord {
-  sessionId: string;
+  sessionId: SessionId;
   electionId: string;
   electionConfigHash: string;
   electionConfig: ElectionConfig;
@@ -23,24 +24,27 @@ export interface SessionIdentityRecord {
   createdAtMs: number;
 }
 
-/**
- * Vote command data. Store-owned cast records make the generated fields
- * required through {@link StoredVoteRecord}.
- */
-export interface VoteData {
-  voteId?: string;
+/** Bot values whose identity and time are owned by the voting-store mutation. */
+export interface BotVoteCommand {
   vote: VoteChoice;
   rand: string;
-  commit: string;
-  path: string[];
-  timestamp?: number;
-  rootAtCast?: string;
-  treeSize?: number;
 }
 
-export interface StoredVoteRecord extends Omit<VoteData, 'voteId' | 'path' | 'timestamp' | 'rootAtCast' | 'treeSize'> {
+/** User-vote values fixed by the caller before the voting-store mutation begins. */
+export interface UserVoteCommand {
   voteId: string;
   timestamp: number;
+  vote: VoteChoice;
+  rand: string;
+}
+
+/** Canonical vote admitted for a CT append after mutation-owned preparation. */
+export interface PreparedVote extends UserVoteCommand {
+  commit: string;
+}
+
+/** Persisted vote after its commitment has been appended to the CT log. */
+export interface StoredVoteRecord extends PreparedVote {
   rootAtCast: string;
 }
 
@@ -65,7 +69,7 @@ export type UserParticipation =
  * not enter this record.
  */
 export interface SessionVotingRecord {
-  sessionId: string;
+  sessionId: SessionId;
   votes: Map<number, StoredVoteRecord>;
   bulletin: SimpleBulletinBoard;
   bulletinRootHistory: RootSnapshot[];
@@ -177,7 +181,7 @@ export function parseSessionIdentityRecord(value: unknown): SessionIdentityRecor
     return undefined;
   }
   return {
-    sessionId,
+    sessionId: asSessionId(sessionId),
     electionId,
     electionConfigHash,
     electionConfig,

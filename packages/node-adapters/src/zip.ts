@@ -1,11 +1,13 @@
 import { createWriteStream, promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { Readable } from 'node:stream';
+import { Transform, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import * as yauzl from 'yauzl';
 
 const DEFAULT_MAX_ENTRY_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_ENTRIES = 10_000;
+const DEFAULT_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
+const MAX_ENTRY_PATH_BYTES = 4_096;
 
 type ZipOpenOptions = yauzl.Options & {
   strictFileNames?: boolean;
@@ -22,6 +24,8 @@ const DEFAULT_YAUZL_OPTIONS: ZipOpenOptions = {
 export interface ExtractZipOptions {
   destination: string;
   maxEntryBytes?: number;
+  maxEntries?: number;
+  maxTotalBytes?: number;
 }
 
 export interface ReadZipEntriesOptions {
@@ -29,7 +33,9 @@ export interface ReadZipEntriesOptions {
 }
 
 export interface ListZipEntryNamesOptions {
+  maxEntryBytes?: number;
   maxEntries?: number;
+  maxTotalBytes?: number;
 }
 
 function resolveEntryTarget(
@@ -37,7 +43,11 @@ function resolveEntryTarget(
   entryName: string,
 ): { targetPath: string; isDirectory: boolean; key: string } {
   const sanitized = entryName.replace(/\\/g, '/');
-  if (sanitized.length === 0 || sanitized.includes('\0')) {
+  if (
+    sanitized.length === 0 ||
+    sanitized.includes('\0') ||
+    Buffer.byteLength(sanitized, 'utf8') > MAX_ENTRY_PATH_BYTES
+  ) {
     throw new Error(`Invalid zip entry name: ${entryName}`);
   }
   const isDirectory = sanitized.endsWith('/');
@@ -63,6 +73,18 @@ function resolveEntryTarget(
 function assertEntrySize(entry: yauzl.Entry, maxEntryBytes: number): void {
   if (entry.uncompressedSize > maxEntryBytes) {
     throw new Error(`Zip entry too large: ${entry.fileName}`);
+  }
+}
+
+function assertZipLimits(maxEntryBytes: number, maxEntries: number, maxTotalBytes: number): void {
+  for (const [value, label] of [
+    [maxEntryBytes, 'maxEntryBytes'],
+    [maxEntries, 'maxEntries'],
+    [maxTotalBytes, 'maxTotalBytes'],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`Zip ${label} must be a positive integer`);
+    }
   }
 }
 
@@ -132,13 +154,22 @@ async function readEntryBuffer(zipfile: yauzl.ZipFile, entry: yauzl.Entry, maxEn
 }
 
 async function extractZip(zipfile: yauzl.ZipFile, options: ExtractZipOptions): Promise<void> {
-  const { destination, maxEntryBytes = DEFAULT_MAX_ENTRY_BYTES } = options;
+  const {
+    destination,
+    maxEntryBytes = DEFAULT_MAX_ENTRY_BYTES,
+    maxEntries = DEFAULT_MAX_ENTRIES,
+    maxTotalBytes = DEFAULT_MAX_TOTAL_BYTES,
+  } = options;
   if (!destination) {
     throw new Error('Zip extraction destination is required');
   }
+  assertZipLimits(maxEntryBytes, maxEntries, maxTotalBytes);
   await fs.mkdir(destination, { recursive: true });
 
   const seen = new Set<string>();
+  let entryCount = 0;
+  let declaredTotalBytes = 0;
+  let actualTotalBytes = 0;
 
   await new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -161,6 +192,16 @@ async function extractZip(zipfile: yauzl.ZipFile, options: ExtractZipOptions): P
     zipfile.on('end', () => finish());
 
     zipfile.on('entry', (entry: yauzl.Entry) => {
+      entryCount += 1;
+      if (entryCount > maxEntries) {
+        finish(new Error(`Zip contains more than ${maxEntries} entries`));
+        return;
+      }
+      declaredTotalBytes += entry.uncompressedSize;
+      if (declaredTotalBytes > maxTotalBytes) {
+        finish(new Error(`Zip aggregate uncompressed size exceeds ${maxTotalBytes} bytes`));
+        return;
+      }
       let target: { targetPath: string; isDirectory: boolean; key: string };
       try {
         target = resolveEntryTarget(destination, entry.fileName);
@@ -192,7 +233,26 @@ async function extractZip(zipfile: yauzl.ZipFile, options: ExtractZipOptions): P
       fs.mkdir(path.dirname(target.targetPath), { recursive: true })
         .then(async () => {
           const stream = await openEntryStream(zipfile, entry);
-          await pipeline(stream, createWriteStream(target.targetPath));
+          let actualEntryBytes = 0;
+          const meter = new Transform({
+            transform(chunk: unknown, _encoding, callback) {
+              let buffer: Buffer;
+              try {
+                buffer = toBuffer(chunk);
+              } catch (error) {
+                callback(error instanceof Error ? error : new Error(String(error)));
+                return;
+              }
+              actualEntryBytes += buffer.length;
+              actualTotalBytes += buffer.length;
+              if (actualEntryBytes > maxEntryBytes || actualTotalBytes > maxTotalBytes) {
+                callback(new Error('Zip actual extracted bytes exceed the configured entry or aggregate bound'));
+                return;
+              }
+              callback(null, buffer);
+            },
+          });
+          await pipeline(stream, meter, createWriteStream(target.targetPath));
         })
         .then(() => zipfile.readEntry())
         .catch((error) => finish(error instanceof Error ? error : new Error(String(error))));
@@ -225,15 +285,18 @@ export async function listZipEntryNamesFromBuffer(
   buffer: Buffer,
   options: ListZipEntryNamesOptions = {},
 ): Promise<string[]> {
-  const { maxEntries = DEFAULT_MAX_ENTRIES } = options;
-  if (!Number.isSafeInteger(maxEntries) || maxEntries <= 0) {
-    throw new Error('Zip maxEntries must be a positive integer');
-  }
+  const {
+    maxEntryBytes = DEFAULT_MAX_ENTRY_BYTES,
+    maxEntries = DEFAULT_MAX_ENTRIES,
+    maxTotalBytes = DEFAULT_MAX_TOTAL_BYTES,
+  } = options;
+  assertZipLimits(maxEntryBytes, maxEntries, maxTotalBytes);
 
   const zipfile = await openZipFromBuffer(buffer);
   const entries: string[] = [];
   const seen = new Set<string>();
   let entryCount = 0;
+  let totalBytes = 0;
 
   await new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -259,6 +322,17 @@ export async function listZipEntryNamesFromBuffer(
       entryCount += 1;
       if (entryCount > maxEntries) {
         finish(new Error(`Zip contains more than ${maxEntries} entries`));
+        return;
+      }
+      try {
+        assertEntrySize(entry, maxEntryBytes);
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      totalBytes += entry.uncompressedSize;
+      if (totalBytes > maxTotalBytes) {
+        finish(new Error(`Zip aggregate uncompressed size exceeds ${maxTotalBytes} bytes`));
         return;
       }
 

@@ -7,7 +7,7 @@ import {
   localRuntimeProfile,
   targetRuntimeProfile,
   targetRuntimeProfileEnv,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { resolveRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import {
   ensureAwsRuntimeConfigReferencesLoaded,
@@ -20,6 +20,7 @@ import {
   createSessionCapabilityToken,
   verifySessionCapabilityToken,
 } from '@stark-ballot/domain/security/sessionCapabilityToken';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
 import { encryptVoteSecret } from '@stark-ballot/aws-adapters/security/voteSecretCipher';
 
 const SESSION_SECRET_REF = '/stark-ballot-simulator/stark-dev/develop/app/secrets/session-capability-secret';
@@ -232,16 +233,17 @@ describe('awsRuntimeConfigReferenceResolver', () => {
       }),
     );
     const nowMs = 1_700_000_000_000;
+    const sessionId = asSessionId('session-123');
     const token = createSessionCapabilityToken(
       {
-        sessionId: 'session-123',
+        sessionId,
         nowMs,
         ttlSeconds,
       },
       secret,
     );
 
-    expect(verifySessionCapabilityToken(token, SESSION_SECRET, { sessionId: 'session-123', nowMs }).ok).toBe(true);
+    expect(verifySessionCapabilityToken(token, SESSION_SECRET, { sessionId, nowMs }).ok).toBe(true);
     expect(() => encryptVoteSecret('0x' + '1'.repeat(64))).not.toThrow();
     expect(ssmSend).toHaveBeenCalledWith(
       expect.objectContaining({ input: { Name: SESSION_TTL_REF, WithDecryption: true } }),

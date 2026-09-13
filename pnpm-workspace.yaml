@@ -12,6 +12,20 @@ disallowWorkspaceCycles: true
 # reject stale installs instead of mutating the workspace through an implicit install.
 enableGlobalVirtualStore: false
 verifyDepsBeforeRun: error
+# These tasks consume workspace source directly, so they need no predecessor
+# build or same-name dependency task. Bound heavy compiler and runner processes;
+# Vitest still owns parallel test-file execution within each invocation.
+tasks:
+  lint:
+    dependsOn: []
+    concurrency: 1
+  type-check:
+    dependsOn: []
+    concurrency: 2
+  test:
+    dependsOn: []
+    concurrency: 1
+
 # Keep transient registry latency below 30 seconds out of otherwise clean CI
 # logs. Fetch timeout, retries, and integrity admission remain unchanged.
 fetchWarnTimeoutMs: 30000
@@ -28,7 +42,6 @@ trustPolicyExclude:
   # evidence expectations. Keep these pinned to exact versions so future trust
   # downgrades still fail closed.
   - 'chokidar@4.0.3'
-  - 'eslint-import-resolver-typescript@3.10.1'
   - 'graphql@15.10.2'
   - 'semver@6.3.1'
   - 'ua-parser-js@1.0.41'
@@ -40,38 +53,56 @@ update:
 
 catalogs:
   aws-sdk:
-    '@aws-sdk/client-codebuild': '3.1106.0'
-    '@aws-sdk/client-codepipeline': '3.1106.0'
-    '@aws-sdk/client-dynamodb': '3.1106.0'
-    '@aws-sdk/client-ecs': '3.1106.0'
-    '@aws-sdk/client-s3': '3.1106.0'
-    '@aws-sdk/client-secrets-manager': '3.1106.0'
-    '@aws-sdk/client-sfn': '3.1106.0'
-    '@aws-sdk/client-sqs': '3.1106.0'
-    '@aws-sdk/client-ssm': '3.1106.0'
-    '@aws-sdk/client-sts': '3.1106.0'
-    '@aws-sdk/lib-dynamodb': '3.1106.0'
+    '@aws-sdk/client-codebuild': 3.1130.0
+    '@aws-sdk/client-codepipeline': 3.1130.0
+    '@aws-sdk/client-dynamodb': 3.1130.0
+    '@aws-sdk/client-ecs': 3.1130.0
+    '@aws-sdk/client-s3': 3.1130.0
+    '@aws-sdk/client-secrets-manager': 3.1130.0
+    '@aws-sdk/client-sfn': 3.1130.0
+    '@aws-sdk/client-sqs': 3.1130.0
+    '@aws-sdk/client-ssm': 3.1130.0
+    '@aws-sdk/client-sts': 3.1130.0
+    '@aws-sdk/lib-dynamodb': 3.1130.0
   crypto-testing:
-    '@noble/hashes': '2.3.0'
+    '@noble/hashes': 2.4.0
     fast-check: '4.9.0'
   react:
-    '@marsidev/react-turnstile': '1.5.5'
-    '@testing-library/react': '16.3.2'
-    '@testing-library/user-event': '14.6.3'
-    lucide-react: '1.30.0'
-    react: '19.2.8'
-    react-dom: '19.2.8'
-    react-router: '8.3.0'
+    '@marsidev/react-turnstile': 1.6.1
+    '@testing-library/react': 16.3.3
+    '@testing-library/user-event': 14.6.7
+    lucide-react: 1.44.0
+    react: '19.3.0'
+    react-dom: '19.3.0'
+    react-router: 8.3.1
+  storybook:
+    '@storybook/react': 10.6.0
+    storybook: 10.6.0
+    '@storybook/react-vite': 10.6.0
   testing:
-    '@vitest/coverage-v8': '4.1.10'
-    typescript: '6.0.3'
-    vitest: '4.1.10'
+    oxfmt: 0.67.0
+    oxc-parser: '0.149.0'
+    '@vitest/coverage-v8': '5.0.0'
+    typescript: '7.0.2'
+    vitest: '5.0.0'
+
+# Tinybench's published declaration uses a DOM-only timestamp name even though
+# performance.now() returns number. Keep Node test projects free of DOM globals.
+# Vitest's declaration patch fixes bundled imports and exact optional types;
+# jest-dom augments Vitest's current Matchers interface. These patches leave
+# runtime code and strict TypeScript checking unchanged.
+# Storybook restores the line positions of two bundled type-error directives.
+patchedDependencies:
+  '@storybook/react@10.6.0': patches/@storybook__react@10.6.0.patch
+  '@testing-library/jest-dom@7.0.1': patches/@testing-library__jest-dom@7.0.1.patch
+  tinybench@6.1.4: patches/tinybench@6.1.4.patch
+  vitest@5.0.0: patches/vitest@5.0.0.patch
 
 overrides:
   '@smithy/types': 4.16.1
-  'brace-expansion@^1.0.0': 1.1.16
-  'brace-expansion@^2.0.0': 2.1.2
-  'js-yaml@^4.0.0': 4.3.0
+  'brace-expansion@^1.0.0': 1.1.18
+  'brace-expansion@^2.0.0': 2.1.4
+  'js-yaml@^4.0.0': 4.3.2
 
 peerDependencyRules:
   allowedVersions:

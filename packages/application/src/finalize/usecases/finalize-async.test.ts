@@ -11,9 +11,12 @@ import {
   finalizeAsync,
   type FinalizeAsyncDependencies,
 } from '@stark-ballot/application/finalize/usecases/finalize-async';
-import { createMockVoteStore } from '../__tests__/support/mockVoteStore';
+import { createMockVoteStore } from '../test-support/mockVoteStore';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { logger } from '@stark-ballot/diagnostics/logger';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
 
 const emitCanonicalEventMock = vi.hoisted(() => vi.fn());
 
@@ -30,9 +33,9 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
 
 type MarkQueuedPayload = Parameters<FinalizeAsyncDependencies['store']['markFinalizationQueued']>[1];
 
-const SESSION_ID = '11111111-1111-4111-8111-111111111111';
+const SESSION_ID = asSessionId('11111111-1111-4111-8111-111111111111');
 const QUEUED_AT = 1_730_000_000_000;
-const FINALIZATION_ID = '01JCGXZ8M00000000000000000';
+const FINALIZATION_ID = asFinalizationId('01JCGXZ8M00000000000000000');
 const SCENARIO_CONTEXT = {
   scenarios: ['S0'],
   tamperMode: 'none' as const,
@@ -58,7 +61,7 @@ function createZkvmInput(): ZkVMInput {
   };
 }
 
-function createFailedState(finalizationId: string): FinalizationState {
+function createFailedState(finalizationId: FinalizationId): FinalizationState {
   return {
     status: 'failed',
     finalizationId,
@@ -72,7 +75,7 @@ function createFailedState(finalizationId: string): FinalizationState {
 }
 
 function createHarness(markQueued: (payload: MarkQueuedPayload) => FinalizationState | Promise<FinalizationState>) {
-  const markFinalizationQueued = vi.fn(async (sessionId: string, payload: MarkQueuedPayload) => {
+  const markFinalizationQueued = vi.fn(async (sessionId: SessionId, payload: MarkQueuedPayload) => {
     const state = await markQueued(payload);
     if (state.status === 'succeeded') {
       throw new Error('This test harness does not create succeeded records');
@@ -84,7 +87,7 @@ function createHarness(markQueued: (payload: MarkQueuedPayload) => FinalizationS
       state,
     };
   });
-  const markFinalizationFailed = vi.fn((sessionId: string, payload: FinalizationFailedPayload) => {
+  const markFinalizationFailed = vi.fn((sessionId: SessionId, payload: FinalizationFailedPayload) => {
     const state = createFailedState(payload.finalizationId);
     return Promise.resolve({
       sessionId,
@@ -116,7 +119,7 @@ const existingAttemptStates: Array<[string, FinalizationState]> = [
     'pending',
     {
       status: 'pending',
-      finalizationId: 'exec-existing-pending',
+      finalizationId: asFinalizationId('exec-existing-pending'),
       queuedAtMs: QUEUED_AT - 5_000,
     },
   ],
@@ -124,7 +127,7 @@ const existingAttemptStates: Array<[string, FinalizationState]> = [
     'running',
     {
       status: 'running',
-      finalizationId: 'exec-existing-running',
+      finalizationId: asFinalizationId('exec-existing-running'),
       queuedAtMs: QUEUED_AT - 5_000,
       startedAtMs: QUEUED_AT - 4_000,
     },
@@ -206,7 +209,7 @@ describe('finalizeAsync duplicate and fail-closed queue handling', () => {
   );
 
   it('short-circuits without upload or publish when a stale terminal attempt is returned', async () => {
-    const existingState = createFailedState('exec-stale-terminal');
+    const existingState = createFailedState(asFinalizationId('exec-stale-terminal'));
 
     const { result, persistAsyncProverInput, finalizationQueue } = await runFinalizeAsync({
       state: existingState,

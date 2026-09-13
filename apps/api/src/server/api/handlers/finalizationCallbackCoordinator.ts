@@ -6,10 +6,15 @@ import { emitCanonicalEvent, type FinalizationUpdateOutcome } from '@stark-ballo
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import type { ApiContextStore } from '../context';
 
-export interface FinalizationCallbackCoordinatorResult {
-  status: number;
-  body: Record<string, unknown>;
-}
+export type FinalizationCallbackCoordinatorResult =
+  | {
+      readonly status: 200;
+      readonly body: FinalizationStateUpdateApplyResult;
+    }
+  | {
+      readonly status: 500 | 501;
+      readonly body: { readonly error: string };
+    };
 
 function emitAppliedCallbackOutcome(
   outcome: FinalizationUpdateOutcome,

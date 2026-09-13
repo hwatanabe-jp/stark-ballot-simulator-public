@@ -120,6 +120,54 @@ variable "image_signature_verifier_base_prover_image_uri" {
   }
 }
 
+variable "image_signature_verifier_reconciled_function_version" {
+  description = "Exact immutable verifier FunctionVersion reconciled before replaying a normal reviewed App plan."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.image_signature_verifier_reconciled_function_version == null
+      || can(regex("^[1-9][0-9]*$", var.image_signature_verifier_reconciled_function_version))
+    )
+    error_message = "image_signature_verifier_reconciled_function_version must be null or a positive decimal FunctionVersion."
+  }
+}
+
+variable "image_signature_verifier_reconciliation_desired_json" {
+  description = "Canonical reconciliation authority reviewed in a normal verifier-preflight saved plan."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.image_signature_verifier_reconciliation_desired_json == null
+      || (
+        length(var.image_signature_verifier_reconciliation_desired_json) <= 262144
+        && can(jsondecode(var.image_signature_verifier_reconciliation_desired_json))
+      )
+    )
+    error_message = "image_signature_verifier_reconciliation_desired_json must be null or bounded valid JSON."
+  }
+}
+
+variable "image_signature_verifier_reconciliation_desired_sha256" {
+  description = "SHA-256 of the exact canonical verifier reconciliation authority JSON."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.image_signature_verifier_reconciliation_desired_sha256 == null
+      || can(regex("^[0-9a-f]{64}$", var.image_signature_verifier_reconciliation_desired_sha256))
+    )
+    error_message = "image_signature_verifier_reconciliation_desired_sha256 must be null or a lowercase SHA-256."
+  }
+}
+
 variable "image_signature_verifier_selected_authority" {
   description = "Exact accepted immutable verifier identity selected by the full App plan. The isolated normal preflight leaves this null."
   type = object({

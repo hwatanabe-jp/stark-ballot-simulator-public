@@ -1,15 +1,22 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, XCircle, AlertTriangle, Loader2, Circle, Download, ChevronDown } from 'lucide-react';
 import type { KnowledgeData, VerificationStepId, VerificationStepStatus } from '@stark-ballot/web/knowledge';
 import { KNOWLEDGE_KEYS } from '@stark-ballot/web/knowledge';
 import { useTranslation } from '@stark-ballot/web/hooks';
-import { useKnowledgeHighlight } from '@stark-ballot/web/components/knowledge';
-import { Badge, type BadgeVariant } from '@stark-ballot/web/components/ui/Badge';
+import type { TranslationKey } from '@stark-ballot/web/i18n';
+import type { VerificationDisplayStatus, VerifiedPresentation } from '@stark-ballot/verification/presentation-policy';
+import {
+  KnowledgeEvidence,
+  selectKnowledgeItems,
+  useKnowledgeItems,
+  useKnowledgeHighlight,
+} from '@stark-ballot/web/components/knowledge';
+import './UnifiedVerificationCard.css';
 import { Button } from '@stark-ballot/web/components/ui/Button';
-import { Card, CardContent } from '@stark-ballot/web/components/ui/Card';
 import { InlineAlert } from '@stark-ballot/web/components/ui/InlineAlert';
+import { joinClassNames } from '@stark-ballot/web/shared/classNames';
 import { shouldLogBrowserDevelopmentWarnings } from '@stark-ballot/runtime-config/env/browserRuntime';
 import {
   VERIFICATION_CHECK_DEFINITIONS,
@@ -21,14 +28,15 @@ import {
 
 type CheckStatus = 'pending' | 'running' | 'success' | 'failed';
 type CheckVisualStatus = CheckStatus | 'demo';
-type SummaryStatus = 'verified' | 'warning' | 'failed' | 'in_progress' | 'demo_only';
+type SummaryStatus = VerificationDisplayStatus | 'in_progress';
 
-interface SummaryData {
-  status: SummaryStatus;
+type SummaryData = {
   message: string;
   subMessage?: string;
-  messageKey?: string;
-}
+} & (
+  | { status: Exclude<SummaryStatus, 'verified'>; verifiedPresentation?: never }
+  | { status: 'verified'; verifiedPresentation: VerifiedPresentation }
+);
 
 interface DownloadData {
   available: boolean;
@@ -40,20 +48,21 @@ interface DownloadData {
 interface VerificationDetailItemDefinition {
   checkId: VerificationCheckId;
   number: number;
-  labelKey: string;
-  noteKey?: string;
+  labelKey: TranslationKey;
+  noteKey?: TranslationKey;
   dependsOnStark?: boolean;
 }
 
 interface VerificationCategoryDefinition {
   id: VerificationStepId;
-  titleKey: string;
-  descriptionKey: string;
+  titleKey: TranslationKey;
+  descriptionKey: TranslationKey;
   items: VerificationDetailItemDefinition[];
 }
 
 export interface UnifiedVerificationCardProps {
   summary: SummaryData | null;
+  knowledgeFilterKeys?: readonly (keyof KnowledgeData)[];
   verificationChecks?: VerificationCheck[];
   /** Override for STARK-dependent gating when STARK is already resolved before display. */
   starkGateStatus?: CheckStatus;
@@ -221,41 +230,24 @@ const VERIFICATION_CATEGORIES: VerificationCategoryDefinition[] = [
   },
 ];
 
-const EVIDENCE_LABEL_KEYS: Record<VerificationEvidence, string> = {
+const EVIDENCE_LABEL_KEYS: Record<VerificationEvidence, TranslationKey> = {
   local: 'pages.verify.stepsCard.evidence.local',
   public: 'pages.verify.stepsCard.evidence.public',
   zk: 'pages.verify.stepsCard.evidence.zk',
   demo: 'pages.verify.stepsCard.evidence.demo',
 };
 
-const EVIDENCE_VARIANTS: Record<VerificationEvidence, BadgeVariant> = {
-  local: 'default',
-  public: 'info',
-  zk: 'verified',
-  demo: 'warning',
-};
-
-const STATUS_LABEL_KEYS: Record<CheckStatus, string> = {
+const STATUS_LABEL_KEYS: Record<CheckStatus, TranslationKey> = {
   pending: 'pages.verify.stepsCard.status.pending',
   running: 'pages.verify.stepsCard.status.running',
   success: 'pages.verify.stepsCard.status.success',
   failed: 'pages.verify.stepsCard.status.failed',
 };
 
-const VISUAL_STATUS_LABEL_KEYS: Record<CheckVisualStatus, string> = {
+const VISUAL_STATUS_LABEL_KEYS: Record<CheckVisualStatus, TranslationKey> = {
   ...STATUS_LABEL_KEYS,
   demo: 'pages.verify.stepsCard.evidence.demo',
 };
-
-const VISUAL_STATUS_VARIANTS: Record<CheckVisualStatus, BadgeVariant> = {
-  pending: 'default',
-  running: 'info',
-  success: 'verified',
-  failed: 'error',
-  demo: 'warning',
-};
-
-const cn = (...classes: Array<string | false | undefined>): string => classes.filter(Boolean).join(' ');
 
 const normalizeStatus = (status: VerificationStepStatus | undefined): CheckStatus => {
   if (status === 'success' || status === 'failed' || status === 'running') {
@@ -313,43 +305,21 @@ const resolveMissingCheckStatus = (
 };
 
 const StatusIcon = ({ status, size = 16 }: { status: CheckVisualStatus; size?: number }): React.ReactElement => {
-  const iconClass = `w-[${size}px] h-[${size}px]`;
   const style = { width: size, height: size };
 
   switch (status) {
     case 'success':
-      return <CheckCircle2 className={cn(iconClass, 'animate-status-icon-morph')} style={style} />;
+      return <CheckCircle2 style={style} />;
     case 'demo':
-      return <AlertTriangle className={cn(iconClass, 'animate-status-icon-morph')} style={style} />;
+      return <AlertTriangle style={style} />;
     case 'failed':
-      return <XCircle className={cn(iconClass, 'animate-status-icon-morph')} style={style} />;
+      return <XCircle style={style} />;
     case 'running':
-      return <Loader2 className={cn(iconClass, 'animate-spin')} style={style} />;
+      return <Loader2 className="animate-spin" style={style} />;
     case 'pending':
     default:
-      return <Circle className={cn(iconClass, 'opacity-40')} style={style} />;
+      return <Circle className="opacity-40" style={style} />;
   }
-};
-
-const StatusBadge = ({
-  status,
-  size = 'small',
-  className,
-}: {
-  status: CheckVisualStatus;
-  size?: 'small' | 'medium' | 'large';
-  className?: string;
-}): React.ReactElement => {
-  const { t } = useTranslation();
-  return (
-    <Badge
-      variant={VISUAL_STATUS_VARIANTS[status]}
-      size={size}
-      className={cn('transition-colors duration-200', className)}
-    >
-      {t(VISUAL_STATUS_LABEL_KEYS[status])}
-    </Badge>
-  );
 };
 
 const SummaryStatusIcon = ({ status }: { status: SummaryStatus }): React.ReactElement => {
@@ -365,7 +335,7 @@ const SummaryStatusIcon = ({ status }: { status: SummaryStatus }): React.ReactEl
     case 'failed':
       return <XCircle className="text-error-600" style={style} aria-hidden="true" />;
     case 'in_progress':
-      return <Loader2 className="text-ink-500 animate-spin" style={style} aria-hidden="true" />;
+      return <Loader2 className="animate-spin text-ink-500" style={style} aria-hidden="true" />;
   }
 };
 
@@ -389,6 +359,7 @@ const OPERATIONAL_STEP_ERROR_PATTERN = /(fetch|network|timeout|internal|\bapi\b|
 
 export function UnifiedVerificationCard({
   summary,
+  knowledgeFilterKeys = [],
   verificationChecks,
   starkGateStatus,
   visibleStepCount,
@@ -397,9 +368,13 @@ export function UnifiedVerificationCard({
   download,
 }: UnifiedVerificationCardProps): React.ReactElement {
   const { t } = useTranslation();
-  const { setHighlightedKeys } = useKnowledgeHighlight();
-  const highlightTimeoutRef = useRef<number | null>(null);
-  const highlightStartRef = useRef<number | null>(null);
+  const knowledgeItems = useKnowledgeItems();
+  const visibleKnowledgeItems = useMemo(
+    () => selectKnowledgeItems(knowledgeItems, knowledgeFilterKeys),
+    [knowledgeItems, knowledgeFilterKeys],
+  );
+  const { highlightedKeys, setHighlightedKeys } = useKnowledgeHighlight();
+  const [selectedCheck, setSelectedCheck] = useState<VerificationCheckId | null>(null);
   const [expandedCategories, setExpandedCategories] = useState<Set<VerificationStepId>>(
     new Set(['cast_as_intended', 'recorded_as_cast', 'counted_as_recorded', 'stark_verification']),
   );
@@ -417,76 +392,26 @@ export function UnifiedVerificationCard({
     return map;
   }, [verificationChecks]);
 
-  const clearHighlight = useCallback(() => {
-    setHighlightedKeys([]);
-  }, [setHighlightedKeys]);
-
-  const handleHighlight = useCallback(
-    (keys: Array<keyof KnowledgeData>) => {
-      if (!sequenceComplete || keys.length === 0) {
-        return;
-      }
-      if (highlightTimeoutRef.current !== null) {
-        window.clearTimeout(highlightTimeoutRef.current);
-      }
-      if (highlightStartRef.current !== null) {
-        window.clearTimeout(highlightStartRef.current);
-      }
-      setHighlightedKeys([]);
-      highlightStartRef.current = window.setTimeout(() => {
-        setHighlightedKeys([...keys]);
-        highlightStartRef.current = null;
-      }, 0);
-      highlightTimeoutRef.current = window.setTimeout(() => {
-        clearHighlight();
-      }, 2500);
-    },
-    [clearHighlight, sequenceComplete, setHighlightedKeys],
-  );
-
   useEffect(() => {
-    return () => {
-      if (highlightTimeoutRef.current !== null) {
-        window.clearTimeout(highlightTimeoutRef.current);
-      }
-      if (highlightStartRef.current !== null) {
-        window.clearTimeout(highlightStartRef.current);
-      }
-      clearHighlight();
-    };
-  }, [clearHighlight]);
-
-  const resolveErrorMessage = useCallback(
-    (error: string | undefined, categoryId: VerificationStepId): string | undefined => {
-      if (!error) {
-        return undefined;
-      }
-      if (shouldLogBrowserDevelopmentWarnings()) {
+    if (!shouldLogBrowserDevelopmentWarnings()) return;
+    for (const { id: categoryId } of VERIFICATION_CATEGORIES) {
+      const error = stepStatusMap[categoryId].error;
+      if (error) {
         console.warn(`[Verify] Step ${categoryId} failed: ${error}`);
       }
-      if (!OPERATIONAL_STEP_ERROR_PATTERN.test(error)) {
-        return undefined;
-      }
-      return t('pages.verify.stepsCard.errors.generic');
-    },
-    [t],
-  );
+    }
+  }, [stepStatusMap]);
 
   const preparedCategories = useMemo(() => {
-    const castStatus = normalizeStatus(stepStatusMap.cast_as_intended.status);
-    const recordedStatus = normalizeStatus(stepStatusMap.recorded_as_cast.status);
-    const countedStatus = normalizeStatus(stepStatusMap.counted_as_recorded.status);
-    const starkStatus = normalizeStatus(stepStatusMap.stark_verification.status);
-    const gateStatus = starkGateStatus ?? starkStatus;
+    const baseStatusMap: Record<VerificationStepId, CheckStatus> = {
+      cast_as_intended: normalizeStatus(stepStatusMap.cast_as_intended.status),
+      recorded_as_cast: normalizeStatus(stepStatusMap.recorded_as_cast.status),
+      counted_as_recorded: normalizeStatus(stepStatusMap.counted_as_recorded.status),
+      stark_verification: normalizeStatus(stepStatusMap.stark_verification.status),
+    };
+    const gateStatus = starkGateStatus ?? baseStatusMap.stark_verification;
 
     return VERIFICATION_CATEGORIES.map((category) => {
-      const baseStatusMap: Record<VerificationStepId, CheckStatus> = {
-        cast_as_intended: castStatus,
-        recorded_as_cast: recordedStatus,
-        counted_as_recorded: countedStatus,
-        stark_verification: starkStatus,
-      };
-
       const baseStatus = baseStatusMap[category.id];
       const items = category.items.map((item) => {
         const check = checkById?.get(item.checkId);
@@ -502,6 +427,7 @@ export function UnifiedVerificationCard({
           ...item,
           evidence,
           knowledgeKeys,
+          knowledgeItems: selectKnowledgeItems(visibleKnowledgeItems, knowledgeKeys),
           status,
           visualStatus: resolveVisualStatus(status, evidence),
           ...(noteKey ? { noteKey } : {}),
@@ -510,6 +436,7 @@ export function UnifiedVerificationCard({
       const categoryStatus = aggregateStatus(items);
       const categoryVisualStatus: CheckVisualStatus =
         categoryStatus === 'success' && items.some((item) => item.visualStatus === 'demo') ? 'demo' : categoryStatus;
+      const error = stepStatusMap[category.id].error;
 
       return {
         ...category,
@@ -518,10 +445,23 @@ export function UnifiedVerificationCard({
         successCount: countSuccessful(items),
         totalCount: items.length,
         items,
-        error: resolveErrorMessage(stepStatusMap[category.id].error, category.id),
+        error:
+          error && OPERATIONAL_STEP_ERROR_PATTERN.test(error) ? t('pages.verify.stepsCard.errors.generic') : undefined,
       };
     });
-  }, [checkById, resolveErrorMessage, starkGateStatus, stepStatusMap]);
+  }, [checkById, starkGateStatus, stepStatusMap, t, visibleKnowledgeItems]);
+
+  useEffect(() => {
+    const check = preparedCategories
+      .flatMap((category) => category.items)
+      .find((item) => item.checkId === selectedCheck);
+    const nextKeys = sequenceComplete && check ? check.knowledgeItems.map((item) => item.key) : [];
+    if (highlightedKeys.length !== nextKeys.length || highlightedKeys.some((key, index) => key !== nextKeys[index])) {
+      setHighlightedKeys(nextKeys);
+    }
+  }, [highlightedKeys, preparedCategories, selectedCheck, sequenceComplete, setHighlightedKeys]);
+
+  useEffect(() => () => setHighlightedKeys([]), [setHighlightedKeys]);
 
   const displayedCategories = preparedCategories.slice(0, Math.min(visibleStepCount, preparedCategories.length));
   const isPreparing = visibleStepCount === 0;
@@ -538,189 +478,29 @@ export function UnifiedVerificationCard({
     });
   }, []);
 
-  const showDownloadSection = sequenceComplete;
-
   return (
-    <Card>
-      <CardContent className="p-0">
-        {/* Verification Steps */}
-        <div className="px-6 pbs-6 pbe-6">
-          {isPreparing ? (
-            <div className="rounded-lg border border-paper-border bg-paper-warm p-4">
-              <div className="flex items-center gap-2 text-sm text-text-secondary font-secondary">
-                <span className="h-2 w-2 rounded-full bg-ink-400 animate-ink-drop" aria-hidden="true" />
-                <span>{t('pages.verify.stepsCard.preparing')}</span>
+    <div className="verification-report">
+      {(summary || sequenceComplete) && (
+        <div className="verification-report__summary-region">
+          {summary && (
+            <div
+              role="status"
+              aria-label={t('pages.verify.resultSummary.ariaLabel')}
+              data-testid="result-summary"
+              data-status={summary.status}
+              className="verification-report__summary"
+            >
+              <SummaryStatusIcon status={summary.status} />
+              <div>
+                <h2 className={SUMMARY_TEXT_STYLES[summary.status]} data-testid="overall-status">
+                  {summary.message}
+                </h2>
+                {summary.subMessage && <p>{summary.subMessage}</p>}
               </div>
-              <div className="mt-4 space-y-2">
-                <div className="h-4 rounded-md animate-skeleton-shimmer" />
-                <div className="h-4 rounded-md animate-skeleton-shimmer" />
-                <div className="h-4 rounded-md animate-skeleton-shimmer" />
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {displayedCategories.map((category, index) => {
-                const isExpanded = expandedCategories.has(category.id);
-
-                return (
-                  <section
-                    key={category.id}
-                    className="border border-paper-border rounded-lg overflow-hidden animate-slide-in-up"
-                    style={{ animationDelay: `${index * 120}ms` }}
-                  >
-                    {/* Category Header */}
-                    <button
-                      type="button"
-                      onClick={() => toggleCategory(category.id)}
-                      className={cn(
-                        'w-full px-3 sm:px-4 py-3 flex items-center justify-between gap-3',
-                        'bg-paper-warm hover:bg-ink-50 transition-colors',
-                        'focus-visible:ring-2 focus-visible:ring-ink-400 focus-visible:ring-inset',
-                      )}
-                      aria-expanded={isExpanded}
-                      aria-controls={`category-${category.id}-content`}
-                      data-testid={`step-${category.id}`}
-                      data-status={category.status}
-                      data-visual-status={category.visualStatus}
-                    >
-                      <div className="flex items-center min-w-0">
-                        <h3 className="font-primary text-base text-ink-900 truncate">{t(category.titleKey)}</h3>
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        <span
-                          className={cn(
-                            'text-sm font-mono font-features-none',
-                            category.visualStatus === 'success'
-                              ? 'text-verified-600'
-                              : category.visualStatus === 'failed'
-                                ? 'text-error-600'
-                                : category.visualStatus === 'demo'
-                                  ? 'text-warning-600'
-                                  : 'text-text-muted',
-                          )}
-                        >
-                          {category.successCount}/{category.totalCount}
-                        </span>
-                        <div className={STATUS_ICON_COLOR[category.visualStatus]}>
-                          <StatusIcon status={category.visualStatus} size={18} />
-                        </div>
-                        <ChevronDown
-                          className={cn(
-                            'w-4 h-4 text-text-muted transition-transform duration-200',
-                            isExpanded && 'rotate-180',
-                          )}
-                          aria-hidden="true"
-                        />
-                      </div>
-                    </button>
-
-                    {/* Category Content */}
-                    {isExpanded && (
-                      <div
-                        id={`category-${category.id}-content`}
-                        className="px-2 sm:px-4 pbe-3 pbs-1 space-y-2 bg-paper-texture"
-                      >
-                        {category.items.map((item) => {
-                          const label = t(item.labelKey);
-                          const note = item.noteKey ? t(item.noteKey) : null;
-                          const evidenceLabel = t(EVIDENCE_LABEL_KEYS[item.evidence]);
-                          const isInteractive = sequenceComplete && item.knowledgeKeys.length > 0;
-
-                          return (
-                            <button
-                              key={item.checkId}
-                              type="button"
-                              aria-disabled={isInteractive ? undefined : 'true'}
-                              onClick={() => {
-                                if (!isInteractive) {
-                                  return;
-                                }
-                                handleHighlight(item.knowledgeKeys);
-                              }}
-                              className={cn(
-                                'verification-detail-item animate-detail-cascade-in w-full text-left',
-                                'flex items-start gap-2 sm:gap-3 rounded-lg px-2 sm:px-3 py-2.5',
-                                'border border-paper-border border-l-[3px]',
-                                'focus-visible:ring-2 focus-visible:ring-ink-400',
-                                isInteractive && 'cursor-pointer hover:shadow-sm hover:bg-ink-50',
-                                !isInteractive && 'cursor-default',
-                              )}
-                              data-status={item.status}
-                              data-visual-status={item.visualStatus}
-                              data-testid={`check-${item.checkId}`}
-                              aria-label={`${t(category.titleKey)} ${item.number}: ${label}`}
-                            >
-                              <div className={cn('mt-0.5 flex-shrink-0', STATUS_ICON_COLOR[item.visualStatus])}>
-                                <StatusIcon status={item.visualStatus} />
-                              </div>
-                              <div className="flex-1 min-w-0 space-y-1">
-                                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                                  <span className="font-mono font-features-none text-xs text-text-muted">
-                                    {String(item.number).padStart(2, '0')}
-                                  </span>
-                                  <span className="font-secondary text-sm text-ink-900 flex-1 min-w-0">{label}</span>
-                                  <div className="flex items-center gap-2 w-full sm:w-auto sm:ml-auto justify-end order-last sm:order-none">
-                                    <Badge variant={EVIDENCE_VARIANTS[item.evidence]} size="small" className="shrink-0">
-                                      {evidenceLabel}
-                                    </Badge>
-                                    <StatusBadge status={item.visualStatus} className="shrink-0" />
-                                  </div>
-                                </div>
-                                {note && <p className="text-xs text-text-muted">{note}</p>}
-                              </div>
-                            </button>
-                          );
-                        })}
-
-                        {category.error && (
-                          <div className="text-sm text-error-600 bg-error-100 border border-error-500 rounded-md px-3 py-2">
-                            {category.error}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </section>
-                );
-              })}
-
-              {!sequenceComplete && (
-                <p className="text-xs text-text-muted">{t('pages.verify.stepsCard.footnoteStarkLast')}</p>
-              )}
-              {sequenceComplete && (
-                <p className="text-xs text-text-muted">{t('pages.verify.stepsCard.footnoteClickable')}</p>
-              )}
-
-              {/* Result Summary */}
-              {summary && (
-                <div
-                  className="mt-4 py-3"
-                  role="status"
-                  aria-label={t('pages.verify.resultSummary.ariaLabel')}
-                  data-testid="result-summary"
-                  data-status={summary.status}
-                >
-                  <div className="flex items-start gap-3">
-                    <SummaryStatusIcon status={summary.status} />
-                    <div className="flex flex-col">
-                      <span
-                        className={cn('text-xl font-semibold font-primary', SUMMARY_TEXT_STYLES[summary.status])}
-                        data-testid="overall-status"
-                      >
-                        {summary.message}
-                      </span>
-                      {summary.subMessage && (
-                        <span className="text-sm text-text-secondary font-secondary mt-1">{summary.subMessage}</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
           )}
-
-          {/* Download Footer */}
-          {showDownloadSection && (
-            <div className="flex flex-col items-center gap-2 pt-4">
+          {sequenceComplete && (
+            <div className="verification-report__download">
               <Button
                 variant="secondary"
                 onClick={download.onDownload}
@@ -728,30 +508,121 @@ export function UnifiedVerificationCard({
                 aria-busy={download.status === 'loading'}
               >
                 {download.status === 'loading' ? (
-                  <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                 ) : (
-                  <Download className="w-4 h-4" aria-hidden="true" />
+                  <Download className="h-4 w-4" aria-hidden="true" />
                 )}
                 {download.status === 'loading' ? t('pages.verify.download.loading') : t('pages.verify.download.cta')}
               </Button>
-              <p className="text-xs text-text-muted">{t('pages.verify.download.description')}</p>
+              <p>{t('pages.verify.download.description')}</p>
             </div>
           )}
-
-          {/* Download Success/Error */}
           {download.status === 'success' && (
-            <div className="mt-3">
-              <InlineAlert message={t('pages.verify.download.success')} variant="success" />
-            </div>
+            <InlineAlert message={t('pages.verify.download.success')} variant="success" />
           )}
-
-          {download.status === 'error' && download.error && (
-            <div className="mt-3">
-              <InlineAlert message={download.error} variant="error" />
-            </div>
-          )}
+          {download.status === 'error' && download.error && <InlineAlert message={download.error} variant="error" />}
         </div>
-      </CardContent>
-    </Card>
+      )}
+      {isPreparing ? (
+        <p className="verification-report__preparing" role="status">
+          {t('pages.verify.stepsCard.preparing')}
+        </p>
+      ) : (
+        <div>
+          {displayedCategories.map((category) => {
+            const isExpanded = expandedCategories.has(category.id);
+            return (
+              <section key={category.id} className="verification-category">
+                <h3>
+                  <button
+                    type="button"
+                    onClick={() => toggleCategory(category.id)}
+                    className="verification-category__heading"
+                    aria-expanded={isExpanded}
+                    aria-controls={`category-${category.id}-content`}
+                    data-testid={`step-${category.id}`}
+                    data-status={category.status}
+                    data-visual-status={category.visualStatus}
+                  >
+                    <span>{t(category.titleKey)}</span>
+                    <span className="verification-category__meta">
+                      <span>
+                        {category.successCount}/{category.totalCount}
+                      </span>
+                      <span className={STATUS_ICON_COLOR[category.visualStatus]} aria-hidden="true">
+                        <StatusIcon status={category.visualStatus} size={18} />
+                      </span>
+                      <ChevronDown
+                        className={joinClassNames('h-4 w-4', isExpanded && 'rotate-180')}
+                        aria-hidden="true"
+                      />
+                    </span>
+                  </button>
+                </h3>
+                {isExpanded && (
+                  <div id={`category-${category.id}-content`}>
+                    {category.items.map((item) => {
+                      const label = t(item.labelKey);
+                      const note = item.noteKey ? t(item.noteKey) : null;
+                      const isInteractive = sequenceComplete && item.knowledgeItems.length > 0;
+                      const isSelected = isInteractive && selectedCheck === item.checkId;
+                      const evidenceId = `evidence-${item.checkId}`;
+                      return (
+                        <div key={item.checkId} className="verification-check">
+                          <button
+                            type="button"
+                            aria-disabled={isInteractive ? undefined : 'true'}
+                            aria-expanded={isInteractive ? isSelected : undefined}
+                            aria-controls={isInteractive ? evidenceId : undefined}
+                            onClick={() => {
+                              if (isInteractive) setSelectedCheck(isSelected ? null : item.checkId);
+                            }}
+                            className="verification-check__button"
+                            data-testid={`check-${item.checkId}`}
+                            data-status={item.status}
+                            data-visual-status={item.visualStatus}
+                            aria-label={`${t(category.titleKey)} ${item.number}: ${label}`}
+                          >
+                            <span className="verification-check__number">{String(item.number).padStart(2, '0')}</span>
+                            <span className="verification-check__main">
+                              <span className="verification-check__label">{label}</span>
+                              <span className="verification-check__meta">
+                                <span className="verification-check__evidence">
+                                  {t(EVIDENCE_LABEL_KEYS[item.evidence])}
+                                </span>
+                                <span
+                                  className={joinClassNames(
+                                    'verification-check__status',
+                                    STATUS_ICON_COLOR[item.visualStatus],
+                                  )}
+                                >
+                                  <span aria-hidden="true">
+                                    <StatusIcon status={item.visualStatus} size={13} />
+                                  </span>
+                                  {t(VISUAL_STATUS_LABEL_KEYS[item.visualStatus])}
+                                </span>
+                              </span>
+                              {note && <span className="verification-check__note">{note}</span>}
+                            </span>
+                          </button>
+                          {isSelected && (
+                            <KnowledgeEvidence
+                              id={evidenceId}
+                              items={item.knowledgeItems}
+                              filterKeys={item.knowledgeKeys}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                    {category.error && <InlineAlert message={category.error} variant="error" />}
+                  </div>
+                )}
+              </section>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }

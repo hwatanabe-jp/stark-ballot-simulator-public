@@ -1,8 +1,9 @@
 import type {
-  VerificationReport,
-  VerificationResult,
-  VerificationStatus,
-} from '@stark-ballot/verification/shared/types';
+  VerifierServiceDevModeReport,
+  VerifierServiceFailedReport,
+  VerifierServiceSuccessReport,
+} from '@stark-ballot/verification/verifier-service-report';
+import type { VerificationResult } from '@stark-ballot/verification/shared/types';
 import type { ProofBundleOptions, ProofBundleService } from '@stark-ballot/application/finalize/proof-bundle-service';
 import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
 import type { ZkVMExecutionResult } from '@stark-ballot/zkvm-contract/zkvm/host-io';
@@ -12,17 +13,29 @@ import type { AdmittedReceiptPayload } from '@stark-ballot/verification/receipt-
 import type { ElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 
 export type { ProofBundleOptions };
 
-export type VerifierStatus = VerificationStatus;
-
-export interface VerifierInvocationResult {
-  status: VerifierStatus;
+interface VerifierInvocationResultBase {
   bundlePath: string;
   reportPath: string;
-  report: VerificationReport;
 }
+
+export type VerifierInvocationResult =
+  | (VerifierInvocationResultBase & {
+      status: 'success';
+      report: VerifierServiceSuccessReport;
+    })
+  | (VerifierInvocationResultBase & {
+      status: 'dev_mode';
+      report: VerifierServiceDevModeReport;
+    })
+  | (VerifierInvocationResultBase & {
+      status: 'failed';
+      report: VerifierServiceFailedReport;
+    });
 
 export type InvokeVerifier = (input: {
   bundlePath: string;
@@ -39,13 +52,13 @@ export interface VerificationBundleResult {
   closeStatementPath: string;
   metadataPath: string;
   reportPath: string;
-  sessionId: string;
-  finalizationId: string;
+  sessionId: SessionId;
+  finalizationId: FinalizationId;
 }
 
 export interface ProofBundlePersistenceInput {
-  sessionId: string;
-  finalizationId: string;
+  sessionId: SessionId;
+  finalizationId: FinalizationId;
   verifierWorkDir?: string;
   zkvmInput: ZkVMInput;
   electionConfig: ElectionConfig;
@@ -73,13 +86,13 @@ export interface ApiProofBundleDependencies {
   invokeVerifier: InvokeVerifier;
   publishBundleArtifacts: (input: {
     bundlePath: string;
-    sessionId: string;
-    finalizationId: string;
+    sessionId: SessionId;
+    finalizationId: FinalizationId;
     upload: boolean;
   }) => Promise<BundlePublicationResult>;
   recordBundlePublication?: (input: {
-    sessionId: string;
-    finalizationId: string;
+    sessionId: SessionId;
+    finalizationId: FinalizationId;
     s3BundleKey?: string;
     s3ReportKey?: string;
     s3UploadedAtMs?: number;
@@ -141,16 +154,29 @@ export function createApiProofBundleService(
           finalizationId: bundle.finalizationId,
           upload: accepted,
         });
-        if (invocation.status === 'dev_mode' && options.allowDevMode) {
-          logger.warn('[API] verifier-service returned dev_mode; accepting because dev mode is enabled');
-        } else if (invocation.status !== 'success') {
+        if (invocation.status === 'dev_mode') {
+          if (options.allowDevMode) {
+            logger.warn('[API] verifier-service returned dev_mode; accepting because dev mode is enabled');
+          } else {
+            logger.error('[API] verifier-service returned non-success status', invocation.status);
+            return {
+              ok: false,
+              error: {
+                type: 'verifier_failed',
+                finalizationId: bundle.finalizationId,
+                status: 'dev_mode',
+                report: invocation.report,
+              },
+            };
+          }
+        } else if (invocation.status === 'failed') {
           logger.error('[API] verifier-service returned non-success status', invocation.status);
           return {
             ok: false,
             error: {
               type: 'verifier_failed',
               finalizationId: bundle.finalizationId,
-              status: invocation.status,
+              status: 'failed',
               report: invocation.report,
             },
           };
@@ -209,15 +235,23 @@ function buildVerificationOutcome(options: {
   bundle: VerificationBundleResult;
 }): {
   verificationResult: VerificationResult;
-  finalizationId: string;
+  finalizationId: FinalizationId;
 } {
   const { invocation, bundle } = options;
 
   return {
-    verificationResult: {
-      status: invocation.status,
-      report: invocation.report,
-    },
+    verificationResult: projectVerificationResult(invocation),
     finalizationId: bundle.finalizationId,
   };
+}
+
+function projectVerificationResult(invocation: VerifierInvocationResult): VerificationResult {
+  switch (invocation.status) {
+    case 'success':
+      return { status: 'success', report: invocation.report };
+    case 'dev_mode':
+      return { status: 'dev_mode', report: invocation.report };
+    case 'failed':
+      return { status: 'failed', report: invocation.report };
+  }
 }

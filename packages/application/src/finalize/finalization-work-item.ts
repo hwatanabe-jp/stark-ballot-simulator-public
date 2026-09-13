@@ -4,11 +4,12 @@ import type {
 } from '@stark-ballot/application/finalize/finalization-types';
 import type { ElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 
 export type FinalizationScenarioCode = `S${0 | 1 | 2 | 3 | 4 | 5}`;
 
 type FinalizationWorkItemCommon = {
-  sessionId: string;
+  sessionId: SessionId;
   finalizationId: FinalizationId;
   queuedAtMs: number;
   expectedImageId: string;

@@ -68,6 +68,10 @@ export default defineConfig(({ mode }) => {
       ],
     },
     server: {
+      watch: {
+        // Storybook builds and local export fixtures must not reset the demo.
+        ignored: ['**/.tmp/**'],
+      },
       forwardConsole: {
         unhandledErrors: true,
         logLevels: ['warn', 'error'],

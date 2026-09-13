@@ -2,6 +2,13 @@ data "aws_iam_policy_document" "foundation_image_signing_authority_resolver_buil
   count = local.foundation_pipeline_enabled ? 1 : 0
 
   statement {
+    sid       = "ReadExactSigningResolverProjectConfiguration"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [local.foundation_image_signing_authority_resolver_project_arn]
+  }
+
+  statement {
     sid    = "UseFoundationSigningAuthorityResolverPipelineArtifacts"
     effect = "Allow"
 
@@ -46,14 +53,49 @@ data "aws_iam_policy_document" "foundation_image_signing_authority_resolver_buil
   }
 
   statement {
-    sid    = "ReadFoundationImageSigningAuthority"
+    sid    = "ReadCurrentFoundationAcceptance"
     effect = "Allow"
 
     actions = [
       "s3:GetObject",
       "s3:GetObjectVersion",
     ]
-    resources = [local.foundation_image_signing_authority_objects_arn]
+    resources = [
+      local.terraform_foundation_acceptance_pointer_object_arn,
+      local.terraform_foundation_acceptance_object_arn_pattern,
+    ]
+  }
+
+  statement {
+    sid       = "DescribeCurrentFoundationAcceptanceKey"
+    effect    = "Allow"
+    actions   = ["kms:DescribeKey"]
+    resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
+  }
+
+  statement {
+    sid       = "DecryptCurrentFoundationAcceptance"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [var.aws_account_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${var.aws_region}.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:aws:s3:arn"
+      values   = [local.terraform_authority_bucket_arn]
+    }
   }
 }
 

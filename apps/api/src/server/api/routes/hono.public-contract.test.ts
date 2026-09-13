@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { createHonoApp as createConfiguredHonoApp, type HonoAppOptions } from './hono';
 import { getGlobalStore } from '@stark-ballot/aws-adapters/store/storeInstance';
-import { createMockVoteStore, type MockVoteStore } from '../../__tests__/support/mockVoteStore';
+import { createMockVoteStore, type MockVoteStore } from '../../test-support/mockVoteStore';
 import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
 import type {
   FinalizationResultAuthority,
   FinalizationScenarioContext,
   FinalizationState,
 } from '@stark-ballot/application/finalize/finalization-types';
+import { createUnavailableFinalizationArtifacts } from '@stark-ballot/application/finalize/finalization-types';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type { VerificationResultRecord } from '@stark-ballot/application/finalize/finalization-result-store';
 import type { ArtifactReader } from '@stark-ballot/application/verification/artifact-reader';
 import type { AwsVerificationDeliveryMetadataInput } from '@stark-ballot/aws-adapters/finalize/finalizationDeliveryMetadataStore';
@@ -20,6 +22,7 @@ import type {
   SessionVotingRecord,
   StoredVoteRecord,
 } from '@stark-ballot/domain/types/sessionRecords';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
 import {
   resolveVerificationObservationRecord,
   type VerificationObservation,
@@ -36,7 +39,7 @@ import {
   getStringProperty,
 } from '@stark-ballot/validation/unknown-value-guards';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
-import { computeInputCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
+import { computeInputCommitment, type VerifiedTally } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { buildDefaultElectionConfig, hashElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import { buildCanonicalZkVMInputFromSession } from '@stark-ballot/application/zkvm-input/private-input-contract';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
@@ -44,16 +47,18 @@ import { normalizeHex } from '@stark-ballot/domain/utils/hex';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import type { VerificationResult } from '@stark-ballot/verification/shared/types';
-import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { buildCloseStatement, buildElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
+import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { resolveConsistencyProofData } from '../handlers/bulletin';
+import { admitVerificationPresentationOutcome } from '../handlers/verify';
 
 vi.mock('@stark-ballot/aws-adapters/store/storeInstance', () => ({
   getGlobalStore: vi.fn(),
 }));
 
 const capabilitySecret = 'mounted-hono-public-contract-secret-0123456789abcdef';
-const sessionId = 'session-mounted-1';
-const finalizationId = 'execution-mounted-1';
+const sessionId = asSessionId('session-mounted-1');
+const finalizationId = asFinalizationId('execution-mounted-1');
 const bundleKey = `sessions/${sessionId}/${finalizationId}/bundle.zip`;
 const reportKey = `sessions/${sessionId}/${finalizationId}/verification.json`;
 const runtimeProfile = localRuntimeProfile('static-mock-e2e');
@@ -72,16 +77,48 @@ function createHonoApp(options: HonoAppOptions = {}) {
 
 function buildFinalizationResult(): FinalizationResultAuthority {
   const oneBitBitmapRoot = computeIncludedBitmapRoot([true]);
+  const baseJournal = createTestJournal({
+    validVotes: 1,
+    totalExpected: 1,
+    seenIndicesCount: 1,
+  });
+  const electionManifest = buildElectionManifest(baseJournal.electionId, {
+    ...buildDefaultElectionConfig(),
+    totalExpected: 1,
+    botCount: 0,
+    merkleTreeDepth: 1,
+  });
+  const closeStatement = buildCloseStatement({
+    logId: `0x${'56'.repeat(32)}`,
+    treeSize: baseJournal.treeSize,
+    timestamp: 1_700_000_000,
+    bulletinRoot: baseJournal.bulletinRoot,
+  });
   const journal = {
-    ...createTestJournal({
-      validVotes: 1,
-      totalExpected: 1,
-      seenIndicesCount: 1,
-    }),
-    verifiedTally: [1, 0, 0, 0, 0],
+    ...baseJournal,
+    verifiedTally: [1, 0, 0, 0, 0] satisfies VerifiedTally,
     includedBitmapRoot: oneBitBitmapRoot,
     seenBitmapRoot: oneBitBitmapRoot,
+    electionConfigHash: electionManifest.electionConfigHash,
+    sthDigest: closeStatement.sthDigest,
   };
+  const publicInputArtifact = createTestPublicInputArtifact({
+    source: 'bundle',
+    finalizationId,
+    bundleKey,
+    typedAuthority: {
+      electionId: journal.electionId,
+      electionConfigHash: journal.electionConfigHash,
+      methodVersion: journal.methodVersion,
+      bulletinRoot: journal.bulletinRoot,
+      treeSize: journal.treeSize,
+      totalExpected: journal.totalExpected,
+      votesCount: journal.validVotes,
+      logId: closeStatement.logId,
+      timestamp: closeStatement.timestamp,
+      recomputedInputCommitment: journal.inputCommitment,
+    },
+  });
 
   return {
     tally: {
@@ -90,23 +127,30 @@ function buildFinalizationResult(): FinalizationResultAuthority {
       tamperedCount: 0,
     },
     imageId: `0x${'12'.repeat(32)}`,
+    tamperDetected: false,
+    scenarios: [],
     journal,
-    publicInputArtifact: createTestPublicInputArtifact({
-      source: 'bundle',
-      finalizationId,
-      bundleKey,
-      typedAuthority: {
-        electionId: journal.electionId,
-        electionConfigHash: journal.electionConfigHash,
-        methodVersion: journal.methodVersion,
-        bulletinRoot: journal.bulletinRoot,
-        treeSize: journal.treeSize,
-        totalExpected: journal.totalExpected,
-        votesCount: journal.validVotes,
-        recomputedInputCommitment: journal.inputCommitment,
+    artifacts: {
+      ...createUnavailableFinalizationArtifacts(),
+      publicAudit: {
+        availability: 'available',
+        publicInputArtifact,
+        electionManifest,
+        closeStatement,
       },
-    }),
-    bitmapProofSource: 'real',
+      bitmap: {
+        availability: 'available',
+        proofSource: 'real',
+        data: {
+          includedBitmap: [true],
+          includedBitmapRoot: oneBitBitmapRoot,
+          seenBitmap: [true],
+          seenBitmapRoot: oneBitBitmapRoot,
+          treeSize: 1,
+          finalizedAtMs: 1,
+        },
+      },
+    },
   };
 }
 
@@ -411,6 +455,65 @@ describe('mounted Hono public contract behavior', () => {
         vi.restoreAllMocks();
       }
     }
+  });
+
+  it('admits a coherent stored verifier result as one presentation outcome', () => {
+    const imageId = `0x${'1'.repeat(64)}`;
+    const report = {
+      status: 'success',
+      verifier_version: 'test-verifier',
+      verified_at: '2026-08-11T00:00:00Z',
+      duration_ms: 1,
+      expected_image_id: imageId,
+      receipt_image_id: imageId,
+      dev_mode_receipt: false,
+    } as const;
+
+    expect(
+      admitVerificationPresentationOutcome({
+        verificationStatus: 'success',
+        verificationReportStatus: 'success',
+        verificationReport: report,
+        failureCategory: 'none',
+      }),
+    ).toEqual({
+      status: 'success',
+      report: {
+        status: 'success',
+        expected_image_id: imageId,
+        receipt_image_id: imageId,
+        dev_mode_receipt: false,
+      },
+      failureCategory: 'none',
+    });
+  });
+
+  it.each([
+    {
+      verificationStatus: 'running' as const,
+      verificationReportStatus: 'success' as const,
+    },
+    {
+      verificationStatus: 'success' as const,
+      verificationReportStatus: 'success' as const,
+      failureCategory: 'verifier_crash' as const,
+    },
+  ])('fails closed for an incoherent stored verifier candidate: %o', (candidate) => {
+    const imageId = `0x${'1'.repeat(64)}`;
+    const verificationReport = {
+      status: 'success' as const,
+      verifier_version: 'test-verifier',
+      verified_at: '2026-08-11T00:00:00Z',
+      duration_ms: 1,
+      expected_image_id: imageId,
+      receipt_image_id: imageId,
+      dev_mode_receipt: false as const,
+    };
+
+    expect(admitVerificationPresentationOutcome({ ...candidate, verificationReport })).toEqual({
+      status: 'failed',
+      failureCategory: 'unknown',
+    });
   });
 
   it('preserves mounted auth failure, CORS, cache, binary range, and report behavior for bundle endpoints', async () => {
@@ -1163,7 +1266,14 @@ describe('mounted Hono public contract behavior', () => {
 
     const finalizationResult = buildFinalizationResult();
     finalizationResult.journal.verifiedTally = [0, 1, 0, 0, 0];
+    finalizationResult.tally.tamperedCount = 1;
+    finalizationResult.tamperDetected = true;
     finalizationResult.scenarios = ['S2'];
+    finalizationResult.tamperSummary = {
+      ignoredVotes: 0,
+      recountedVotes: 1,
+      userRecountedTo: 'A',
+    };
     const verificationResult: VerificationResult = {
       status: 'success',
       report: {
@@ -1174,7 +1284,6 @@ describe('mounted Hono public contract behavior', () => {
         expected_image_id: finalizationResult.imageId,
         receipt_image_id: finalizationResult.imageId,
         dev_mode_receipt: false,
-        errors: [],
       },
     };
     const vote: StoredVoteRecord = {
@@ -1196,6 +1305,17 @@ describe('mounted Hono public contract behavior', () => {
         userParticipation: { status: 'cast', voteIndex: 0 },
       },
       finalizationResult,
+      scenarioContext: {
+        scenarios: ['S2'],
+        tamperMode: 'claim',
+        claimedCounts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
+        claimedTotalVotes: 1,
+        summary: {
+          ignoredCount: 0,
+          recountedCount: 1,
+          userRecountChoice: 'A',
+        },
+      },
       verificationResult,
     });
     vi.mocked(getGlobalStore).mockReturnValue(
@@ -1277,7 +1397,7 @@ describe('mounted Hono public contract behavior', () => {
       outcome: 'recorded_integrity_failed',
       failure_category: 'none',
       scenario_id: 'S2',
-      failed_required_count: 5,
+      failed_required_count: 3,
       dev_mode_receipt: false,
       session_id_hash: hashSessionIdForLogging(sessionId),
       finalization_id: finalizationId,

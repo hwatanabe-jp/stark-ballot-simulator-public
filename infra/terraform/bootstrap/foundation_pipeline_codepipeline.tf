@@ -44,28 +44,6 @@ resource "aws_codepipeline" "development_foundation" {
   }
 
   stage {
-    name = "Validate"
-
-    action {
-      name             = "ValidateFoundationLane"
-      category         = "Build"
-      owner            = "AWS"
-      provider         = "CodeBuild"
-      version          = "1"
-      input_artifacts  = ["SourceOutput"]
-      output_artifacts = ["ValidateOutput"]
-
-      configuration = {
-        EnvironmentVariables = jsonencode([
-          { name = "FOUNDATION_PIPELINE_EXECUTION_ID", value = "#{codepipeline.PipelineExecutionId}", type = "PLAINTEXT" },
-          { name = "PIPELINE_SOURCE_SHA", value = "#{FoundationSource.CommitId}", type = "PLAINTEXT" },
-        ])
-        ProjectName = aws_codebuild_project.foundation_validate[0].name
-      }
-    }
-  }
-
-  stage {
     name = "TerraformPlan"
 
     action {
@@ -74,7 +52,7 @@ resource "aws_codepipeline" "development_foundation" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "ValidateOutput"]
+      input_artifacts  = ["SourceOutput"]
       output_artifacts = ["PlanOutput"]
 
       configuration = {
@@ -99,7 +77,7 @@ resource "aws_codepipeline" "development_foundation" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/foundation/tfplan.txt and tfplan.sha256 for ${local.foundation_lane_authority.stateIdentity}. Approval must confirm the foundation plan manages no app runtime resources; separately deployed app state/runtime may exist. Approval summary must be exact JSON: {\"sourceSha\":\"#{FoundationSource.CommitId}\",\"accountId\":\"${local.deployment_target.accountId}\",\"deploymentEnvironment\":\"${local.deployment_target.environmentId}\",\"reviewedPlanChecksum\":\"<tfplan sha256>\"}."
+        CustomData = "Review and approve this exact saved plan only through ${local.deployment_cli_command} review foundation --execution-id #{codepipeline.PipelineExecutionId} --source-sha #{FoundationSource.CommitId}. Confirm the reviewed Foundation plan manages no App runtime resources; separately deployed App state/runtime may exist. The command creates the bounded approval evidence and transport for ${local.foundation_lane_authority.stateIdentity}; do not hand-author an approval summary."
       }
     }
   }

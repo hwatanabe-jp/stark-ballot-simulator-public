@@ -6,8 +6,8 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import {
   VERIFIER_STDERR_CAPTURE_LIMIT_BYTES,
+  VerifierServiceExecutionError,
   invokeVerifierService,
-  parseVerifierServiceReport,
   type SpawnImpl,
 } from './verifier-service-client';
 import type { VerifierInvocationOptions } from './verifier-service-client';
@@ -29,6 +29,28 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 describe('verifier-service-client', () => {
   let testWorkDir: string;
+
+  type ProtocolCase = {
+    name: string;
+    exitCode: number | null;
+    reportStatus: 'success' | 'dev_mode' | 'failed' | null;
+    expected: 'accept' | 'reject';
+  };
+
+  const protocolCases = [
+    { name: 'accepts exit 0 with success', exitCode: 0, reportStatus: 'success', expected: 'accept' },
+    { name: 'rejects exit 0 with dev_mode', exitCode: 0, reportStatus: 'dev_mode', expected: 'reject' },
+    { name: 'rejects exit 0 with failed', exitCode: 0, reportStatus: 'failed', expected: 'reject' },
+    { name: 'rejects exit 2 with success', exitCode: 2, reportStatus: 'success', expected: 'reject' },
+    { name: 'accepts exit 2 with dev_mode', exitCode: 2, reportStatus: 'dev_mode', expected: 'accept' },
+    { name: 'rejects exit 2 with failed', exitCode: 2, reportStatus: 'failed', expected: 'reject' },
+    { name: 'rejects exit 3 with success', exitCode: 3, reportStatus: 'success', expected: 'reject' },
+    { name: 'rejects exit 3 with dev_mode', exitCode: 3, reportStatus: 'dev_mode', expected: 'reject' },
+    { name: 'accepts exit 3 with failed', exitCode: 3, reportStatus: 'failed', expected: 'accept' },
+    { name: 'rejects general-error exit 1 without a report', exitCode: 1, reportStatus: null, expected: 'reject' },
+    { name: 'rejects a null exit code without a report', exitCode: null, reportStatus: null, expected: 'reject' },
+    { name: 'rejects unknown exit 4 with success', exitCode: 4, reportStatus: 'success', expected: 'reject' },
+  ] as const satisfies readonly ProtocolCase[];
 
   const createMockChild = (): ChildProcessWithoutNullStreams => {
     const stdin = new PassThrough();
@@ -57,6 +79,59 @@ describe('verifier-service-client', () => {
     });
   };
 
+  const IMAGE_ID = `0x${'a'.repeat(64)}`;
+
+  function createSuccessWireReport(bundlePath: string, imageId = IMAGE_ID): Record<string, unknown> {
+    return {
+      status: 'success',
+      verifier_version: '0.1.0',
+      verified_at: '2026-08-11T00:00:00Z',
+      duration_ms: 1,
+      expected_image_id: imageId,
+      receipt_image_id: imageId,
+      bundle_path: path.basename(bundlePath),
+      receipt_path: 'receipt.json',
+      dev_mode_receipt: false,
+    };
+  }
+
+  async function invokeReportFixture(options: {
+    name: string;
+    report: (bundlePath: string) => Record<string, unknown>;
+    exitCode?: number;
+    expectedImageId?: string;
+    authority?: 'file' | 'stdout';
+    trailingWhitespaceBytes?: number;
+  }) {
+    const bundlePath = path.join(testWorkDir, `bundle-${options.name}`);
+    const reportPath = path.join(testWorkDir, `report-${options.name}.json`);
+    const mockBinaryPath = path.join(testWorkDir, `verifier-service-${options.name}`);
+    await fs.mkdir(bundlePath, { recursive: true });
+    await fs.writeFile(mockBinaryPath, '#!/bin/bash\necho test', { mode: 0o755 });
+
+    const mockChild = createMockChild();
+    const spawnImpl: SpawnImpl = () => {
+      process.nextTick(async () => {
+        const content = `${JSON.stringify(options.report(bundlePath))}${' '.repeat(options.trailingWhitespaceBytes ?? 0)}`;
+        if (options.authority === 'stdout') {
+          mockChild.stdout.emit('data', Buffer.from(content));
+        } else {
+          await fs.writeFile(reportPath, content, 'utf8');
+        }
+        mockChild.emit('close', options.exitCode ?? 0);
+      });
+      return mockChild;
+    };
+
+    return invokeVerifierService({
+      bundlePath,
+      expectedImageId: options.expectedImageId ?? IMAGE_ID,
+      reportPath,
+      binaryPath: mockBinaryPath,
+      spawnImpl,
+    });
+  }
+
   beforeEach(async () => {
     // Create temporary directories for test
     testWorkDir = path.join(process.cwd(), '.test-verifier-client');
@@ -73,6 +148,58 @@ describe('verifier-service-client', () => {
   });
 
   describe('invokeVerifierService', () => {
+    it.each(protocolCases)('$name', async ({ exitCode, reportStatus, expected }) => {
+      const bundlePath = path.join(testWorkDir, 'protocol-bundle');
+      const reportPath = path.join(testWorkDir, 'protocol-report.json');
+      const mockBinaryPath = path.join(testWorkDir, 'protocol-verifier-service');
+      const imageId = `0x${'a'.repeat(64)}`;
+      await fs.mkdir(bundlePath, { recursive: true });
+      await fs.writeFile(mockBinaryPath, '#!/bin/bash\necho test', { mode: 0o755 });
+
+      const mockChild = createMockChild();
+      const spawnImpl: SpawnImpl = () => {
+        process.nextTick(async () => {
+          if (reportStatus !== null) {
+            await fs.writeFile(
+              reportPath,
+              JSON.stringify({
+                status: reportStatus,
+                verifier_version: '0.1.0',
+                verified_at: '2026-08-11T00:00:00Z',
+                duration_ms: 1,
+                expected_image_id: imageId,
+                receipt_image_id: imageId,
+                bundle_path: 'protocol-bundle',
+                receipt_path: 'receipt.json',
+                dev_mode_receipt: reportStatus === 'dev_mode',
+                ...(reportStatus === 'failed' ? { errors: ['verification failed'] } : {}),
+              }),
+              'utf8',
+            );
+          }
+          mockChild.emit('close', exitCode);
+        });
+        return mockChild;
+      };
+
+      const invocation = invokeVerifierService({
+        bundlePath,
+        expectedImageId: imageId,
+        reportPath,
+        binaryPath: mockBinaryPath,
+        spawnImpl,
+      });
+
+      if (expected === 'accept') {
+        const result = await invocation;
+        expect(result.status).toBe(reportStatus);
+        expect(result.report.status).toBe(reportStatus);
+        return;
+      }
+
+      await expect(invocation).rejects.toBeInstanceOf(VerifierServiceExecutionError);
+    });
+
     it('should resolve binary path and invoke verifier', async () => {
       // Arrange
       const bundlePath = path.join(testWorkDir, 'bundle');
@@ -90,18 +217,18 @@ describe('verifier-service-client', () => {
         duration_ms: 42,
         expected_image_id: '0xf2471bb167f465927d3cc90c3553d5f7512c5c71c4b34623456c141b2aabc45d',
         receipt_image_id: '0xf2471bb167f465927d3cc90c3553d5f7512c5c71c4b34623456c141b2aabc45d',
-        bundle_path: bundlePath,
-        receipt_path: path.join(bundlePath, 'receipt.json'),
+        bundle_path: path.basename(bundlePath),
+        receipt_path: 'receipt.json',
         dev_mode_receipt: false,
-        errors: [],
       };
 
       const mockChild = createMockChild();
 
       let spawnCalled = false;
-      const spawnImpl: SpawnImpl = (...args: Parameters<SpawnImpl>) => {
+      let spawnArguments: readonly string[] | undefined;
+      const spawnImpl: SpawnImpl = (_command, args) => {
         spawnCalled = true;
-        void args;
+        spawnArguments = args;
         // Emit events after listeners are registered
         process.nextTick(async () => {
           await fs.writeFile(reportPath, JSON.stringify(mockReport, null, 2), 'utf-8');
@@ -130,6 +257,16 @@ describe('verifier-service-client', () => {
       expect(result.report).not.toHaveProperty('receipt_path');
       expect(result.diagnostics).toEqual({ stderrCategory: 'none', stderrBytes: 0, stderrTruncated: false });
       expect(spawnCalled).toBe(true);
+      expect(spawnArguments).toEqual([
+        'verify',
+        '--bundle',
+        bundlePath,
+        '--image-id',
+        options.expectedImageId,
+        '--output',
+        reportPath,
+        '--quiet',
+      ]);
     });
 
     it('bounds success-path stderr during streaming and exposes only closed diagnostics', async () => {
@@ -147,10 +284,9 @@ describe('verifier-service-client', () => {
         duration_ms: 42,
         expected_image_id: `0x${'a'.repeat(64)}`,
         receipt_image_id: `0x${'a'.repeat(64)}`,
-        bundle_path: bundlePath,
-        receipt_path: path.join(bundlePath, 'receipt.json'),
+        bundle_path: path.basename(bundlePath),
+        receipt_path: 'receipt.json',
         dev_mode_receipt: false,
-        errors: [],
       };
       const mockChild = createMockChild();
       const spawnImpl: SpawnImpl = () => {
@@ -243,10 +379,9 @@ describe('verifier-service-client', () => {
         duration_ms: 2,
         expected_image_id: '0xf2471bb167f465927d3cc90c3553d5f7512c5c71c4b34623456c141b2aabc45d',
         receipt_image_id: '0xf2471bb167f465927d3cc90c3553d5f7512c5c71c4b34623456c141b2aabc45d',
-        bundle_path: bundlePath,
-        receipt_path: path.join(bundlePath, 'receipt.json'),
+        bundle_path: path.basename(bundlePath),
+        receipt_path: 'receipt.json',
         dev_mode_receipt: true,
-        errors: [],
       };
 
       // Use real EventEmitter instances
@@ -293,8 +428,8 @@ describe('verifier-service-client', () => {
         duration_ms: 5,
         expected_image_id: '0xf2471bb167f465927d3cc90c3553d5f7512c5c71c4b34623456c141b2aabc45d',
         receipt_image_id: '0x0000000000000000000000000000000000000000000000000000000000000000',
-        bundle_path: bundlePath,
-        receipt_path: path.join(bundlePath, 'receipt.json'),
+        bundle_path: path.basename(bundlePath),
+        receipt_path: 'receipt.json',
         dev_mode_receipt: false,
         errors: ['ImageID mismatch'],
       };
@@ -368,6 +503,65 @@ describe('verifier-service-client', () => {
       await expect(invocation).rejects.not.toThrow('invalid arguments');
     });
 
+    it('rejects stdout as report authority when the output file is absent', async () => {
+      await expect(
+        invokeReportFixture({
+          name: 'stdout-only',
+          report: (bundlePath) => createSuccessWireReport(bundlePath),
+          authority: 'stdout',
+        }),
+      ).rejects.toMatchObject({ message: 'verifier-service report unavailable or invalid' });
+    });
+
+    it('rejects an oversized output report before parsing it', async () => {
+      await expect(
+        invokeReportFixture({
+          name: 'oversized',
+          report: (bundlePath) => createSuccessWireReport(bundlePath),
+          trailingWhitespaceBytes: 1024 * 1024,
+        }),
+      ).rejects.toMatchObject({ message: 'verifier-service report unavailable or invalid' });
+    });
+
+    it.each([
+      {
+        name: 'expected ImageID',
+        expectedImageId: IMAGE_ID,
+        report: (bundlePath: string) => createSuccessWireReport(bundlePath, `0x${'b'.repeat(64)}`),
+      },
+      {
+        name: 'bundle basename',
+        expectedImageId: IMAGE_ID,
+        report: (bundlePath: string) => ({
+          ...createSuccessWireReport(bundlePath),
+          bundle_path: 'different-bundle',
+        }),
+      },
+    ])('binds the admitted $name to the invocation', async ({ name, expectedImageId, report }) => {
+      await expect(
+        invokeReportFixture({
+          name: `binding-${name}`,
+          expectedImageId,
+          report,
+        }),
+      ).rejects.toMatchObject({ message: 'verifier-service report does not match invocation' });
+    });
+
+    it('rejects malformed receipt ImageIDs from failed Rust reports', async () => {
+      await expect(
+        invokeReportFixture({
+          name: 'malformed-receipt-id',
+          exitCode: 3,
+          report: (bundlePath) => ({
+            ...createSuccessWireReport(bundlePath),
+            status: 'failed',
+            receipt_image_id: '0xmalformed',
+            errors: ['malformed receipt metadata'],
+          }),
+        }),
+      ).rejects.toMatchObject({ message: 'verifier-service report unavailable or invalid' });
+    });
+
     it('should throw error when binary not found', async () => {
       // Arrange
       delete process.env['VERIFIER_SERVICE_BIN'];
@@ -392,52 +586,6 @@ describe('verifier-service-client', () => {
 
       // Cleanup
       fsAccessSpy.mockRestore();
-    });
-  });
-
-  describe('parseVerifierServiceReport', () => {
-    const validReport = {
-      status: 'success',
-      verifier_version: '0.1.0',
-      verified_at: '2026-06-17T00:00:00.000Z',
-      duration_ms: 42,
-      expected_image_id: '0xf2471bb167f465927d3cc90c3553d5f7512c5c71c4b34623456c141b2aabc45d',
-      receipt_image_id: '0xf2471bb167f465927d3cc90c3553d5f7512c5c71c4b34623456c141b2aabc45d',
-      bundle_path: '/tmp/verifier/bundle',
-      receipt_path: '/tmp/verifier/bundle/receipt.json',
-      dev_mode_receipt: false,
-      errors: [],
-    };
-
-    it('projects verifier-service wire reports to pure verifier facts', () => {
-      const report = parseVerifierServiceReport(validReport);
-
-      expect(report).toEqual({
-        status: 'success',
-        verifier_version: '0.1.0',
-        verified_at: '2026-06-17T00:00:00.000Z',
-        duration_ms: 42,
-        expected_image_id: '0xf2471bb167f465927d3cc90c3553d5f7512c5c71c4b34623456c141b2aabc45d',
-        receipt_image_id: '0xf2471bb167f465927d3cc90c3553d5f7512c5c71c4b34623456c141b2aabc45d',
-        dev_mode_receipt: false,
-        errors: [],
-      });
-    });
-
-    it('rejects malformed status values', () => {
-      expect(() => parseVerifierServiceReport({ ...validReport, status: 'running' })).toThrow(/status/);
-    });
-
-    it('rejects missing required fields', () => {
-      const missingVersion: Record<string, unknown> = { ...validReport };
-      delete missingVersion['verifier_version'];
-
-      expect(() => parseVerifierServiceReport(missingVersion)).toThrow(/verifier_version/);
-    });
-
-    it('rejects invalid path fields at the wire boundary', () => {
-      expect(() => parseVerifierServiceReport({ ...validReport, bundle_path: '' })).toThrow(/bundle_path/);
-      expect(() => parseVerifierServiceReport({ ...validReport, receipt_path: 42 })).toThrow(/receipt_path/);
     });
   });
 });

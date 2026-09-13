@@ -19,7 +19,8 @@ import {
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
 import { isRecord, getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 import { listZipEntryNamesFromBuffer, readZipEntriesFromBuffer } from '@stark-ballot/node-adapters/zip';
-import { resolveExpectedImageIdFromMapping, type ImageIdMapping } from '@stark-ballot/validation/image-id-policy';
+import { parseImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
+import { resolveExpectedImageIdFromMapping } from '@stark-ballot/validation/image-id-policy';
 import {
   VERIFICATION_CHECK_DEFINITIONS,
   type VerificationCheck,
@@ -32,11 +33,12 @@ import {
   overlayLocalCastChecks,
 } from '@stark-ballot/verification/local-cast-checks';
 import { deriveVerificationPresentationPolicy } from '@stark-ballot/verification/presentation-policy';
+import { parseVerifierServiceWireReport } from '@stark-ballot/verification/verifier-service-report';
 import imageIdMappingJson from '../../public/imageId-mapping.json';
 import { CLIVotingTest, type CLITestConfig } from './cli-e2e-voting-flow';
 import { pollUntil } from '@stark-ballot/test-support/testing/poll';
 
-const imageIdMapping = imageIdMappingJson as ImageIdMapping;
+const imageIdMapping = parseImageIdMapping(imageIdMappingJson);
 
 const OPERATOR_AUTH_HEADER_NAME_ENV = 'STARK_BALLOT_OPERATOR_AUTH_HEADER';
 const OPERATOR_AUTH_HEADER_VALUE_ENV = 'STARK_BALLOT_OPERATOR_AUTH_VALUE';
@@ -165,13 +167,17 @@ function requireFreshVerificationChecks(data: Record<string, unknown>): Verifica
       throw new Error(`Fresh verificationChecks check ${definition.id} has an invalid status.`);
     }
     seen.add(definition.id);
-    checks.push({
+    const checkBase = {
       id: definition.id,
-      status,
       evidence: definition.evidence,
       inputs: [...definition.inputs],
       ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
-    });
+    };
+    if (status === 'failed' || status === 'not_run') {
+      checks.push({ ...checkBase, status });
+    } else {
+      checks.push({ ...checkBase, status });
+    }
   }
 
   const missing = VERIFICATION_CHECK_DEFINITIONS.filter((definition) => !seen.has(definition.id)).map(
@@ -184,14 +190,18 @@ function requireFreshVerificationChecks(data: Record<string, unknown>): Verifica
 }
 
 function projectVerificationChecks(resource: AvailableVerificationResource): VerificationCheck[] {
-  return resource.verification.checks.map((check) => ({
-    id: check.id,
-    status: check.status,
-    evidence: check.evidence,
-    inputs: [...check.inputs],
-    ...(check.noteKey ? { noteKey: check.noteKey } : {}),
-    ...(check.derivedFrom ? { derivedFrom: check.derivedFrom } : {}),
-  }));
+  return resource.verification.checks.map((check): VerificationCheck => {
+    const base = {
+      id: check.id,
+      evidence: check.evidence,
+      inputs: [...check.inputs],
+      ...(check.derivedFrom ? { derivedFrom: check.derivedFrom } : {}),
+    };
+    if ((check.status === 'failed' || check.status === 'not_run') && 'noteKey' in check) {
+      return { ...base, status: check.status, noteKey: check.noteKey };
+    }
+    return { ...base, status: check.status };
+  });
 }
 
 function mergeLocallyVerifiedCastChecks(
@@ -241,19 +251,19 @@ function requireScenarioCount(
   return value;
 }
 
-function requireReportString(report: Record<string, unknown>, field: string): string {
-  const value = getStringProperty(report, field);
-  if (!value?.trim()) {
-    throw new Error(`Authenticated verification report ${field} is required.`);
-  }
-  return value;
-}
-
 export function assertAuthenticatedVerificationReport(
-  report: Record<string, unknown>,
+  report: unknown,
   headers: Headers,
   options: AuthenticatedVerificationReportOptions,
 ): void {
+  let admittedReport: ReturnType<typeof parseVerifierServiceWireReport>;
+  try {
+    admittedReport = parseVerifierServiceWireReport(report);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'schema validation failed';
+    throw new Error(`Authenticated verification report is invalid: ${detail}`);
+  }
+
   const contentType = headers.get('content-type')?.toLowerCase() ?? '';
   if (!contentType.includes('application/json')) {
     throw new Error('Authenticated verification report returned an invalid Content-Type.');
@@ -265,30 +275,21 @@ export function assertAuthenticatedVerificationReport(
     );
   }
 
-  const status = requireReportString(report, 'status');
-  if (status !== options.expectedStatus) {
+  if (admittedReport.status !== options.expectedStatus) {
     throw new Error(
-      `Authenticated verification report status mismatch: expected ${options.expectedStatus}, got ${status}.`,
+      `Authenticated verification report status mismatch: expected ${options.expectedStatus}, got ${admittedReport.status}.`,
     );
   }
-  requireReportString(report, 'verifier_version');
-  requireReportString(report, 'verified_at');
-  const durationMs = report['duration_ms'];
-  if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs < 0) {
-    throw new Error('Authenticated verification report duration_ms is invalid.');
-  }
-  const expectedImageId = requireReportString(report, 'expected_image_id');
-  if (expectedImageId !== options.expectedImageId) {
+  if (admittedReport.expected_image_id !== options.expectedImageId) {
     throw new Error('Authenticated verification report expected_image_id does not match the independent ImageID.');
   }
-  const receiptImageId = requireReportString(report, 'receipt_image_id');
-  if (receiptImageId !== options.expectedImageId) {
+  if (admittedReport.receipt_image_id !== options.expectedImageId) {
     throw new Error('Authenticated verification report receipt_image_id does not match the independent ImageID.');
   }
-  if (report['dev_mode_receipt'] !== false) {
+  if (admittedReport.dev_mode_receipt !== false) {
     throw new Error('Authenticated verification report dev_mode_receipt must be false.');
   }
-  const errors = report['errors'];
+  const errors = admittedReport.errors;
   if (errors !== undefined && (!Array.isArray(errors) || errors.length > 0)) {
     throw new Error('Authenticated verification report errors must be absent or empty.');
   }
@@ -298,8 +299,9 @@ function isGatedSmokeScenario(value: string): value is GatedSmokeScenario {
   return GATED_SMOKE_SCENARIOS.some((scenario) => scenario === value);
 }
 
-export function resolveGatedSmokeExpectedImageId(mapping: ImageIdMapping = imageIdMapping): string {
-  return resolveExpectedImageIdFromMapping(mapping, Number(mapping.current), 'default');
+export function resolveGatedSmokeExpectedImageId(mapping: unknown = imageIdMapping): string {
+  const admittedMapping = parseImageIdMapping(mapping);
+  return resolveExpectedImageIdFromMapping(admittedMapping, Number(admittedMapping.current), 'default');
 }
 
 export function assertIndependentFinalizationImageId(data: Record<string, unknown>, expectedImageId: string): void {
@@ -489,14 +491,6 @@ async function parseErrorCode(response: Response): Promise<string | null> {
   return getStringProperty(getRecordProperty(payload, 'error'), 'code') ?? null;
 }
 
-async function readJsonRecord(response: Response, label: string): Promise<Record<string, unknown>> {
-  const payload = await readJsonValue(response, label);
-  if (!isRecord(payload)) {
-    throw new Error(`${label} returned a non-object JSON payload.`);
-  }
-  return payload;
-}
-
 async function readJsonValue(response: Response, label: string): Promise<unknown> {
   let payload: unknown;
   try {
@@ -570,13 +564,15 @@ function projectAcceptedVerificationData(
       counts: { ...presentation.tally.counts },
       bulletinRoot: authority.bulletinRoot,
       totalVotes: presentation.tally.totalVotes,
-      tamperedCount: presentation.tally.tamperedCount ?? 0,
+      tamperedCount: presentation.tally.tamperedCount,
     },
     totalVotes: presentation.tally.totalVotes,
     scenarioId: presentation.scenarioId,
     ...('tamperDetected' in presentation ? { tamperDetected: presentation.tamperDetected } : {}),
     verificationStatus: resource.verifierResult.status,
-    ...(resource.verifierResult.report ? { verificationReport: resource.verifierResult.report } : {}),
+    ...('report' in resource.verifierResult && resource.verifierResult.report
+      ? { verificationReport: resource.verifierResult.report }
+      : {}),
     verificationSteps: resource.verification.steps.map((step) => ({
       id: step.id,
       status: step.status,
@@ -723,7 +719,7 @@ async function readBundleBodyWithLimit(response: Response, maxTotalBytes: number
     return Buffer.alloc(0);
   }
 
-  const reader = response.body.getReader();
+  const reader: ReadableStreamDefaultReader<unknown> = response.body.getReader();
   const chunks: Buffer[] = [];
   let totalBytes = 0;
   let reading = true;
@@ -733,6 +729,10 @@ async function readBundleBodyWithLimit(response: Response, maxTotalBytes: number
       if (done) {
         reading = false;
         continue;
+      }
+      if (!(value instanceof Uint8Array)) {
+        await reader.cancel('verification bundle returned a non-byte chunk');
+        throw new Error('verification bundle returned a non-byte chunk.');
       }
       totalBytes += value.byteLength;
       if (totalBytes > maxTotalBytes) {
@@ -958,7 +958,7 @@ export async function runVerificationAcceptance(
   }
 
   const reportResponse = await fetchAuthenticatedArtifact('verification report', reportUrl, artifactAuthHeaders);
-  const report = await readJsonRecord(reportResponse, 'verification report');
+  const report = await readJsonValue(reportResponse, 'verification report');
   assertAuthenticatedVerificationReport(report, reportResponse.headers, {
     expectedImageId: options.expectedImageId,
     expectedFinalizationId: options.finalizationId,
@@ -1133,13 +1133,11 @@ export function createPositiveOwnerFlowConfigs(configuredScenarios?: string): CL
 
 class GatedSmokeCLITestHelpers extends CLITestHelpers {
   private readonly localVotes = new Map<string, VoteResult>();
+  private readonly expectedImageId: string;
 
-  constructor(
-    baseUrl: string,
-    operatorAuthHeaders: Record<string, string>,
-    private readonly expectedImageId: string,
-  ) {
+  constructor(baseUrl: string, operatorAuthHeaders: Record<string, string>, expectedImageId: string) {
     super(baseUrl, operatorAuthHeaders);
+    this.expectedImageId = expectedImageId;
   }
 
   override async submitVote(sessionId: string, choice: VoteResult['choice']): Promise<VoteResult> {

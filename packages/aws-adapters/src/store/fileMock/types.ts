@@ -1,5 +1,5 @@
-import type { FinalizationBitmapData } from '@stark-ballot/application/finalize/finalization-store';
-import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
+import type { FinalizationBitmapRecord } from '@stark-ballot/application/finalize/finalization-store';
+import type { PersistedFinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
 import type { VerificationResultRecord } from '@stark-ballot/application/finalize/finalization-result-store';
 import type { AwsVerificationDeliveryMetadataInput } from '@stark-ballot/aws-adapters/finalize/finalizationDeliveryMetadataStore';
 import type { AwsFinalizationRuntimeMetadata } from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
@@ -52,11 +52,11 @@ export interface ReceiptRecord {
 export interface FileStoreSnapshot {
   identities: SessionIdentityRecord[];
   voting: SerializableSessionVotingRecord[];
-  finalizations: FinalizationRecord[];
+  finalizations: PersistedFinalizationRecord[];
   currentFinalizationIds: Array<[string, string]>;
   verificationResults: VerificationResultRecord[];
   verificationObservations: VerificationObservationRecord[];
-  bitmaps: FinalizationBitmapData[];
+  bitmaps: FinalizationBitmapRecord[];
   voteIdIndex: Array<[string, { sessionId: string; index: number }]>;
   runtimeMetadata: AwsRuntimeMetadataRecord[];
   deliveryMetadata: AwsDeliveryMetadataRecord[];

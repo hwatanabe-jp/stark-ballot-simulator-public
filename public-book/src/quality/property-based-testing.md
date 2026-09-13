@@ -1,110 +1,50 @@
-# Property-based Testing
+# 入力を生成して、性質を試す
 
-Property-based Testing (PBT) は、少数の fixture では見落としやすい境界条件を、生成入力と「常に成り立つべき性質」で検査します。
+64 票で通った包含証明が、63 票や 65 票でも正しく動くとは限りません。Merkle ツリーの枝分かれや、ビットをバイトに詰める処理には、大きさが一つ変わっただけで別の分岐を通る箇所があります。
 
-本プロジェクトでは、Merkle tree、bitmap packing、input commitment、journal count のように、順序、境界、改ざん耐性が重要なロジックに PBT を置いています。
+Property-based Testing（PBT）は、こうした入力を多数生成し、「どの入力でも成り立ってほしい性質」を実装に対して試す方法です。TypeScript には `fast-check`、Rust には `proptest` を使います。失敗が見つかると、原因を追いやすい小さな入力へ縮めます。
 
-## PBT を導入した理由
+## 順番を変えても、同じ入力を表すか
 
-Example-based tests は既知のシナリオを守ります。
-PBT はそれに加えて、input commitment の順序不変性、Merkle proof の改ざん拒否、LSB-first bitmap packing の境界安定性、journal count の分解式のような仕様レベルの性質を、生成器が到達できる範囲で探索します。
+[入力コミットメント](../protocol/input-commitment.md) は、同じ票の集合なら入力順を変えても同じ値になる設計です。PBT では票を生成して並べ替え、元の入力と計算結果を比較します。
 
-PBT は数学的証明ではありません（[限界](#限界)）。
-それでも、CI で広い生成入力を継続的に試せるため、暗号周辺の encoding drift や境界条件の退行を早期に検出しやすくなります。
+正常な票だけでは、同じインデックスを持つ異常なレコードの並び方を確かめられません。そのため重複インデックスも生成し、追加の比較規則によって順序が一定になるかを試します。一方、選挙 ID、掲示板ルート、票数、各票のコミットメントや Merkle パスを変えた場合は、試したケースでハッシュが変わることを確認します。
 
-## TypeScript 側の PBT
+このテストは実装の並べ替えやバイト列化の誤りを探します。SHA-256 の衝突困難性を証明するものではありません。
 
-### RFC 6962 Merkle tree
+## 一つのビットが境界を越えるとき
 
-対象:
+自票が採用されたかを示すビットマップでは、7 と 8 の間でバイトが変わり、255 と 256 の間で 256 ビットの区画が変わります。境界の前後でビットを取り違えると、別の票の採用状況を表示してしまいます。
 
-- `packages/merkle/src/rfc6962-merkle-tree.property.test.ts`
+生成したビットマップから証明を作り、任意のインデックスで元のビットと一致するかを確かめます。区画の内容や証明パスを変更すれば拒否されること、論理的な票数を越えた位置を証明として使えないこと、末尾の埋め草が非ゼロなら拒否されることも試します。
 
-検査する性質:
+固定ケースには 0、1、7、8、255、256、257、511、512、513、1025 ビットを残しています。生成テストに加えて、重要な境界は毎回必ず通すためです。
 
-- 任意の leaf set について inclusion proof が round-trip する
-- root、leaf、index、proof node を改ざんすると検証に失敗する
-- append-only consistency proof が old size / new size の組み合わせで検証できる
-- 奇数サイズ tree の代表ケースを固定 regression として保持する
+## 検査する性質と実装
 
-### Bitmap Merkle
+| 対象               | 主な性質                                                                                     | TypeScript のテストファイル                                            |
+| ------------------ | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| 掲示板             | 生成した包含証明が通り、葉・ルート・位置・パスの改ざんを拒否する。追記前後の整合性証明が通る | `packages/merkle/src/rfc6962-merkle-tree.property.test.ts`             |
+| ビットマップ       | 証明から取り出したビットが元と一致し、改ざん・範囲外・不正な埋め草を拒否する                 | `packages/verification/src/merkle/bitmap-merkle-tree.property.test.ts` |
+| 入力コミットメント | 同じ票の並べ替えで値が変わらず、結び付けるフィールドの変更を検出する                         | `packages/zkvm-contract/src/zkvm/input-commitment.property.test.ts`    |
+| ジャーナルの票数   | レコード数と掲示板上の位置数を、それぞれ矛盾なく分解できる                                   | `packages/node-adapters/src/zkvm/journal-invariants.property.test.ts`  |
 
-対象:
+ジャーナルでは、次の式と「採用済みの位置は提示済みでもある」という関係を検査します。
 
-- `packages/verification/src/merkle/bitmap-merkle-tree.property.test.ts`
+```text
+totalVotes = validVotes + rejectedRecords
+invalidVotes = rejectedRecords
+seenIndicesCount = validVotes + invalidPresentedSlots
+validVotes + invalidPresentedSlots + missingSlots = treeSize
+excludedSlots = missingSlots + invalidPresentedSlots
+```
 
-検査する性質:
+Rust 側の `zkvm/methods/guest/src/property_tests.rs` でも、入力の並べ替え、Merkle 証明、ビットマップ、ゲストの集計数と重複処理を検査します。Merkle ツリーやビットマップは比較用の実装と照合し、同じ誤りをそのまま期待値にしてしまう可能性を減らします。
 
-- 生成した bitmap の任意 index について proof が round-trip する
-- proof から抽出した `included` が元の bit と一致する
-- leaf chunk や Merkle パスの改ざんを拒否する
-- 認証済みの logical tree size から外れる bit の proof を拒否する
-- logical tree size より後ろの padding bit が非ゼロなら拒否する
-- 0, 1, 7, 8, 255, 256, 257, 511, 512, 513, 1025 bit の境界を固定ケースで検査する
+## 生成テストから証明へ
 
-### Input commitment
+PBT が確認できるのは、生成器が作り、実際に実行したケースです。実行時間を増やしても、生成器が作らない種類の入力は試せません。
 
-対象:
+同じ性質をすべてのモデル入力について述べたい場合は、[Lean による形式化](lean-formalization.md) を使います。そこで証明したモデルと実装の対応も、生成したテストケースを介して確かめます。
 
-- `packages/zkvm-contract/src/zkvm/__tests__/input-commitment.property.test.ts`
-
-検査する性質:
-
-- 同じ vote multiset の順序を入れ替えても input commitment が変わらない
-- duplicate index がある異常入力でも deterministic tie-break により順序が安定する
-- election ID、bulletin root、tree size、total expected を変えると commitment が変わる
-- vote の index、commitment、Merkle パスを変えると commitment が変わる
-
-### Journal invariants
-
-対象:
-
-- `packages/node-adapters/src/zkvm/journal-invariants.property.test.ts`
-
-検査する性質:
-
-- `totalVotes = validVotes + rejectedRecords`
-- `invalidVotes = rejectedRecords`
-- `seenIndicesCount = validVotes + invalidPresentedSlots`
-- `validVotes + invalidPresentedSlots + missingSlots = treeSize`
-- `excludedSlots = missingSlots + invalidPresentedSlots`
-- included bitmap の `true` は seen bitmap の `true` を含意する
-
-## Rust 側の PBT
-
-対象:
-
-- `zkvm/methods/guest/src/property_tests.rs`
-
-検査する性質:
-
-- input commitment が vote order に対して permutation invariant
-- duplicate index の tie-break を含めても permutation invariant
-- RFC 6962 inclusion proof が reference tree と一致する
-- root / leaf / path 改ざんを拒否する
-- bitmap root が reference oracle と一致する
-- bit flip で bitmap root が変わる
-- guest の slot / record accounting が現在の journal semantics と一致する
-- duplicate index の処理順序 semantics を固定する
-
-Rust 側の PBT は、zkVM guest / contract-core で使う低レベル実装に近い場所で動きます。
-TypeScript 側と同じ性質を別実装として検査します。
-
-## Lean との関係
-
-PBT は実装に対して広い入力空間を探索します。
-Lean は同種の不変条件を抽象モデル上で証明します。
-両者の役割分担と、Lean から出力した generated vectors を介して実装テストに接続する仕組みは [Lean による形式化 > 実装との接続](./lean-formalization.md#実装との接続) に整理しています。
-
-## 限界
-
-- PBT は数学的証明ではない
-- 生成範囲は CI 実行時間とのバランスで制限する
-- SHA-256 の衝突困難性は PBT では証明しない
-- RISC Zero receipt soundness も PBT の対象ではない
-- 生成器に含めていない入力領域は探索されない
-
-そのため、PBT は example-based tests や Lean formalization を置き換えるものではありません。
-境界条件と実装 drift を検出する追加レイヤーとして扱います。
-
-<!-- source: packages/merkle/src/rfc6962-merkle-tree.property.test.ts, packages/verification/src/merkle/bitmap-merkle-tree.property.test.ts, packages/zkvm-contract/src/zkvm/__tests__/input-commitment.property.test.ts, packages/node-adapters/src/zkvm/journal-invariants.property.test.ts, zkvm/methods/guest/src/property_tests.rs, docs/formal/README.md -->
+<!-- source: packages/merkle/src/rfc6962-merkle-tree.property.test.ts, packages/verification/src/merkle/bitmap-merkle-tree.property.test.ts, packages/zkvm-contract/src/zkvm/input-commitment.property.test.ts, packages/node-adapters/src/zkvm/journal-invariants.property.test.ts, zkvm/methods/guest/src/property_tests.rs, docs/formal/README.md -->

@@ -6,66 +6,69 @@ import { finalizationIdSchema, requestIdSchema } from '../schemas/primitives';
 import { publicErrorDetailSchema } from '../schemas/errors';
 import type { FlattenedSchemaError, PublicErrorDetail, StandardErrorResponse } from '../schemas/errors';
 import type { VerificationStatus } from '../schemas/verification';
+import { VERIFICATION_STATUS_VALUES } from '@stark-ballot/verification/shared/types';
 
 export type {
   PublicVerificationErrorMessage,
   PublicVerificationReport,
-  VerificationStatus,
-} from '../schemas/verification';
+} from '@stark-ballot/verification/public-result';
+export type { VerificationStatus } from '../schemas/verification';
 
 /**
  * Error codes for API responses
  */
-export enum ErrorCode {
-  SESSION_NOT_FOUND = 'SESSION_NOT_FOUND',
-  SESSION_EXPIRED = 'SESSION_EXPIRED',
-  SESSION_LIMIT_EXCEEDED = 'SESSION_LIMIT_EXCEEDED',
-  INVALID_REQUEST = 'INVALID_REQUEST',
-  PAYLOAD_TOO_LARGE = 'PAYLOAD_TOO_LARGE',
-  INVALID_IMAGE_ID = 'INVALID_IMAGE_ID',
-  INVALID_SIZE = 'INVALID_SIZE',
-  INVALID_BITMAP_PROOF_REQUEST = 'INVALID_BITMAP_PROOF_REQUEST',
-  INVALID_OFFSET = 'INVALID_OFFSET',
-  INVALID_LIMIT = 'INVALID_LIMIT',
-  INTERNAL_ERROR = 'INTERNAL_ERROR',
-  GLOBAL_LIMIT_EXCEEDED = 'GLOBAL_LIMIT_EXCEEDED',
-  CAPTCHA_FAILED = 'CAPTCHA_FAILED',
-  ZKVM_RATE_LIMIT_EXCEEDED = 'ZKVM_RATE_LIMIT_EXCEEDED',
-  SESSION_CAPABILITY_REQUIRED = 'SESSION_CAPABILITY_REQUIRED',
-  SESSION_CAPABILITY_INVALID = 'SESSION_CAPABILITY_INVALID',
-  SESSION_CAPABILITY_EXPIRED = 'SESSION_CAPABILITY_EXPIRED',
-  SAME_ORIGIN_REQUIRED = 'SAME_ORIGIN_REQUIRED',
-  INVALID_FINALIZATION_ARTIFACT = 'INVALID_FINALIZATION_ARTIFACT',
-  INVALID_BUNDLE_REFERENCE = 'INVALID_BUNDLE_REFERENCE',
-  BUNDLE_NOT_FOUND = 'BUNDLE_NOT_FOUND',
-  BUNDLE_DOWNLOAD_FAILED = 'BUNDLE_DOWNLOAD_FAILED',
-  BUNDLE_REQUIRES_RANGE_DOWNLOAD = 'BUNDLE_REQUIRES_RANGE_DOWNLOAD',
-  INVALID_RANGE = 'INVALID_RANGE',
-  REPORT_NOT_FOUND = 'REPORT_NOT_FOUND',
-  REPORT_DOWNLOAD_FAILED = 'REPORT_DOWNLOAD_FAILED',
-  REPORT_DOWNLOAD_TOO_LARGE = 'REPORT_DOWNLOAD_TOO_LARGE',
-  ASYNC_FINALIZATION_DISABLED = 'ASYNC_FINALIZATION_DISABLED',
-  CANCELLATION_UNSUPPORTED = 'CANCELLATION_UNSUPPORTED',
-  FINALIZATION_NOT_CANCELLABLE = 'FINALIZATION_NOT_CANCELLABLE',
-  VERIFICATION_OBSERVATION_CONFLICT = 'VERIFICATION_OBSERVATION_CONFLICT',
+export const ErrorCode = {
+  SESSION_NOT_FOUND: 'SESSION_NOT_FOUND',
+  SESSION_EXPIRED: 'SESSION_EXPIRED',
+  SESSION_LIMIT_EXCEEDED: 'SESSION_LIMIT_EXCEEDED',
+  INVALID_REQUEST: 'INVALID_REQUEST',
+  PAYLOAD_TOO_LARGE: 'PAYLOAD_TOO_LARGE',
+  INVALID_IMAGE_ID: 'INVALID_IMAGE_ID',
+  INVALID_SIZE: 'INVALID_SIZE',
+  INVALID_BITMAP_PROOF_REQUEST: 'INVALID_BITMAP_PROOF_REQUEST',
+  INVALID_OFFSET: 'INVALID_OFFSET',
+  INVALID_LIMIT: 'INVALID_LIMIT',
+  INTERNAL_ERROR: 'INTERNAL_ERROR',
+  GLOBAL_LIMIT_EXCEEDED: 'GLOBAL_LIMIT_EXCEEDED',
+  CAPTCHA_FAILED: 'CAPTCHA_FAILED',
+  ZKVM_RATE_LIMIT_EXCEEDED: 'ZKVM_RATE_LIMIT_EXCEEDED',
+  SESSION_CAPABILITY_REQUIRED: 'SESSION_CAPABILITY_REQUIRED',
+  SESSION_CAPABILITY_INVALID: 'SESSION_CAPABILITY_INVALID',
+  SESSION_CAPABILITY_EXPIRED: 'SESSION_CAPABILITY_EXPIRED',
+  SAME_ORIGIN_REQUIRED: 'SAME_ORIGIN_REQUIRED',
+  INVALID_FINALIZATION_ARTIFACT: 'INVALID_FINALIZATION_ARTIFACT',
+  INVALID_BUNDLE_REFERENCE: 'INVALID_BUNDLE_REFERENCE',
+  BUNDLE_NOT_FOUND: 'BUNDLE_NOT_FOUND',
+  BUNDLE_DOWNLOAD_FAILED: 'BUNDLE_DOWNLOAD_FAILED',
+  BUNDLE_REQUIRES_RANGE_DOWNLOAD: 'BUNDLE_REQUIRES_RANGE_DOWNLOAD',
+  INVALID_RANGE: 'INVALID_RANGE',
+  REPORT_NOT_FOUND: 'REPORT_NOT_FOUND',
+  REPORT_DOWNLOAD_FAILED: 'REPORT_DOWNLOAD_FAILED',
+  REPORT_DOWNLOAD_TOO_LARGE: 'REPORT_DOWNLOAD_TOO_LARGE',
+  ASYNC_FINALIZATION_DISABLED: 'ASYNC_FINALIZATION_DISABLED',
+  CANCELLATION_UNSUPPORTED: 'CANCELLATION_UNSUPPORTED',
+  FINALIZATION_NOT_CANCELLABLE: 'FINALIZATION_NOT_CANCELLABLE',
+  VERIFICATION_OBSERVATION_CONFLICT: 'VERIFICATION_OBSERVATION_CONFLICT',
 
   // Additional error codes used in routes
-  INVALID_VOTE_CHOICE = 'INVALID_VOTE_CHOICE',
-  ALREADY_VOTED = 'ALREADY_VOTED',
-  SESSION_FINALIZED = 'SESSION_FINALIZED',
-  INVALID_COMMITMENT = 'INVALID_COMMITMENT',
-  SESSION_ALREADY_FINALIZED = 'SESSION_ALREADY_FINALIZED',
-  USER_NOT_VOTED = 'USER_NOT_VOTED',
-  VOTING_NOT_COMPLETE = 'VOTING_NOT_COMPLETE',
-  INVALID_SCENARIO = 'INVALID_SCENARIO',
-  INVALID_SCENARIO_COMBINATION = 'INVALID_SCENARIO_COMBINATION',
-  SESSION_NOT_FINALIZED = 'SESSION_NOT_FINALIZED',
-  INVALID_VOTE_ID = 'INVALID_VOTE_ID',
-  VOTE_NOT_FOUND = 'VOTE_NOT_FOUND',
-  DUPLICATE_VOTE = 'DUPLICATE_VOTE',
-  VERIFICATION_FAILED = 'VERIFICATION_FAILED',
-  CT_PROOF_UNAVAILABLE = 'CT_PROOF_UNAVAILABLE',
-}
+  INVALID_VOTE_CHOICE: 'INVALID_VOTE_CHOICE',
+  ALREADY_VOTED: 'ALREADY_VOTED',
+  SESSION_FINALIZED: 'SESSION_FINALIZED',
+  INVALID_COMMITMENT: 'INVALID_COMMITMENT',
+  SESSION_ALREADY_FINALIZED: 'SESSION_ALREADY_FINALIZED',
+  USER_NOT_VOTED: 'USER_NOT_VOTED',
+  VOTING_NOT_COMPLETE: 'VOTING_NOT_COMPLETE',
+  INVALID_SCENARIO: 'INVALID_SCENARIO',
+  INVALID_SCENARIO_COMBINATION: 'INVALID_SCENARIO_COMBINATION',
+  SESSION_NOT_FINALIZED: 'SESSION_NOT_FINALIZED',
+  INVALID_VOTE_ID: 'INVALID_VOTE_ID',
+  VOTE_NOT_FOUND: 'VOTE_NOT_FOUND',
+  DUPLICATE_VOTE: 'DUPLICATE_VOTE',
+  VERIFICATION_FAILED: 'VERIFICATION_FAILED',
+  CT_PROOF_UNAVAILABLE: 'CT_PROOF_UNAVAILABLE',
+} as const;
+
+export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 
 /**
  * Error messages in Japanese
@@ -125,7 +128,7 @@ const ERROR_MESSAGES: Record<ErrorCode, string> = {
  * Get error message for a given error code
  */
 export function getErrorMessage(code: ErrorCode): string {
-  return ERROR_MESSAGES[code] || '不明なエラーが発生しました';
+  return ERROR_MESSAGES[code];
 }
 
 type ErrorDetailInputFields = {
@@ -156,7 +159,8 @@ export interface ApiErrorResult {
   payload: ApiErrorPayload;
 }
 
-export type ErrorDetails = ErrorDetailInputFields & Record<string, unknown>;
+/** Closed set of fields that may enter the public error-detail sanitizer. */
+export type ErrorDetails = ErrorDetailInputFields;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -197,7 +201,7 @@ function sanitizeFlattenedIssues(value: unknown): FlattenedSchemaError | undefin
   };
 }
 
-const VERIFICATION_STATUSES = new Set<VerificationStatus>(['success', 'failed', 'dev_mode', 'not_run', 'running']);
+const VERIFICATION_STATUSES = new Set<VerificationStatus>(VERIFICATION_STATUS_VALUES);
 
 function isVerificationStatus(value: unknown): value is VerificationStatus {
   return typeof value === 'string' && VERIFICATION_STATUSES.has(value as VerificationStatus);
@@ -319,17 +323,21 @@ function sanitizeErrorDetails(details?: ErrorDetails): { message?: string; detai
  * Custom error class for API errors
  */
 export class ApiError extends Error {
-  constructor(
-    public readonly code: ErrorCode,
-    public readonly statusCode: number,
-    message?: string,
-    public readonly details?: ErrorDetails,
-  ) {
+  readonly code: ErrorCode;
+  readonly statusCode: number;
+  readonly details: ErrorDetails | undefined;
+
+  constructor(code: ErrorCode, statusCode: number, message?: string, details?: ErrorDetails) {
     super(message || getErrorMessage(code));
+    this.code = code;
+    this.statusCode = statusCode;
+    this.details = details;
     this.name = 'ApiError';
 
     // Maintains proper stack trace for where error was thrown
-    Error.captureStackTrace(this, ApiError);
+    if (hasCaptureStackTrace(Error)) {
+      Error.captureStackTrace(this, ApiError);
+    }
   }
 
   /**
@@ -359,10 +367,16 @@ export class ApiError extends Error {
   }
 }
 
+function hasCaptureStackTrace(
+  value: unknown,
+): value is ErrorConstructor & { captureStackTrace(targetObject: object, constructorOpt?: object): void } {
+  return typeof value === 'function' && 'captureStackTrace' in value && typeof value.captureStackTrace === 'function';
+}
+
 /**
  * Standard HTTP status codes for common errors
  */
-export const ERROR_STATUS_CODES: Partial<Record<ErrorCode, number>> = {
+const ERROR_STATUS_CODES: Readonly<Record<ErrorCode, number>> = {
   [ErrorCode.SESSION_NOT_FOUND]: 404,
   [ErrorCode.SESSION_EXPIRED]: 401,
   [ErrorCode.SESSION_LIMIT_EXCEEDED]: 503,
@@ -423,6 +437,6 @@ export function createApiErrorResult(
     return error.toResult(requestId);
   }
 
-  const statusCode = ERROR_STATUS_CODES[error] || 500;
+  const statusCode = ERROR_STATUS_CODES[error];
   return new ApiError(error, statusCode, undefined, details).toResult(requestId);
 }

@@ -4,7 +4,8 @@ import type {
   FinalizationSucceededPayload,
   FinalizationTimedOutPayload,
 } from '@stark-ballot/application/finalize/finalization-store';
-import type { FinalizationState } from '@stark-ballot/application/finalize/finalization-types';
+import type { FinalizationId, FinalizationState } from '@stark-ballot/application/finalize/finalization-types';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 
 export type AwsRuntimeTransitionMetadata = {
   stepFunctionsArn?: string;
@@ -39,19 +40,25 @@ export type AwsFinalizationTimedOutPayload = FinalizationTimedOutPayload & AwsRu
 
 export interface AwsFinalizationRuntimeMetadataStore {
   getAwsFinalizationRuntimeMetadata(
-    sessionId: string,
-    finalizationId: string,
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
   ): Promise<AwsFinalizationRuntimeMetadata | undefined>;
 }
 
 export interface AwsFinalizationRuntimeTransitionStore {
-  markAwsFinalizationRunning(sessionId: string, payload: AwsFinalizationRunningPayload): Promise<FinalizationState>;
+  markAwsFinalizationRunning(sessionId: SessionId, payload: AwsFinalizationRunningPayload): Promise<FinalizationState>;
 
-  markAwsFinalizationSucceeded(sessionId: string, payload: AwsFinalizationSucceededPayload): Promise<FinalizationState>;
+  markAwsFinalizationSucceeded(
+    sessionId: SessionId,
+    payload: AwsFinalizationSucceededPayload,
+  ): Promise<FinalizationState>;
 
-  markAwsFinalizationFailed(sessionId: string, payload: AwsFinalizationFailedPayload): Promise<FinalizationState>;
+  markAwsFinalizationFailed(sessionId: SessionId, payload: AwsFinalizationFailedPayload): Promise<FinalizationState>;
 
-  markAwsFinalizationTimedOut(sessionId: string, payload: AwsFinalizationTimedOutPayload): Promise<FinalizationState>;
+  markAwsFinalizationTimedOut(
+    sessionId: SessionId,
+    payload: AwsFinalizationTimedOutPayload,
+  ): Promise<FinalizationState>;
 }
 
 function hasFunction(value: Record<string, unknown>, key: keyof AwsFinalizationRuntimeTransitionStore): boolean {

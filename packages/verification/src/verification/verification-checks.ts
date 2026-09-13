@@ -19,32 +19,6 @@ export type VerificationCheckRole = (typeof VERIFICATION_CHECK_ROLE_VALUES)[numb
 export const VERIFICATION_CHECK_CRITICALITY_VALUES = ['required', 'optional'] as const;
 export type VerificationCheckCriticality = (typeof VERIFICATION_CHECK_CRITICALITY_VALUES)[number];
 
-export const VERIFICATION_CHECK_IDS = [
-  'cast_receipt_present',
-  'cast_choice_range',
-  'cast_random_format',
-  'cast_commitment_match',
-  'recorded_commitment_in_bulletin',
-  'recorded_index_in_range',
-  'recorded_root_at_cast_consistent',
-  'recorded_inclusion_proof',
-  'recorded_consistency_proof',
-  'recorded_sth_third_party',
-  'counted_input_sanity',
-  'counted_unique_indices',
-  'counted_unique_commitments',
-  'counted_tally_consistent',
-  'counted_missing_indices_zero',
-  'counted_expected_vs_tree_size',
-  'counted_election_manifest_consistent',
-  'counted_close_statement_consistent',
-  'counted_my_vote_included',
-  'counted_input_commitment_match',
-  'stark_image_id_match',
-  'stark_receipt_verify',
-] as const;
-export type VerificationCheckId = (typeof VERIFICATION_CHECK_IDS)[number];
-
 export const VERIFICATION_CHECK_NOTE_KEY_VALUES = [
   'pages.verify.stepsCard.notes.myVoteIncluded.notPresented',
   'pages.verify.stepsCard.notes.myVoteIncluded.presentedButInvalid',
@@ -54,30 +28,47 @@ export const VERIFICATION_CHECK_NOTE_KEY_VALUES = [
 ] as const;
 export type VerificationCheckNoteKey = (typeof VERIFICATION_CHECK_NOTE_KEY_VALUES)[number];
 
-export interface VerificationCheck {
+interface VerificationCheckBase {
   id: VerificationCheckId;
-  status: VerificationStepStatus;
   evidence: VerificationEvidence;
   inputs: string[];
-  noteKey?: VerificationCheckNoteKey;
   derivedFrom?: VerificationCheckId;
 }
 
+export type VerificationCheck = VerificationCheckBase &
+  (
+    | { status: VerificationStepStatus; noteKey?: never }
+    | {
+        status: Extract<VerificationStepStatus, 'failed' | 'not_run'>;
+        noteKey: VerificationCheckNoteKey;
+      }
+  );
+
 export interface VerificationCheckDefinition {
-  id: VerificationCheckId;
-  category: VerificationStepId;
-  evidence: VerificationEvidence;
-  inputs: string[];
-  role: VerificationCheckRole;
-  criticality: VerificationCheckCriticality;
-  derivedFrom?: VerificationCheckId;
+  readonly id: VerificationCheckId;
+  readonly category: VerificationStepId;
+  readonly evidence: VerificationEvidence;
+  readonly inputs: readonly string[];
+  readonly role: VerificationCheckRole;
+  readonly criticality: VerificationCheckCriticality;
+  readonly derivedFrom?: VerificationCheckId;
 }
 
 export interface VerificationCheckRequirementContext {
   sthSourcesConfigured?: boolean;
 }
 
-export const VERIFICATION_CHECK_DEFINITIONS: VerificationCheckDefinition[] = [
+interface VerificationCheckDefinitionSource {
+  id: string;
+  category: VerificationStepId;
+  evidence: VerificationEvidence;
+  inputs: readonly string[];
+  role: VerificationCheckRole;
+  criticality: VerificationCheckCriticality;
+  derivedFrom?: string;
+}
+
+const VERIFICATION_CHECK_DEFINITION_SOURCE = [
   {
     id: 'cast_receipt_present',
     category: 'cast_as_intended',
@@ -256,7 +247,22 @@ export const VERIFICATION_CHECK_DEFINITIONS: VerificationCheckDefinition[] = [
     role: 'proof_verification',
     criticality: 'required',
   },
-];
+] as const satisfies readonly VerificationCheckDefinitionSource[];
+
+export type VerificationCheckId = (typeof VERIFICATION_CHECK_DEFINITION_SOURCE)[number]['id'];
+
+export const VERIFICATION_CHECK_IDS: readonly VerificationCheckId[] = Object.freeze(
+  VERIFICATION_CHECK_DEFINITION_SOURCE.map((definition) => definition.id),
+);
+
+export const VERIFICATION_CHECK_DEFINITIONS: readonly VerificationCheckDefinition[] = Object.freeze(
+  VERIFICATION_CHECK_DEFINITION_SOURCE.map((definition) =>
+    Object.freeze({
+      ...definition,
+      inputs: Object.freeze([...definition.inputs]),
+    }),
+  ),
+);
 
 const CHECK_DEFINITIONS_BY_STEP = VERIFICATION_CHECK_DEFINITIONS.reduce<
   Record<VerificationStepId, VerificationCheckDefinition[]>
@@ -288,14 +294,16 @@ export function isVerificationCheckRequired(
   return false;
 }
 
-export function getVerificationAllCheckDefinitionsForStep(stepId: VerificationStepId): VerificationCheckDefinition[] {
+export function getVerificationAllCheckDefinitionsForStep(
+  stepId: VerificationStepId,
+): readonly VerificationCheckDefinition[] {
   return [...CHECK_DEFINITIONS_BY_STEP[stepId]];
 }
 
 export function getVerificationRequiredCheckDefinitionsForStep(
   stepId: VerificationStepId,
   context?: VerificationCheckRequirementContext,
-): VerificationCheckDefinition[] {
+): readonly VerificationCheckDefinition[] {
   return getVerificationAllCheckDefinitionsForStep(stepId).filter((definition) =>
     isVerificationCheckRequired(definition, context),
   );

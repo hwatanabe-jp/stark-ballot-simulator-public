@@ -1,5 +1,23 @@
 data "aws_iam_policy_document" "foundation_apply_deploy_permissions_boundary" {
   count = local.foundation_pipeline_enabled ? 1 : 0
+  source_policy_documents = concat([
+    # Main first-use reads fit the quota by omitting approval KMS statements
+    # already admitted by this boundary's KMS ceiling. The identity stays exact.
+    local.deployment_target.environmentId == "main" ? jsonencode({
+      Version = "2012-10-17"
+      Statement = [
+        for statement in jsondecode(data.aws_iam_policy_document.saved_plan_approval_apply_read["foundation_terraform"].json).Statement :
+        statement if statement.Sid == "ReadExactFoundationTerraformApprovalEvidenceVersion"
+      ]
+    }) : data.aws_iam_policy_document.saved_plan_approval_apply_read["foundation_terraform"].json,
+    ], [for document in data.aws_iam_policy_document.foundation_initial_state_observation[*].json : jsonencode({
+      Version = "2012-10-17"
+      Statement = [
+        for statement in jsondecode(document).Statement :
+        # The exact state bucket is already admitted by the S3 ceiling below.
+        statement if statement.Sid != "InspectInitialFoundationStateVersions"
+      ]
+  })])
 
   statement {
     effect  = "Allow"
@@ -33,10 +51,19 @@ data "aws_iam_policy_document" "foundation_apply_deploy_permissions_boundary" {
     resources = ["*"]
   }
 
+  # The identity policy separately limits each action to its reviewed resource
+  # inventory. This boundary intersects BatchGetProjects to the Apply project and
+  # ListActionExecutions to the Foundation pipeline while staying within quota.
   statement {
-    effect    = "Allow"
-    actions   = ["codepipeline:ListActionExecutions"]
-    resources = ["arn:aws:codepipeline:${var.aws_region}:${var.aws_account_id}:${local.foundation_pipeline_name}"]
+    effect = "Allow"
+    actions = [
+      "codebuild:BatchGetProjects",
+      "codepipeline:ListActionExecutions",
+    ]
+    resources = [
+      local.source_path_foundation_start_build_projects.apply.project_arn,
+      "arn:aws:codepipeline:${var.aws_region}:${var.aws_account_id}:${local.foundation_pipeline_name}",
+    ]
   }
 
   statement {

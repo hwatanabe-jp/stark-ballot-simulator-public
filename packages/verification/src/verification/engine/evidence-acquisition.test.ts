@@ -3,7 +3,7 @@ import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitm
 import { generateBitmapMerkleProof } from '@stark-ballot/verification/merkle/bitmap-merkle-tree';
 import type { AdmittedConsistencyProof } from '../consistency-proof-types';
 import { evaluateChecks } from './evaluate-checks';
-import type { EvidenceAcquisition, VerificationContext } from './types';
+import type { EvidenceAcquisition, VerificationEvaluationInput } from './types';
 
 const ROOT = `0x${'1'.repeat(64)}`;
 
@@ -11,7 +11,9 @@ function admitted<T>(value: T): EvidenceAcquisition<T> {
   return { kind: 'admitted', value };
 }
 
-function consistencyContext(consistencyProof: EvidenceAcquisition<AdmittedConsistencyProof>): VerificationContext {
+function consistencyContext(
+  consistencyProof: EvidenceAcquisition<AdmittedConsistencyProof>,
+): VerificationEvaluationInput {
   return {
     voteReceipt: {
       voteId: 'vote-1',
@@ -77,8 +79,8 @@ describe('verification evidence acquisition outcomes', () => {
   it('evaluates admitted bitmap evidence without a provider callback', async () => {
     const bitmap = [true];
     const includedBitmapRoot = computeIncludedBitmapRoot(bitmap);
-    const context: VerificationContext = {
-      verificationStatus: 'success',
+    const context: VerificationEvaluationInput = {
+      verifierOutcome: { status: 'success' },
       bitmapProofSource: 'real',
       treeSize: 1,
       includedBitmapRoot,
@@ -100,8 +102,8 @@ describe('verification evidence acquisition outcomes', () => {
   it.each(['unavailable', 'malformed', 'transport_failed'] as const)(
     'keeps %s bitmap evidence not_run and therefore fail-closed',
     async (kind) => {
-      const context: VerificationContext = {
-        verificationStatus: 'success',
+      const context: VerificationEvaluationInput = {
+        verifierOutcome: { status: 'success' },
         bitmapProofSource: 'real',
         treeSize: 1,
         includedBitmapRoot: computeIncludedBitmapRoot([true]),

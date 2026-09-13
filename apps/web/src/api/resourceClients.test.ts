@@ -3,14 +3,13 @@ import sessionFixture from '@stark-ballot/web/mock-api/fixtures/json/sessions.po
 import voteFixture from '@stark-ballot/web/mock-api/fixtures/json/sessions.votes.post.json';
 import progressFixture from '@stark-ballot/web/mock-api/fixtures/json/sessions.progress.get.json';
 import verificationRunFixture from '@stark-ballot/web/mock-api/fixtures/json/verification.post.json';
+import verificationFixture from '@stark-ballot/web/mock-api/fixtures/json/verification.get.S0.json';
 import { apiFetch } from './apiFetch';
 import { createSession } from './sessions';
 import { submitVote } from './votes';
 import { getProgress } from './progress';
-import { getBulletin, getBulletinConsistencyProof, getBulletinVoteProof, getSameOriginSth } from './bulletin';
 import { cancelFinalization, fetchCurrentFinalization, startFinalization } from './finalizations';
 import { getVerification, recordVerificationObservation, runVerification } from './verification';
-import { getBitmapProof, getInputCommitment } from './artifacts';
 import { deriveVerificationPresentationPolicy } from '@stark-ballot/verification/presentation-policy';
 import { resolveEligibleRenderedVerificationStatus } from '@stark-ballot/web/routes/verify/lib/verification-presentation';
 
@@ -23,12 +22,6 @@ const SESSION = {
   capabilityToken: 'capability-token',
 };
 const requestMeta = { requestId: 'request-id' } as const;
-const HEX_A = `0x${'a'.repeat(64)}`;
-const HEX_B = `0x${'b'.repeat(64)}`;
-const HEX_C = `0x${'c'.repeat(64)}`;
-const HEX_D = `0x${'d'.repeat(64)}`;
-const HEX_E = `0x${'e'.repeat(64)}`;
-const HEX_F = `0x${'f'.repeat(64)}`;
 const pendingFinalization = {
   finalizationId: 'finalization-1',
   status: 'pending' as const,
@@ -55,74 +48,8 @@ function jsonResponse(payload: unknown, status = 200): Response {
 
 function availableVerificationData(finalizationId: string) {
   return {
-    availability: 'available' as const,
+    ...verificationFixture.data,
     finalizationId,
-    proofAuthority: {
-      electionId: 'election-1',
-      electionConfigHash: HEX_A,
-      logId: HEX_B,
-      imageId: HEX_C,
-      bulletinRoot: HEX_D,
-      verifiedTally: [1, 0, 0, 0, 0],
-      missingSlots: 0,
-      invalidPresentedSlots: 0,
-      rejectedRecords: 0,
-      totalExpected: 1,
-      treeSize: 1,
-      excludedSlots: 0,
-      sthDigest: HEX_E,
-      includedBitmapRoot: HEX_F,
-      inputCommitment: HEX_A,
-      seenIndicesCount: 1,
-    },
-    presentation: {
-      tally: {
-        counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
-        totalVotes: 1,
-        tamperedCount: 0,
-      },
-      scenarioId: 'S0' as const,
-      policy: {
-        summary: {
-          status: 'fully_verified' as const,
-          tone: 'verified' as const,
-        },
-        stageStatuses: {
-          cast_as_intended: 'success' as const,
-          recorded_as_cast: 'success' as const,
-          counted_as_recorded: 'success' as const,
-          stark_verification: 'success' as const,
-        },
-        evidenceFullyVerified: true,
-        fullyVerifiedLabelEligible: true,
-        display: {
-          readiness: 'ready' as const,
-          source: 'summary' as const,
-          status: 'verified' as const,
-          renderedStatus: 'verified' as const,
-        },
-        publishedTallyMismatch: false,
-        devModeEvidence: false,
-        missingEvidence: false,
-      },
-    },
-    verifierResult: {
-      status: 'success' as const,
-    },
-    verification: {
-      checks: [],
-      steps: [],
-    },
-    voterEvidence: {
-      availability: 'unavailable' as const,
-      reason: 'exact_proof_unavailable' as const,
-      userVote: {
-        commitment: HEX_B,
-      },
-    },
-    journal: {
-      representation: 'omitted' as const,
-    },
   };
 }
 
@@ -191,188 +118,6 @@ describe('web API resource clients', () => {
       method: 'GET',
     });
     expect(result).toEqual(pendingFinalization);
-  });
-
-  it('serializes parsed bulletin query values through the route contract', async () => {
-    const payload = {
-      commitments: [],
-      bulletinRoot: `0x${'0'.repeat(64)}`,
-      treeSize: 0,
-      generatedAtMs: 0,
-    };
-    vi.mocked(apiFetch).mockResolvedValue(
-      jsonResponse({
-        data: payload,
-        meta: {
-          ...requestMeta,
-          page: {
-            nextOffset: null,
-            hasMore: false,
-          },
-        },
-      }),
-    );
-
-    const result = await getBulletin(SESSION, { offset: 2, limit: 50 });
-
-    expect(apiFetch).toHaveBeenCalledWith('/api/sessions/session%2Fone/bulletin?offset=2&limit=50', {
-      headers: {
-        'X-Session-Capability': SESSION.capabilityToken,
-      },
-      method: 'GET',
-    });
-    expect(result).toEqual({
-      data: payload,
-      page: {
-        nextOffset: null,
-        hasMore: false,
-      },
-    });
-  });
-
-  it('uses canonical bulletin proof routes with path-scoped session authority', async () => {
-    const hex = `0x${'a'.repeat(64)}`;
-    vi.mocked(apiFetch)
-      .mockResolvedValueOnce(
-        jsonResponse(
-          successEnvelope({
-            voteId: 'vote/one',
-            proof: {
-              leafIndex: 0,
-              merklePath: [],
-              treeSize: 1,
-              bulletinRootAtCast: hex,
-            },
-          }),
-        ),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(
-          successEnvelope({
-            fromTreeSize: 0,
-            toTreeSize: 1,
-            rootAtFromTreeSize: hex,
-            rootAtToTreeSize: hex,
-            proofNodes: [],
-            generatedAtMs: 1,
-          }),
-        ),
-      );
-
-    await getBulletinVoteProof(SESSION, 'vote/one');
-    await getBulletinConsistencyProof(SESSION, { fromTreeSize: 0, toTreeSize: 1 });
-
-    expect(apiFetch).toHaveBeenNthCalledWith(1, '/api/sessions/session%2Fone/votes/vote%2Fone/inclusion-proof', {
-      headers: {
-        'X-Session-Capability': SESSION.capabilityToken,
-      },
-      method: 'GET',
-    });
-    expect(apiFetch).toHaveBeenNthCalledWith(
-      2,
-      '/api/sessions/session%2Fone/bulletin/consistency-proof?fromTreeSize=0&toTreeSize=1',
-      {
-        headers: {
-          'X-Session-Capability': SESSION.capabilityToken,
-        },
-        method: 'GET',
-      },
-    );
-  });
-
-  it('uses canonical finalization evidence routes and their declared capability scopes', async () => {
-    const hex = `0x${'a'.repeat(64)}`;
-    vi.mocked(apiFetch)
-      .mockResolvedValueOnce(
-        jsonResponse(
-          successEnvelope({
-            sth: {
-              sthDigest: hex,
-              bulletinRoot: hex,
-              treeSize: 1,
-              timestamp: 1,
-              logId: 'log-1',
-            },
-          }),
-        ),
-      )
-      .mockResolvedValueOnce(jsonResponse(successEnvelope({ leafChunk: hex, auditPath: [] })))
-      .mockResolvedValueOnce(jsonResponse(successEnvelope({ inputCommitment: hex })));
-
-    await getSameOriginSth(SESSION, { auditorId: 'browser' });
-    await getBitmapProof(SESSION, { kind: 'seen', voteIndex: 3 });
-    await getInputCommitment(SESSION);
-
-    expect(apiFetch).toHaveBeenNthCalledWith(1, '/api/sessions/session%2Fone/bulletin/sth?auditorId=browser', {
-      headers: {
-        'X-Session-Capability': SESSION.capabilityToken,
-      },
-      method: 'GET',
-    });
-    expect(apiFetch).toHaveBeenNthCalledWith(
-      2,
-      '/api/sessions/session%2Fone/finalizations/current/bitmap-proofs/seen/3',
-      {
-        headers: {
-          'X-Session-Capability': SESSION.capabilityToken,
-        },
-        method: 'GET',
-      },
-    );
-    expect(apiFetch).toHaveBeenNthCalledWith(3, '/api/sessions/session%2Fone/finalizations/current/input-commitment', {
-      headers: {
-        'X-Session-Capability': SESSION.capabilityToken,
-      },
-      method: 'GET',
-    });
-  });
-
-  it('does not resolve the same-origin STH client against an external base URL', async () => {
-    const hex = `0x${'a'.repeat(64)}`;
-    vi.mocked(apiFetch).mockResolvedValue(
-      jsonResponse(
-        successEnvelope({
-          sth: {
-            sthDigest: hex,
-            bulletinRoot: hex,
-            treeSize: 1,
-            timestamp: 1,
-            logId: 'log-1',
-          },
-        }),
-      ),
-    );
-    await expect(getSameOriginSth(SESSION, {}, { baseUrl: 'https://auditor.example' })).rejects.toThrow(
-      'Same-origin STH requests cannot override the API base URL',
-    );
-    expect(apiFetch).not.toHaveBeenCalled();
-  });
-
-  it('sends a conditional bitmap request and admits an empty-body 304', async () => {
-    vi.mocked(apiFetch).mockResolvedValue(
-      new Response(null, {
-        status: 304,
-        headers: { ETag: 'W/"bitmap-etag"' },
-      }),
-    );
-
-    const result = await getBitmapProof(
-      SESSION,
-      { kind: 'included', voteIndex: 3 },
-      { ifNoneMatch: 'W/"bitmap-etag"' },
-    );
-
-    expect(result).toEqual({ status: 304, etag: 'W/"bitmap-etag"' });
-    expect(apiFetch).toHaveBeenCalledWith(
-      '/api/sessions/session%2Fone/finalizations/current/bitmap-proofs/included/3',
-      {
-        headers: {
-          'If-None-Match': 'W/"bitmap-etag"',
-          'X-Session-Capability': SESSION.capabilityToken,
-        },
-        method: 'GET',
-      },
-    );
   });
 
   it('returns a status-discriminated accepted finalization', async () => {

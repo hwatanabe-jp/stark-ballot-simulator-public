@@ -1,7 +1,10 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import type { Server } from 'node:http';
+import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { get, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as wait } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createStaticHonoServer, STATIC_API_ROUTE_MODE } from './static-hono-server';
 import { logger } from '@stark-ballot/diagnostics/logger';
@@ -12,6 +15,17 @@ let distDir: string | undefined;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+async function stopFixtureHost(pidFile: string): Promise<void> {
+  try {
+    const hostPid = Number(await readFile(pidFile, 'utf8'));
+    process.kill(-hostPid, 'SIGKILL');
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ESRCH'))) {
+      throw error;
+    }
+  }
 }
 
 async function closeServer(): Promise<void> {
@@ -127,4 +141,95 @@ describe('static-hono-server', () => {
     expect(response.headers.get('set-cookie')).toBeNull();
     await expect(response.text()).resolves.toContain('app shell');
   });
+});
+
+describe.skipIf(process.platform === 'win32')('static server shutdown', () => {
+  it.each(['SIGTERM', 'SIGINT'] as const)(
+    'stops an active host before exiting on repeated %s',
+    async (signal) => {
+      const directory = await mkdtemp(join(tmpdir(), 'stark-ballot-server-shutdown-'));
+      const pidFile = join(directory, 'host.pid');
+      const resultFile = join(directory, 'result.json');
+      const hostCode = `
+      process.on('SIGTERM', () => {});
+      process.on('SIGINT', () => {});
+      require('node:fs').writeFileSync(process.argv[1], String(process.pid));
+      process.stdout.write('Executing guest program and generating proof...\\n');
+      setInterval(() => {}, 1000);
+    `;
+      const supervisorCode = `
+      import { createServer } from 'node:http';
+      import { writeFile } from 'node:fs/promises';
+      import { installStaticServerShutdown } from ${JSON.stringify(new URL('./static-hono-server.ts', import.meta.url).href)};
+      import { runHostProcess, shutdownHostProcesses } from ${JSON.stringify(new URL('../../packages/node-adapters/src/zkvm/host-process.ts', import.meta.url).href)};
+      const server = createServer((request, response) => response.write('in progress'));
+      installStaticServerShutdown(server);
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      const result = await runHostProcess(process.execPath, ['-e', ${JSON.stringify(hostCode)}, ${JSON.stringify(pidFile)}], {
+        env: process.env, timeoutMs: 10000, terminationGraceMs: 200, killWaitMs: 200,
+        onStage: () => process.send({ port: server.address().port }),
+      });
+      const remainingHosts = (await shutdownHostProcesses()).length;
+      let newWorkRejected = false;
+      try {
+        await runHostProcess(process.execPath, ['-e', 'process.exit(0)'], { env: process.env });
+      } catch (error) {
+        newWorkRejected = error instanceof Error && error.message === 'Local zkVM supervisor is shutting down.';
+      }
+      await writeFile(${JSON.stringify(resultFile)}, JSON.stringify({ ...result, remainingHosts, newWorkRejected }));
+    `;
+      const supervisor = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', supervisorCode], {
+        cwd: fileURLToPath(new URL('../..', import.meta.url)),
+        stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+      });
+      let stderr = '';
+      supervisor.stderr?.on('data', (chunk: Buffer) => {
+        stderr = (stderr + chunk.toString()).slice(-4_096);
+      });
+      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) => {
+        supervisor.once('exit', (code, exitSignal) => resolveExit({ code, signal: exitSignal }));
+      });
+      const watchdog = setTimeout(() => supervisor.kill('SIGKILL'), 5_000);
+      try {
+        const port = await new Promise<number>((resolvePort, reject) => {
+          supervisor.once('error', reject);
+          supervisor.once('exit', () => reject(new Error(`Supervisor exited before starting the host: ${stderr}`)));
+          supervisor.once('message', (message: unknown) => {
+            if (!isRecord(message) || typeof message['port'] !== 'number') {
+              reject(new Error('Invalid fixture readiness message'));
+              return;
+            }
+            resolvePort(message['port']);
+          });
+        });
+        const response = await new Promise<import('node:http').IncomingMessage>((resolveResponse, reject) => {
+          get(`http://127.0.0.1:${port}`, resolveResponse).once('error', reject);
+        });
+        response.resume();
+        response.on('error', () => undefined); // An interrupted response is expected during shutdown.
+        const connectionClosed = new Promise<void>((resolveClosed) => response.once('close', resolveClosed));
+        supervisor.kill(signal);
+        await wait(25);
+        supervisor.kill(signal);
+        expect(await exited).toEqual({ code: signal === 'SIGINT' ? 130 : 143, signal: null });
+        await connectionClosed;
+        expect(JSON.parse(await readFile(resultFile, 'utf8'))).toMatchObject({
+          outcome: 'interrupted',
+          signal: 'SIGKILL',
+          cleanup: 'complete',
+          remainingHosts: 0,
+          newWorkRejected: true,
+        });
+        const hostPid = Number(await readFile(pidFile, 'utf8'));
+        expect(() => process.kill(hostPid, 0)).toThrow();
+      } finally {
+        clearTimeout(watchdog);
+        supervisor.kill('SIGKILL');
+        await exited;
+        await stopFixtureHost(pidFile);
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+    10_000,
+  );
 });

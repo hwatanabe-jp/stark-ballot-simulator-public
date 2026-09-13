@@ -1,9 +1,11 @@
 'use client';
 
 import { useCallback } from 'react';
+import { joinClassNames } from '@stark-ballot/web/shared/classNames';
 import type { Language } from '@stark-ballot/web/hooks/useLanguage';
 import { t } from '@stark-ballot/web/i18n';
 import { AppLink, useAppPathname } from '@stark-ballot/web/navigation/appNavigation';
+import './StepIndicatorHorizontal.css';
 
 interface StepIndicatorHorizontalProps {
   currentStep?: number;
@@ -28,8 +30,6 @@ const steps = [
 ] satisfies ReadonlyArray<Step>;
 
 type StepStatus = 'pending' | 'active' | 'completed';
-
-const cn = (...classes: Array<string | false | undefined>): string => classes.filter(Boolean).join(' ');
 
 export function StepIndicatorHorizontal({
   currentStep,
@@ -60,7 +60,6 @@ export function StepIndicatorHorizontal({
 
   const derivedIndex = getCurrentStepIndex();
   const currentStepIndex = currentStep ?? derivedIndex;
-  const newlyCompletedStep = currentStepIndex > 0 ? (steps[currentStepIndex - 1]?.id ?? null) : null;
 
   const getStepStatus = (index: number): StepStatus => {
     if (index < currentStepIndex) return 'completed';
@@ -74,38 +73,13 @@ export function StepIndicatorHorizontal({
     }
   }, [language, onReset]);
 
-  const renderDot = (status: StepStatus, stepId: string, index: number): React.ReactNode => {
-    const isNewlyCompleted = status === 'completed' && newlyCompletedStep === stepId;
-    return (
-      <div
-        className={cn('step-dot', status, status === 'completed' && isNewlyCompleted && 'animate-step-complete-subtle')}
-      >
-        {status === 'completed' ? (
-          <svg
-            className={cn('w-3.5 h-3.5', isNewlyCompleted && 'animate-check-subtle')}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M5 13l4 4L19 7" />
-          </svg>
-        ) : (
-          index + 1
-        )}
-      </div>
-    );
-  };
-
   return (
     <nav
-      className={cn('step-indicator-horizontal', className)}
+      className={joinClassNames('step-indicator', className)}
       aria-label="Progress navigation"
       data-testid="step-indicator"
     >
-      <ol className="step-list" role="list">
+      <ol className="step-indicator__list" role="list">
         {steps.map((step, index) => {
           const status = getStepStatus(index);
           const isCompleted = status === 'completed';
@@ -113,24 +87,18 @@ export function StepIndicatorHorizontal({
           const canNavigateHome = isCompleted && isHome && onReset;
 
           return (
-            <li key={step.id} className={cn('step-item', status)} data-step-id={step.id} data-status={status}>
+            <li key={step.id} className="step-indicator__item" data-step-id={step.id} data-status={status}>
               {canNavigateHome ? (
-                <button type="button" onClick={handleHomeClick} className="step-link">
-                  {renderDot(status, step.id, index)}
-                  <span className="step-label">{language === 'ja' ? step.label : step.labelEn}</span>
+                <button type="button" onClick={handleHomeClick} className="step-indicator__link">
+                  <span className="step-indicator__label">{language === 'ja' ? step.label : step.labelEn}</span>
                 </button>
               ) : isCompleted ? (
-                <AppLink href={step.path} className="step-link">
-                  {renderDot(status, step.id, index)}
-                  <span className="step-label">{language === 'ja' ? step.label : step.labelEn}</span>
+                <AppLink href={step.path} className="step-indicator__link">
+                  <span className="step-indicator__label">{language === 'ja' ? step.label : step.labelEn}</span>
                 </AppLink>
               ) : (
-                <div
-                  className={cn('step-link', status === 'pending' && 'opacity-60')}
-                  aria-current={status === 'active' ? 'step' : undefined}
-                >
-                  {renderDot(status, step.id, index)}
-                  <span className="step-label">{language === 'ja' ? step.label : step.labelEn}</span>
+                <div className="step-indicator__link" aria-current={status === 'active' ? 'step' : undefined}>
+                  <span className="step-indicator__label">{language === 'ja' ? step.label : step.labelEn}</span>
                 </div>
               )}
             </li>

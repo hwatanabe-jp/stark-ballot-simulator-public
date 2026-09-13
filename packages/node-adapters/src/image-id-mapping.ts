@@ -1,9 +1,11 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { parseImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
-import type { ImageIdMapping as PublicImageIdMapping } from '@stark-ballot/validation/image-id-mapping-types';
+import {
+  parseImageIdMapping,
+  type ImageIdMapping as PublicImageIdMapping,
+} from '@stark-ballot/validation/image-id-mapping';
 
-export type { ImageIdMapping as PublicImageIdMapping } from '@stark-ballot/validation/image-id-mapping-types';
+export type { ImageIdMapping as PublicImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
 
 let cachedMapping: PublicImageIdMapping | null = null;
 

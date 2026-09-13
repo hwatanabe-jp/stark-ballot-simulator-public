@@ -5,8 +5,9 @@ import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
 import type { ZkVMExecutionResult, ZkVMExecutor } from '@stark-ballot/application/finalize/zkvm-executor';
 import type { ElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
 import type { ProofBundleService } from '@stark-ballot/application/finalize/proof-bundle-service';
+import { ApplicationErrorCode } from '@stark-ballot/application';
 import {
-  ApplicationErrorCode,
+  createUnavailableFinalizationArtifacts,
   type FinalizationBitmapDisposition,
   type FinalizationId,
   type FinalizationResultAuthority,
@@ -32,9 +33,10 @@ import {
 import { buildUserVoteArtifacts, UserVoteArtifactsUnavailableError } from './user-vote-artifacts';
 import type { FinalizeScenarioContext, FinalizeSessionError, FinalizeSyncPayload, Result } from './types';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 
 export interface FinalizeSyncInput {
-  sessionId: string;
+  sessionId: SessionId;
   finalizationId: FinalizationId;
   queuedAtMs: number;
   voting: SessionVotingRecord;
@@ -105,7 +107,8 @@ export async function finalizeSync(
       typeof (zkVMResult as { methodVersion?: unknown }).methodVersion === 'number'
         ? (zkVMResult as { methodVersion: number }).methodVersion
         : undefined;
-    if (!isSupportedZkVMJournal(zkVMResult)) {
+    const publicJournal = admitCurrentExecutionJournal(zkVMResult);
+    if (!publicJournal) {
       return {
         ok: false,
         error: {
@@ -134,7 +137,6 @@ export async function finalizeSync(
     const electionManifest = buildElectionManifest(input.zkvmInput.electionId, input.electionConfig);
     const excludedSlots = zkVMResult.excludedSlots;
     const effectiveTamperedCount = Math.max(excludedSlots, scenarioTamperCount);
-    const publicJournal = toPublicZkvmJournal(zkVMResult);
     const artifactSourceResult: FinalizationResultAuthority = {
       tally: {
         counts: input.scenario.claimedCounts,
@@ -143,6 +145,7 @@ export async function finalizeSync(
       },
       imageId: actualImageId || 'zkvm-image-v' + zkVMResult.methodVersion,
       journal: publicJournal,
+      artifacts: createUnavailableFinalizationArtifacts(),
     };
 
     let userVoteArtifacts;
@@ -193,16 +196,25 @@ export async function finalizeSync(
 
     if (!proofBundleOutcome.ok) {
       if (proofBundleOutcome.error.type === 'verifier_failed') {
+        const verifierFailure = proofBundleOutcome.error;
+        const details =
+          verifierFailure.status === 'failed'
+            ? {
+                status: 'failed' as const,
+                finalizationId: verifierFailure.finalizationId,
+                verificationReport: verifierFailure.report,
+              }
+            : {
+                status: 'dev_mode' as const,
+                finalizationId: verifierFailure.finalizationId,
+                verificationReport: verifierFailure.report,
+              };
         return {
           ok: false,
           error: {
             kind: 'api',
             code: ApplicationErrorCode.VERIFICATION_FAILED,
-            details: {
-              status: proofBundleOutcome.error.status,
-              finalizationId: proofBundleOutcome.error.finalizationId,
-              verificationReport: proofBundleOutcome.error.report,
-            },
+            details,
           },
         };
       }
@@ -237,7 +249,6 @@ export async function finalizeSync(
       zkVMResult.methodVersion,
       {
         finalizationId,
-        source: 'generated',
       },
     );
     const closeStatement = buildCloseStatement({
@@ -258,7 +269,6 @@ export async function finalizeSync(
         totalVotes: input.scenario.claimedTotalVotes,
         tamperedCount: effectiveTamperedCount,
       },
-      receipt: normalizedReceipt.receipt,
       imageId: actualImageId || 'zkvm-image-v' + zkVMResult.methodVersion,
       tamperDetected: resolveFinalizationTamperDetected({
         excludedSlots: zkVMResult.excludedSlots,
@@ -266,12 +276,27 @@ export async function finalizeSync(
         scenarioTamperCount,
       }),
       journal: publicJournal,
-      publicInputArtifact,
-      electionManifest,
-      closeStatement,
-      ...omitUndefinedProperties({
-        bitmapProofSource: bitmap.bitmapProofSource,
-      }),
+      artifacts: {
+        publicAudit: {
+          availability: 'available',
+          publicInputArtifact,
+          electionManifest,
+          closeStatement,
+        },
+        receipt: {
+          availability: 'available',
+          receipt: normalizedReceipt.receipt,
+        },
+        receiptPublication: { availability: 'unavailable' },
+        bitmap:
+          bitmap.disposition.availability === 'available' && bitmap.bitmapProofSource
+            ? {
+                availability: 'available',
+                proofSource: bitmap.bitmapProofSource,
+                data: bitmap.disposition.data,
+              }
+            : { availability: 'unavailable' },
+      },
       scenarios: input.scenario.scenarios,
       ...omitUndefinedProperties({
         tamperSummary:
@@ -401,6 +426,15 @@ export async function finalizeSync(
         details: { details: 'Proof generation failed' },
       },
     };
+  }
+}
+
+function admitCurrentExecutionJournal(result: ZkVMExecutionResult): ReturnType<typeof toPublicZkvmJournal> | undefined {
+  try {
+    const journal = toPublicZkvmJournal(result);
+    return isSupportedZkVMJournal(journal) ? journal : undefined;
+  } catch {
+    return undefined;
   }
 }
 

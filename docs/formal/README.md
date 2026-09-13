@@ -3,7 +3,7 @@
 This directory contains the stable outputs from the Lean 4 formalization
 workspace under `formal/`. Lean is installed through `elan`; `lake` is provided
 by the selected Lean toolchain rather than by a separate system package. The
-workspace pins `leanprover/lean4:v4.32.2` in `formal/lean-toolchain` for
+workspace pins `leanprover/lean4:v4.33.1` in `formal/lean-toolchain` for
 reproducible builds.
 
 ## Scope and Claim Boundaries
@@ -76,6 +76,37 @@ TypeScript and Rust coverage:
   vectors are consumed through the Rust guest's checked inspection surface,
   which shares the validation and fold logic used by `guest_main`.
 
+`formal/Scripts/EmitTestVectors.lean` is the sole producer of all six vectors'
+contents. `pnpm formal:vectors` applies Oxfmt to the emitted JSON before it
+becomes committed evidence. `scripts/formal/check-formal-vectors.ts` invokes
+the Lean emitter with a temporary output directory, formats its JSON through
+the shared `scripts/formatting/format-source.ts` helper, and compares those
+bytes with the committed files. Each file is an unnumbered exact-current envelope with the
+exact keys `envelopeType`, `kind`, `modeledBounds`, `payload`, and
+`canonicalSha256`. `envelopeType` is the current-contract discriminator, while
+`kind` binds the file path to its one admitted payload shape. The fingerprint is
+SHA-256 over the recursively key-sorted, whitespace-free JSON body after
+removing `canonicalSha256`. Unknown, missing, generation-number, wrong-kind,
+and fingerprint-drifted envelopes fail closed; there is no compatibility
+reader for a retired vector shape.
+
+Every envelope repeats the modeled integer and work bounds so a vector cannot
+silently outlive the runtime contract it exercises. The current metadata binds
+input commitment format `10`, `u16` maximum `65,535`, `u32` maximum
+`4,294,967,295`, guest method `14`, tree/expected/vote and total-path ceilings
+of `1,000,000`, per-record path ceiling `65,535`, serialized-input ceiling
+`67,108,864` bytes, tally width `5`, and tally-bucket ceiling `1,000,000`.
+`@stark-ballot/zkvm-contract/zkvm/formal-vectors` admits imported JSON from
+`unknown` and asserts those values against the TypeScript contract constants.
+The Rust correspondence tests use the exact serde envelope admission in
+`zkvm/contract-core/src/formal_vector_test_support.rs` and assert the same
+metadata against the Rust constants before consuming a payload.
+
+Lean remains an independent model and deterministic evidence producer. The
+emitter does not generate TypeScript or Rust runtime implementations; each
+runtime retains its own constants and behavior, and the correspondence tests
+compare them through the admitted envelopes.
+
 ## Stable Artifacts and Audit
 
 The stable public outputs are `formal-report.json`, `formal-audit.json`, and the
@@ -83,12 +114,14 @@ summary, display, input commitment, bitmap, check-definition, and guest-model
 files under `generated-vectors/`.
 
 `formal-report.json` omits volatile fields such as `generatedAt` and
-`repoCommit`, lists theorem claims and assumptions, and is checked by a targeted
-Vitest schema test. `formal-audit.json` records theorem statement hashes,
-generated-vector hashes, checked `#print axioms` dependency summaries, the
-proof-hygiene scan summary, and the native-decision allowlist.
+`repoCommit`, lists theorem claims and assumptions, records the current envelope
+discriminator, and owns the exhaustive generated-vector path-to-kind registry.
+It is checked by a targeted Vitest schema test. `formal-audit.json` records
+theorem statement hashes, byte-for-byte generated-vector hashes, checked
+`#print axioms` dependency summaries, the proof-hygiene scan summary, and the
+native-decision allowlist.
 
-The theorem dependencies are checked under Lean `v4.32.2`. The allowlisted Lean
+The theorem dependencies are checked under Lean `v4.33.1`. The allowlisted Lean
 core axioms are `propext`, `Quot.sound`, and `Classical.choice`. The
 `pack_bits_get_bit` theorem also depends on generated `native_decide` axioms from
 the exhaustive byte-bit case split in `byteValueAt_get_bit`;

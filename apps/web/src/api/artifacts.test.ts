@@ -4,6 +4,7 @@ import {
   clearBrowserPublicEnvForTests,
   setBrowserPublicEnvForTests,
 } from '@stark-ballot/runtime-config/env/browserPublic';
+import type { VerifierServiceWireReport } from '@stark-ballot/verification/verifier-service-report';
 
 const originalCreateObjectURL = URL.createObjectURL.bind(URL);
 const originalRevokeObjectURL = URL.revokeObjectURL.bind(URL);
@@ -25,6 +26,44 @@ const authenticatedReportCandidate: ReportCandidate = {
   sessionId: 'session-1',
   finalizationId: 'exec-1',
 };
+const expectedImageId = `0x${'a'.repeat(64)}`;
+
+function verifierWireReport(status: VerifierServiceWireReport['status']): VerifierServiceWireReport {
+  const common = {
+    verifier_version: '0.1.0',
+    verified_at: '2026-08-11T09:10:11Z',
+    duration_ms: 10,
+    expected_image_id: expectedImageId,
+    bundle_path: 'bundle.zip',
+    receipt_path: 'receipt.json',
+  } as const;
+
+  switch (status) {
+    case 'success':
+      return {
+        status,
+        ...common,
+        receipt_image_id: expectedImageId,
+        dev_mode_receipt: false,
+      };
+    case 'dev_mode':
+      return {
+        status,
+        ...common,
+        receipt_image_id: null,
+        dev_mode_receipt: true,
+        errors: ['development receipt'],
+      };
+    case 'failed':
+      return {
+        status,
+        ...common,
+        receipt_image_id: null,
+        dev_mode_receipt: false,
+        errors: ['verification failed'],
+      };
+  }
+}
 
 function s3ObjectUrl(hostParts: string[], objectPath: string): string {
   return `https://${hostParts.join('.')}/${objectPath}`;
@@ -205,7 +244,7 @@ describe('downloadBundle', () => {
       },
     );
 
-    expect(fetchMock.mock.calls.map((call) => (call[1]?.headers as Record<string, string>)['Range'])).toEqual([
+    expect(fetchMock.mock.calls.map((call) => new Headers(call[1]?.headers).get('Range'))).toEqual([
       'bytes=0-4194303',
       'bytes=4-7',
       'bytes=8-9',
@@ -294,7 +333,7 @@ describe('downloadBundle', () => {
     await expect(downloadBundle(authenticatedBundleCandidate, { identity })).rejects.toThrow(
       'Invalid ranged bundle response',
     );
-    expect((fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>)['Range']).toBe('bytes=4-7');
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('Range')).toBe('bytes=4-7');
   });
 
   it('rejects a representation identity change between ranged responses', async () => {
@@ -346,7 +385,7 @@ describe('downloadBundle', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(downloadBundle(authenticatedBundleCandidate, { identity })).rejects.toThrow('HTTP 416');
-    expect((fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>)['Range']).toBe('bytes=4-4194307');
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('Range')).toBe('bytes=4-4194307');
   });
 
   it('rejects a full bundle response whose declared size exceeds the client bound', async () => {
@@ -417,7 +456,7 @@ describe('fetchVerificationReport', () => {
 
   it('fetches configured cross-origin report candidates with session auth headers and no range header', async () => {
     setBrowserPublicEnvForTests('VITE_API_BASE_URL', 'https://api.example.com');
-    const report = { status: 'success', duration_ms: 10 };
+    const report = verifierWireReport('success');
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify(report), {
         status: 200,
@@ -476,7 +515,31 @@ describe('fetchVerificationReport', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('fetches trusted same-origin report candidates with session auth headers and no range header', async () => {
+  it.each(['success', 'dev_mode', 'failed'] as const)(
+    'admits a coherent %s report from a trusted same-origin endpoint',
+    async (status) => {
+      const report = verifierWireReport(status);
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify(report), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(fetchVerificationReport(authenticatedReportCandidate, { identity })).resolves.toEqual(report);
+
+      expect(fetchMock).toHaveBeenCalledWith(authenticatedReportCandidate.url, {
+        headers: {
+          'X-Session-Capability': 'capability-token',
+        },
+      });
+    },
+  );
+
+  it('rejects the former incomplete success report shape', async () => {
     const report = { status: 'success', duration_ms: 10 };
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify(report), {
@@ -488,26 +551,42 @@ describe('fetchVerificationReport', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(
-      fetchVerificationReport(
-        {
-          kind: 'report',
-          source: 'authenticated-endpoint',
-          url: '/api/sessions/session-1/finalizations/exec-1/artifacts/report',
-          sessionId: 'session-1',
-          finalizationId: 'exec-1',
-        },
-        {
-          identity,
-        },
-      ),
-    ).resolves.toEqual(report);
+    await expect(fetchVerificationReport(authenticatedReportCandidate, { identity })).rejects.toThrow(
+      'Invalid verification report response',
+    );
+  });
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/session-1/finalizations/exec-1/artifacts/report', {
-      headers: {
-        'X-Session-Capability': 'capability-token',
-      },
-    });
+  it.each([
+    {
+      label: 'an unknown key',
+      report: { ...verifierWireReport('success'), private_path: '/tmp/private/report.json' },
+    },
+    {
+      label: 'a missing required path',
+      report: (() => {
+        const report: Record<string, unknown> = { ...verifierWireReport('success') };
+        delete report['receipt_path'];
+        return report;
+      })(),
+    },
+    {
+      label: 'an incoherent success status',
+      report: { ...verifierWireReport('success'), dev_mode_receipt: true },
+    },
+  ])('rejects a protected report with $label', async ({ report }) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify(report), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+
+    await expect(fetchVerificationReport(authenticatedReportCandidate, { identity })).rejects.toThrow(
+      'Invalid verification report response',
+    );
   });
 
   it('rejects a protected report whose declared size exceeds 4 MiB', async () => {

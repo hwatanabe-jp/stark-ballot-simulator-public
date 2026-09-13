@@ -82,6 +82,16 @@ resource "aws_codebuild_project" "prover_release_candidate" {
       value = var.aws_region
     }
 
+    environment_variable {
+      name  = "PROVER_RELEASE_BUCKET"
+      value = local.foundation_release_manifest_bucket_name
+    }
+
+    environment_variable {
+      name  = "IMAGE_REPO_NAME"
+      value = local.foundation_prover_ecr_repository_name
+    }
+
   }
 
   logs_config {
@@ -136,6 +146,11 @@ resource "aws_codebuild_project" "prover_release_update_accepted_pointer" {
     environment_variable {
       name  = "PROVER_RELEASE_BUCKET"
       value = local.foundation_release_manifest_bucket_name
+    }
+
+    environment_variable {
+      name  = "IMAGE_REPO_NAME"
+      value = local.foundation_prover_ecr_repository_name
     }
 
     environment_variable {

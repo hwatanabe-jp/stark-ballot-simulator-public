@@ -3,19 +3,8 @@ import path from 'node:path';
 import { parseImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
 
 const DEFAULT_DIST_DIR = 'dist';
-const REQUIRED_STABLE_ARTIFACTS = new Set([
-  'index.html',
-  'imageId-mapping.json',
-  'patterns/sayagata.svg',
-  'textures/paper-noise.png',
-  'textures/stamp-texture.png',
-]);
-const ALLOWED_ROOT_FILES = new Set(['index.html', 'imageId-mapping.json']);
-const ALLOWED_PUBLIC_ASSET_FILES = new Set([
-  'patterns/sayagata.svg',
-  'textures/paper-noise.png',
-  'textures/stamp-texture.png',
-]);
+const REQUIRED_STABLE_ARTIFACTS = new Set(['index.html', 'imageId-mapping.json']);
+const ALLOWED_ROOT_FILES = new Set(REQUIRED_STABLE_ARTIFACTS);
 const ALLOWED_GENERATED_ASSET_EXTENSIONS = new Set([
   '.css',
   '.gif',
@@ -228,7 +217,7 @@ function toArtifactPath(root: string, filePath: string): string {
 }
 
 function isAllowedArtifactPath(relative: string): boolean {
-  if (ALLOWED_ROOT_FILES.has(relative) || ALLOWED_PUBLIC_ASSET_FILES.has(relative)) {
+  if (ALLOWED_ROOT_FILES.has(relative)) {
     return true;
   }
   if (!relative.startsWith('assets/')) {

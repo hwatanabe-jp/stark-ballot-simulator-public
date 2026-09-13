@@ -1,17 +1,20 @@
 import { isFinalizationEventReason, type FinalizationEventReason } from '@stark-ballot/diagnostics/canonicalEvents';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
+import { parseFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import {
   type FinalizationRecord,
   type FinalizationResultRecord,
 } from '@stark-ballot/application/finalize/finalization-record';
 import {
   FinalizationFailureCategory,
+  type FinalizationId,
   type FinalizationResultAuthority,
   type FinalizationScenarioContext,
   type FinalizationState,
 } from '@stark-ballot/application/finalize/finalization-types';
 import {
-  parseFinalizationResultAuthority,
+  admitFinalizationResultAuthority,
   parseFinalizationScenarioContext,
 } from '@stark-ballot/application/finalize/finalization-storage';
 
@@ -24,8 +27,8 @@ export interface FinalizationLifecycleAuthority {
 }
 
 type FinalizationCommandBase = {
-  sessionId: string;
-  finalizationId: string;
+  sessionId: SessionId;
+  finalizationId: FinalizationId;
   queuedAtMs: number;
   scenarioContext?: FinalizationScenarioContext;
   reason?: FinalizationEventReason;
@@ -103,8 +106,8 @@ export type FinalizationTransitionOutcome =
 
 type AdmittedFinalizationCommand = {
   kind: FinalizationTransitionCommand['kind'];
-  sessionId: string;
-  finalizationId: string;
+  sessionId: SessionId;
+  finalizationId: FinalizationId;
   state: FinalizationState;
   reason: FinalizationEventReason;
   scenarioContext?: FinalizationScenarioContext;
@@ -207,6 +210,11 @@ function admitCommand(command: FinalizationTransitionCommand):
   if (invalidBaseReason) {
     return { admitted: false, reason: invalidBaseReason };
   }
+  const sessionId = asSessionId(command.sessionId);
+  const finalizationId = parseFinalizationId(command.finalizationId);
+  if (!finalizationId) {
+    return { admitted: false, reason: 'invalid_finalization_id' };
+  }
   if (command.kind === 'fail' && !hasValidFailureError(command.error)) {
     return { admitted: false, reason: 'invalid_error' };
   }
@@ -220,8 +228,8 @@ function admitCommand(command: FinalizationTransitionCommand):
   const reason = command.reason ?? resolveDefaultReason(command);
   const base = {
     kind: command.kind,
-    sessionId: command.sessionId,
-    finalizationId: command.finalizationId,
+    sessionId,
+    finalizationId,
     reason,
     ...(scenarioContext ? { scenarioContext } : {}),
   };
@@ -234,7 +242,7 @@ function admitCommand(command: FinalizationTransitionCommand):
           ...base,
           state: {
             status: 'pending',
-            finalizationId: command.finalizationId,
+            finalizationId,
             queuedAtMs: command.queuedAtMs,
           },
         },
@@ -249,7 +257,7 @@ function admitCommand(command: FinalizationTransitionCommand):
           ...base,
           state: {
             status: 'running',
-            finalizationId: command.finalizationId,
+            finalizationId,
             queuedAtMs: command.queuedAtMs,
             startedAtMs: command.startedAtMs,
           },
@@ -262,14 +270,14 @@ function admitCommand(command: FinalizationTransitionCommand):
       ) {
         return { admitted: false, reason: 'invalid_timestamp' };
       }
-      const successfulResult = parseFinalizationResultAuthority(command.finalizationResult);
+      const successfulResult = admitFinalizationResultAuthority(command.finalizationResult);
       return {
         admitted: true,
         command: {
           ...base,
           state: {
             status: 'succeeded',
-            finalizationId: command.finalizationId,
+            finalizationId,
             queuedAtMs: command.queuedAtMs,
             startedAtMs: command.startedAtMs,
             completedAtMs: command.completedAtMs,
@@ -295,7 +303,7 @@ function admitCommand(command: FinalizationTransitionCommand):
           ...base,
           state: {
             status: 'failed',
-            finalizationId: command.finalizationId,
+            finalizationId,
             queuedAtMs: command.queuedAtMs,
             ...(command.startedAtMs === undefined ? {} : { startedAtMs: command.startedAtMs }),
             failedAtMs: command.failedAtMs,
@@ -316,7 +324,7 @@ function admitCommand(command: FinalizationTransitionCommand):
           ...base,
           state: {
             status: 'timeout',
-            finalizationId: command.finalizationId,
+            finalizationId,
             queuedAtMs: command.queuedAtMs,
             ...(command.startedAtMs === undefined ? {} : { startedAtMs: command.startedAtMs }),
             timeoutAtMs: command.timeoutAtMs,
@@ -338,7 +346,7 @@ function admitCommand(command: FinalizationTransitionCommand):
           ...base,
           state: {
             status: 'failed',
-            finalizationId: command.finalizationId,
+            finalizationId,
             queuedAtMs: command.queuedAtMs,
             ...(command.startedAtMs === undefined ? {} : { startedAtMs: command.startedAtMs }),
             failedAtMs: command.failedAtMs,

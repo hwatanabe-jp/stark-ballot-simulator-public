@@ -1,5 +1,5 @@
 resource "aws_iam_role" "app_static_fast_pipeline" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   name                 = local.app_static_fast_pipeline_role_name
   assume_role_policy   = data.aws_iam_policy_document.pipeline_assume_role[0].json
@@ -12,7 +12,7 @@ resource "aws_iam_role" "app_static_fast_pipeline" {
 }
 
 resource "aws_iam_role" "app_static_fast_gate_and_build" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   name                 = local.app_static_fast_gate_and_build_role_name
   assume_role_policy   = data.aws_iam_policy_document.codebuild_assume_role[0].json
@@ -25,7 +25,7 @@ resource "aws_iam_role" "app_static_fast_gate_and_build" {
 }
 
 resource "aws_iam_role" "app_static_fast_static_deploy" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   name                 = local.app_static_fast_static_deploy_role_name
   assume_role_policy   = data.aws_iam_policy_document.codebuild_assume_role[0].json
@@ -38,7 +38,7 @@ resource "aws_iam_role" "app_static_fast_static_deploy" {
 }
 
 resource "aws_iam_role" "app_static_fast_smoke_lite" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   name                 = local.app_static_fast_smoke_lite_role_name
   assume_role_policy   = data.aws_iam_policy_document.codebuild_assume_role[0].json
@@ -51,7 +51,7 @@ resource "aws_iam_role" "app_static_fast_smoke_lite" {
 }
 
 data "aws_iam_policy_document" "app_static_fast_pipeline" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   statement {
     sid    = "UseSharedSourceConnection"
@@ -78,11 +78,7 @@ data "aws_iam_policy_document" "app_static_fast_pipeline" {
       "codebuild:BatchGetBuilds",
       "codebuild:StartBuild",
     ]
-    resources = [
-      aws_codebuild_project.app_static_fast_gate_and_build[0].arn,
-      aws_codebuild_project.app_static_fast_static_deploy[0].arn,
-      aws_codebuild_project.app_static_fast_smoke_lite[0].arn,
-    ]
+    resources = local.app_static_fast_codebuild_project_arns
   }
 
   statement {
@@ -119,30 +115,44 @@ data "aws_iam_policy_document" "app_static_fast_pipeline" {
       "kms:ReEncryptFrom",
       "kms:ReEncryptTo",
     ]
-    resources = [aws_kms_key.app_pipeline_artifacts[0].arn]
+    resources = [aws_kms_alias.app_pipeline_artifacts[0].target_key_arn]
   }
 }
 
 resource "aws_iam_role_policy" "app_static_fast_pipeline" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
+
+  depends_on = [
+    aws_codebuild_project.app_static_fast_gate_and_build,
+    aws_codebuild_project.app_static_fast_smoke_lite,
+    aws_codebuild_project.app_static_fast_static_deploy,
+  ]
 
   name   = "${local.app_static_fast_pipeline_role_name}-policy"
   role   = aws_iam_role.app_static_fast_pipeline[0].id
   policy = data.aws_iam_policy_document.app_static_fast_pipeline[0].json
 }
 
+check "app_static_fast_pipeline_inline_policy_size" {
+  assert {
+    condition = (
+      !local.app_static_fast_enabled
+      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.app_static_fast_pipeline[0].json))) <= 10240, false)
+    )
+    error_message = "The static-fast pipeline inline policy must remain within IAM's 10,240-character role-policy quota."
+  }
+}
+
 data "aws_iam_policy_document" "app_static_fast_gate_and_build" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
+
+  source_policy_documents = [data.aws_iam_policy_document.app_pipeline_clone_reference_source[0].json]
 
   statement {
-    sid    = "UseSharedSourceConnection"
-    effect = "Allow"
-
-    actions = [
-      "codeconnections:UseConnection",
-      "codestar-connections:UseConnection",
-    ]
-    resources = local.app_source_connection_arns
+    sid       = "ReadExactAppStaticFastGateProjectConfiguration"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [local.source_path_static_fast_start_build_projects.app_static_fast_gate_and_build.project_arn]
   }
 
   statement {
@@ -154,12 +164,12 @@ data "aws_iam_policy_document" "app_static_fast_gate_and_build" {
       "logs:PutLogEvents",
     ]
     resources = [
-      "${module.app_pipeline_codebuild_log_groups.log_groups[local.app_static_fast_gate_project_name].arn}:*",
+      "${local.app_codebuild_log_group_arn_by_project_name[local.app_static_fast_gate_project_name]}:*",
     ]
   }
 
   statement {
-    sid    = "ReadAcceptedAppDeploymentEvidence"
+    sid    = "ReadCurrentAppAcceptanceEvidence"
     effect = "Allow"
 
     actions = [
@@ -168,9 +178,8 @@ data "aws_iam_policy_document" "app_static_fast_gate_and_build" {
     ]
     resources = [
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.acceptedDeploymentPointerKey}",
-      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.acceptedDeploymentPrefix}/executions/*/attempts/*/authoritative-app-deployment.json",
+      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.acceptedDeploymentPrefix}/acceptances/*",
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.acceptedDeploymentPrefix}/executions/*/attempts/*/apply-outputs.json",
-      "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.acceptedDeploymentPrefix}/executions/*/attempts/*/static-frontend-deploy.json",
     ]
   }
 
@@ -211,7 +220,7 @@ data "aws_iam_policy_document" "app_static_fast_gate_and_build" {
       "kms:ReEncryptFrom",
       "kms:ReEncryptTo",
     ]
-    resources = [aws_kms_key.app_pipeline_artifacts[0].arn]
+    resources = [aws_kms_alias.app_pipeline_artifacts[0].target_key_arn]
   }
 
   statement {
@@ -226,7 +235,9 @@ data "aws_iam_policy_document" "app_static_fast_gate_and_build" {
 }
 
 resource "aws_iam_role_policy" "app_static_fast_gate_and_build" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
+
+  depends_on = [module.app_pipeline_codebuild_log_groups]
 
   name   = "${local.app_static_fast_gate_and_build_role_name}-policy"
   role   = aws_iam_role.app_static_fast_gate_and_build[0].id
@@ -234,16 +245,15 @@ resource "aws_iam_role_policy" "app_static_fast_gate_and_build" {
 }
 
 data "aws_iam_policy_document" "app_static_fast_smoke_lite" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
+
+  source_policy_documents = [data.aws_iam_policy_document.app_pipeline_clone_reference_source[0].json]
 
   statement {
-    sid    = "UseSharedSourceConnection"
-    effect = "Allow"
-    actions = [
-      "codeconnections:UseConnection",
-      "codestar-connections:UseConnection",
-    ]
-    resources = local.app_source_connection_arns
+    sid       = "ReadExactAppStaticFastSmokeProjectConfiguration"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [local.source_path_static_fast_start_build_projects.app_static_fast_smoke_lite.project_arn]
   }
 
   statement {
@@ -255,7 +265,7 @@ data "aws_iam_policy_document" "app_static_fast_smoke_lite" {
       "logs:PutLogEvents",
     ]
     resources = [
-      "${module.app_pipeline_codebuild_log_groups.log_groups[local.app_static_fast_smoke_project_name].arn}:*",
+      "${local.app_codebuild_log_group_arn_by_project_name[local.app_static_fast_smoke_project_name]}:*",
     ]
   }
 
@@ -293,12 +303,14 @@ data "aws_iam_policy_document" "app_static_fast_smoke_lite" {
       "kms:ReEncryptFrom",
       "kms:ReEncryptTo",
     ]
-    resources = [aws_kms_key.app_pipeline_artifacts[0].arn]
+    resources = [aws_kms_alias.app_pipeline_artifacts[0].target_key_arn]
   }
 }
 
 resource "aws_iam_role_policy" "app_static_fast_smoke_lite" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
+
+  depends_on = [module.app_pipeline_codebuild_log_groups]
 
   name   = "${local.app_static_fast_smoke_lite_role_name}-policy"
   role   = aws_iam_role.app_static_fast_smoke_lite[0].id
@@ -306,7 +318,7 @@ resource "aws_iam_role_policy" "app_static_fast_smoke_lite" {
 }
 
 resource "aws_codebuild_project" "app_static_fast_gate_and_build" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   name          = local.app_static_fast_gate_project_name
   service_role  = aws_iam_role.app_static_fast_gate_and_build[0].arn
@@ -331,11 +343,8 @@ resource "aws_codebuild_project" "app_static_fast_gate_and_build" {
   }
 
   source {
-    type = "CODEPIPELINE"
-    buildspec = templatefile("${path.module}/buildspec-app-static-fast-gate-and-build.yml.tftpl", {
-      aws_account_id    = var.aws_account_id
-      entrypoint_sha256 = filesha256("${path.module}/app-pipeline-scripts/app-static-fast-gate-and-build.sh")
-    })
+    type      = "CODEPIPELINE"
+    buildspec = "infra/terraform/bootstrap/buildspec-app-static-fast-gate-and-build.yml"
   }
 
   tags = merge(local.common_tags, {
@@ -344,7 +353,7 @@ resource "aws_codebuild_project" "app_static_fast_gate_and_build" {
 }
 
 resource "aws_codebuild_project" "app_static_fast_static_deploy" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   name          = local.app_static_fast_static_deploy_project_name
   service_role  = aws_iam_role.app_static_fast_static_deploy[0].arn
@@ -369,10 +378,8 @@ resource "aws_codebuild_project" "app_static_fast_static_deploy" {
   }
 
   source {
-    type = "CODEPIPELINE"
-    buildspec = templatefile("${path.module}/buildspec-app-static-deploy.yml.tftpl", {
-      entrypoint_sha256 = filesha256("${path.module}/app-pipeline-scripts/app-static-deploy.sh")
-    })
+    type      = "CODEPIPELINE"
+    buildspec = "infra/terraform/bootstrap/buildspec-app-static-deploy.yml"
   }
 
   tags = merge(local.common_tags, {
@@ -381,7 +388,7 @@ resource "aws_codebuild_project" "app_static_fast_static_deploy" {
 }
 
 resource "aws_codebuild_project" "app_static_fast_smoke_lite" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   name          = local.app_static_fast_smoke_project_name
   service_role  = aws_iam_role.app_static_fast_smoke_lite[0].arn
@@ -406,10 +413,8 @@ resource "aws_codebuild_project" "app_static_fast_smoke_lite" {
   }
 
   source {
-    type = "CODEPIPELINE"
-    buildspec = templatefile("${path.module}/buildspec-app-static-fast-smoke-lite.yml.tftpl", {
-      entrypoint_sha256 = filesha256("${path.module}/app-pipeline-scripts/app-static-fast-smoke-lite.sh")
-    })
+    type      = "CODEPIPELINE"
+    buildspec = "infra/terraform/bootstrap/buildspec-app-static-fast-smoke-lite.yml"
   }
 
   tags = merge(local.common_tags, {
@@ -418,7 +423,7 @@ resource "aws_codebuild_project" "app_static_fast_smoke_lite" {
 }
 
 resource "aws_codepipeline" "app_static_fast" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   name          = local.app_static_fast_pipeline_name
   pipeline_type = "V2"

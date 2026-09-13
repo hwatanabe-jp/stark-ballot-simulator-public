@@ -43,13 +43,13 @@ import {
   PATH_SESSION_CAPABILITY_ERROR_RESPONSES,
   TURNSTILE_ERROR_RESPONSES,
   apiBodySize,
+  clientIpAndGlobalRateLimit,
   clientIpRateLimit,
   noBodySize,
   noRateLimit,
   noSourceIp,
   noTurnstile,
   publicErrors,
-  sessionRateLimit,
   standardJsonError,
   trustedProxySourceIp,
   turnstile,
@@ -62,7 +62,7 @@ import {
   jsonResponse,
   jsonResponseExempt,
   matchRoutePath,
-  type ApiContractMethod,
+  type HttpMethod,
   type RouteInput,
 } from './route';
 
@@ -455,7 +455,7 @@ export const createSessionRoute = defineRoute({
     nonOperatorDevelop: 'blocked-by-outer-operator-gate',
     operatorGatedDevelop: 'enabled-for-production-equivalent-smoke',
     ungatedPublic: 'requires-explicit-public-enable-and-server-turnstile',
-    runtimeEnforcementHandoff: 'plans-07-and-11',
+    runtimeEnforcementHandoff: 'trusted-proxy-and-public-admission',
   },
 });
 
@@ -498,7 +498,7 @@ export const submitVoteRoute = defineRoute({
   ],
   bodySize: apiBodySize,
   sourceIp: trustedProxySourceIp,
-  rateLimit: sessionRateLimit,
+  rateLimit: clientIpRateLimit,
   turnstile: turnstile('vote'),
   productionBypass: 'deny-outside-approved-non-production',
 });
@@ -543,7 +543,7 @@ export const createFinalizationRoute = defineRoute({
   ],
   bodySize: apiBodySize,
   sourceIp: trustedProxySourceIp,
-  rateLimit: sessionRateLimit,
+  rateLimit: clientIpAndGlobalRateLimit,
   turnstile: turnstile('finalize'),
   productionBypass: 'deny-outside-approved-non-production',
 });
@@ -569,14 +569,13 @@ export const cancelFinalizationRoute = defineRoute({
     ...BODY_ERROR_RESPONSES,
     standardJsonError('GLOBAL_LIMIT_EXCEEDED', 503),
     standardJsonError('ASYNC_FINALIZATION_DISABLED', 404),
-    standardJsonError('CANCELLATION_UNSUPPORTED', 501),
     standardJsonError('FINALIZATION_NOT_CANCELLABLE', 409),
   ]),
   dataClassification: 'owner-scoped-public-projection',
   admissionControls: ['path-session-capability', 'rate-limit', 'body-size', 'malformed-json', 'finalization-id'],
   bodySize: apiBodySize,
   sourceIp: trustedProxySourceIp,
-  rateLimit: sessionRateLimit,
+  rateLimit: clientIpRateLimit,
   turnstile: noTurnstile,
   productionBypass: 'deny-outside-approved-non-production',
 });
@@ -659,7 +658,7 @@ export const runVerificationRoute = defineRoute({
   ],
   bodySize: apiBodySize,
   sourceIp: trustedProxySourceIp,
-  rateLimit: sessionRateLimit,
+  rateLimit: clientIpAndGlobalRateLimit,
   turnstile: noTurnstile,
   productionBypass: 'deny-outside-approved-non-production',
 });
@@ -690,13 +689,13 @@ export type ApiContractRouteId = (typeof TARGET_API_ROUTE_CONTRACTS)[number]['ro
 export type ApiRoute = (typeof TARGET_API_ROUTE_CONTRACTS)[number];
 export type ApiRouteRegistry = typeof API_ROUTES;
 
-type RouteLookup<TMethod extends ApiContractMethod, TPath extends string> = string extends TPath
+type RouteLookup<TMethod extends HttpMethod, TPath extends string> = string extends TPath
   ? ApiRouteContract
   : Extract<ApiRoute, { method: TMethod; path: TPath }> extends never
     ? ApiRouteContract
     : Extract<ApiRoute, { method: TMethod; path: TPath }>;
 
-export function getApiRouteContract<const TMethod extends ApiContractMethod, const TPath extends string>(
+export function getApiRouteContract<const TMethod extends HttpMethod, const TPath extends string>(
   method: TMethod,
   path: TPath,
 ): RouteLookup<TMethod, TPath> {
@@ -733,7 +732,7 @@ export type MatchedApiRoute = {
   };
 }[keyof ApiRouteRegistry];
 
-export function matchApiRoute(method: ApiContractMethod, pathname: string, basePath = '/api'): MatchedApiRoute | null {
+export function matchApiRoute(method: HttpMethod, pathname: string, basePath = '/api'): MatchedApiRoute | null {
   const candidate = stripBasePath(pathname.split(/[?#]/, 1)[0] ?? '', basePath);
   if (candidate === null) {
     return null;

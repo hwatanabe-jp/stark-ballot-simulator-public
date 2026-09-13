@@ -149,17 +149,34 @@ export interface KnowledgeData {
 /**
  * Knowledge item for display in the panel
  */
-export interface KnowledgeItem {
-  key: keyof KnowledgeData;
-  value: unknown;
-  isNew: boolean;
-  addedAt: number;
-}
+type ReadonlyKnowledgeValue<T> = T extends object ? { readonly [K in keyof T]: ReadonlyKnowledgeValue<T[K]> } : T;
+
+export type KnowledgeItem = {
+  [K in keyof KnowledgeData]-?: {
+    readonly key: K;
+    readonly value: ReadonlyKnowledgeValue<NonNullable<KnowledgeData[K]>>;
+    readonly isNew: boolean;
+    readonly addedAt: number;
+  };
+}[keyof KnowledgeData];
 
 /**
  * Listener for knowledge updates
  */
-export type KnowledgeUpdateListener = (items: KnowledgeItem[], phase: KnowledgePhase) => void;
+export type KnowledgeUpdateListener = (items: readonly KnowledgeItem[], phase: KnowledgePhase) => void;
+
+export const BOT_KNOWLEDGE_KEYS = [
+  'bot.id',
+  'bot.choice',
+  'bot.random',
+  'bot.commitment',
+  'bot.voteId',
+  'bot.bulletinIndex',
+  'bot.bulletinRootAtCast',
+  'bot.voteTimestamp',
+  'bot.merklePath',
+  'bot.verification.steps',
+] as const satisfies readonly (keyof KnowledgeData)[];
 
 /**
  * All valid knowledge keys
@@ -205,16 +222,7 @@ export const KNOWLEDGE_KEYS = [
   'verification.steps',
   'verification.reportSummary',
   // Bot
-  'bot.id',
-  'bot.choice',
-  'bot.random',
-  'bot.commitment',
-  'bot.voteId',
-  'bot.bulletinIndex',
-  'bot.bulletinRootAtCast',
-  'bot.voteTimestamp',
-  'bot.merklePath',
-  'bot.verification.steps',
+  ...BOT_KNOWLEDGE_KEYS,
 ] as const satisfies readonly (keyof KnowledgeData)[];
 
 /**

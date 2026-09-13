@@ -6,6 +6,8 @@ import {
   projectFinalizationResultForPublicResponse,
   projectFinalizeSyncPayloadForResponse,
 } from './finalizationResultProjection';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 
 describe('projectFinalizationResultForPublicResponse', () => {
   it('derives the public authority and presentation partitions from the canonical journal only', () => {
@@ -19,11 +21,15 @@ describe('projectFinalizationResultForPublicResponse', () => {
       journal,
       imageId: '0x' + '1'.repeat(64),
     });
-    authority.bitmapData = {
-      includedBitmap: [true, false],
-      includedBitmapRoot: journal.includedBitmapRoot,
-      treeSize: journal.treeSize,
-      finalizedAtMs: 1730000000000,
+    authority.artifacts.bitmap = {
+      availability: 'available',
+      proofSource: 'real',
+      data: {
+        includedBitmap: [true, false],
+        includedBitmapRoot: journal.includedBitmapRoot,
+        treeSize: journal.treeSize,
+        finalizedAtMs: 1730000000000,
+      },
     };
 
     const projected = projectFinalizationResultForPublicResponse(authority);
@@ -58,8 +64,8 @@ describe('projectFinalizationResultForPublicResponse', () => {
       imageId: '0x' + '1'.repeat(64),
     });
     const bitmapData = {
-      sessionId: 'session-1',
-      finalizationId: 'finalization-1',
+      sessionId: asSessionId('session-1'),
+      finalizationId: asFinalizationId('finalization-1'),
       includedBitmap: [true],
       includedBitmapRoot: journal.includedBitmapRoot,
       treeSize: journal.treeSize,
@@ -90,8 +96,7 @@ describe('projectFinalizationResultForPublicResponse', () => {
         duration_ms: 1234,
         expected_image_id: authority.imageId,
         receipt_image_id: authority.imageId,
-        dev_mode_receipt: false,
-        errors: [],
+        dev_mode_receipt: false as const,
       },
     };
 
@@ -127,14 +132,17 @@ describe('projectFinalizationResultForPublicResponse', () => {
       journal,
       imageId: '0x' + '1'.repeat(64),
     });
-    authority.receipt = {
-      imageId: authority.imageId,
-      seal: 'seal',
-      journal: 'receipt-journal',
-      metadata: {
-        isFake: true,
-        verifier_parameters: [1, 2, 3],
-        verifierPath: '/tmp/private-verifier/receipt.json',
+    authority.artifacts.receipt = {
+      availability: 'available',
+      receipt: {
+        imageId: authority.imageId,
+        seal: 'seal',
+        journal: 'receipt-journal',
+        metadata: {
+          isFake: true,
+          verifier_parameters: [1, 2, 3],
+          verifierPath: '/tmp/private-verifier/receipt.json',
+        },
       },
     };
 
@@ -198,16 +206,15 @@ describe('projectFinalizationResultForPublicResponse', () => {
         expected_image_id: authority.imageId,
         receipt_image_id: authority.imageId,
         dev_mode_receipt: false,
-        errors: [],
       },
     } satisfies FinalizeSyncPayload['verificationResult'];
 
     const projected = projectFinalizeSyncPayloadForResponse({
-      sessionId: 'session-1',
-      finalizationId: 'exec-sync-1',
+      sessionId: asSessionId('session-1'),
+      finalizationId: asFinalizationId('exec-sync-1'),
       state: {
         status: 'succeeded',
-        finalizationId: 'exec-sync-1',
+        finalizationId: asFinalizationId('exec-sync-1'),
         queuedAtMs: 1730000000000,
         startedAtMs: 1730000001000,
         completedAtMs: 1730000002000,

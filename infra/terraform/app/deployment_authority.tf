@@ -1,17 +1,21 @@
 locals {
   deployment_target_configuration = jsondecode(file("${path.module}/../../../packages/deployment-authority/deployment-targets.json"))
-  deployment_target               = local.deployment_target_configuration.allowedTargets["stark-dev/develop"]
-  deployment_shared_names         = local.deployment_target.sharedNames
-  bootstrap_lane_authority        = local.deployment_target.lanes.bootstrap
-  foundation_lane_authority       = local.deployment_target.lanes.foundation
-  toolchain_lane_authority        = local.deployment_target.lanes.toolchain
-  prover_lane_authority           = local.deployment_target.lanes.prover
-  app_lane_authority              = local.deployment_target.lanes.app
-  static_fast_lane_authority      = local.deployment_target.lanes["static-fast"]
+  deployment_target = one([
+    for target in values(local.deployment_target_configuration.allowedTargets) : target
+    if target.accountLabel == var.account_alias && target.environmentId == var.deployment_environment
+  ])
+  deployment_shared_names    = local.deployment_target.sharedNames
+  bootstrap_lane_authority   = local.deployment_target.lanes.bootstrap
+  foundation_lane_authority  = local.deployment_target.lanes.foundation
+  toolchain_lane_authority   = local.deployment_target.lanes.toolchain
+  prover_lane_authority      = local.deployment_target.lanes.prover
+  app_lane_authority         = local.deployment_target.lanes.app
+  static_fast_lane_authority = contains(keys(local.deployment_target.lanes), "static-fast") ? local.deployment_target.lanes["static-fast"] : null
 
   deployment_target_configuration_exact = (
     local.deployment_target_configuration.configurationType == "deployment-target-configuration"
-    && keys(local.deployment_target_configuration.allowedTargets) == ["stark-dev/develop"]
+    && length(local.deployment_target_configuration.allowedTargets) > 0
+    && alltrue([for key, target in local.deployment_target_configuration.allowedTargets : key == target.targetKey])
   )
   deployment_target_inputs_exact = (
     var.aws_account_id == local.deployment_target.accountId
@@ -27,6 +31,6 @@ locals {
 check "deployment_target_configuration" {
   assert {
     condition     = local.deployment_target_configuration_exact
-    error_message = "Deployment target configuration must authorize exactly stark-dev/develop."
+    error_message = "Deployment target configuration must contain only reviewed targets with matching keys."
   }
 }

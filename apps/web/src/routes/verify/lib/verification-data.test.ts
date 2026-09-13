@@ -41,6 +41,7 @@ function availableResource(): AvailableVerificationResource {
       treeSize: 1,
       excludedSlots: 0,
       sthDigest: HEX_D,
+      seenBitmapRoot: HEX_E,
       includedBitmapRoot: HEX_E,
       inputCommitment: HEX_F,
       seenIndicesCount: 1,
@@ -52,6 +53,7 @@ function availableResource(): AvailableVerificationResource {
         tamperedCount: 0,
       },
       scenarioId: 'S0',
+      tamperDetected: false,
       policy: {
         summary: { status: 'fully_verified', tone: 'verified' },
         stageStatuses: {
@@ -75,7 +77,15 @@ function availableResource(): AvailableVerificationResource {
     },
     verifierResult: {
       status: 'success',
-      report: { status: 'success' },
+      report: {
+        status: 'success',
+        verifier_version: 'test-verifier',
+        verified_at: '2026-08-12T00:00:00.000Z',
+        duration_ms: 1,
+        expected_image_id: HEX_C,
+        receipt_image_id: HEX_C,
+        dev_mode_receipt: false,
+      },
     },
     verification: {
       checks: VERIFICATION_CHECK_DEFINITIONS.map((definition) => ({
@@ -95,6 +105,7 @@ function availableResource(): AvailableVerificationResource {
         bulletinIndex: 0,
         bulletinRootAtCast: HEX_B,
         castAtMs: 1730000000000,
+        inputCommitment: HEX_F,
       },
       userVote: {
         commitment,

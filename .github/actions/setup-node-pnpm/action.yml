@@ -14,6 +14,10 @@ inputs:
     description: Lockfile path for cache key
     required: false
     default: 'pnpm-lock.yaml'
+  working-directory:
+    description: Directory for dependency installation and build-script review
+    required: false
+    default: '.'
 
 runs:
   using: composite
@@ -68,9 +72,11 @@ runs:
     - name: Install dependencies
       if: ${{ inputs.install == 'true' }}
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       run: pnpm install --frozen-lockfile
 
     - name: Review dependency build scripts
       if: ${{ inputs.install == 'true' }}
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       run: pnpm ignored-builds

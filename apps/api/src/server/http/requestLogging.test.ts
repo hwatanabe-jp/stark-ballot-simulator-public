@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { buildRequestLogContext, resolveUntrustedClientRequestId, withTrustedRequestIdHeader } from './requestLogging';
 import { hashIpForLogging } from '@stark-ballot/diagnostics/logging';
-import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 
 const runtimeProfile = localRuntimeProfile();
 

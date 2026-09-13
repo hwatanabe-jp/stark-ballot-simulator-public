@@ -13,7 +13,10 @@ import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import { createTestPublicInputArtifact } from '@stark-ballot/test-support/testing/public-input-artifact';
-import { buildCloseStatement } from '@stark-ballot/verification/public-audit-artifacts';
+import { buildCloseStatement, buildElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
+import { buildDefaultElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 
 const emitCanonicalEventMock = vi.hoisted(() => vi.fn());
 
@@ -49,7 +52,7 @@ function buildStore(state: FinalizationState): {
     },
   };
   const buildRecord = (
-    sessionId: string,
+    sessionId: SessionId,
     nextState: FinalizationState,
     finalizationResult?: FinalizationResultAuthority,
   ): FinalizationRecord => {
@@ -119,8 +122,8 @@ function buildStore(state: FinalizationState): {
 
 function buildRunningPayload(overrides: Partial<Record<keyof FinalizationStateUpdatePayload, unknown>> = {}) {
   return {
-    sessionId: 'session-running-update',
-    finalizationId: 'exec-running-update',
+    sessionId: asSessionId('session-running-update'),
+    finalizationId: asFinalizationId('exec-running-update'),
     status: 'RUNNING',
     queuedAtMs: 1_700_000_000_000,
     startedAtMs: 1_700_000_001_000,
@@ -136,7 +139,7 @@ describe('applyFinalizationStateUpdatePayload', () => {
   it('applies RUNNING updates through the lifecycle store and returns the applied state', async () => {
     const state: FinalizationState = {
       status: 'running',
-      finalizationId: 'exec-running-update',
+      finalizationId: asFinalizationId('exec-running-update'),
       queuedAtMs: 1_700_000_000_000,
       startedAtMs: 1_700_000_001_000,
     };
@@ -154,12 +157,12 @@ describe('applyFinalizationStateUpdatePayload', () => {
         store,
       }),
     ).resolves.toEqual({
-      sessionId: 'session-running-update',
+      sessionId: asSessionId('session-running-update'),
       state,
     });
 
     expect(markFinalizationRunning).toHaveBeenCalledWith('session-running-update', {
-      finalizationId: 'exec-running-update',
+      finalizationId: asFinalizationId('exec-running-update'),
       queuedAtMs: 1_700_000_000_000,
       startedAtMs: 1_700_000_001_000,
       observability: {
@@ -184,7 +187,7 @@ describe('applyFinalizationStateUpdatePayload', () => {
   it('returns an existing terminal failed state unchanged when RUNNING is blocked by the store guard', async () => {
     const failedState: FinalizationState = {
       status: 'failed',
-      finalizationId: 'exec-running-update',
+      finalizationId: asFinalizationId('exec-running-update'),
       queuedAtMs: 1_700_000_000_000,
       failedAtMs: 1_700_000_002_000,
       error: {
@@ -200,7 +203,7 @@ describe('applyFinalizationStateUpdatePayload', () => {
         store,
       }),
     ).resolves.toEqual({
-      sessionId: 'session-running-update',
+      sessionId: asSessionId('session-running-update'),
       state: failedState,
     });
 
@@ -210,7 +213,7 @@ describe('applyFinalizationStateUpdatePayload', () => {
   it('categorizes an invalid finalization result before calling the failure store path', async () => {
     const state: FinalizationState = {
       status: 'failed',
-      finalizationId: 'exec-invalid-result',
+      finalizationId: asFinalizationId('exec-invalid-result'),
       queuedAtMs: 1_700_000_000_000,
       failedAtMs: 1_700_000_002_000,
       error: {
@@ -224,8 +227,8 @@ describe('applyFinalizationStateUpdatePayload', () => {
     await expect(
       applyFinalizationStateUpdatePayload({
         payload: {
-          sessionId: 'session-invalid-result',
-          finalizationId: 'exec-invalid-result',
+          sessionId: asSessionId('session-invalid-result'),
+          finalizationId: asFinalizationId('exec-invalid-result'),
           status: 'SUCCEEDED',
           queuedAtMs: 1_700_000_000_000,
           startedAtMs: 1_700_000_001_000,
@@ -235,7 +238,7 @@ describe('applyFinalizationStateUpdatePayload', () => {
         store,
       }),
     ).resolves.toEqual({
-      sessionId: 'session-invalid-result',
+      sessionId: asSessionId('session-invalid-result'),
       state,
     });
 
@@ -267,7 +270,7 @@ describe('applyFinalizationStateUpdatePayload', () => {
   it('rejects a success update when its exact finalization record is unavailable', async () => {
     const state: FinalizationState = {
       status: 'succeeded',
-      finalizationId: 'exec-missing-record',
+      finalizationId: asFinalizationId('exec-missing-record'),
       queuedAtMs: 1_700_000_000_000,
       startedAtMs: 1_700_000_001_000,
       completedAtMs: 1_700_000_002_000,
@@ -278,8 +281,8 @@ describe('applyFinalizationStateUpdatePayload', () => {
     await expect(
       applyFinalizationStateUpdatePayload({
         payload: {
-          sessionId: 'session-missing-record',
-          finalizationId: 'exec-missing-record',
+          sessionId: asSessionId('session-missing-record'),
+          finalizationId: asFinalizationId('exec-missing-record'),
           status: 'SUCCEEDED',
           queuedAtMs: 1_700_000_000_000,
           startedAtMs: 1_700_000_001_000,
@@ -297,7 +300,7 @@ describe('applyFinalizationStateUpdatePayload', () => {
   it('applies an explicitly admitted closed generic failure tuple', async () => {
     const state: FinalizationState = {
       status: 'failed',
-      finalizationId: 'exec-generic-failure',
+      finalizationId: asFinalizationId('exec-generic-failure'),
       queuedAtMs: 1_700_000_000_000,
       failedAtMs: 1_700_000_002_000,
       error: {
@@ -311,8 +314,8 @@ describe('applyFinalizationStateUpdatePayload', () => {
     await expect(
       applyFinalizationStateUpdatePayload({
         payload: {
-          sessionId: 'session-generic-failure',
-          finalizationId: 'exec-generic-failure',
+          sessionId: asSessionId('session-generic-failure'),
+          finalizationId: asFinalizationId('exec-generic-failure'),
           status: 'FAILED',
           queuedAtMs: 1_700_000_000_000,
           failedAtMs: 1_700_000_002_000,
@@ -321,7 +324,7 @@ describe('applyFinalizationStateUpdatePayload', () => {
         store,
       }),
     ).resolves.toEqual({
-      sessionId: 'session-generic-failure',
+      sessionId: asSessionId('session-generic-failure'),
       state,
     });
 
@@ -352,7 +355,7 @@ describe('applyFinalizationStateUpdatePayload', () => {
   it('preserves a closed incoming failure code as the writer/update reason', async () => {
     const state: FinalizationState = {
       status: 'failed',
-      finalizationId: 'exec-prover-failure',
+      finalizationId: asFinalizationId('exec-prover-failure'),
       queuedAtMs: 1_700_000_000_000,
       failedAtMs: 1_700_000_002_000,
       error: {
@@ -365,8 +368,8 @@ describe('applyFinalizationStateUpdatePayload', () => {
 
     await applyFinalizationStateUpdatePayload({
       payload: {
-        sessionId: 'session-prover-failure',
-        finalizationId: 'exec-prover-failure',
+        sessionId: asSessionId('session-prover-failure'),
+        finalizationId: asFinalizationId('exec-prover-failure'),
         status: 'FAILED',
         queuedAtMs: 1_700_000_000_000,
         failedAtMs: 1_700_000_002_000,
@@ -397,18 +400,19 @@ describe('applyFinalizationStateUpdatePayload', () => {
   it('records a successful writer/update transition attempt before calling the store', async () => {
     const state: FinalizationState = {
       status: 'succeeded',
-      finalizationId: 'exec-success-update',
+      finalizationId: asFinalizationId('exec-success-update'),
       queuedAtMs: 1_700_000_000_000,
       startedAtMs: 1_700_000_001_000,
       completedAtMs: 1_700_000_002_000,
     };
     const { store, markFinalizationSucceeded } = buildStore(state);
     const baseJournal = createTestJournal();
+    const electionManifest = buildElectionManifest(baseJournal.electionId, buildDefaultElectionConfig());
     const publicInputArtifact = createTestPublicInputArtifact({
       source: 'generated',
       typedAuthority: {
         electionId: baseJournal.electionId,
-        electionConfigHash: baseJournal.electionConfigHash,
+        electionConfigHash: electionManifest.electionConfigHash,
         votesCount: baseJournal.validVotes,
         treeSize: baseJournal.treeSize,
         totalExpected: baseJournal.totalExpected,
@@ -427,21 +431,26 @@ describe('applyFinalizationStateUpdatePayload', () => {
     });
     const journal = {
       ...baseJournal,
+      electionConfigHash: electionManifest.electionConfigHash,
       sthDigest: closeStatement.sthDigest,
     };
     const finalizationResult = {
       ...buildFinalizationResultFromJournal({
         journal,
         imageId: `0x${'1'.repeat(64)}`,
-        closeStatement,
+        publicAuditArtifacts: {
+          availability: 'available',
+          publicInputArtifact,
+          electionManifest,
+          closeStatement,
+        },
       }),
-      publicInputArtifact,
     };
 
     await applyFinalizationStateUpdatePayload({
       payload: {
-        sessionId: 'session-success-update',
-        finalizationId: 'exec-success-update',
+        sessionId: asSessionId('session-success-update'),
+        finalizationId: asFinalizationId('exec-success-update'),
         status: 'SUCCEEDED',
         queuedAtMs: 1_700_000_000_000,
         startedAtMs: 1_700_000_001_000,
@@ -474,7 +483,7 @@ describe('applyFinalizationStateUpdatePayload', () => {
   it('records a timed-out writer/update transition attempt before calling the store', async () => {
     const state: FinalizationState = {
       status: 'timeout',
-      finalizationId: 'exec-timeout-update',
+      finalizationId: asFinalizationId('exec-timeout-update'),
       queuedAtMs: 1_700_000_000_000,
       startedAtMs: 1_700_000_001_000,
       timeoutAtMs: 1_700_000_002_000,
@@ -483,8 +492,8 @@ describe('applyFinalizationStateUpdatePayload', () => {
 
     await applyFinalizationStateUpdatePayload({
       payload: {
-        sessionId: 'session-timeout-update',
-        finalizationId: 'exec-timeout-update',
+        sessionId: asSessionId('session-timeout-update'),
+        finalizationId: asFinalizationId('exec-timeout-update'),
         status: 'TIMED_OUT',
         queuedAtMs: 1_700_000_000_000,
         startedAtMs: 1_700_000_001_000,

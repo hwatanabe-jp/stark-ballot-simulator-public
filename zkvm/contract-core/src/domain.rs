@@ -211,10 +211,6 @@ impl VoteCount {
         Ok(Self(count))
     }
 
-    pub fn from_u32(value: u32) -> Self {
-        Self(value)
-    }
-
     pub fn get(self) -> u32 {
         self.0
     }

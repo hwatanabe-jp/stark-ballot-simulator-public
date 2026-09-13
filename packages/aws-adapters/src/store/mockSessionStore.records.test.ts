@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type { FinalizationScenarioContext } from '@stark-ballot/application/finalize/finalization-types';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
@@ -42,24 +43,28 @@ describe('MockSessionStore lifecycle records', () => {
     const store = new MockSessionStore();
     const identity = await store.createSession();
     const queued = await store.markFinalizationQueued(identity.sessionId, {
-      finalizationId: 'finalization-current',
+      finalizationId: asFinalizationId('finalization-current'),
       queuedAtMs: 10,
       scenarioContext,
     });
 
     expect(await store.getCurrentFinalizationRecord(identity.sessionId)).toEqual(queued);
-    expect(await store.getFinalizationRecord(identity.sessionId, 'finalization-current')).toEqual(queued);
-    expect(await store.getFinalizationRecord(identity.sessionId, 'finalization-stale')).toBeNull();
+    expect(await store.getFinalizationRecord(identity.sessionId, asFinalizationId('finalization-current'))).toEqual(
+      queued,
+    );
+    expect(await store.getFinalizationRecord(identity.sessionId, asFinalizationId('finalization-stale'))).toBeNull();
   });
 
   it('keeps finalization, verification, observation, bitmap, and adapter metadata separate', async () => {
     const store = new MockSessionStore();
     const identity = await store.createSession();
-    const finalizationId = 'finalization-separated';
+    const finalizationId = asFinalizationId('finalization-separated');
     const includedBitmap = [true];
+    const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
     const journal = {
       ...createTestJournal({ totalExpected: includedBitmap.length }),
-      includedBitmapRoot: computeIncludedBitmapRoot(includedBitmap),
+      includedBitmapRoot,
+      seenBitmapRoot: includedBitmapRoot,
     };
     const result = buildFinalizationResultFromJournal({
       journal,
@@ -122,7 +127,7 @@ describe('MockSessionStore lifecycle records', () => {
   it('rejects a duplicated observation finalization identifier instead of reconciling it', async () => {
     const store = new MockSessionStore();
     const identity = await store.createSession();
-    const finalizationId = 'finalization-observation';
+    const finalizationId = asFinalizationId('finalization-observation');
     await store.markFinalizationQueued(identity.sessionId, {
       finalizationId,
       queuedAtMs: 10,

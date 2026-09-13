@@ -1,12 +1,17 @@
 import { spawn, type StdioOptions } from 'node:child_process';
 import { promises as fs, constants as fsConstants } from 'node:fs';
 import path from 'node:path';
-import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import {
+  parseVerifierServiceExitCode,
+  parseVerifierServiceProtocol,
+  type VerifierServiceDevModeReport,
+  type VerifierServiceFailedReport,
+  type VerifierServiceSuccessReport,
+} from '@stark-ballot/verification/verifier-service-report';
 
-export type VerifierStatus = 'success' | 'failed' | 'dev_mode';
 export type VerifierStderrCategory = 'none' | 'present' | 'truncated';
 export const VERIFIER_STDERR_CAPTURE_LIMIT_BYTES = 4 * 1024;
-const VERIFIER_STDOUT_CAPTURE_LIMIT_BYTES = 1024 * 1024;
+const VERIFIER_REPORT_MAX_BYTES = 1024 * 1024;
 
 export interface VerifierInvocationDiagnostics {
   stderrCategory: VerifierStderrCategory;
@@ -35,41 +40,25 @@ export interface VerifierInvocationOptions {
   spawnImpl?: SpawnImpl;
 }
 
-interface VerifierServiceWireReport {
-  status: VerifierStatus;
-  verifier_version: string;
-  verified_at: string;
-  duration_ms: number;
-  expected_image_id: string;
-  receipt_image_id: string | null;
-  bundle_path: string;
-  receipt_path: string;
-  dev_mode_receipt: boolean;
-  errors?: string[];
-}
-
-type VerifierServiceReport = VerificationReport & {
-  status: VerifierStatus;
-};
-
-export interface VerificationReport {
-  status: VerifierStatus;
-  verifier_version: string;
-  verified_at: string;
-  duration_ms: number;
-  expected_image_id: string;
-  receipt_image_id: string | null;
-  dev_mode_receipt: boolean;
-  errors?: string[];
-}
-
-export interface VerifierInvocationResult {
-  status: VerifierStatus;
+interface VerifierInvocationResultBase {
   reportPath: string;
   bundlePath: string;
-  report: VerifierServiceReport;
   diagnostics?: VerifierInvocationDiagnostics;
 }
+
+export type VerifierInvocationResult =
+  | (VerifierInvocationResultBase & {
+      status: 'success';
+      report: VerifierServiceSuccessReport;
+    })
+  | (VerifierInvocationResultBase & {
+      status: 'dev_mode';
+      report: VerifierServiceDevModeReport;
+    })
+  | (VerifierInvocationResultBase & {
+      status: 'failed';
+      report: VerifierServiceFailedReport;
+    });
 
 export interface SpawnOptions {
   stdio: StdioOptions;
@@ -87,7 +76,6 @@ export type SpawnImpl = (command: string, args: readonly string[], options: Spaw
 
 interface BoundedStreamCapture {
   append(chunk: unknown): void;
-  text(): string;
   diagnostics(): VerifierInvocationDiagnostics;
 }
 
@@ -119,9 +107,6 @@ function createBoundedStreamCapture(limitBytes: number): BoundedStreamCapture {
         truncated = true;
       }
     },
-    text(): string {
-      return storage.toString('utf8', 0, capturedBytes);
-    },
     diagnostics(): VerifierInvocationDiagnostics {
       return {
         stderrCategory: truncated ? 'truncated' : capturedBytes > 0 ? 'present' : 'none',
@@ -129,86 +114,6 @@ function createBoundedStreamCapture(limitBytes: number): BoundedStreamCapture {
         stderrTruncated: truncated,
       };
     },
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function parseVerifierStatus(value: unknown): VerifierStatus {
-  if (value === 'success' || value === 'failed' || value === 'dev_mode') {
-    return value;
-  }
-  throw new Error('verifier-service report status is invalid');
-}
-
-function parseRequiredString(record: Record<string, unknown>, key: string): string {
-  const value = record[key];
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new Error(`verifier-service report ${key} is required`);
-  }
-  return value;
-}
-
-function parseDurationMs(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw new Error('verifier-service report duration_ms is invalid');
-  }
-  return value;
-}
-
-function parseReceiptImageId(value: unknown): string | null {
-  if (value === null || typeof value === 'string') {
-    return value;
-  }
-  throw new Error('verifier-service report receipt_image_id is invalid');
-}
-
-function parseDevModeReceipt(value: unknown): boolean {
-  if (typeof value === 'boolean') {
-    return value;
-  }
-  throw new Error('verifier-service report dev_mode_receipt is required');
-}
-
-function parseErrors(value: unknown): string[] | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
-    throw new Error('verifier-service report errors must be strings');
-  }
-  return value.map((entry) => String(entry));
-}
-
-export function parseVerifierServiceReport(input: unknown): VerifierServiceReport {
-  if (!isRecord(input)) {
-    throw new Error('verifier-service report must be an object');
-  }
-
-  const wireReport: VerifierServiceWireReport = {
-    status: parseVerifierStatus(input['status']),
-    verifier_version: parseRequiredString(input, 'verifier_version'),
-    verified_at: parseRequiredString(input, 'verified_at'),
-    duration_ms: parseDurationMs(input['duration_ms']),
-    expected_image_id: parseRequiredString(input, 'expected_image_id'),
-    receipt_image_id: parseReceiptImageId(input['receipt_image_id']),
-    bundle_path: parseRequiredString(input, 'bundle_path'),
-    receipt_path: parseRequiredString(input, 'receipt_path'),
-    dev_mode_receipt: parseDevModeReceipt(input['dev_mode_receipt']),
-    ...omitUndefinedProperties({ errors: parseErrors(input['errors']) }),
-  };
-
-  return {
-    status: wireReport.status,
-    verifier_version: wireReport.verifier_version,
-    verified_at: wireReport.verified_at,
-    duration_ms: wireReport.duration_ms,
-    expected_image_id: wireReport.expected_image_id,
-    receipt_image_id: wireReport.receipt_image_id,
-    dev_mode_receipt: wireReport.dev_mode_receipt,
-    ...(wireReport.errors ? { errors: wireReport.errors } : {}),
   };
 }
 
@@ -225,6 +130,7 @@ export async function invokeVerifierService(options: VerifierInvocationOptions):
     options.expectedImageId,
     '--output',
     options.reportPath,
+    '--quiet',
   ];
 
   const spawnFn: SpawnImpl =
@@ -239,16 +145,13 @@ export async function invokeVerifierService(options: VerifierInvocationOptions):
     },
   });
 
-  const stdoutCapture = createBoundedStreamCapture(VERIFIER_STDOUT_CAPTURE_LIMIT_BYTES);
   const stderrCapture = createBoundedStreamCapture(VERIFIER_STDERR_CAPTURE_LIMIT_BYTES);
 
   if (!child.stdout || !child.stderr) {
     throw new Error('verifier-service did not provide stdout/stderr streams');
   }
 
-  child.stdout.on('data', (data: unknown) => {
-    stdoutCapture.append(data);
-  });
+  child.stdout.on('data', () => undefined);
 
   child.stderr.on('data', (data: unknown) => {
     stderrCapture.append(data);
@@ -269,9 +172,19 @@ export async function invokeVerifierService(options: VerifierInvocationOptions):
     throw new VerifierServiceExecutionError('verifier-service exited with status 1', stderrCapture.diagnostics());
   }
 
-  let report: VerifierServiceReport;
+  let admittedExitCode: ReturnType<typeof parseVerifierServiceExitCode>;
   try {
-    report = await readVerificationReport(options.reportPath, stdoutCapture.text());
+    admittedExitCode = parseVerifierServiceExitCode(exitCode);
+  } catch {
+    throw new VerifierServiceExecutionError(
+      'verifier-service exited with an unsupported status',
+      stderrCapture.diagnostics(),
+    );
+  }
+
+  let reportInput: unknown;
+  try {
+    reportInput = await readVerificationReport(options.reportPath);
   } catch {
     throw new VerifierServiceExecutionError(
       'verifier-service report unavailable or invalid',
@@ -279,13 +192,39 @@ export async function invokeVerifierService(options: VerifierInvocationOptions):
     );
   }
 
-  return {
-    status: report.status,
+  let protocol: ReturnType<typeof parseVerifierServiceProtocol>;
+  try {
+    protocol = parseVerifierServiceProtocol(admittedExitCode, reportInput);
+  } catch {
+    throw new VerifierServiceExecutionError(
+      'verifier-service report unavailable or invalid',
+      stderrCapture.diagnostics(),
+    );
+  }
+
+  if (
+    protocol.wireReport.expected_image_id !== options.expectedImageId ||
+    protocol.wireReport.bundle_path !== path.basename(options.bundlePath)
+  ) {
+    throw new VerifierServiceExecutionError(
+      'verifier-service report does not match invocation',
+      stderrCapture.diagnostics(),
+    );
+  }
+
+  const commonResult = {
     reportPath: options.reportPath,
     bundlePath: options.bundlePath,
-    report,
     diagnostics: stderrCapture.diagnostics(),
   };
+  switch (protocol.status) {
+    case 'success':
+      return { ...commonResult, status: 'success', report: protocol.report };
+    case 'dev_mode':
+      return { ...commonResult, status: 'dev_mode', report: protocol.report };
+    case 'failed':
+      return { ...commonResult, status: 'failed', report: protocol.report };
+  }
 }
 
 async function resolveBinaryPath(explicitPath?: string): Promise<string> {
@@ -308,14 +247,31 @@ async function resolveBinaryPath(explicitPath?: string): Promise<string> {
   throw new Error('verifier-service binary not found. Set VERIFIER_SERVICE_BIN or build the project.');
 }
 
-async function readVerificationReport(reportPath: string, fallbackStdout: string): Promise<VerifierServiceReport> {
+async function readVerificationReport(reportPath: string): Promise<unknown> {
+  const handle = await fs.open(reportPath, 'r');
   try {
-    const content = await fs.readFile(reportPath, 'utf-8');
-    return parseVerifierServiceReport(JSON.parse(content));
-  } catch {
-    if (fallbackStdout.trim().length > 0) {
-      return parseVerifierServiceReport(JSON.parse(fallbackStdout));
+    const stats = await handle.stat();
+    if (!stats.isFile() || stats.size > VERIFIER_REPORT_MAX_BYTES) {
+      throw new Error('verifier-service report exceeds the admitted file bounds');
     }
-    throw new Error('verification report not generated by verifier-service');
+
+    const content = Buffer.alloc(VERIFIER_REPORT_MAX_BYTES + 1);
+    let bytesRead = 0;
+    while (bytesRead < content.byteLength) {
+      const result = await handle.read(content, bytesRead, content.byteLength - bytesRead, null);
+      if (result.bytesRead === 0) {
+        break;
+      }
+      bytesRead += result.bytesRead;
+    }
+
+    if (bytesRead > VERIFIER_REPORT_MAX_BYTES) {
+      throw new Error('verifier-service report exceeds the admitted file bounds');
+    }
+
+    const parsed: unknown = JSON.parse(content.toString('utf8', 0, bytesRead));
+    return parsed;
+  } finally {
+    await handle.close();
   }
 }

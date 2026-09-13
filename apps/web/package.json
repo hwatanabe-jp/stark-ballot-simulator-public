@@ -2,11 +2,6 @@
   "name": "@stark-ballot/web",
   "private": true,
   "type": "module",
-  "scripts": {
-    "lint": "pnpm --dir ../.. exec eslint apps/web",
-    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/web",
-    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.vite.json"
-  },
   "exports": {
     ".": "./src/index.ts",
     "./api/*": "./src/api/*",
@@ -28,6 +23,13 @@
     "./verification/*": "./src/verification/*",
     "./vote/*": "./src/vote/*"
   },
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec oxlint apps/web",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/web",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.vite.json && tsc --noEmit -p tsconfig.storybook.json",
+    "storybook": "VITE_RUNTIME_PROFILE=local-demo storybook dev --port 6006 --host 0.0.0.0 --no-open --disable-telemetry",
+    "storybook:build": "VITE_RUNTIME_PROFILE=local-demo storybook build --output-dir ../../.tmp/storybook-static --disable-telemetry"
+  },
   "dependencies": {
     "@marsidev/react-turnstile": "catalog:react",
     "@stark-ballot/api-contract": "workspace:*",
@@ -45,8 +47,12 @@
   },
   "devDependencies": {
     "@stark-ballot/test-support": "workspace:*",
+    "@storybook/react": "catalog:storybook",
+    "@storybook/react-vite": "catalog:storybook",
     "@testing-library/react": "catalog:react",
     "@testing-library/user-event": "catalog:react",
+    "oxc-parser": "catalog:testing",
+    "storybook": "catalog:storybook",
     "typescript": "catalog:testing",
     "vitest": "catalog:testing"
   }

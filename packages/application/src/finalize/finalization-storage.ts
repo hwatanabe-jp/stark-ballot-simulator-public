@@ -4,6 +4,7 @@ import {
   FinalizationFailureCategory,
   type BitmapProofSource,
   type FinalizationBitmapData,
+  type FinalizationReceiptPublication,
   type FinalizationResultAuthority,
   type FinalizationScenarioContext,
   type FinalizationState,
@@ -16,10 +17,22 @@ import type {
   VerificationResult,
   VerificationStatus,
 } from '@stark-ballot/verification/shared/types';
-import { VERIFICATION_FAILURE_CATEGORY_VALUES } from '@stark-ballot/verification/shared/types';
+import {
+  VERIFICATION_FAILURE_CATEGORY_VALUES,
+  VERIFICATION_STATUS_VALUES,
+} from '@stark-ballot/verification/shared/types';
+import { parseVerifierServiceReport } from '@stark-ballot/verification/verifier-service-report';
 import type { ReceiptJournal, ReceiptWithImageId } from '@stark-ballot/verification/image-id-types';
-import { parseStoredPublicInputArtifact } from '@stark-ballot/verification/public-input';
-import { isCloseStatement, isElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
+import {
+  parseStoredPublicInputArtifact,
+  type SupportedPublicInputArtifact,
+} from '@stark-ballot/verification/public-input';
+import {
+  isCloseStatement,
+  isElectionManifest,
+  type CloseStatement,
+  type ElectionManifest,
+} from '@stark-ballot/verification/public-audit-artifacts';
 import {
   getBooleanArrayProperty,
   getNumberArrayProperty,
@@ -31,8 +44,9 @@ import {
 } from '@stark-ballot/validation/unknown-value-guards';
 import { isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import { toPublicZkvmJournal } from '@stark-ballot/zkvm-contract/zkvm/public-journal';
+import { parseFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 
-const VERIFICATION_STATUSES = new Set<VerificationStatus>(['success', 'failed', 'dev_mode', 'not_run', 'running']);
+const VERIFICATION_STATUSES = new Set<VerificationStatus>(VERIFICATION_STATUS_VALUES);
 const VERIFICATION_FAILURE_CATEGORIES = new Set<VerificationFailureCategory>(VERIFICATION_FAILURE_CATEGORY_VALUES);
 const BITMAP_PROOF_SOURCES = new Set<BitmapProofSource>(['mock', 'real']);
 const SCENARIO_TAMPER_MODES = new Set<ScenarioTamperMode>(['none', 'input', 'claim']);
@@ -55,17 +69,22 @@ const FINALIZATION_RESULT_AUTHORITY_KEYS = new Set<string>([
   'bitmapData',
   'tamperSummary',
 ]);
-const VERIFICATION_RESULT_KEYS = new Set<string>(['status', 'report', 'failureCategory']);
-const VERIFICATION_REPORT_KEYS = new Set<string>([
-  'status',
-  'verifier_version',
-  'verified_at',
-  'duration_ms',
-  'expected_image_id',
-  'receipt_image_id',
-  'dev_mode_receipt',
-  'errors',
+const ADMITTED_FINALIZATION_RESULT_AUTHORITY_KEYS = new Set<string>([
+  'tally',
+  'imageId',
+  'tamperDetected',
+  'scenarios',
+  'journal',
+  'artifacts',
+  'tamperSummary',
 ]);
+const FINALIZATION_ARTIFACT_AVAILABILITY_KEYS = new Set<string>([
+  'publicAudit',
+  'receipt',
+  'receiptPublication',
+  'bitmap',
+]);
+const VERIFICATION_RESULT_KEYS = new Set<string>(['status', 'report', 'failureCategory']);
 const FINALIZATION_TALLY_KEYS = new Set<string>(['counts', 'totalVotes', 'tamperedCount']);
 const FINALIZATION_ERROR_KEYS = new Set<string>(['code', 'message', 'category', 'details']);
 const FINALIZATION_SCENARIO_CONTEXT_KEYS = new Set<string>([
@@ -92,6 +111,7 @@ const BITMAP_DATA_KEYS = new Set<string>([
   'treeSize',
   'finalizedAtMs',
 ]);
+const BITMAP_ROOT_PATTERN = /^(?:0x)?[0-9a-f]{64}$/;
 const TAMPER_SUMMARY_KEYS = new Set<string>(['ignoredVotes', 'recountedVotes', 'userRecountedTo', 'affectedBotIds']);
 const JOURNAL_KEYS = new Set<string>([
   'electionId',
@@ -126,6 +146,37 @@ const ELECTION_MANIFEST_KEYS = new Set<string>([
 ]);
 const CLOSE_STATEMENT_KEYS = new Set<string>(['logId', 'treeSize', 'timestamp', 'bulletinRoot', 'sthDigest']);
 
+/** Exact current persisted result shape. Artifact availability is encoded by
+ * the presence of its existing flat fields; no storage discriminator is added.
+ */
+export type PersistedFinalizationReceiptState = { receipt?: never } | { receipt: ReceiptWithImageId };
+
+export type PersistedFinalizationReceiptPublicationState =
+  | { receiptPublication?: never }
+  | { receiptPublication: FinalizationReceiptPublication };
+
+export type PersistedFinalizationPublicAuditState =
+  | {
+      publicInputArtifact?: never;
+      electionManifest?: never;
+      closeStatement?: never;
+    }
+  | {
+      publicInputArtifact: SupportedPublicInputArtifact;
+      electionManifest: ElectionManifest;
+      closeStatement: CloseStatement;
+    };
+
+export type PersistedFinalizationBitmapState =
+  | { bitmapProofSource?: never; bitmapData?: never }
+  | { bitmapProofSource: BitmapProofSource; bitmapData: FinalizationBitmapData };
+
+export type PersistedFinalizationResultAuthority = Omit<FinalizationResultAuthority, 'artifacts'> &
+  PersistedFinalizationReceiptState &
+  PersistedFinalizationReceiptPublicationState &
+  PersistedFinalizationPublicAuditState &
+  PersistedFinalizationBitmapState;
+
 function hasOwn(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
@@ -136,6 +187,10 @@ function hasOnlyAllowedKeys(value: Record<string, unknown>, allowedKeys: Readonl
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function isIntegerArray(value: number[]): boolean {
@@ -222,9 +277,7 @@ function parseReceiptWithImageId(value: unknown): ReceiptWithImageId | undefined
   };
 }
 
-function parseReceiptPublication(
-  value: unknown,
-): NonNullable<FinalizationResultAuthority['receiptPublication']> | undefined {
+function parseReceiptPublication(value: unknown): FinalizationReceiptPublication | undefined {
   if (!isRecord(value) || !hasOnlyAllowedKeys(value, RECEIPT_PUBLICATION_KEYS)) {
     return undefined;
   }
@@ -246,7 +299,7 @@ function parseReceiptPublication(
   };
 }
 
-function parseBitmapData(value: unknown): FinalizationBitmapData | undefined {
+export function parseFinalizationBitmapData(value: unknown): FinalizationBitmapData | undefined {
   if (!isRecord(value) || !hasOnlyAllowedKeys(value, BITMAP_DATA_KEYS)) {
     return undefined;
   }
@@ -258,75 +311,57 @@ function parseBitmapData(value: unknown): FinalizationBitmapData | undefined {
   if (
     !includedBitmap ||
     typeof includedBitmapRoot !== 'string' ||
-    !isNonNegativeInteger(treeSize) ||
-    !isNonNegativeInteger(finalizedAtMs)
+    !BITMAP_ROOT_PATTERN.test(includedBitmapRoot) ||
+    !isNonNegativeSafeInteger(treeSize) ||
+    !isNonNegativeSafeInteger(finalizedAtMs)
   ) {
     return undefined;
   }
 
   const seenBitmap = getBooleanArrayProperty(value, 'seenBitmap');
   const seenBitmapRoot = getStringProperty(value, 'seenBitmapRoot');
-  if (hasOwn(value, 'seenBitmap') && !seenBitmap) {
+  const hasSeenBitmap = hasOwn(value, 'seenBitmap');
+  const hasSeenBitmapRoot = hasOwn(value, 'seenBitmapRoot');
+  if (hasSeenBitmap !== hasSeenBitmapRoot) {
     return undefined;
   }
-  if (hasOwn(value, 'seenBitmapRoot') && typeof seenBitmapRoot !== 'string') {
+  if (hasSeenBitmap && !seenBitmap) {
+    return undefined;
+  }
+  if (hasSeenBitmapRoot && (typeof seenBitmapRoot !== 'string' || !BITMAP_ROOT_PATTERN.test(seenBitmapRoot))) {
     return undefined;
   }
 
   return {
     includedBitmap: [...includedBitmap],
     includedBitmapRoot,
-    ...(seenBitmap ? { seenBitmap: [...seenBitmap] } : {}),
-    ...(seenBitmapRoot ? { seenBitmapRoot } : {}),
+    ...(seenBitmap && seenBitmapRoot ? { seenBitmap: [...seenBitmap], seenBitmapRoot } : {}),
     treeSize,
     finalizedAtMs,
   };
 }
 
-function parseVerificationReport(value: unknown): VerificationReport | undefined {
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, VERIFICATION_REPORT_KEYS)) {
-    return undefined;
-  }
-
-  const status = parseVerificationStatus(value['status']);
-  if (!status) {
-    return undefined;
-  }
-
-  const durationMs = getNumberProperty(value, 'duration_ms');
-  const errors = getStringArrayProperty(value, 'errors');
-  const verifierVersion = getStringProperty(value, 'verifier_version');
-  const verifiedAt = getStringProperty(value, 'verified_at');
-  const expectedImageId = getStringProperty(value, 'expected_image_id');
-  const rawReceiptImageId = value['receipt_image_id'];
-  const devModeReceipt = value['dev_mode_receipt'];
-
-  if (!isNonNegativeInteger(durationMs)) {
-    return undefined;
-  }
-  if (hasOwn(value, 'errors') && !errors) {
-    return undefined;
-  }
-  if (typeof verifierVersion !== 'string' || typeof verifiedAt !== 'string' || typeof expectedImageId !== 'string') {
-    return undefined;
-  }
-  if (rawReceiptImageId !== null && typeof rawReceiptImageId !== 'string') {
-    return undefined;
-  }
-  if (typeof devModeReceipt !== 'boolean') {
-    return undefined;
-  }
-
+export function encodeFinalizationBitmapData(data: FinalizationBitmapData): FinalizationBitmapData {
   return {
-    status,
-    verifier_version: verifierVersion,
-    verified_at: verifiedAt,
-    duration_ms: durationMs,
-    expected_image_id: expectedImageId,
-    receipt_image_id: rawReceiptImageId,
-    dev_mode_receipt: devModeReceipt,
-    ...(errors ? { errors: [...errors] } : {}),
+    includedBitmap: [...data.includedBitmap],
+    includedBitmapRoot: data.includedBitmapRoot,
+    ...(data.seenBitmap !== undefined ? { seenBitmap: [...data.seenBitmap], seenBitmapRoot: data.seenBitmapRoot } : {}),
+    treeSize: data.treeSize,
+    finalizedAtMs: data.finalizedAtMs,
   };
+}
+
+export const finalizationBitmapDataCodec = {
+  decode: parseFinalizationBitmapData,
+  encode: encodeFinalizationBitmapData,
+} as const;
+
+function parseVerificationReport(value: unknown): VerificationReport | undefined {
+  try {
+    return parseVerifierServiceReport(value);
+  } catch {
+    return undefined;
+  }
 }
 
 export function parseVerificationResult(value: unknown): VerificationResult | undefined {
@@ -354,11 +389,51 @@ export function parseVerificationResult(value: unknown): VerificationResult | un
     return undefined;
   }
 
-  return {
-    status,
-    ...(parsedReport ? { report: parsedReport } : {}),
-    ...(failureCategory ? { failureCategory: failureCategory as VerificationFailureCategory } : {}),
-  };
+  const admittedFailureCategory = failureCategory as VerificationFailureCategory | undefined;
+  switch (status) {
+    case 'not_run':
+    case 'running':
+      if (parsedReport !== undefined || (admittedFailureCategory !== undefined && admittedFailureCategory !== 'none')) {
+        return undefined;
+      }
+      return {
+        status,
+        ...(admittedFailureCategory ? { failureCategory: admittedFailureCategory } : {}),
+      };
+    case 'success':
+      if (
+        (parsedReport !== undefined && parsedReport.status !== 'success') ||
+        (admittedFailureCategory !== undefined && admittedFailureCategory !== 'none')
+      ) {
+        return undefined;
+      }
+      return {
+        status,
+        ...(parsedReport?.status === 'success' ? { report: parsedReport } : {}),
+        ...(admittedFailureCategory ? { failureCategory: admittedFailureCategory } : {}),
+      };
+    case 'dev_mode':
+      if (
+        (parsedReport !== undefined && parsedReport.status !== 'dev_mode') ||
+        (admittedFailureCategory !== undefined && admittedFailureCategory !== 'none')
+      ) {
+        return undefined;
+      }
+      return {
+        status,
+        ...(parsedReport?.status === 'dev_mode' ? { report: parsedReport } : {}),
+        ...(admittedFailureCategory ? { failureCategory: admittedFailureCategory } : {}),
+      };
+    case 'failed':
+      if ((parsedReport !== undefined && parsedReport.status !== 'failed') || admittedFailureCategory === 'none') {
+        return undefined;
+      }
+      return {
+        status,
+        ...(parsedReport?.status === 'failed' ? { report: parsedReport } : {}),
+        ...(admittedFailureCategory ? { failureCategory: admittedFailureCategory } : {}),
+      };
+  }
 }
 
 function parseTamperSummary(value: unknown): FinalizationTamperSummary | undefined {
@@ -420,53 +495,79 @@ export function parseFinalizationResultAuthority(value: unknown): FinalizationRe
     return undefined;
   }
 
-  const receipt = value['receipt'];
-  const parsedReceipt = receipt !== undefined ? parseReceiptWithImageId(receipt) : undefined;
-  if (receipt !== undefined && !parsedReceipt) {
+  const hasReceipt = hasOwn(value, 'receipt');
+  const parsedReceipt = hasReceipt ? parseReceiptWithImageId(value['receipt']) : undefined;
+  if (hasReceipt && !parsedReceipt) {
     return undefined;
   }
 
-  const receiptPublication = value['receiptPublication'];
-  const parsedReceiptPublication =
-    receiptPublication !== undefined ? parseReceiptPublication(receiptPublication) : undefined;
-  if (receiptPublication !== undefined && !parsedReceiptPublication) {
+  const hasReceiptPublication = hasOwn(value, 'receiptPublication');
+  const parsedReceiptPublication = hasReceiptPublication
+    ? parseReceiptPublication(value['receiptPublication'])
+    : undefined;
+  if (hasReceiptPublication && !parsedReceiptPublication) {
     return undefined;
   }
 
-  const publicInputArtifact = value['publicInputArtifact'];
-  const parsedPublicInputArtifact =
-    publicInputArtifact !== undefined ? parseStoredPublicInputArtifact(publicInputArtifact) : undefined;
-  if (publicInputArtifact !== undefined && !parsedPublicInputArtifact) {
+  const hasPublicInputArtifact = hasOwn(value, 'publicInputArtifact');
+  const hasElectionManifest = hasOwn(value, 'electionManifest');
+  const hasCloseStatement = hasOwn(value, 'closeStatement');
+  const parsedPublicInputArtifact = hasPublicInputArtifact
+    ? parseStoredPublicInputArtifact(value['publicInputArtifact'])
+    : undefined;
+  if (hasPublicInputArtifact && !parsedPublicInputArtifact) {
     return undefined;
   }
 
-  const electionManifest = value['electionManifest'];
-  if (
-    electionManifest !== undefined &&
-    (!isRecord(electionManifest) ||
-      !hasOnlyAllowedKeys(electionManifest, ELECTION_MANIFEST_KEYS) ||
-      !isElectionManifest(electionManifest))
-  ) {
+  let electionManifest: ElectionManifest | undefined;
+  if (hasElectionManifest) {
+    const candidate = value['electionManifest'];
+    if (
+      !isRecord(candidate) ||
+      !hasOnlyAllowedKeys(candidate, ELECTION_MANIFEST_KEYS) ||
+      !isElectionManifest(candidate)
+    ) {
+      return undefined;
+    }
+    electionManifest = candidate;
+  }
+  let closeStatement: CloseStatement | undefined;
+  if (hasCloseStatement) {
+    const candidate = value['closeStatement'];
+    if (!isRecord(candidate) || !hasOnlyAllowedKeys(candidate, CLOSE_STATEMENT_KEYS) || !isCloseStatement(candidate)) {
+      return undefined;
+    }
+    closeStatement = candidate;
+  }
+
+  const hasAnyPublicAuditArtifact = hasPublicInputArtifact || hasElectionManifest || hasCloseStatement;
+  const hasCompletePublicAuditArtifacts =
+    parsedPublicInputArtifact !== undefined && electionManifest !== undefined && closeStatement !== undefined;
+  if (hasAnyPublicAuditArtifact !== hasCompletePublicAuditArtifacts) {
     return undefined;
   }
-  const closeStatement = value['closeStatement'];
-  if (
-    closeStatement !== undefined &&
-    (!isRecord(closeStatement) ||
-      !hasOnlyAllowedKeys(closeStatement, CLOSE_STATEMENT_KEYS) ||
-      !isCloseStatement(closeStatement))
-  ) {
+  const publicAuditArtifacts =
+    parsedPublicInputArtifact && electionManifest && closeStatement
+      ? {
+          availability: 'available' as const,
+          publicInputArtifact: parsedPublicInputArtifact,
+          electionManifest,
+          closeStatement,
+        }
+      : { availability: 'unavailable' as const };
+
+  const hasBitmapProofSource = hasOwn(value, 'bitmapProofSource');
+  const bitmapProofSource = hasBitmapProofSource ? value['bitmapProofSource'] : undefined;
+  if (hasBitmapProofSource && !BITMAP_PROOF_SOURCES.has(bitmapProofSource as BitmapProofSource)) {
     return undefined;
   }
 
-  const bitmapProofSource = value['bitmapProofSource'];
-  if (bitmapProofSource !== undefined && !BITMAP_PROOF_SOURCES.has(bitmapProofSource as BitmapProofSource)) {
+  const hasBitmapData = hasOwn(value, 'bitmapData');
+  const parsedBitmapData = hasBitmapData ? finalizationBitmapDataCodec.decode(value['bitmapData']) : undefined;
+  if (hasBitmapData && !parsedBitmapData) {
     return undefined;
   }
-
-  const bitmapData = value['bitmapData'];
-  const parsedBitmapData = bitmapData !== undefined ? parseBitmapData(bitmapData) : undefined;
-  if (bitmapData !== undefined && !parsedBitmapData) {
+  if (hasBitmapProofSource !== hasBitmapData) {
     return undefined;
   }
 
@@ -478,19 +579,115 @@ export function parseFinalizationResultAuthority(value: unknown): FinalizationRe
 
   return {
     tally,
-    ...(parsedReceipt ? { receipt: parsedReceipt } : {}),
-    ...(parsedReceiptPublication ? { receiptPublication: parsedReceiptPublication } : {}),
     imageId,
     ...(typeof value['tamperDetected'] === 'boolean' ? { tamperDetected: value['tamperDetected'] } : {}),
     ...(scenarios ? { scenarios: [...scenarios] } : {}),
     journal,
-    ...(parsedPublicInputArtifact ? { publicInputArtifact: parsedPublicInputArtifact } : {}),
-    ...(electionManifest !== undefined ? { electionManifest } : {}),
-    ...(closeStatement !== undefined ? { closeStatement } : {}),
-    ...(bitmapProofSource !== undefined ? { bitmapProofSource: bitmapProofSource as BitmapProofSource } : {}),
-    ...(parsedBitmapData ? { bitmapData: parsedBitmapData } : {}),
+    artifacts: {
+      receipt: parsedReceipt ? { availability: 'available', receipt: parsedReceipt } : { availability: 'unavailable' },
+      receiptPublication: parsedReceiptPublication
+        ? { availability: 'available', publication: parsedReceiptPublication }
+        : { availability: 'unavailable' },
+      publicAudit: publicAuditArtifacts,
+      bitmap:
+        bitmapProofSource !== undefined && parsedBitmapData
+          ? {
+              availability: 'available',
+              proofSource: bitmapProofSource as BitmapProofSource,
+              data: parsedBitmapData,
+            }
+          : { availability: 'unavailable' },
+    },
     ...(parsedTamperSummary ? { tamperSummary: parsedTamperSummary } : {}),
   };
+}
+
+export function encodeFinalizationResultAuthority(
+  authority: FinalizationResultAuthority,
+): PersistedFinalizationResultAuthority {
+  const { artifacts, ...common } = authority;
+  return {
+    ...common,
+    ...(artifacts.receipt.availability === 'available' ? { receipt: artifacts.receipt.receipt } : {}),
+    ...(artifacts.receiptPublication.availability === 'available'
+      ? { receiptPublication: artifacts.receiptPublication.publication }
+      : {}),
+    ...(artifacts.publicAudit.availability === 'available'
+      ? {
+          publicInputArtifact: artifacts.publicAudit.publicInputArtifact,
+          electionManifest: artifacts.publicAudit.electionManifest,
+          closeStatement: artifacts.publicAudit.closeStatement,
+        }
+      : {}),
+    ...(artifacts.bitmap.availability === 'available'
+      ? {
+          bitmapProofSource: artifacts.bitmap.proofSource,
+          bitmapData: finalizationBitmapDataCodec.encode(artifacts.bitmap.data),
+        }
+      : {}),
+  };
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: ReadonlySet<string>): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.size && keys.every((key) => expected.has(key));
+}
+
+function hasExactAvailabilityKeys(value: unknown, availableKeys: readonly string[]): value is Record<string, unknown> {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const availability = value['availability'];
+  const expected = new Set(availability === 'available' ? ['availability', ...availableKeys] : ['availability']);
+  return (availability === 'available' || availability === 'unavailable') && hasExactKeys(value, expected);
+}
+
+/** Admits an application-owned nested authority through the same exact-current
+ * persisted codec. This is used at process/runtime command boundaries.
+ */
+export function admitFinalizationResultAuthority(value: unknown): FinalizationResultAuthority | undefined {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, ADMITTED_FINALIZATION_RESULT_AUTHORITY_KEYS)) {
+    return undefined;
+  }
+  const artifacts = value['artifacts'];
+  if (!isRecord(artifacts) || !hasExactKeys(artifacts, FINALIZATION_ARTIFACT_AVAILABILITY_KEYS)) {
+    return undefined;
+  }
+  const publicAudit = artifacts['publicAudit'];
+  const receipt = artifacts['receipt'];
+  const receiptPublication = artifacts['receiptPublication'];
+  const bitmap = artifacts['bitmap'];
+  if (
+    !hasExactAvailabilityKeys(publicAudit, ['publicInputArtifact', 'electionManifest', 'closeStatement']) ||
+    !hasExactAvailabilityKeys(receipt, ['receipt']) ||
+    !hasExactAvailabilityKeys(receiptPublication, ['publication']) ||
+    !hasExactAvailabilityKeys(bitmap, ['proofSource', 'data'])
+  ) {
+    return undefined;
+  }
+
+  return parseFinalizationResultAuthority({
+    tally: value['tally'],
+    imageId: value['imageId'],
+    journal: value['journal'],
+    ...(hasOwn(value, 'tamperDetected') ? { tamperDetected: value['tamperDetected'] } : {}),
+    ...(hasOwn(value, 'scenarios') ? { scenarios: value['scenarios'] } : {}),
+    ...(hasOwn(value, 'tamperSummary') ? { tamperSummary: value['tamperSummary'] } : {}),
+    ...(receipt['availability'] === 'available' ? { receipt: receipt['receipt'] } : {}),
+    ...(receiptPublication['availability'] === 'available'
+      ? { receiptPublication: receiptPublication['publication'] }
+      : {}),
+    ...(publicAudit['availability'] === 'available'
+      ? {
+          publicInputArtifact: publicAudit['publicInputArtifact'],
+          electionManifest: publicAudit['electionManifest'],
+          closeStatement: publicAudit['closeStatement'],
+        }
+      : {}),
+    ...(bitmap['availability'] === 'available'
+      ? { bitmapProofSource: bitmap['proofSource'], bitmapData: bitmap['data'] }
+      : {}),
+  });
 }
 
 function parseFinalizationError(value: unknown): Extract<FinalizationState, { status: 'failed' }>['error'] | undefined {
@@ -538,9 +735,9 @@ export function parseFinalizationState(value: unknown): FinalizationState | unde
     return undefined;
   }
 
-  const finalizationId = getStringProperty(value, 'finalizationId');
+  const finalizationId = parseFinalizationId(value['finalizationId']);
   const queuedAtMs = getNumberProperty(value, 'queuedAtMs');
-  if (!status || typeof finalizationId !== 'string' || !isNonNegativeInteger(queuedAtMs)) {
+  if (!status || !finalizationId || !isNonNegativeInteger(queuedAtMs)) {
     return undefined;
   }
 

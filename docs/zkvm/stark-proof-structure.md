@@ -7,7 +7,7 @@
 
 1. [概要](#概要)
 2. [証明の構造](#証明の構造)
-3. [実測・目安](#実測目安)
+3. [サイズと性能の評価](#サイズと性能の評価)
 4. [検証可能な保証と境界](#検証可能な保証と境界)
 
 ## 概要
@@ -70,7 +70,7 @@ RISC Zero `Receipt` と compiled guest の ImageID metadata を持つ envelope �
 }
 ```
 
-この `Composite` は checked-in の実 receipt fixture が現在使用している variant の例です。
+この `Composite` は構造を説明するための例で、配列の中身は省略しています。
 envelope の契約は特定の inner variant に固定されておらず、dev-mode-capable host が
 `RISC0_DEV_MODE=1` で生成した Receipt では `inner.Fake` が入ります。consumer は envelope 内の
 RISC Zero `Receipt` を generic に deserialize し、`Composite` を前提にしません。
@@ -82,8 +82,8 @@ app の bundle 生成は、境界間の表記を維持するため `image_id` �
 ### Seal
 
 Seal は計算の正当性を検証する暗号学的 proof data です。具体的な JSON shape は RISC Zero の
-inner receipt variant に依存します。現在の checked-in `Composite` receipt では segment ごとの
-配列として表現され、実 receipt JSON のファイルサイズの大半を占めます。seal または seal が
+inner receipt variant に依存します。上の `Composite` の例では segment ごとの
+配列として表現されます。seal または seal が
 結び付ける claim / journal を不整合に変更すると、`Receipt::verify(expectedImageId)` は失敗します。
 
 ### Journal（公開出力）
@@ -120,7 +120,7 @@ canonical な公開 artifact `journal.json` を生成します。この decoded 
 `journal.json` が app と bundle における現在の journal path です。
 
 - `methodVersion` は **14** です。current journal admission はこの version を要求し、legacy count
-  alias や旧 layout を current field へ変換しません。
+  alias、未知の field、必須 field の欠落を拒否します。
 - `imageId` は guest が commit する `VerificationOutput` の field ではありません。host が付与する
   comparison-only metadata で、`journal.json` に投影されることがあります。
 - `tamperDetected` も journal field ではありません。app は `excludedSlots`、`rejectedRecords`、
@@ -128,24 +128,31 @@ canonical な公開 artifact `journal.json` を生成します。この decoded 
 - `seenBitmapRoot` と `includedBitmapRoot` は公開されますが、個々の bitmap artifact は private で、
   public bundle には含めません。
 
-`packages/verification/src/verification/journal-parser.ts` の `parseJournalBytes()` が扱う 272-byte
-packed layout は unit test 用の低レベル helper です。RISC Zero Receipt 内部の
-`receipt.journal.bytes` は serde encoding を含み、この layout の入力ではありません。raw bytes を
-直接解釈せず、`journal.json` を current public interface として使用します。
+TypeScript の journal admission は、count と5要素の `verifiedTally` に非負の JavaScript safe
+integer かつ Rust `u32` の範囲を要求し、`treeSize` には正数を要求します。さらに tally 合計と
+`validVotes`、有効・無効 record 数の合計と `totalVotes`、`invalidVotes` と `rejectedRecords` の一致を
+確認します。計上・提示済み無効・未提示 slot の分割が tree size と整合し、提示済み無効 slot が
+なければ両 bitmap root も一致する必要があります。これらの authority は
+[`journal-guards.ts`](../../packages/zkvm-contract/src/zkvm/journal-guards.ts) です。
+`totalExpected` と `treeSize` の不一致は失敗を説明する証拠として受理できますが、全体を
+Verified とする条件は満たしません。
 
-## 実測・目安
+RISC Zero Receipt 内部の `receipt.journal.bytes` は RISC Zero serde encoding です。生成時の
+decode は Rust host が所有し、app と bundle はそこから投影した `journal.json` を使用します。
+独立した監査では `verifier-service decode-journal` が同じ読み込み済み receipt を expected
+ImageID で検証し、`success` の場合だけ `VerificationOutput` へ decode して methodVersion 14 の
+JSON を出力します。Fake receipt や旧 method の journal はこの経路では出力しません。
+bundle の `journal.json` との照合手順は
+[`verifier-service` の CLI guide](../../verifier-service/README.md#cli-usage) を参照してください。
+どちらの経路も RISC Zero serde を使い、固定 byte offset の TypeScript parser は持ちません。
 
-実測値は環境、RISC Zero の version、proof 条件、JSON 表現、圧縮有無に依存し、protocol 上の
-保証値ではありません。
+## サイズと性能の評価
 
-| モード                | Receipt / 証明タイプ              | サイズ目安   | 生成時間目安                    |
-| --------------------- | --------------------------------- | ------------ | ------------------------------- |
-| mock                  | mock artifact                     | 実装依存     | 高速                            |
-| RISC Zero development | Fake                              | 数十KB程度   | ~100ms                          |
-| RISC Zero production  | Composite（current fixture の例） | 数百KB〜~2MB | 数分（64票 ≈ ~370秒、環境依存） |
-
-- `Receipt::verify` の検証時間は数秒程度が目安です。
-- checked-in の 64票 real receipt JSON は現在およそ **1.7MB** です。
+Receipt のサイズ、生成時間、検証時間は環境、RISC Zero の version、proof 条件、JSON 表現、
+圧縮有無に依存します。receipt fixture は実行時に再生成する artifact であり、この文書には
+現在の build に対する固定の実測値を置きません。比較には同じ入力・build・環境で生成した
+artifact と計測条件を使い、mock / Fake の速度を production STARK の性能として扱わないでください。
+再生成手順は [zkVM guide](../../zkvm/README.md#build-test-prove-and-verify) にあります。
 
 ## 検証可能な保証と境界
 
@@ -153,7 +160,10 @@ packed layout は unit test 用の低レベル helper です。RISC Zero Receipt
 `Receipt::verify(expectedImageId)` を実行します。これにより、expected ImageID が識別する guest
 program が正常終了し、その実行が commit した journal と receipt の claim / seal が整合することを
 検証します。non-dev receipt では、envelope の top-level `image_id` が expected ImageID と一致する
-ことも必須です。
+ことも必須です。app が受理する report は status と `dev_mode_receipt`、ImageID、errors の相関を
+検査し、`duration_ms` には非負の JavaScript safe integer を要求します。`success` report は
+non-dev receipt と一致する expected / receipt ImageID を持ち、errors を持ちません。
+report の形式・process exit/status 契約は [検証フロー](../verification/README.md) を参照してください。
 
 `inputCommitment` は、次の **公開 subset** を domain-separated hash に結び付けます。
 
@@ -174,8 +184,16 @@ authority と consistency check で結び付けます。
 - `methodVersion`: journal と public input contract の current-version admission
 - ImageID: verifier の expected ImageID、receipt verification report、envelope metadata の一致
 
-したがって、production の検証結果は seal だけで決まりません。実 STARK receipt、expected
-ImageID、canonical journal、public input、manifest、close statement、bitmap / bulletin evidence
-など、必要な check がすべて成功した場合にだけ全体を Verified と扱えます。mock は高速な UI / API
-test evidence、Fake receipt は RISC Zero integration 用の development evidence に限定され、どちらも
-production STARK proof correctness の証拠ではありません。
+公開 verification resource の admission は、report がある場合の status / ImageID、included
+journal と `proofAuthority`、claimed tally と proof tally、それらから導く check・stage・表示
+policy の整合も確認します。S2/S4 の claimed-tally 改ざんでは journal と receipt が正しくても、
+公開 tally との不一致が検証失敗になります。
+
+全体の Verified 表示は、[共有 presentation policy](../../packages/verification/src/verification/verification-presentation-policy.ts)
+が全必須 check と stage の成功、表示準備完了、hard failure と development evidence の不在を
+確認した場合に限ります。必要な証拠には実 STARK receipt、expected ImageID、canonical journal、
+public input、manifest、close statement、個票の cast / bulletin / bitmap evidence が含まれます。
+STH source を設定した場合はその consensus も必須です。未実行・欠落・進行中の必須 check、
+除外 slot や rejected record、期待票数と tree size の不一致は成功を阻みます。
+mock は UI / API test evidence、Fake receipt は RISC Zero integration 用の development evidence
+であり、どちらも production STARK proof correctness の証拠ではありません。

@@ -5,8 +5,10 @@ import {
   type NeverSchema,
   type ObjectSchema,
   type SchemaShape,
-  type SchemaTypeAny,
+  type AnySchema,
+  type StringSchema,
 } from '@stark-ballot/validation/schema';
+import { documentOpenApiRefinement, documentOpenApiTransform } from '@stark-ballot/validation/schema-openapi';
 import { UINT32_MAX } from '@stark-ballot/zkvm-contract/zkvm/types';
 
 export const VOTE_CHOICES = ['A', 'B', 'C', 'D', 'E'] as const;
@@ -31,24 +33,32 @@ export const apiResponseMetaSchema = publicObject({
   requestId: requestIdSchema,
 });
 
-type ApiResponseMetaShape<TAdditionalMetaShape extends SchemaShape> = TAdditionalMetaShape & {
+type ApiResponseMetaShape<TAdditionalMetaShape extends SchemaShape> = Omit<TAdditionalMetaShape, 'requestId'> & {
   requestId: typeof requestIdSchema;
 };
 
-export function apiResponseSchema<
-  TSchema extends SchemaTypeAny,
-  const TAdditionalMetaShape extends SchemaShape = Record<never, never>,
->(
-  schema: TSchema,
-  additionalMetaShape?: TAdditionalMetaShape,
-): ObjectSchema<
+type ResponseSchema<TSchema extends AnySchema, TAdditionalMetaShape extends SchemaShape> = ObjectSchema<
   {
     data: TSchema;
     meta: ObjectSchema<ApiResponseMetaShape<TAdditionalMetaShape>, 'strict', NeverSchema>;
   },
   'strict',
   NeverSchema
-> {
+>;
+
+export function apiResponseSchema<TSchema extends AnySchema>(
+  schema: TSchema,
+): ResponseSchema<TSchema, Record<never, never>>;
+export function apiResponseSchema<TSchema extends AnySchema, const TAdditionalMetaShape extends SchemaShape>(
+  schema: TSchema,
+  additionalMetaShape: TAdditionalMetaShape &
+    Required<TAdditionalMetaShape> &
+    (string extends keyof TAdditionalMetaShape ? never : keyof TAdditionalMetaShape extends string ? unknown : never),
+): ResponseSchema<TSchema, TAdditionalMetaShape>;
+export function apiResponseSchema<
+  TSchema extends AnySchema,
+  const TAdditionalMetaShape extends SchemaShape = Record<never, never>,
+>(schema: TSchema, additionalMetaShape?: TAdditionalMetaShape): ResponseSchema<TSchema, TAdditionalMetaShape> {
   const metaShape = {
     ...additionalMetaShape,
     requestId: requestIdSchema,
@@ -67,18 +77,22 @@ export const finalizationIdSchema = s
   .regex(SAFE_VERIFIER_SEGMENT_PATTERN, 'Expected a safe single path segment');
 export const capabilityTokenSchema = s.string().min(1);
 
-export const hex32Schema = s
-  .string()
-  .refine((value) => isValidHexString(value, 32), {
-    message: 'Expected 32-byte hex string',
-  })
-  .describe('hex32');
+export const hex32Schema = documentOpenApiRefinement(
+  s
+    .string()
+    .refine((value) => isValidHexString(value, 32), {
+      message: 'Expected 32-byte hex string',
+    })
+    .describe('hex32'),
+  'The value is exactly 32 bytes of hexadecimal, with an optional lowercase 0x prefix.',
+  { pattern: '^(?:0x)?[0-9A-Fa-f]{64}$' },
+);
 
-export const timestampMsSchema = s.number().int().nonnegative();
-export const durationMsSchema = s.number().int().nonnegative();
-export const treeSizeSchema = s.number().int().nonnegative();
+export const timestampMsSchema = s.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+export const durationMsSchema = s.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+export const treeSizeSchema = s.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const positiveTreeSizeSchema = treeSizeSchema.min(1);
-export const voteIndexSchema = s.number().int().nonnegative();
+export const voteIndexSchema = s.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const uint32Schema = s.number().int().nonnegative().max(UINT32_MAX);
 export const positiveUint32Schema = uint32Schema.min(1);
 
@@ -88,29 +102,80 @@ export const scenarioIdSchema = s.enum(SCENARIO_IDS);
 const nonNegativeIntegerQueryTextSchema = s.string().regex(/^(0|[1-9]\d*)$/);
 const positiveIntegerQueryTextSchema = s.string().regex(/^[1-9]\d*$/);
 
-export const nonNegativeIntegerQuerySchema = nonNegativeIntegerQueryTextSchema.transform((value) => Number(value));
-export const positiveIntegerQuerySchema = positiveIntegerQueryTextSchema.transform((value) => Number(value));
-export const bulletinLimitQuerySchema = positiveIntegerQueryTextSchema
-  .refine((value) => Number(value) <= 1000, {
+function integerQuerySchema(textSchema: StringSchema, minimum: 0 | 1) {
+  const boundedTextSchema = documentOpenApiRefinement(
+    textSchema.refine((value) => Number.isSafeInteger(Number(value)), {
+      message: 'Expected a safe integer',
+    }),
+    `The decimal wire value is at most ${Number.MAX_SAFE_INTEGER} and converts without rounding or overflow.`,
+    { maxLength: String(Number.MAX_SAFE_INTEGER).length },
+  );
+  return documentOpenApiTransform(
+    boundedTextSchema.transform((value) => Number(value)),
+    {},
+    { type: 'integer', minimum, maximum: Number.MAX_SAFE_INTEGER },
+  );
+}
+
+export const nonNegativeIntegerQuerySchema = integerQuerySchema(nonNegativeIntegerQueryTextSchema, 0);
+export const positiveIntegerQuerySchema = integerQuerySchema(positiveIntegerQueryTextSchema, 1);
+const bulletinLimitQueryTextSchema = documentOpenApiRefinement(
+  positiveIntegerQueryTextSchema.refine((value) => Number(value) <= 1000, {
     message: 'Expected integer <= 1000',
-  })
-  .transform((value) => Number(value));
+  }),
+  'The decimal wire value is between 1 and 1000 with no leading zero.',
+  { pattern: '^(?:[1-9]\\d{0,2}|1000)$' },
+);
+export const bulletinLimitQuerySchema = documentOpenApiTransform(
+  bulletinLimitQueryTextSchema.transform((value) => Number(value)),
+  {},
+  { type: 'integer', minimum: 1, maximum: 1000 },
+);
 
 export const tallyCountsSchema = publicObject({
-  A: s.number().int().nonnegative(),
-  B: s.number().int().nonnegative(),
-  C: s.number().int().nonnegative(),
-  D: s.number().int().nonnegative(),
-  E: s.number().int().nonnegative(),
+  A: uint32Schema,
+  B: uint32Schema,
+  C: uint32Schema,
+  D: uint32Schema,
+  E: uint32Schema,
 });
 
-export const tallySchema = publicObject({
+const tallyBaseShape = {
   counts: tallyCountsSchema,
-  totalVotes: s.number().int().nonnegative(),
-  tamperedCount: s.number().int().nonnegative().optional(),
-});
+  totalVotes: uint32Schema,
+} as const;
 
-export const journalTallySchema = s.array(uint32Schema).length(VOTE_CHOICES.length);
+function addTallyChoiceCounts(counts: Infer<typeof tallyCountsSchema>): number | undefined {
+  const total = VOTE_CHOICES.reduce((sum, choice) => sum + counts[choice], 0);
+  return Number.isSafeInteger(total) ? total : undefined;
+}
+
+function refineTallyTotal(
+  tally: { counts: Infer<typeof tallyCountsSchema>; totalVotes: number },
+  context: { addIssue(issue: { message: string }): void },
+): void {
+  if (addTallyChoiceCounts(tally.counts) !== tally.totalVotes) {
+    context.addIssue({ message: 'Tally totalVotes must equal the sum of all choice counts' });
+  }
+}
+
+export const tallySchema = documentOpenApiRefinement(
+  publicObject({
+    ...tallyBaseShape,
+    tamperedCount: uint32Schema.optional(),
+  }).superRefine(refineTallyTotal),
+  'totalVotes equals the sum of the A, B, C, D, and E counts.',
+);
+
+export const tallyWithRequiredTamperedCountSchema = documentOpenApiRefinement(
+  publicObject({
+    ...tallyBaseShape,
+    tamperedCount: uint32Schema,
+  }).superRefine(refineTallyTotal),
+  'totalVotes equals the sum of the A, B, C, D, and E counts.',
+);
+
+export const journalTallySchema = s.tuple([uint32Schema, uint32Schema, uint32Schema, uint32Schema, uint32Schema]);
 
 export const turnstileTokenFields = {
   turnstileToken: s.string().min(1).optional(),
@@ -118,10 +183,10 @@ export const turnstileTokenFields = {
 
 export type VoteChoice = Infer<typeof voteChoiceSchema>;
 export type ScenarioId = Infer<typeof scenarioIdSchema>;
-export type SessionId = Infer<typeof sessionIdSchema>;
+export type SessionIdWire = Infer<typeof sessionIdSchema>;
 export type VoteId = Infer<typeof voteIdSchema>;
-export type FinalizationId = Infer<typeof finalizationIdSchema>;
-export type CapabilityToken = Infer<typeof capabilityTokenSchema>;
+export type FinalizationIdWire = Infer<typeof finalizationIdSchema>;
+export type CapabilityTokenWire = Infer<typeof capabilityTokenSchema>;
 export type RequestId = Infer<typeof requestIdSchema>;
 export type Hex32 = Infer<typeof hex32Schema>;
 export type TimestampMs = Infer<typeof timestampMsSchema>;

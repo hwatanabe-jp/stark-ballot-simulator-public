@@ -1,4 +1,4 @@
-import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3';
 import { downloadRangeFromS3, headS3Object } from '@stark-ballot/aws-adapters/aws/s3-download';
 import { restoreReceiptFromS3 } from '@stark-ballot/aws-adapters/aws/bundle-restore';
 import { getS3Client, getS3Config } from '@stark-ballot/aws-adapters/aws/s3-client';
@@ -16,7 +16,6 @@ import {
 import type { FinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-types';
 import { getRecordProperty, getStringProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
 import { buildFinalizationArtifactS3Keys } from '@stark-ballot/aws-adapters/finalize/artifact-key-layout';
-import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 export interface AsyncProverArtifactKeys {
@@ -107,8 +106,34 @@ export async function readAsyncProverFailureCategory(
   sessionId: string,
   finalizationId: string,
 ): Promise<ProverFailureCategory | undefined> {
+  const markerKey = buildAsyncProverFailureMarkerKey(profile, sessionId, finalizationId);
+  const { bucket, expectedBucketOwner } = getS3Config(profile);
+  // A task that never starts cannot publish a marker. HEAD alone returns 403
+  // for absence without unrestricted ListBucket permission, so observe only
+  // this complete key prefix before reading. Listing errors must still retry.
+  const listing = await getS3Client(profile).send(
+    new ListObjectsV2Command({
+      Bucket: bucket,
+      ExpectedBucketOwner: expectedBucketOwner,
+      Prefix: markerKey,
+      MaxKeys: 1,
+    }),
+  );
+  if (listing.CommonPrefixes?.length) {
+    throw new Error('Unexpected failure marker listing');
+  }
+  if (listing.KeyCount === 0 && !listing.Contents?.length && listing.IsTruncated === false) {
+    return undefined;
+  }
+  if (
+    listing.KeyCount !== 1 ||
+    listing.Contents?.length !== 1 ||
+    listing.Contents[0]?.Key !== markerKey ||
+    typeof listing.IsTruncated !== 'boolean'
+  ) {
+    throw new Error('Unexpected failure marker listing');
+  }
   try {
-    const markerKey = buildAsyncProverFailureMarkerKey(profile, sessionId, finalizationId);
     const { contentLength } = await headS3Object(profile, markerKey);
     if (contentLength <= 0 || contentLength > MAX_PROVER_FAILURE_MARKER_BYTES) {
       return undefined;
@@ -155,7 +180,6 @@ function buildAsyncProverInputPayload(options: PersistAsyncProverInputOptions): 
   return {
     ...serializedInput,
     election_config: options.electionConfig,
-    electionConfig: options.electionConfig,
   };
 }
 
@@ -265,24 +289,41 @@ export async function buildFinalizationResultFromS3Bundle(options: {
   }
 
   const finalizedAtMs = options.finalizedAtMs ?? Date.now();
+  const hasAnyPublicAuditArtifact = Boolean(
+    restored.publicInputArtifact || restored.electionManifest || restored.closeStatement,
+  );
+  if (
+    hasAnyPublicAuditArtifact &&
+    !(restored.publicInputArtifact && restored.electionManifest && restored.closeStatement)
+  ) {
+    throw new Error('Restored bundle contains an incomplete public audit artifact group');
+  }
   const baseResult = buildFinalizationResultFromJournal({
     journal: restored.journal,
     imageId: resolveImageId(restored.receipt, restored.receiptRaw, restored.journal),
-    ...omitUndefinedProperties({
-      electionManifest: restored.electionManifest,
-      closeStatement: restored.closeStatement,
-    }),
+    ...(restored.publicInputArtifact && restored.electionManifest && restored.closeStatement
+      ? {
+          publicAuditArtifacts: {
+            availability: 'available' as const,
+            publicInputArtifact: restored.publicInputArtifact,
+            electionManifest: restored.electionManifest,
+            closeStatement: restored.closeStatement,
+          },
+        }
+      : {}),
   });
+  const bitmapData = buildBitmapData(restored, finalizedAtMs);
 
-  return omitUndefinedProperties({
+  return {
     ...baseResult,
-    ...(isReceiptWithImageId(restored.receipt) ? { receipt: restored.receipt } : {}),
-    ...omitUndefinedProperties({ publicInputArtifact: restored.publicInputArtifact }),
-    ...omitUndefinedProperties({ electionManifest: restored.electionManifest }),
-    ...omitUndefinedProperties({
-      closeStatement: restored.closeStatement,
-      bitmapData: buildBitmapData(restored, finalizedAtMs),
-      bitmapProofSource: restored.includedBitmapArtifact ? 'real' : baseResult.bitmapProofSource,
-    }),
-  });
+    artifacts: {
+      ...baseResult.artifacts,
+      ...(isReceiptWithImageId(restored.receipt)
+        ? { receipt: { availability: 'available' as const, receipt: restored.receipt } }
+        : {}),
+      ...(bitmapData
+        ? { bitmap: { availability: 'available' as const, proofSource: 'real' as const, data: bitmapData } }
+        : {}),
+    },
+  };
 }

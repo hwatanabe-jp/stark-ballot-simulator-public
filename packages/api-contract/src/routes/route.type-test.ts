@@ -1,11 +1,9 @@
 import { s } from '@stark-ballot/validation/schema';
 import {
-  bindRoute,
   buildRoutePath,
   declaredResponse,
   defineRoute,
   jsonResponse,
-  type RouteHandler,
   type RouteInput,
   type RouteOutput,
 } from './route';
@@ -61,22 +59,6 @@ const validOutput: RouteOutput<typeof route> = {
   body: { itemId: 'item-1' },
 };
 void validOutput;
-
-const handler: RouteHandler<typeof route, { requestId: string }> = ({ input, context }) => {
-  input.params.itemId satisfies string;
-  input.query.page satisfies number;
-  context.requestId satisfies string;
-
-  // @ts-expect-error Typed handlers cannot read an undeclared raw request location.
-  void input.rawRequest;
-
-  return declaredResponse(route, 200, { itemId: input.params.itemId });
-};
-void handler;
-
-const binding = bindRoute(route, handler);
-binding.route.path satisfies '/items/:itemId';
-binding.handler satisfies RouteHandler<typeof route, { requestId: string }>;
 
 buildRoutePath(route, { itemId: 'item-1' });
 

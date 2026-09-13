@@ -468,22 +468,39 @@ function normalizePnpmPackageKey(rawKey: string, location: string): string {
   return packageIdentity(packageKey.slice(0, separator), packageKey.slice(separator + 1));
 }
 
-function extractYamlSection(content: string, sectionName: string, nextSectionName?: string): string {
-  const startMarker = `${sectionName}:\n`;
-  const start = content.indexOf(startMarker);
-  if (start === -1 || (start > 0 && content[start - 1] !== '\n')) {
+function extractYamlSection(content: string, sectionName: string): string {
+  const starts = [...content.matchAll(new RegExp(`^${sectionName}:\\n`, 'gm'))];
+  const start = starts[0];
+  if (start === undefined) {
     throw new Error(`pnpm-lock.yaml is missing ${sectionName}: section`);
   }
-  const contentStart = start + startMarker.length;
-  if (nextSectionName === undefined) {
-    return content.slice(contentStart);
+  if (starts.length !== 1) {
+    throw new Error(`pnpm-lock.yaml contains duplicate ${sectionName}: sections`);
   }
-  const endMarker = `\n${nextSectionName}:\n`;
-  const end = content.indexOf(endMarker, contentStart);
-  if (end === -1) {
-    throw new Error(`pnpm-lock.yaml is missing ${nextSectionName}: section`);
+  const remainder = content.slice(start.index + start[0].length);
+  const end = remainder.search(/^[^\s#][^\n]*:/m);
+  return end === -1 ? remainder : remainder.slice(0, end);
+}
+
+function selectPnpmWorkspaceLockDocument(content: string): string {
+  const documents = content.split(/^---[ \t]*\n/m).filter((document) => document.trim().length > 0);
+  if (documents.length > 2) {
+    throw new Error('pnpm-lock.yaml contains more than two YAML documents');
   }
-  return content.slice(contentStart, end);
+  const workspaceDocuments = documents.filter((document) => {
+    const importers = extractYamlSection(document, 'importers');
+    // pnpm stores its package manager and config dependencies in a separate env document.
+    const isEnvironment = /^ {4}(?:configDependencies|packageManagerDependencies):/m.test(importers);
+    if (isEnvironment && /^ {4}(?:dependencies|devDependencies|optionalDependencies):/m.test(importers)) {
+      throw new Error('pnpm-lock.yaml mixes environment and workspace dependency groups in one document');
+    }
+    return !isEnvironment;
+  });
+  const workspaceDocument = workspaceDocuments[0];
+  if (workspaceDocuments.length !== 1 || workspaceDocument === undefined) {
+    throw new Error('pnpm-lock.yaml must contain exactly one workspace dependency document');
+  }
+  return workspaceDocument;
 }
 
 function parsePnpmPackageEntries(section: string, sectionName: string): Set<string> {
@@ -595,10 +612,10 @@ function parseDirectProductionPnpmPackages(importersSection: string): Set<string
 }
 
 function parsePnpmLock(content: string): PnpmLockPackages {
-  const normalized = content.replaceAll('\r\n', '\n');
-  const importersSection = extractYamlSection(normalized, 'importers', 'packages');
-  const packagesSection = extractYamlSection(normalized, 'packages', 'snapshots');
-  const snapshotsSection = extractYamlSection(normalized, 'snapshots');
+  const workspaceDocument = selectPnpmWorkspaceLockDocument(content.replaceAll('\r\n', '\n'));
+  const importersSection = extractYamlSection(workspaceDocument, 'importers');
+  const packagesSection = extractYamlSection(workspaceDocument, 'packages');
+  const snapshotsSection = extractYamlSection(workspaceDocument, 'snapshots');
   const all = parsePnpmPackageEntries(packagesSection, 'packages');
   const required = parseRequiredPnpmPackages(snapshotsSection);
 

@@ -3,7 +3,7 @@
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { format, resolveConfig } from 'prettier';
+import { formatSource } from '../formatting/format-source';
 import { buildRfc6962GoldenVectors } from './rfc6962-golden-vectors';
 
 const OUTPUT_PATH = path.resolve(
@@ -12,11 +12,7 @@ const OUTPUT_PATH = path.resolve(
 );
 
 async function main(): Promise<void> {
-  const prettierOptions = (await resolveConfig(OUTPUT_PATH)) ?? {};
-  const formatted = await format(JSON.stringify(buildRfc6962GoldenVectors()), {
-    ...prettierOptions,
-    filepath: OUTPUT_PATH,
-  });
+  const formatted = await formatSource(OUTPUT_PATH, JSON.stringify(buildRfc6962GoldenVectors()));
   writeFileSync(OUTPUT_PATH, formatted);
   console.log(`Wrote ${OUTPUT_PATH}`);
 }

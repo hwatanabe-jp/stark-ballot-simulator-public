@@ -3,7 +3,9 @@ import type { FinalizationWorkItem } from '@stark-ballot/application/finalize/fi
 import {
   localRuntimeProfile,
   targetRuntimeProfile,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 
 const executorMocks = vi.hoisted(() => ({
   getDefaultExecutor: vi.fn(() =>
@@ -51,8 +53,8 @@ describe('finalization runtime profile composition', () => {
     const dependencies = createFinalizationDependencies(profile);
     const workItem = {
       inputSource: 's3',
-      sessionId: '00000000-0000-4000-8000-000000000001',
-      finalizationId: 'FINALIZATION123',
+      sessionId: asSessionId('00000000-0000-4000-8000-000000000001'),
+      finalizationId: asFinalizationId('FINALIZATION123'),
       queuedAtMs: 1_700_000_000_000,
       expectedImageId: `0x${'1'.repeat(64)}`,
       scenarios: [],

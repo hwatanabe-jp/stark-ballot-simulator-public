@@ -1,3 +1,132 @@
+/** @typedef {import("./index.js").ImmutableObjectReference} ImmutableObjectReference */
+
+/** @typedef {import("./terraform-authority.js").TerraformBackendAuthority} TerraformBackendAuthority */
+
+/**
+ * @typedef {'create' | 'update' | 'replace' | 'delete' | 'read-only'} TerraformDriftActionClass
+ */
+
+/**
+ * @typedef {'no-drift' | 'drift-detected' | 'check-failed'} TerraformDriftResult
+ */
+
+/**
+ * @typedef {'app' | 'bootstrap' | 'foundation'} TerraformDriftRoot
+ */
+
+/**
+ * @typedef {'authority-selection' | 'authority-admission' | 'source-checkout' | 'identity-admission' | 'provider-initialization' | 'runner-runtime' | 'plan-input-preparation' | 'terraform-plan' | 'plan-summary'} TerraformDriftFailureStage
+ */
+
+/**
+ * @typedef {{
+    readonly configuredManagedImage: string;
+    readonly runningManagedImage: string;
+}} TerraformDriftBuildRuntime
+ */
+
+/**
+ * @typedef {{
+    readonly create: number;
+    readonly update: number;
+    readonly replace: number;
+    readonly delete: number;
+    readonly readOnly: number;
+}} TerraformDriftActionCounts
+ */
+
+/**
+ * @typedef {{
+    readonly address: string;
+    readonly actionClasses: readonly TerraformDriftActionClass[];
+}} TerraformDriftAddress
+ */
+
+/**
+ * @typedef {{
+    readonly actionCounts: TerraformDriftActionCounts;
+    readonly addresses: readonly TerraformDriftAddress[];
+    readonly omittedAddressCount: number;
+}} TerraformDriftSummary
+ */
+
+/**
+ * @typedef {{
+    readonly accountId: string;
+    readonly region: string;
+    readonly root: TerraformDriftRoot;
+    readonly stateIdentity: string;
+    readonly backend: TerraformBackendAuthority;
+    readonly controlSourceSha: string;
+    readonly frameworkSourceSha: string;
+    readonly targetConfigurationSha256: string;
+}} TerraformDriftIdentity
+ */
+
+/**
+ * @typedef {{
+    readonly runnerSourceSha: string;
+    readonly terraformVersion: string;
+    readonly terraformPlanFormatVersion: string;
+}} TerraformDriftToolRuntime
+ */
+
+/**
+ * @typedef {{
+    readonly evidenceType: 'terraform-drift-report';
+    readonly executionId: string;
+    readonly startedAt: string;
+    readonly finishedAt: string;
+    readonly reportOnly: true;
+}} TerraformDriftEvidenceBase
+ */
+
+/**
+ * @typedef {TerraformDriftEvidenceBase & {
+    readonly acceptedAuthority: ImmutableObjectReference;
+    readonly buildRuntime: TerraformDriftBuildRuntime;
+    readonly observed: TerraformDriftIdentity;
+    readonly result: 'no-drift' | 'drift-detected';
+    readonly terraformDetailedExitCode: 0 | 2;
+    readonly failureStage: null;
+    readonly summary: TerraformDriftSummary;
+    readonly toolRuntime: TerraformDriftToolRuntime;
+}} TerraformDriftSuccessfulEvidence
+ */
+
+/**
+ * @typedef {TerraformDriftEvidenceBase & {
+    readonly acceptedAuthority: ImmutableObjectReference | null;
+    readonly buildRuntime: TerraformDriftBuildRuntime | null;
+    readonly observed: TerraformDriftIdentity | null;
+    readonly result: 'check-failed';
+    readonly terraformDetailedExitCode: number | null;
+    readonly failureStage: TerraformDriftFailureStage;
+    readonly summary: null;
+    readonly toolRuntime: TerraformDriftToolRuntime | null;
+}} TerraformDriftFailedEvidence
+ */
+
+/**
+ * @typedef {TerraformDriftSuccessfulEvidence | TerraformDriftFailedEvidence} TerraformDriftEvidence
+ */
+
+/**
+ * @typedef {{
+    readonly acceptedAuthority: ImmutableObjectReference | null;
+    readonly buildRuntime: TerraformDriftBuildRuntime | null;
+    readonly expectedIdentity: TerraformDriftIdentity | null;
+    readonly observed: TerraformDriftIdentity | null;
+    readonly executionId: string;
+    readonly startedAt: string;
+    readonly finishedAt: string;
+    readonly terraformDetailedExitCode: number | null;
+    readonly failureStage: TerraformDriftFailureStage | null;
+    readonly summary: TerraformDriftSummary | null;
+    readonly toolRuntime: TerraformDriftToolRuntime | null;
+}} TerraformDriftEvidenceInput
+ */
+
 import { isDeepStrictEqual } from 'node:util';
 import {
   deepFreeze,
@@ -5,46 +134,38 @@ import {
   isPlainRecord,
   parseFullSourceSha,
   parseImmutableObjectReference,
+  parseSha256,
   requireExactKeys,
   requireString,
 } from './internal.js';
-import { validateTerraformBackendAuthority } from './terraform-baseline.js';
+import { isManagedCodeBuildImageIdentifier } from './source-path-build-authority.js';
+import { validateTerraformBackendAuthority } from './terraform-authority.js';
 
 export const MAX_REDACTED_TERRAFORM_ADDRESSES = 100;
+export const MAX_SAVED_PLAN_REVIEW_ADDRESSES = 1_000;
 
-const ACTION_COUNT_KEYS = ['create', 'update', 'replace', 'delete', 'readOnly'];
 const REPORTED_ACTION_ORDER = ['create', 'update', 'replace', 'delete', 'read-only'];
 const MAX_TERRAFORM_ADDRESS_BYTES = 4_096;
 const MAX_REDACTED_ADDRESS_BYTES = 1_024;
-const ROOTS = ['app', 'bootstrap', 'foundation'];
+/** @type {readonly ['create', 'update', 'replace', 'delete', 'read-only']} */
 const ACTION_CLASSES = ['create', 'update', 'replace', 'delete', 'read-only'];
-const FAILURE_STAGES = [
-  'baseline-selection',
-  'baseline-admission',
-  'source-checkout',
-  'identity-admission',
-  'provider-initialization',
-  'runner-runtime',
-  'terraform-plan',
-  'plan-summary',
-];
 const DRIFT_IDENTITY_KEYS = [
   'accountId',
   'backend',
-  'context',
   'controlSourceSha',
   'frameworkSourceSha',
-  'inputManifest',
-  'providerEvidence',
   'region',
   'root',
   'stateIdentity',
+  'targetConfigurationSha256',
 ];
 const DRIFT_SUMMARY_KEYS = ['actionCounts', 'addresses', 'omittedAddressCount'];
 const ACTION_COUNTS_KEYS = ['create', 'delete', 'readOnly', 'replace', 'update'];
+const BUILD_RUNTIME_KEYS = ['configuredManagedImage', 'runningManagedImage'];
 const TOOL_RUNTIME_KEYS = ['runnerSourceSha', 'terraformPlanFormatVersion', 'terraformVersion'];
 const DRIFT_EVIDENCE_KEYS = [
-  'baseline',
+  'acceptedAuthority',
+  'buildRuntime',
   'evidenceType',
   'executionId',
   'failureStage',
@@ -58,7 +179,8 @@ const DRIFT_EVIDENCE_KEYS = [
   'toolRuntime',
 ];
 const DRIFT_EVIDENCE_INPUT_KEYS = [
-  'baseline',
+  'acceptedAuthority',
+  'buildRuntime',
   'executionId',
   'expectedIdentity',
   'failureStage',
@@ -74,11 +196,79 @@ const OPERATIONAL_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@/+,-]{0,255}$/
 const TERRAFORM_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u;
 const TERRAFORM_PLAN_FORMAT_PATTERN = /^[0-9]+\.[0-9]+$/u;
 
+/** @param {unknown} value @returns {value is TerraformDriftActionClass} */
+function isTerraformDriftActionClass(value) {
+  return typeof value === 'string' && ACTION_CLASSES.some((actionClass) => actionClass === value);
+}
+
+/** @param {unknown} value @returns {TerraformDriftActionClass} */
+function parseTerraformDriftActionClass(value) {
+  if (!isTerraformDriftActionClass(value)) {
+    throw new Error('Terraform drift action class is invalid.');
+  }
+  return value;
+}
+
+/** @param {unknown} value @param {string} label @returns {TerraformDriftRoot} */
+function parseTerraformDriftRoot(value, label) {
+  switch (value) {
+    case 'app':
+    case 'bootstrap':
+    case 'foundation':
+      return value;
+    default:
+      throw new Error(`${label} root is invalid.`);
+  }
+}
+
+/** @param {unknown} value @returns {TerraformDriftFailureStage} */
+function parseTerraformDriftFailureStage(value) {
+  switch (value) {
+    case 'authority-selection':
+    case 'authority-admission':
+    case 'source-checkout':
+    case 'identity-admission':
+    case 'provider-initialization':
+    case 'runner-runtime':
+    case 'plan-input-preparation':
+    case 'terraform-plan':
+    case 'plan-summary':
+      return value;
+    default:
+      throw new Error('Terraform drift failureStage is invalid.');
+  }
+}
+
+/** @param {unknown} value @returns {TerraformDriftResult} */
+function parseTerraformDriftResult(value) {
+  switch (value) {
+    case 'no-drift':
+    case 'drift-detected':
+    case 'check-failed':
+      return value;
+    default:
+      throw new Error('Terraform drift result is invalid.');
+  }
+}
+
+/** @param {unknown} value @returns {number | null} */
+function parseTerraformDetailedExitCode(value) {
+  classifyTerraformDetailedExitCode(value);
+  if (value === null || typeof value === 'number') {
+    return value;
+  }
+  throw new Error('Terraform detailed exit code is invalid.');
+}
+
+/**
+ * @param {unknown} value
+ * @returns {TerraformDriftResult}
+ */
 export function classifyTerraformDetailedExitCode(value) {
   if (value === null) {
     return 'check-failed';
   }
-  if (!Number.isSafeInteger(value) || value < 0 || value > 255) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 255) {
     throw new Error('Terraform detailed exit code is invalid.');
   }
   if (value === 0) {
@@ -90,6 +280,11 @@ export function classifyTerraformDetailedExitCode(value) {
   return 'check-failed';
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} label
+ * @returns {Record<string, unknown>}
+ */
 function requireRecord(value, label) {
   if (!isPlainRecord(value)) {
     throw new Error(`${label} must be an object.`);
@@ -97,6 +292,12 @@ function requireRecord(value, label) {
   return value;
 }
 
+/**
+ * @param {Record<string, unknown>} record
+ * @param {PropertyKey} key
+ * @param {string} label
+ * @returns {unknown}
+ */
 function requireDataProperty(record, key, label) {
   const descriptor = Object.getOwnPropertyDescriptor(record, key);
   if (descriptor === undefined || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
@@ -105,6 +306,11 @@ function requireDataProperty(record, key, label) {
   return descriptor.value;
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} label
+ * @returns {unknown[]}
+ */
 function denseDataArray(value, label) {
   if (!Array.isArray(value)) {
     throw new Error(`${label} must be a dense data-property array.`);
@@ -114,6 +320,7 @@ function denseDataArray(value, label) {
   if (lengthDescriptor === undefined || !Object.hasOwn(lengthDescriptor, 'value')) {
     throw new Error(`${label} must be a dense data-property array.`);
   }
+  /** @type {unknown[]} */
   const entries = [];
   for (let index = 0; index < value.length; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
@@ -135,6 +342,12 @@ function denseDataArray(value, label) {
   return entries;
 }
 
+/**
+ * @param {unknown} value
+ * @param {readonly string[]} keys
+ * @param {string} label
+ * @returns {Record<string, unknown>}
+ */
 function exactKeys(value, keys, label) {
   try {
     return requireExactKeys(value, keys, label);
@@ -143,13 +356,23 @@ function exactKeys(value, keys, label) {
   }
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} label
+ * @returns {number}
+ */
 function nonNegativeInteger(value, label) {
-  if (!Number.isSafeInteger(value) || value < 0) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${label} must be a non-negative safe integer.`);
   }
   return value;
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} label
+ * @returns {string}
+ */
 function canonicalTimestamp(value, label) {
   if (
     typeof value !== 'string' ||
@@ -162,16 +385,18 @@ function canonicalTimestamp(value, label) {
   return value;
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} label
+ * @returns {TerraformDriftIdentity}
+ */
 function parseDriftIdentity(value, label) {
   const identity = exactKeys(value, DRIFT_IDENTITY_KEYS, label);
-  const root = identity.root;
-  if (!ROOTS.includes(root)) {
-    throw new Error(`${label} root is invalid.`);
-  }
-  const accountId = requireString(identity.accountId, `${label} accountId`, /^[0-9]{12}$/u);
-  const region = requireString(identity.region, `${label} region`, /^[a-z]{2}(?:-gov)?-[a-z]+-[0-9]$/u);
+  const root = parseTerraformDriftRoot(identity['root'], label);
+  const accountId = requireString(identity['accountId'], `${label} accountId`, /^[0-9]{12}$/u);
+  const region = requireString(identity['region'], `${label} region`, /^[a-z]{2}(?:-gov)?-[a-z]+-[0-9]$/u);
   const stateIdentity = requireString(
-    identity.stateIdentity,
+    identity['stateIdentity'],
     `${label} stateIdentity`,
     /^[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*\/(?:app|bootstrap|foundation)$/u,
   );
@@ -180,7 +405,7 @@ function parseDriftIdentity(value, label) {
   }
   let backend;
   try {
-    backend = validateTerraformBackendAuthority(identity.backend, root);
+    backend = validateTerraformBackendAuthority(identity['backend'], root, stateIdentity.slice(0, -root.length - 1));
     if (backend.region !== region || !backend.kmsKeyArn.startsWith(`arn:aws:kms:${region}:${accountId}:key/`)) {
       throw new Error('Terraform drift target coordinates do not match its backend.');
     }
@@ -193,40 +418,46 @@ function parseDriftIdentity(value, label) {
     root,
     stateIdentity,
     backend,
-    controlSourceSha: parseFullSourceSha(identity.controlSourceSha, `${label} controlSourceSha`),
-    frameworkSourceSha: parseFullSourceSha(identity.frameworkSourceSha, `${label} frameworkSourceSha`),
-    context: parseImmutableObjectReference(identity.context),
-    inputManifest: parseImmutableObjectReference(identity.inputManifest),
-    providerEvidence: parseImmutableObjectReference(identity.providerEvidence),
+    controlSourceSha: parseFullSourceSha(identity['controlSourceSha'], `${label} controlSourceSha`),
+    frameworkSourceSha: parseFullSourceSha(identity['frameworkSourceSha'], `${label} frameworkSourceSha`),
+    targetConfigurationSha256: parseSha256(identity['targetConfigurationSha256'], `${label} targetConfigurationSha256`),
   });
 }
 
+/**
+ * @param {unknown} value
+ * @returns {TerraformDriftSummary}
+ */
 function parseDriftSummary(value) {
   const summary = exactKeys(value, DRIFT_SUMMARY_KEYS, 'Terraform drift summary');
-  const rawCounts = exactKeys(summary.actionCounts, ACTION_COUNTS_KEYS, 'Terraform drift action counts');
-  const actionCounts = Object.fromEntries(
-    ACTION_COUNTS_KEYS.map((key) => [key, nonNegativeInteger(rawCounts[key], `Terraform drift ${key} count`)]),
-  );
-  const rawAddresses = denseDataArray(summary.addresses, 'Terraform drift addresses');
+  const rawCounts = exactKeys(summary['actionCounts'], ACTION_COUNTS_KEYS, 'Terraform drift action counts');
+  const actionCounts = {
+    create: nonNegativeInteger(rawCounts['create'], 'Terraform drift create count'),
+    update: nonNegativeInteger(rawCounts['update'], 'Terraform drift update count'),
+    replace: nonNegativeInteger(rawCounts['replace'], 'Terraform drift replace count'),
+    delete: nonNegativeInteger(rawCounts['delete'], 'Terraform drift delete count'),
+    readOnly: nonNegativeInteger(rawCounts['readOnly'], 'Terraform drift readOnly count'),
+  };
+  const rawAddresses = denseDataArray(summary['addresses'], 'Terraform drift addresses');
   if (rawAddresses.length > MAX_REDACTED_TERRAFORM_ADDRESSES) {
     throw new Error('Terraform drift addresses are invalid.');
   }
   const addresses = rawAddresses.map((entry, index) => {
     const addressEntry = exactKeys(entry, ['actionClasses', 'address'], `Terraform drift address ${index}`);
-    const address = redactTerraformResourceAddressWithPolicy(addressEntry.address, true);
-    if (address !== addressEntry.address) {
+    const address = redactTerraformResourceAddressWithPolicy(addressEntry['address'], true);
+    if (address !== addressEntry['address']) {
       throw new Error(`Terraform drift address ${index} is not redacted.`);
     }
     const rawActionClasses = denseDataArray(
-      addressEntry.actionClasses,
+      addressEntry['actionClasses'],
       `Terraform drift address ${index} action classes`,
     );
-    if (rawActionClasses.length === 0 || rawActionClasses.some((action) => !ACTION_CLASSES.includes(action))) {
+    if (rawActionClasses.length === 0 || rawActionClasses.some((action) => !isTerraformDriftActionClass(action))) {
       throw new Error(`Terraform drift address ${index} action classes are invalid.`);
     }
-    const actionClasses = [...rawActionClasses].sort(
-      (left, right) => REPORTED_ACTION_ORDER.indexOf(left) - REPORTED_ACTION_ORDER.indexOf(right),
-    );
+    const actionClasses = rawActionClasses
+      .map(parseTerraformDriftActionClass)
+      .sort((left, right) => REPORTED_ACTION_ORDER.indexOf(left) - REPORTED_ACTION_ORDER.indexOf(right));
     if (new Set(actionClasses).size !== actionClasses.length || !isDeepStrictEqual(actionClasses, rawActionClasses)) {
       throw new Error(`Terraform drift address ${index} action classes are not canonical.`);
     }
@@ -241,7 +472,7 @@ function parseDriftSummary(value) {
   ) {
     throw new Error('Terraform drift addresses must be unique and sorted.');
   }
-  const omittedAddressCount = nonNegativeInteger(summary.omittedAddressCount, 'Terraform drift omittedAddressCount');
+  const omittedAddressCount = nonNegativeInteger(summary['omittedAddressCount'], 'Terraform drift omittedAddressCount');
   const totalActionCount = Object.values(actionCounts).reduce((total, count) => total + count, 0);
   for (const [addressIndex, addressEntry] of addresses.entries()) {
     for (const actionClass of addressEntry.actionClasses) {
@@ -265,68 +496,144 @@ function parseDriftSummary(value) {
   return deepFreeze({ actionCounts, addresses, omittedAddressCount });
 }
 
+/**
+ * @param {unknown} value
+ * @returns {TerraformDriftSummary}
+ */
 export function validateTerraformDriftSummary(value) {
   return parseDriftSummary(value);
 }
 
+/**
+ * @param {unknown} value
+ * @returns {TerraformDriftToolRuntime}
+ */
 function parseToolRuntime(value) {
   const runtime = exactKeys(value, TOOL_RUNTIME_KEYS, 'Terraform drift tool runtime');
   return deepFreeze({
-    runnerSourceSha: parseFullSourceSha(runtime.runnerSourceSha, 'Terraform drift runner source SHA'),
+    runnerSourceSha: parseFullSourceSha(runtime['runnerSourceSha'], 'Terraform drift runner source SHA'),
     terraformVersion: requireString(
-      runtime.terraformVersion,
+      runtime['terraformVersion'],
       'Terraform drift Terraform version',
       TERRAFORM_VERSION_PATTERN,
     ),
     terraformPlanFormatVersion: requireString(
-      runtime.terraformPlanFormatVersion,
+      runtime['terraformPlanFormatVersion'],
       'Terraform drift plan format version',
       TERRAFORM_PLAN_FORMAT_PATTERN,
     ),
   });
 }
 
+/**
+ * @param {unknown} value
+ * @returns {TerraformDriftBuildRuntime}
+ */
+function parseBuildRuntime(value) {
+  const runtime = exactKeys(value, BUILD_RUNTIME_KEYS, 'Terraform drift build runtime');
+  const configuredManagedImage = runtime['configuredManagedImage'];
+  if (!isManagedCodeBuildImageIdentifier(configuredManagedImage)) {
+    throw new Error('Terraform drift configured build image is not an admitted AWS-managed image.');
+  }
+  const runningManagedImage = runtime['runningManagedImage'];
+  if (!isManagedCodeBuildImageIdentifier(runningManagedImage)) {
+    throw new Error('Terraform drift running build image is not an admitted AWS-managed image.');
+  }
+  return deepFreeze({ configuredManagedImage, runningManagedImage });
+}
+
+/**
+ * @param {unknown} value
+ * @returns {TerraformDriftFailureStage | null}
+ */
 function parseFailureStage(value) {
   if (value === null) {
     return null;
   }
-  if (typeof value !== 'string' || !FAILURE_STAGES.includes(value)) {
-    throw new Error('Terraform drift failureStage is invalid.');
-  }
-  return value;
+  return parseTerraformDriftFailureStage(value);
 }
 
+/**
+ * @param {unknown} value
+ * @returns {ImmutableObjectReference | null}
+ */
 function parseNullableReference(value) {
   return value === null ? null : parseImmutableObjectReference(value);
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} label
+ * @returns {TerraformDriftIdentity | null}
+ */
 function parseNullableIdentity(value, label) {
   return value === null ? null : parseDriftIdentity(value, label);
 }
 
+/**
+ * @param {unknown} value
+ * @returns {TerraformDriftSummary | null}
+ */
 function parseNullableSummary(value) {
   return value === null ? null : parseDriftSummary(value);
 }
 
+/**
+ * @param {unknown} value
+ * @returns {TerraformDriftToolRuntime | null}
+ */
 function parseNullableToolRuntime(value) {
   return value === null ? null : parseToolRuntime(value);
 }
 
-function assertSuccessfulEvidenceCoordinates(baseline, observed, summary, toolRuntime) {
-  if (baseline === null || observed === null || summary === null || toolRuntime === null) {
-    throw new Error('Successful Terraform drift evidence requires complete admitted coordinates.');
-  }
+/**
+ * @param {unknown} value
+ * @returns {TerraformDriftBuildRuntime | null}
+ */
+function parseNullableBuildRuntime(value) {
+  return value === null ? null : parseBuildRuntime(value);
 }
 
-function assertFailedEvidenceCoordinates(baseline, observed, summary) {
+/**
+ * @param {ImmutableObjectReference | null} acceptedAuthority
+ * @param {TerraformDriftIdentity | null} observed
+ * @param {TerraformDriftSummary | null} summary
+ * @param {TerraformDriftToolRuntime | null} toolRuntime
+ * @param {TerraformDriftBuildRuntime | null} buildRuntime
+ * @returns {{ acceptedAuthority: ImmutableObjectReference, buildRuntime: TerraformDriftBuildRuntime, observed: TerraformDriftIdentity, summary: TerraformDriftSummary, toolRuntime: TerraformDriftToolRuntime }}
+ */
+function requireSuccessfulEvidenceCoordinates(acceptedAuthority, observed, summary, toolRuntime, buildRuntime) {
+  if (
+    acceptedAuthority === null ||
+    observed === null ||
+    summary === null ||
+    toolRuntime === null ||
+    buildRuntime === null
+  ) {
+    throw new Error('Successful Terraform drift evidence requires complete admitted coordinates.');
+  }
+  return { acceptedAuthority, buildRuntime, observed, summary, toolRuntime };
+}
+
+/**
+ * @param {ImmutableObjectReference | null} acceptedAuthority
+ * @param {TerraformDriftIdentity | null} observed
+ * @param {TerraformDriftSummary | null} summary
+ * @returns {void}
+ */
+function assertFailedEvidenceCoordinates(acceptedAuthority, observed, summary) {
   if (summary !== null) {
     throw new Error('Failed Terraform drift evidence must not claim a plan summary.');
   }
-  if (baseline === null && observed !== null) {
-    throw new Error('Terraform drift observed coordinates require an admitted baseline reference.');
+  if (acceptedAuthority === null && observed !== null) {
+    throw new Error('Terraform drift observed coordinates require an admitted accepted authority reference.');
   }
 }
 
+/**
+ * @param {unknown} value
+ * @returns {TerraformDriftActionClass | null}
+ */
 export function classifyTerraformActionSequence(value, label = 'Terraform action sequence') {
   const actions = denseDataArray(value, label);
   if (!actions.every((action) => typeof action === 'string')) {
@@ -352,6 +659,11 @@ export function classifyTerraformActionSequence(value, label = 'Terraform action
   }
 }
 
+/**
+ * @param {unknown} value
+ * @param {boolean} allowRedactedWildcard
+ * @returns {string}
+ */
 function redactTerraformResourceAddressWithPolicy(value, allowRedactedWildcard) {
   if (
     typeof value !== 'string' ||
@@ -431,11 +743,25 @@ function redactTerraformResourceAddressWithPolicy(value, allowRedactedWildcard) 
   return redacted;
 }
 
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
 export function redactTerraformResourceAddress(value) {
   return redactTerraformResourceAddressWithPolicy(value, false);
 }
 
-export function summarizeTerraformPlan(value) {
+/**
+ * @param {unknown} value
+ * @param {'drift-report' | 'saved-plan-review'} [purpose]
+ * @returns {TerraformDriftSummary}
+ */
+export function summarizeTerraformPlan(value, purpose = 'drift-report') {
+  if (purpose !== 'drift-report' && purpose !== 'saved-plan-review') {
+    throw new Error('Terraform plan summary purpose is invalid.');
+  }
+  const addressLimit =
+    purpose === 'saved-plan-review' ? MAX_SAVED_PLAN_REVIEW_ADDRESSES : MAX_REDACTED_TERRAFORM_ADDRESSES;
   const plan = requireRecord(value, 'Terraform plan JSON');
   const resourceChangesDescriptor = Object.getOwnPropertyDescriptor(plan, 'resource_changes');
   const resourceChanges = denseDataArray(
@@ -443,7 +769,8 @@ export function summarizeTerraformPlan(value) {
     'Terraform plan JSON resource_changes',
   );
 
-  const actionCounts = Object.fromEntries(ACTION_COUNT_KEYS.map((key) => [key, 0]));
+  const actionCounts = { create: 0, update: 0, replace: 0, delete: 0, readOnly: 0 };
+  /** @type {Map<string, Set<TerraformDriftActionClass>>} */
   const addressActions = new Map();
   for (const [index, valueAtIndex] of resourceChanges.entries()) {
     const resourceChange = requireRecord(valueAtIndex, `resource_changes[${index}]`);
@@ -470,7 +797,7 @@ export function summarizeTerraformPlan(value) {
 
   const addresses = [...addressActions]
     .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-    .slice(0, MAX_REDACTED_TERRAFORM_ADDRESSES)
+    .slice(0, addressLimit)
     .map(([address, actions]) => ({
       address,
       actionClasses: [...actions].sort(
@@ -485,83 +812,114 @@ export function summarizeTerraformPlan(value) {
   });
 }
 
+/**
+ * @param {unknown} value
+ * @returns {TerraformDriftEvidence}
+ */
 export function validateTerraformDriftEvidence(value) {
   const evidence = exactKeys(value, DRIFT_EVIDENCE_KEYS, 'Terraform drift evidence');
-  if (evidence.evidenceType !== 'terraform-drift-report') {
+  if (evidence['evidenceType'] !== 'terraform-drift-report') {
     throw new Error('Terraform drift evidenceType is invalid.');
   }
-  if (evidence.reportOnly !== true) {
+  if (evidence['reportOnly'] !== true) {
     throw new Error('Terraform drift evidence must be report-only.');
   }
   const executionId = requireString(
-    evidence.executionId,
+    evidence['executionId'],
     'Terraform drift executionId',
     OPERATIONAL_IDENTIFIER_PATTERN,
   );
-  const startedAt = canonicalTimestamp(evidence.startedAt, 'Terraform drift startedAt');
-  const finishedAt = canonicalTimestamp(evidence.finishedAt, 'Terraform drift finishedAt');
+  const startedAt = canonicalTimestamp(evidence['startedAt'], 'Terraform drift startedAt');
+  const finishedAt = canonicalTimestamp(evidence['finishedAt'], 'Terraform drift finishedAt');
   if (Date.parse(finishedAt) < Date.parse(startedAt)) {
     throw new Error('Terraform drift finishedAt must not precede startedAt.');
   }
-  const terraformDetailedExitCode = evidence.terraformDetailedExitCode;
+  const terraformDetailedExitCode = parseTerraformDetailedExitCode(evidence['terraformDetailedExitCode']);
   const mappedResult = classifyTerraformDetailedExitCode(terraformDetailedExitCode);
-  const failureStage = parseFailureStage(evidence.failureStage);
-  const baseline = parseNullableReference(evidence.baseline);
-  const observed = parseNullableIdentity(evidence.observed, 'Terraform drift observed identity');
-  const summary = parseNullableSummary(evidence.summary);
-  const toolRuntime = parseNullableToolRuntime(evidence.toolRuntime);
-  const result = evidence.result;
-  if (!['no-drift', 'drift-detected', 'check-failed'].includes(result)) {
-    throw new Error('Terraform drift result is invalid.');
-  }
+  const failureStage = parseFailureStage(evidence['failureStage']);
+  const acceptedAuthority = parseNullableReference(evidence['acceptedAuthority']);
+  const buildRuntime = parseNullableBuildRuntime(evidence['buildRuntime']);
+  const observed = parseNullableIdentity(evidence['observed'], 'Terraform drift observed identity');
+  const summary = parseNullableSummary(evidence['summary']);
+  const toolRuntime = parseNullableToolRuntime(evidence['toolRuntime']);
+  const result = parseTerraformDriftResult(evidence['result']);
 
   if (failureStage === null) {
     if (mappedResult === 'check-failed' || result !== mappedResult) {
       throw new Error('Terraform drift result does not match its detailed exit code.');
     }
-    assertSuccessfulEvidenceCoordinates(baseline, observed, summary, toolRuntime);
+    const coordinates = requireSuccessfulEvidenceCoordinates(
+      acceptedAuthority,
+      observed,
+      summary,
+      toolRuntime,
+      buildRuntime,
+    );
     if (
       result === 'no-drift' &&
-      (summary.actionCounts.create !== 0 ||
-        summary.actionCounts.update !== 0 ||
-        summary.actionCounts.replace !== 0 ||
-        summary.actionCounts.delete !== 0)
+      (coordinates.summary.actionCounts['create'] !== 0 ||
+        coordinates.summary.actionCounts['update'] !== 0 ||
+        coordinates.summary.actionCounts['replace'] !== 0 ||
+        coordinates.summary.actionCounts['delete'] !== 0)
     ) {
       throw new Error('Terraform no-drift evidence cannot contain mutating resource actions.');
     }
-  } else {
-    if (result !== 'check-failed') {
-      throw new Error('Terraform drift failureStage requires check-failed result.');
+    if (terraformDetailedExitCode !== 0 && terraformDetailedExitCode !== 2) {
+      throw new Error('Successful Terraform drift evidence requires a successful detailed exit code.');
     }
-    assertFailedEvidenceCoordinates(baseline, observed, summary);
+    return deepFreeze({
+      evidenceType: 'terraform-drift-report',
+      executionId,
+      acceptedAuthority: coordinates.acceptedAuthority,
+      buildRuntime: coordinates.buildRuntime,
+      observed: coordinates.observed,
+      startedAt,
+      finishedAt,
+      result,
+      terraformDetailedExitCode,
+      failureStage: null,
+      summary: coordinates.summary,
+      reportOnly: true,
+      toolRuntime: coordinates.toolRuntime,
+    });
   }
 
+  if (result !== 'check-failed') {
+    throw new Error('Terraform drift failureStage requires check-failed result.');
+  }
+  assertFailedEvidenceCoordinates(acceptedAuthority, observed, summary);
   return deepFreeze({
     evidenceType: 'terraform-drift-report',
     executionId,
-    baseline,
+    acceptedAuthority,
+    buildRuntime,
     observed,
     startedAt,
     finishedAt,
-    result,
+    result: 'check-failed',
     terraformDetailedExitCode,
     failureStage,
-    summary,
+    summary: null,
     reportOnly: true,
     toolRuntime,
   });
 }
 
+/**
+ * @param {unknown} value
+ * @returns {TerraformDriftEvidence}
+ */
 export function buildTerraformDriftEvidence(value) {
   const input = exactKeys(value, DRIFT_EVIDENCE_INPUT_KEYS, 'Terraform drift evidence input');
-  const baseline = parseNullableReference(input.baseline);
-  const expectedIdentity = parseNullableIdentity(input.expectedIdentity, 'Terraform drift expected identity');
-  const observed = parseNullableIdentity(input.observed, 'Terraform drift observed identity');
-  const summary = parseNullableSummary(input.summary);
-  const toolRuntime = parseNullableToolRuntime(input.toolRuntime);
-  const terraformDetailedExitCode = input.terraformDetailedExitCode;
+  const acceptedAuthority = parseNullableReference(input['acceptedAuthority']);
+  const buildRuntime = parseNullableBuildRuntime(input['buildRuntime']);
+  const expectedIdentity = parseNullableIdentity(input['expectedIdentity'], 'Terraform drift expected identity');
+  const observed = parseNullableIdentity(input['observed'], 'Terraform drift observed identity');
+  const summary = parseNullableSummary(input['summary']);
+  const toolRuntime = parseNullableToolRuntime(input['toolRuntime']);
+  const terraformDetailedExitCode = input['terraformDetailedExitCode'];
   const mappedResult = classifyTerraformDetailedExitCode(terraformDetailedExitCode);
-  let failureStage = parseFailureStage(input.failureStage);
+  let failureStage = parseFailureStage(input['failureStage']);
   if (mappedResult === 'check-failed' && failureStage === null) {
     if (terraformDetailedExitCode === null) {
       throw new Error('A pre-Terraform check failure requires an explicit failureStage.');
@@ -571,27 +929,28 @@ export function buildTerraformDriftEvidence(value) {
   const result = failureStage === null ? mappedResult : 'check-failed';
 
   if (result === 'check-failed') {
-    if (baseline === null && expectedIdentity !== null) {
-      throw new Error('Terraform drift expected identity requires an admitted baseline reference.');
+    if (acceptedAuthority === null && expectedIdentity !== null) {
+      throw new Error('Terraform drift expected identity requires an admitted accepted authority reference.');
     }
     if (observed !== null && expectedIdentity === null) {
       throw new Error('Terraform drift observed identity requires an expected identity.');
     }
-    assertFailedEvidenceCoordinates(baseline, observed, summary);
+    assertFailedEvidenceCoordinates(acceptedAuthority, observed, summary);
   } else {
     if (expectedIdentity === null || !isDeepStrictEqual(expectedIdentity, observed)) {
-      throw new Error('Terraform drift observed identity does not match the accepted baseline identity.');
+      throw new Error('Terraform drift observed identity does not match the accepted authority identity.');
     }
-    assertSuccessfulEvidenceCoordinates(baseline, observed, summary, toolRuntime);
+    requireSuccessfulEvidenceCoordinates(acceptedAuthority, observed, summary, toolRuntime, buildRuntime);
   }
 
   return validateTerraformDriftEvidence({
     evidenceType: 'terraform-drift-report',
-    executionId: input.executionId,
-    baseline,
+    executionId: input['executionId'],
+    acceptedAuthority,
+    buildRuntime,
     observed,
-    startedAt: input.startedAt,
-    finishedAt: input.finishedAt,
+    startedAt: input['startedAt'],
+    finishedAt: input['finishedAt'],
     result,
     terraformDetailedExitCode,
     failureStage,

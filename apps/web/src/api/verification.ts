@@ -1,4 +1,4 @@
-import { API_ROUTES, buildApiRouteUrl } from '@stark-ballot/api-contract/routes';
+import { API_ROUTES } from '@stark-ballot/api-contract/routes';
 import {
   type VerificationObservationRequest,
   type VerificationObservationResponse,
@@ -32,15 +32,13 @@ export async function getVerification(
   try {
     const result = await requestJsonRoute(
       API_ROUTES.verification,
-      buildApiRouteUrl(API_ROUTES.verification, {
+      {
         params: { sessionId: identity.sessionId, finalizationId },
         query,
-      }),
-      'verification',
-      {
-        ...options,
         headers: buildPathSessionHeaders(identity),
       },
+      'verification',
+      options,
     );
     if (result.body.data.finalizationId !== finalizationId) {
       return corruptVerificationResource(finalizationId, 'Verification response finalization identity mismatch');
@@ -61,15 +59,13 @@ export async function runVerification(
 ): Promise<VerificationRunResponse['data']> {
   const result = await requestJsonRoute(
     API_ROUTES.runVerification,
-    buildApiRouteUrl(API_ROUTES.runVerification, {
-      params: { sessionId: identity.sessionId, finalizationId },
-    }),
-    'verification run',
     {
-      ...options,
+      params: { sessionId: identity.sessionId, finalizationId },
       headers: buildPathSessionHeaders(identity),
       body: {},
     },
+    'verification run',
+    options,
   );
   if (result.body.data.finalizationId !== finalizationId) {
     throw new ApiClientContractError('Verification run response finalization identity mismatch');
@@ -85,15 +81,13 @@ export async function recordVerificationObservation(
 ): Promise<VerificationObservationResponse['data']> {
   const result = await requestJsonRoute(
     API_ROUTES.recordVerificationObservation,
-    buildApiRouteUrl(API_ROUTES.recordVerificationObservation, {
-      params: { sessionId: identity.sessionId, finalizationId },
-    }),
-    'verification observation',
     {
-      ...options,
+      params: { sessionId: identity.sessionId, finalizationId },
       headers: buildPathSessionHeaders(identity),
       body: request,
     },
+    'verification observation',
+    options,
   );
   return result.body.data;
 }

@@ -46,7 +46,7 @@ export interface VerificationSummaryContext {
 export interface VerificationSummaryResult {
   status: VerificationSummaryStatus;
   tone: VerificationSummaryTone;
-  messageKey?: string;
+  messageKey?: ExclusionMessageKey;
 }
 
 interface ResolvedCheck {
@@ -66,7 +66,7 @@ const STATUS_PRIORITY: Record<VerificationStepStatus, number> = {
 
 type ExclusionReason = 'missing' | 'invalid' | 'mixed' | 'unknown';
 
-const EXCLUSION_MESSAGE_KEYS: Record<VerificationSummaryStatus, Partial<Record<ExclusionReason, string>>> = {
+const EXCLUSION_MESSAGE_KEYS = {
   user_vote_excluded: {
     missing: 'pages.verify.resultSummary.userVoteMissingSub',
     invalid: 'pages.verify.resultSummary.userVoteInvalidSub',
@@ -79,17 +79,10 @@ const EXCLUSION_MESSAGE_KEYS: Record<VerificationSummaryStatus, Partial<Record<E
     missing: 'pages.verify.resultSummary.votesMissingUnknownUserSub',
     invalid: 'pages.verify.resultSummary.votesInvalidUnknownUserSub',
   },
-  fully_verified: {},
-  demo_only: {},
-  in_progress: {},
-  missing_evidence: {},
-  verified_with_limitations: {},
-  recorded_integrity_failed: {},
-  published_tally_mismatch: {},
-  counted_integrity_failed: {},
-  cast_integrity_failed: {},
-  proof_verification_failed: {},
-};
+} as const satisfies Partial<Record<VerificationSummaryStatus, Partial<Record<ExclusionReason, string>>>>;
+
+type ExclusionMessages = (typeof EXCLUSION_MESSAGE_KEYS)[keyof typeof EXCLUSION_MESSAGE_KEYS];
+type ExclusionMessageKey = ExclusionMessages[keyof ExclusionMessages];
 
 /**
  * Derive a single verification summary from verification check results.
@@ -234,7 +227,10 @@ function resolveExclusionReason(context?: VerificationSummaryContext): Exclusion
   return missing ? 'missing' : 'invalid';
 }
 
-function resolveExclusionMessageKey(status: VerificationSummaryStatus, reason?: ExclusionReason): string | undefined {
+function resolveExclusionMessageKey(
+  status: keyof typeof EXCLUSION_MESSAGE_KEYS,
+  reason?: ExclusionReason,
+): ExclusionMessageKey | undefined {
   if (!reason || reason === 'mixed' || reason === 'unknown') {
     return undefined;
   }

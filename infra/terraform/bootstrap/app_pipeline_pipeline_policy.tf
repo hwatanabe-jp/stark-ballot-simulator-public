@@ -57,14 +57,26 @@ data "aws_iam_policy_document" "app_pipeline" {
       "kms:ReEncryptFrom",
       "kms:ReEncryptTo",
     ]
-    resources = [aws_kms_key.app_pipeline_artifacts[0].arn]
+    resources = [aws_kms_alias.app_pipeline_artifacts[0].target_key_arn]
   }
 }
 
 resource "aws_iam_role_policy" "app_pipeline" {
   count = local.app_pipeline_enabled ? 1 : 0
 
+  depends_on = [aws_codebuild_project.app_execution_authority]
+
   name   = "${local.app_pipeline_role_name}-policy"
   role   = aws_iam_role.app_pipeline[0].id
   policy = data.aws_iam_policy_document.app_pipeline[0].json
+}
+
+check "app_pipeline_inline_policy_size" {
+  assert {
+    condition = (
+      !local.app_pipeline_enabled
+      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.app_pipeline[0].json))) <= 10240, false)
+    )
+    error_message = "The App pipeline inline policy must remain within IAM's 10,240-character role-policy quota."
+  }
 }

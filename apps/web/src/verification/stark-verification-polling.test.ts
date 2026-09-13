@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VerificationStatus } from '@stark-ballot/verification/shared/types';
+import {
+  VERIFICATION_CHECK_DEFINITIONS,
+  getVerificationStepInputs,
+  type VerificationCheck,
+} from '@stark-ballot/verification/checks';
+import { deriveVerificationPresentationPolicy } from '@stark-ballot/verification/presentation-policy';
 import { resolveCanonicalFinalizationPayload } from '@stark-ballot/web/finalize/client-finalization-result';
+import verificationFixture from '@stark-ballot/web/mock-api/fixtures/json/verification.get.S0.json';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import {
   getStarkVerificationSnapshot,
@@ -32,9 +39,21 @@ const mockGetSessionData = vi.mocked(sessionModule.getSessionData);
 const HEX_A = `0x${'a'.repeat(64)}`;
 const HEX_B = `0x${'b'.repeat(64)}`;
 const HEX_C = `0x${'c'.repeat(64)}`;
-const HEX_D = `0x${'d'.repeat(64)}`;
-const HEX_E = `0x${'e'.repeat(64)}`;
-const HEX_F = `0x${'f'.repeat(64)}`;
+const VERIFICATION_STEP_IDS = [
+  'cast_as_intended',
+  'recorded_as_cast',
+  'counted_as_recorded',
+  'stark_verification',
+] as const;
+const ZK_GATE_CHECK_IDS = new Set<VerificationCheck['id']>([
+  'counted_tally_consistent',
+  'counted_missing_indices_zero',
+  'counted_expected_vs_tree_size',
+  'counted_election_manifest_consistent',
+  'counted_close_statement_consistent',
+  'counted_my_vote_included',
+  'counted_input_commitment_match',
+]);
 
 function response(data: unknown, status = 200): Response {
   return new Response(
@@ -47,63 +66,55 @@ function response(data: unknown, status = 200): Response {
 }
 
 function verificationResource(status: VerificationStatus) {
-  return {
-    availability: 'available' as const,
-    finalizationId: 'finalization-1',
-    proofAuthority: {
-      electionId: 'election-1',
-      electionConfigHash: HEX_A,
-      logId: 'log-1',
-      bulletinRoot: HEX_B,
-      imageId: HEX_C,
-      verifiedTally: [1, 0, 0, 0, 0],
+  const checks: VerificationCheck[] = VERIFICATION_CHECK_DEFINITIONS.map((definition) => {
+    let checkStatus: VerificationCheck['status'] = 'success';
+    if (definition.category === 'cast_as_intended') {
+      checkStatus = 'not_run';
+    } else if (definition.id === 'stark_image_id_match') {
+      checkStatus = status === 'running' ? 'running' : 'not_run';
+    } else if (definition.id === 'stark_receipt_verify') {
+      checkStatus = status === 'dev_mode' ? 'success' : status;
+    } else if (status === 'running' && ZK_GATE_CHECK_IDS.has(definition.id)) {
+      checkStatus = 'pending';
+    }
+
+    return {
+      id: definition.id,
+      status: checkStatus,
+      evidence: definition.evidence,
+      inputs: [...definition.inputs],
+      ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
+    };
+  });
+  const policy = deriveVerificationPresentationPolicy({
+    availability: 'available',
+    checks,
+    context: {
       missingSlots: 0,
       invalidPresentedSlots: 0,
       rejectedRecords: 0,
-      totalExpected: 1,
-      treeSize: 1,
       excludedSlots: 0,
-      sthDigest: HEX_D,
-      includedBitmapRoot: HEX_E,
-      inputCommitment: HEX_F,
-      seenIndicesCount: 1,
+      sthSourcesConfigured: true,
     },
+    verificationStatus: status,
+  });
+
+  return {
+    ...verificationFixture.data,
+    finalizationId: 'finalization-1',
     presentation: {
-      tally: {
-        counts: { A: 1, B: 0, C: 0, D: 0, E: 0 },
-        totalVotes: 1,
-        tamperedCount: 0,
-      },
-      scenarioId: 'S0' as const,
-      policy: {
-        summary: null,
-        stageStatuses: {
-          cast_as_intended: 'not_run' as const,
-          recorded_as_cast: 'not_run' as const,
-          counted_as_recorded: 'not_run' as const,
-          stark_verification: status === 'success' ? ('success' as const) : ('running' as const),
-        },
-        evidenceFullyVerified: false,
-        fullyVerifiedLabelEligible: false,
-        display: {
-          readiness: 'ready' as const,
-          source: 'pending' as const,
-          status: 'warning' as const,
-          renderedStatus: 'warning' as const,
-        },
-        publishedTallyMismatch: false,
-        devModeEvidence: false,
-        missingEvidence: true,
-      },
+      ...verificationFixture.data.presentation,
+      policy,
     },
     verifierResult: { status },
-    verification: { checks: [], steps: [] },
-    voterEvidence: {
-      availability: 'unavailable' as const,
-      reason: 'exact_proof_unavailable' as const,
-      userVote: { commitment: HEX_A },
+    verification: {
+      checks,
+      steps: VERIFICATION_STEP_IDS.map((id) => ({
+        id,
+        status: policy.stageStatuses[id],
+        inputs: getVerificationStepInputs(id),
+      })),
     },
-    journal: { representation: 'omitted' as const },
   };
 }
 

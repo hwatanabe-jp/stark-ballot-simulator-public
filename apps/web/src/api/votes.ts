@@ -1,4 +1,4 @@
-import { API_ROUTES, buildApiRouteUrl } from '@stark-ballot/api-contract/routes';
+import { API_ROUTES } from '@stark-ballot/api-contract/routes';
 import type { VoteRequest, VoteResponse } from '@stark-ballot/api-contract/schemas/votes';
 import {
   buildPathSessionHeaders,
@@ -14,13 +14,13 @@ export async function submitVote(
 ): Promise<VoteResponse['data']> {
   const result = await requestJsonRoute(
     API_ROUTES.submitVote,
-    buildApiRouteUrl(API_ROUTES.submitVote, { params: { sessionId: identity.sessionId } }),
-    'vote',
     {
-      ...options,
+      params: { sessionId: identity.sessionId },
       headers: buildPathSessionHeaders(identity),
       body: request,
     },
+    'vote',
+    options,
   );
   return result.body.data;
 }

@@ -14,12 +14,6 @@ export type FinalizationProgress = {
   updatedAtMs: number;
 };
 
-export interface ProgressState {
-  percent: number;
-  isComplete: boolean;
-  isWaiting: boolean;
-}
-
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
@@ -57,33 +51,6 @@ export function interpolateProgress(elapsed: number, total: number = DEFAULT_EST
   }
 
   return 99;
-}
-
-/**
- * Projects the queue, running, and completion states used by progress views.
- */
-export function calculateProgressState(params: {
-  queuedAt: string | null;
-  startedAt: string | null;
-  estimatedDurationMs?: number;
-  isComplete?: boolean;
-  now: number;
-}): ProgressState {
-  const { startedAt, estimatedDurationMs = DEFAULT_ESTIMATED_DURATION_MS, isComplete = false, now } = params;
-
-  if (isComplete) {
-    return { percent: 100, isComplete: true, isWaiting: false };
-  }
-
-  if (!startedAt) {
-    return { percent: 0, isComplete: false, isWaiting: true };
-  }
-
-  const startTime = new Date(startedAt).getTime();
-  const elapsed = now - startTime;
-  const percent = interpolateProgress(elapsed, estimatedDurationMs);
-
-  return { percent: Math.floor(percent), isComplete: false, isWaiting: false };
 }
 
 /**

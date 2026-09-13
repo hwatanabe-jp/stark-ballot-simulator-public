@@ -1,5 +1,6 @@
 data "aws_iam_policy_document" "bootstrap_apply_foundation_lane_pipeline_management" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
+  count                   = local.foundation_pipeline_enabled ? 1 : 0
+  source_policy_documents = [data.aws_iam_policy_document.source_path_start_build_guardrail_management[0].json]
 
   statement {
     sid    = "ManageFoundationCodeBuildProjects"
@@ -193,13 +194,21 @@ data "aws_iam_policy_document" "bootstrap_apply_foundation_lane_artifacts_manage
       "s3:CreateBucket",
       "s3:DeleteBucket",
       "s3:DeleteBucketPolicy",
+      "s3:GetAccelerateConfiguration",
       "s3:GetBucketAcl",
+      "s3:GetBucketCORS",
+      "s3:GetBucketLocation",
+      "s3:GetBucketLogging",
+      "s3:GetBucketObjectLockConfiguration",
       "s3:GetEncryptionConfiguration",
       "s3:GetBucketPolicy",
       "s3:GetBucketPublicAccessBlock",
+      "s3:GetBucketRequestPayment",
       "s3:GetBucketTagging",
       "s3:GetBucketVersioning",
+      "s3:GetBucketWebsite",
       "s3:GetLifecycleConfiguration",
+      "s3:GetReplicationConfiguration",
       "s3:ListBucket",
       "s3:PutEncryptionConfiguration",
       "s3:PutBucketPolicy",
@@ -230,6 +239,7 @@ data "aws_iam_policy_document" "bootstrap_apply_foundation_lane_artifacts_manage
     actions = [
       "kms:DescribeKey",
       "kms:GetKeyPolicy",
+      "kms:GetKeyRotationStatus",
       "kms:ListResourceTags",
       "kms:PutKeyPolicy",
       "kms:ScheduleKeyDeletion",
@@ -299,6 +309,16 @@ resource "aws_iam_policy" "bootstrap_apply_foundation_lane_pipeline_management" 
     aws_iam_policy.bootstrap_deploy_permissions_boundary,
     aws_iam_policy.terraform_apply_app_lane_policy_admin,
   ]
+}
+
+check "bootstrap_apply_foundation_lane_pipeline_policy_size" {
+  assert {
+    condition = (
+      !local.foundation_pipeline_enabled
+      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.bootstrap_apply_foundation_lane_pipeline_management[0].json))) <= 6144, false)
+    )
+    error_message = "The bootstrap Foundation-lane pipeline managed policy must remain within the IAM 6,144-character quota."
+  }
 }
 
 resource "aws_iam_policy" "bootstrap_apply_foundation_lane_iam_management" {

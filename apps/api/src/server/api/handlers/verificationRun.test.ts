@@ -6,21 +6,24 @@ import { buildFinalizationResultFromJournal } from '@stark-ballot/application/fi
 import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
 import type { VerificationResultRecord } from '@stark-ballot/application/finalize/finalization-result-store';
 import type {
+  FinalizationId,
   FinalizationResultAuthority,
   FinalizationScenarioContext,
 } from '@stark-ballot/application/finalize/finalization-types';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type { SessionReadModel } from '@stark-ballot/application/session/session-read-model';
 import type { AwsVerificationDeliveryMetadataInput } from '@stark-ballot/aws-adapters/finalize/finalizationDeliveryMetadataStore';
 import type { AwsFinalizationRuntimeMetadata } from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
-import { createMockVoteStore, type MockVoteStore } from '../../__tests__/support/mockVoteStore';
+import { createMockVoteStore, type MockVoteStore } from '../../test-support/mockVoteStore';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sessionCapabilityToken';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
 import type { SessionIdentityRecord, SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
 import {
   localRuntimeProfile,
   targetRuntimeProfileEnv,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { resolveRuntimeProfile, type ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import {
@@ -51,8 +54,8 @@ vi.mock('@stark-ballot/aws-adapters/sqs/publishVerificationWorkMessage', () => (
 
 const capabilitySecret = 'verification-run-handler-secret-0123456789abcdef';
 const expectedImageId = `0x${'ab'.repeat(32)}`;
-const sessionId = 'session-verification-run-1';
-const finalizationId = 'execution-verification-run-1';
+const sessionId = asSessionId('session-verification-run-1');
+const finalizationId = asFinalizationId('execution-verification-run-1');
 const logId = `0x${'2'.repeat(64)}`;
 const scenarioContext: FinalizationScenarioContext = {
   scenarios: [],
@@ -83,7 +86,6 @@ const validVerificationReport = {
   expected_image_id: expectedImageId,
   receipt_image_id: expectedImageId,
   dev_mode_receipt: false,
-  errors: [],
 };
 
 function bundleKeyFor(id: string, execId: string): string {
@@ -147,7 +149,7 @@ function buildVotingRecord(): SessionVotingRecord {
 
 function buildFinalizationRecord(
   finalizationResult: FinalizationResultAuthority,
-  recordFinalizationId = finalizationId,
+  recordFinalizationId: FinalizationId = finalizationId,
 ): FinalizationRecord {
   const now = Date.now();
   return {
@@ -197,14 +199,11 @@ function createVerificationRunStore(
     ? options.deliveryMetadata
     : ({ s3BundleKey: bundleKeyFor(sessionId, finalizationId) } satisfies AwsVerificationDeliveryMetadataInput);
   const markVerificationRunning = vi.fn<MockVoteStore['markVerificationRunning']>(
-    (requestedSessionId, requestedFinalizationId, report) =>
+    (requestedSessionId, requestedFinalizationId) =>
       Promise.resolve({
         sessionId: requestedSessionId,
         finalizationId: requestedFinalizationId,
-        verificationResult: {
-          status: 'running',
-          ...(report ? { report } : {}),
-        },
+        verificationResult: { status: 'running' },
       }),
   );
   const rollbackVerificationResult = vi.fn<MockVoteStore['rollbackVerificationResult']>(() => Promise.resolve());
@@ -301,6 +300,7 @@ async function invokeVerificationRun(
       clientIp: '127.0.0.1',
       operatorGatedDevelop: false,
       sessionId,
+      finalizationId: asFinalizationId(requestedFinalizationId),
       session,
       finalizeRateLimit,
     },
@@ -323,7 +323,6 @@ describe('runVerificationHandler', () => {
   beforeEach(() => {
     vi.stubEnv('SESSION_CAPABILITY_SECRET', capabilitySecret);
     vi.stubEnv('EXPECTED_IMAGE_ID', expectedImageId);
-    vi.stubEnv('EXPECTED_IMAGEID_POC', undefined);
     vi.stubEnv('EXPECTED_IMAGE_ID_VARIANT', undefined);
     vi.resetAllMocks();
   });
@@ -448,7 +447,7 @@ describe('runVerificationHandler', () => {
     const { store, markVerificationRunning, rollbackVerificationResult, completeVerificationResult } =
       createVerificationRunStore(buildFinalizationResult());
 
-    const response = await invokeVerificationRun(store, 'other-finalization');
+    const response = await invokeVerificationRun(store, asFinalizationId('other-finalization'));
     const payload = await readJsonRecord(response, 'mismatched path finalization response');
 
     expect(response.status).toBe(400);
@@ -493,7 +492,7 @@ describe('runVerificationHandler', () => {
     expect(getStringProperty(data, 'finalizationId')).toBe(finalizationId);
     expect(getBooleanProperty(data, 'idempotent')).toBe(false);
     expect(markVerificationRunning).toHaveBeenCalledOnce();
-    expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, finalizationId, undefined);
+    expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, finalizationId);
     const [publishedProfile, publishedMessage] = verificationQueueMocks.publishVerificationWorkMessage.mock
       .calls[0] as [
       ResolvedRuntimeProfile,
@@ -539,7 +538,7 @@ describe('runVerificationHandler', () => {
 
     expect(response.status).toBe(200);
     expect(getStringProperty(data, 'verificationStatus')).toBe('running');
-    expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, finalizationId, undefined);
+    expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, finalizationId);
     expect(verificationQueueMocks.publishVerificationWorkMessage).toHaveBeenCalledWith(
       quiescedVerificationRuntimeProfile,
       expect.objectContaining({
@@ -604,7 +603,7 @@ describe('runVerificationHandler', () => {
     expect(getStringProperty(data, 'verificationStatus')).toBe('running');
     expect(getStringProperty(data, 'finalizationId')).toBe(finalizationId);
     expect(getBooleanProperty(data, 'idempotent')).toBe(true);
-    expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, finalizationId, undefined);
+    expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, finalizationId);
     expect(verificationQueueMocks.publishVerificationWorkMessage).not.toHaveBeenCalled();
   });
 
@@ -622,7 +621,7 @@ describe('runVerificationHandler', () => {
 
     expect(response.status).toBe(500);
     expect(getApiErrorCode(payload)).toBe('INTERNAL_ERROR');
-    expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, finalizationId, undefined);
+    expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, finalizationId);
     expect(rollbackVerificationResult).toHaveBeenCalledWith(sessionId, finalizationId);
     expect(loggerErrorSpy).toHaveBeenCalledTimes(1);
     expect(loggerErrorSpy).toHaveBeenCalledWith('[VerificationRun] Verifier invocation failed', {
@@ -652,7 +651,7 @@ describe('runVerificationHandler', () => {
 
     expect(response.status).toBe(500);
     expect(getApiErrorCode(payload)).toBe('INTERNAL_ERROR');
-    expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, finalizationId, undefined);
+    expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, finalizationId);
     expect(rollbackVerificationResult).toHaveBeenCalledWith(sessionId, finalizationId);
     expect(loggerErrorSpy).toHaveBeenCalledTimes(1);
     expect(loggerErrorSpy).toHaveBeenCalledWith(
@@ -689,7 +688,7 @@ describe('runVerificationHandler', () => {
       expectedImageId,
       reportPath,
     });
-    expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, finalizationId, undefined);
+    expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, finalizationId);
     expect(recordAwsVerificationDeliveryMetadata).not.toHaveBeenCalled();
     expect(completeVerificationResult).toHaveBeenCalledWith(sessionId, finalizationId, {
       status: 'failed',

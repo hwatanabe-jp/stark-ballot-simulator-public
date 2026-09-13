@@ -1,0 +1,16 @@
+{
+  "included": {
+    "schema": "stark-ballot.included_bitmap",
+    "version": "1.0",
+    "treeSize": 8,
+    "includedBitmapRoot": "0xe4018e05fd184227db0b71514ec035dbe036ebdea6360eb572ac801aff35e753",
+    "includedBitmap": [true, false, true, true, false, false, true, false]
+  },
+  "seen": {
+    "schema": "stark-ballot.seen_bitmap",
+    "version": "1.0",
+    "treeSize": 12,
+    "seenBitmapRoot": "0x6e1d0752358a72b5be5fa226f517f005b7b5b785965ac1f1ca67902478b6fc10",
+    "seenBitmap": [true, false, false, true, false, false, false, false, false, false, false, true]
+  }
+}

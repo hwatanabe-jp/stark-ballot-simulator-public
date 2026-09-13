@@ -1,3 +1,11 @@
+locals {
+  # Only the verifier for a random 256-bit Cloudflare request-header token is
+  # retained in source/state. The token itself belongs only to Cloudflare.
+  # Rotating it requires a reviewed App deployment and a matching Transform Rule.
+  cloudflare_origin_token_sha256 = var.deployment_environment == "main" ? "d44645acbb66f8e08b0b7737a85d0069587b55c5ea5523de31e5c9b70922a727" : null
+  cloudflare_origin_required     = local.cloudflare_origin_token_sha256 != null
+}
+
 resource "aws_s3_bucket" "frontend_static" {
   bucket = local.frontend_bucket_name
 
@@ -151,7 +159,10 @@ resource "aws_cloudfront_origin_request_policy" "api" {
   headers_config {
     header_behavior = "whitelist"
     headers {
-      items = ["Content-Type", "If-None-Match", "Origin", "Range", "X-Session-Capability"]
+      items = concat(
+        ["Content-Type", "If-None-Match", "Origin", "Range", "X-Session-Capability"],
+        local.cloudflare_origin_required ? ["CF-Connecting-IP"] : [],
+      )
     }
   }
 
@@ -210,13 +221,53 @@ resource "aws_cloudfront_response_headers_policy" "frontend_security" {
 resource "aws_cloudfront_function" "frontend_spa_fallback" {
   name    = "${local.name_prefix}-frontend-spa-fallback"
   runtime = "cloudfront-js-2.0"
-  comment = "Rewrite extensionless browser routes to the Vite app shell"
+  comment = "Admit the production Cloudflare origin path and route the static app"
   publish = true
   code    = <<-EOT
+var crypto = require("crypto");
+var cloudflareTokenSha256 = ${jsonencode(local.cloudflare_origin_token_sha256)};
+var publicHostname = ${jsonencode(var.public_hostname)};
+
+function singleHeader(headers, name) {
+  var header = headers[name];
+  return header && !header.multiValue && typeof header.value === "string" ? header.value : null;
+}
+
+function forbidden() {
+  return {
+    statusCode: 403,
+    statusDescription: "Forbidden",
+    headers: {
+      "cache-control": { value: "no-store" },
+      "content-type": { value: "text/plain; charset=utf-8" }
+    },
+    body: "Forbidden"
+  };
+}
+
 function handler(event) {
   var request = event.request;
+  if (cloudflareTokenSha256 !== null) {
+    var headers = request.headers;
+    var token = singleHeader(headers, "x-stark-ballot-cloudflare-verify");
+    var hostname = singleHeader(headers, "host");
+    var clientIp = singleHeader(headers, "cf-connecting-ip");
+    if (!hostname || hostname.toLowerCase() !== publicHostname.toLowerCase() ||
+        !token || !/^[A-Za-z0-9_-]{43}$/.test(token) ||
+        !clientIp || !/^[0-9a-fA-F:.]{3,45}$/.test(clientIp)) {
+      return forbidden();
+    }
+    var digest = crypto.createHash("sha256");
+    digest.update(token);
+    if (digest.digest("hex") !== cloudflareTokenSha256) {
+      return forbidden();
+    }
+    // The origin receives only the authenticated client-IP header, never the token.
+    delete headers["x-stark-ballot-cloudflare-verify"];
+  }
   var uri = request.uri || "/";
-  if (uri === "/api" || uri.indexOf("/api/") === 0 || uri.indexOf("/assets/") === 0) {
+  if (uri === "/api" || uri.indexOf("/api/") === 0 || uri.indexOf("/assets/") === 0 ||
+      uri.indexOf("/patterns/") === 0 || uri.indexOf("/textures/") === 0) {
     return request;
   }
   var lastSegment = uri.substring(uri.lastIndexOf("/") + 1);
@@ -230,6 +281,7 @@ EOT
 
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
+  wait_for_deployment = true
   comment             = local.frontend_distribution_comment
   default_root_object = "index.html"
   price_class         = "PriceClass_100"
@@ -290,6 +342,14 @@ resource "aws_cloudfront_distribution" "frontend" {
     response_headers_policy_id = aws_cloudfront_response_headers_policy.frontend_security.id
     trusted_key_groups         = local.operator_gate_trusted_key_groups
     compress                   = true
+
+    dynamic "function_association" {
+      for_each = local.cloudflare_origin_required ? [true] : []
+      content {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.frontend_spa_fallback.arn
+      }
+    }
   }
 
   ordered_cache_behavior {
@@ -302,6 +362,14 @@ resource "aws_cloudfront_distribution" "frontend" {
     response_headers_policy_id = aws_cloudfront_response_headers_policy.frontend_security.id
     trusted_key_groups         = local.operator_gate_trusted_key_groups
     compress                   = true
+
+    dynamic "function_association" {
+      for_each = local.cloudflare_origin_required ? [true] : []
+      content {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.frontend_spa_fallback.arn
+      }
+    }
   }
 
   ordered_cache_behavior {
@@ -314,6 +382,14 @@ resource "aws_cloudfront_distribution" "frontend" {
     response_headers_policy_id = aws_cloudfront_response_headers_policy.frontend_security.id
     trusted_key_groups         = local.operator_gate_trusted_key_groups
     compress                   = true
+
+    dynamic "function_association" {
+      for_each = local.cloudflare_origin_required ? [true] : []
+      content {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.frontend_spa_fallback.arn
+      }
+    }
   }
 
   ordered_cache_behavior {
@@ -327,6 +403,14 @@ resource "aws_cloudfront_distribution" "frontend" {
     response_headers_policy_id = aws_cloudfront_response_headers_policy.frontend_security.id
     trusted_key_groups         = local.operator_gate_trusted_key_groups
     compress                   = true
+
+    dynamic "function_association" {
+      for_each = local.cloudflare_origin_required ? [true] : []
+      content {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.frontend_spa_fallback.arn
+      }
+    }
   }
 
   ordered_cache_behavior {
@@ -340,6 +424,14 @@ resource "aws_cloudfront_distribution" "frontend" {
     response_headers_policy_id = aws_cloudfront_response_headers_policy.frontend_security.id
     trusted_key_groups         = local.operator_gate_trusted_key_groups
     compress                   = true
+
+    dynamic "function_association" {
+      for_each = local.cloudflare_origin_required ? [true] : []
+      content {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.frontend_spa_fallback.arn
+      }
+    }
   }
 
   restrictions {
@@ -395,6 +487,164 @@ data "aws_iam_policy_document" "frontend_static_bucket" {
       test     = "StringEquals"
       variable = "AWS:SourceArn"
       values   = [aws_cloudfront_distribution.frontend.arn]
+    }
+  }
+
+  statement {
+    sid    = "DenyCloudFrontStaticFrontendPublicationLeaseRead"
+    effect = "Deny"
+
+    principals {
+      type        = "Service"
+      identifiers = ["cloudfront.amazonaws.com"]
+    }
+
+    actions = ["s3:GetObject"]
+    resources = [
+      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
+    ]
+  }
+
+  statement {
+    sid    = "DenyStaticFrontendPublicationLeaseMutationOutsidePublishers"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = [
+      "s3:DeleteObject",
+      "s3:PutObject",
+    ]
+    resources = [
+      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
+    ]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values = concat(
+        ["arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.appStaticDeployRole}"],
+        local.static_fast_lane_authority == null ? [] : [
+          "arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.appStaticFastDeployRole}",
+        ],
+      )
+    }
+  }
+
+  statement {
+    sid    = "DenyStaticFrontendPublicationLeaseVersionDeletion"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = ["s3:DeleteObjectVersion"]
+    resources = [
+      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
+    ]
+  }
+
+  statement {
+    sid    = "DenyUnconditionalStaticFrontendPublicationLeaseWrites"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
+    ]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:if-none-match"
+      values   = ["*"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-match"
+      values   = ["true"]
+    }
+  }
+
+  statement {
+    sid    = "DenyAmbiguousStaticFrontendPublicationLeaseWrites"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
+    ]
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-none-match"
+      values   = ["false"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-match"
+      values   = ["false"]
+    }
+  }
+
+  statement {
+    sid    = "DenyUnconditionalStaticFrontendPublicationLeaseDeletes"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = ["s3:DeleteObject"]
+    resources = [
+      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
+    ]
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-match"
+      values   = ["true"]
+    }
+  }
+
+  statement {
+    sid    = "DenyWildcardStaticFrontendPublicationLeaseMutations"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = [
+      "s3:DeleteObject",
+      "s3:PutObject",
+    ]
+    resources = [
+      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "s3:if-match"
+      values   = ["*"]
     }
   }
 }

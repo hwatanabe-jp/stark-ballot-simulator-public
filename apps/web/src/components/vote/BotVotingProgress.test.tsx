@@ -1,7 +1,7 @@
 import { act, render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { BotVotingProgress } from './BotVotingProgress';
-import { t as translate } from '@stark-ballot/web/i18n';
+import { t as translate, type TranslationKey, type TranslationParams } from '@stark-ballot/web/i18n';
 import { getProgress } from '@stark-ballot/web/api/progress';
 import { ApiClientError } from '@stark-ballot/web/api/client';
 
@@ -26,7 +26,7 @@ vi.mock('@stark-ballot/web/navigation/appNavigation', () => ({
 vi.mock('@stark-ballot/web/hooks', () => ({
   useTranslation: () => ({
     language: 'en',
-    t: (key: string, params?: Record<string, string | number>) => translate('en', key, params),
+    t: (key: TranslationKey, params?: TranslationParams) => translate('en', key, params),
   }),
 }));
 
@@ -73,42 +73,90 @@ describe('BotVotingProgress', () => {
     vi.useRealTimers();
   });
 
-  it('shows the bot voting title and processing text', () => {
-    render(<BotVotingProgress autoNavigate={false} />);
-
-    expect(screen.getByText(/bots are voting/i)).toBeInTheDocument();
-    expect(screen.getAllByText(/Processing/i).length).toBeGreaterThan(0);
+  it('keeps waiting for actual completion after time has passed', async () => {
+    await act(async () => {
+      render(<BotVotingProgress autoNavigate={true} />);
+      await vi.advanceTimersByTimeAsync(12_000);
+    });
+    expect(screen.getByRole('status')).toHaveTextContent('Processing...');
+    expect(getProgress).toHaveBeenCalled();
+    expect(mockPush).not.toHaveBeenCalled();
   });
 
-  it('freezes bar heights after the 10 second animation window', () => {
-    render(<BotVotingProgress autoNavigate={false} />);
-
-    const getBarHeight = (label: string) => {
-      const labelNode = screen.getByText(label);
-      const column = labelNode.parentElement;
-      if (!column) {
-        throw new Error(`Missing column for label ${label}`);
-      }
-      const bar = column.querySelector<HTMLDivElement>('div[style]');
-      if (!bar) {
-        throw new Error(`Missing bar for label ${label}`);
-      }
-      return bar.style.height;
-    };
-
-    act(() => {
-      vi.advanceTimersByTime(10000);
+  it('navigates once as soon as the API reports completion', async () => {
+    vi.mocked(getProgress).mockResolvedValue({
+      count: 63,
+      total: 63,
+      completed: true,
+      userVoted: true,
+      finalized: false,
     });
-
-    const heightAtEndA = getBarHeight('A');
-    const heightAtEndB = getBarHeight('B');
-
-    act(() => {
-      vi.advanceTimersByTime(2000);
+    const onComplete = vi.fn();
+    await act(async () => {
+      render(<BotVotingProgress onComplete={onComplete} />);
     });
+    expect(onComplete).toHaveBeenCalledOnce();
+    expect(mockPush).toHaveBeenCalledWith('/aggregate');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(getProgress).toHaveBeenCalledOnce();
+    expect(mockPush).toHaveBeenCalledOnce();
+  });
 
-    expect(getBarHeight('A')).toBe(heightAtEndA);
-    expect(getBarHeight('B')).toBe(heightAtEndB);
+  it('does not navigate for a response arriving after unmount', async () => {
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof getProgress>>>();
+    vi.mocked(getProgress).mockReturnValue(pending.promise);
+    const onComplete = vi.fn();
+    const { unmount } = render(<BotVotingProgress onComplete={onComplete} />);
+    const requestSignal = vi.mocked(getProgress).mock.calls[0]?.[1]?.signal;
+    unmount();
+    expect(requestSignal?.aborted).toBe(true);
+    await act(async () => {
+      pending.resolve({ count: 63, total: 63, completed: true, userVoted: true, finalized: false });
+      await pending.promise;
+    });
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it('waits for an outstanding progress request before polling again', async () => {
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof getProgress>>>();
+    vi.mocked(getProgress).mockReturnValueOnce(pending.promise);
+    const onComplete = vi.fn();
+    render(<BotVotingProgress onComplete={onComplete} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(getProgress).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      pending.resolve({ count: 63, total: 63, completed: true, userVoted: true, finalized: false });
+      await pending.promise;
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(getProgress).toHaveBeenCalledOnce();
+    expect(onComplete).toHaveBeenCalledOnce();
+    expect(mockPush).toHaveBeenCalledOnce();
+  });
+
+  it('rejects completed progress for a session replaced while the request was pending', async () => {
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof getProgress>>>();
+    vi.mocked(getProgress).mockReturnValue(pending.promise);
+    const onComplete = vi.fn();
+    render(<BotVotingProgress onComplete={onComplete} />);
+    mockGetSessionDataForIdentity.mockReturnValue(null);
+    mockIsSessionReplacedForIdentity.mockReturnValue(true);
+    await act(async () => {
+      pending.resolve({ count: 63, total: 63, completed: true, userVoted: true, finalized: false });
+      await pending.promise;
+    });
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(
+      screen.getByText('This session was replaced in another tab. Please restart from the home page.'),
+    ).toBeInTheDocument();
   });
 
   it('fails closed when the expected session is replaced in the same tab', () => {

@@ -1,4 +1,5 @@
-import { createHash } from 'crypto';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { BOT_COUNT, MERKLE_TREE_DEPTH, VOTE_CHOICES } from './contract-constants';
 import { normalizeHexString } from './hex';
 
@@ -32,40 +33,15 @@ export function cloneElectionConfig(config: ElectionConfig): ElectionConfig {
   };
 }
 
-export function isElectionConfig(value: unknown): value is ElectionConfig {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-
-  const config = value as Partial<ElectionConfig>;
-  return Boolean(
-    Number.isInteger(config.totalExpected) &&
-    typeof config.version === 'string' &&
-    config.version.length > 0 &&
-    Number.isInteger(config.botCount) &&
-    typeof config.botCount === 'number' &&
-    config.botCount >= 0 &&
-    Number.isInteger(config.merkleTreeDepth) &&
-    typeof config.merkleTreeDepth === 'number' &&
-    config.merkleTreeDepth > 0 &&
-    Array.isArray(config.choices) &&
-    config.choices.length > 0 &&
-    config.choices.every((choice) => typeof choice === 'string' && choice.length > 0),
-  );
-}
-
 export function hashElectionConfig(config: ElectionConfig): string {
-  const hash = createHash('sha256');
-  hash.update(
-    JSON.stringify({
-      totalExpected: config.totalExpected,
-      choices: [...config.choices],
-      version: config.version,
-      botCount: config.botCount,
-      merkleTreeDepth: config.merkleTreeDepth,
-    }),
-  );
-  return '0x' + hash.digest('hex');
+  const canonicalConfig = JSON.stringify({
+    totalExpected: config.totalExpected,
+    choices: [...config.choices],
+    version: config.version,
+    botCount: config.botCount,
+    merkleTreeDepth: config.merkleTreeDepth,
+  });
+  return `0x${bytesToHex(sha256(utf8ToBytes(canonicalConfig)))}`;
 }
 
 export function getDefaultElectionConfigHash(): string {

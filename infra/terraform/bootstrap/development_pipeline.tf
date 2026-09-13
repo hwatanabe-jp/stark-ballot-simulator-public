@@ -1,5 +1,4 @@
 locals {
-  pipeline_enabled = var.enable_development_pipeline
   development_pipeline_identity_approved = (
     var.enable_development_pipeline == false
     || (
@@ -10,83 +9,17 @@ locals {
     )
   )
 
-  pipeline_name                 = local.bootstrap_lane_authority.names.pipeline
-  codeconnection_name           = "sbs-${local.deployment_target.accountLabel}-${local.deployment_target.environmentId}"
   pipeline_artifact_bucket_name = local.bootstrap_lane_authority.names.artifactBucket
   artifact_kms_alias            = local.bootstrap_lane_authority.names.artifactKmsAlias
   artifact_kms_alias_arn        = "arn:aws:kms:${var.aws_region}:${var.aws_account_id}:${local.artifact_kms_alias}"
 
-  pipeline_role_name        = local.bootstrap_lane_authority.names.pipelineRole
-  terraform_plan_role_name  = local.bootstrap_lane_authority.names.terraformPlanRole
-  terraform_apply_role_name = local.bootstrap_lane_authority.names.terraformApplyRole
-  terraform_smoke_role_name = local.bootstrap_lane_authority.names.terraformSmokeRole
-  terraform_smoke_role_arn  = "arn:aws:iam::${var.aws_account_id}:role/${local.terraform_smoke_role_name}"
-  github_trigger_role_name  = local.bootstrap_lane_authority.names.githubTriggerRole
-  bootstrap_deploy_permissions_boundary_policy_name = (
-    "${local.deployment_target.projectId}-bootstrap-deploy-boundary-${local.deployment_target.accountLabel}-${local.deployment_target.environmentId}-${local.bootstrap_lane_authority.scope}"
-  )
-  bootstrap_deploy_permissions_boundary_policy_arn = (
-    "arn:aws:iam::${var.aws_account_id}:policy/${local.bootstrap_deploy_permissions_boundary_policy_name}"
-  )
-  bootstrap_apply_app_lane_policy_admin_policy_name = (
-    "${local.deployment_target.projectId}-bootstrap-apply-app-lane-admin-${local.deployment_target.accountLabel}-${local.deployment_target.environmentId}"
-  )
-  bootstrap_apply_artifact_management_policy_name = (
-    "${local.deployment_target.projectId}-bootstrap-apply-artifacts-${local.deployment_target.accountLabel}-${local.deployment_target.environmentId}"
-  )
-  bootstrap_apply_artifact_management_policy_arn = (
-    "arn:aws:iam::${var.aws_account_id}:policy/${local.bootstrap_apply_artifact_management_policy_name}"
-  )
-  bootstrap_apply_foundation_lane_policy_arns = local.foundation_pipeline_enabled ? local.foundation_lane_management_policy_arns : []
-  bootstrap_apply_managed_policy_arns = concat(
-    [
-      "arn:aws:iam::${var.aws_account_id}:policy/${local.bootstrap_apply_app_lane_policy_admin_policy_name}",
-      local.bootstrap_apply_artifact_management_policy_arn,
-      local.terraform_baseline_authority_management_policy_arn,
-      local.terraform_baseline_authority_runtime_management_policy_arn,
-    ],
-    local.bootstrap_apply_foundation_lane_policy_arns,
-  )
-  bootstrap_apply_administered_policy_arns = concat(
-    local.bootstrap_apply_managed_policy_arns,
-    local.foundation_pipeline_enabled ? [local.foundation_terraform_apply_workload_policy_arn] : [],
-    values(local.terraform_drift_bootstrap_provider_policy_arns),
-  )
+  terraform_smoke_role_arn = "arn:aws:iam::${var.aws_account_id}:role/${local.terraform_smoke_role_name}"
   bootstrap_apply_managed_policy_attachment_count = length(distinct(concat(
     local.bootstrap_apply_managed_policy_arns,
     local.app_pipeline_enabled ? local.app_lane_management_policy_arns : [],
   )))
-  validate_project_name        = local.bootstrap_lane_authority.names.validateProject
-  terraform_plan_project_name  = local.bootstrap_lane_authority.names.terraformPlanProject
-  terraform_apply_project_name = local.bootstrap_lane_authority.names.terraformApplyProject
-  smoke_project_name           = local.bootstrap_lane_authority.names.smokeProject
-
-  codebuild_project_names = [
-    local.validate_project_name,
-    local.terraform_plan_project_name,
-    local.terraform_apply_project_name,
-    local.smoke_project_name,
-  ]
-
-  codebuild_project_arns = [
-    for name in local.codebuild_project_names :
-    "arn:aws:codebuild:${var.aws_region}:${var.aws_account_id}:project/${name}"
-  ]
-  codebuild_log_group_arns = [
-    for name in local.codebuild_project_names :
-    "arn:aws:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/codebuild/${name}"
-  ]
   codebuild_project_arn_pattern   = "arn:aws:codebuild:${var.aws_region}:${var.aws_account_id}:project/${local.pipeline_name}-*"
   codebuild_log_group_arn_pattern = "arn:aws:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/codebuild/${local.pipeline_name}-*"
-  pipeline_arn                    = "arn:aws:codepipeline:${var.aws_region}:${var.aws_account_id}:${local.pipeline_name}"
-  oidc_provider_arn               = "arn:aws:iam::${var.aws_account_id}:oidc-provider/token.actions.githubusercontent.com"
-  bootstrap_pipeline_role_name_arns = [
-    "arn:aws:iam::${var.aws_account_id}:role/${local.pipeline_role_name}",
-    "arn:aws:iam::${var.aws_account_id}:role/${local.terraform_plan_role_name}",
-    "arn:aws:iam::${var.aws_account_id}:role/${local.terraform_apply_role_name}",
-    "arn:aws:iam::${var.aws_account_id}:role/${local.terraform_smoke_role_name}",
-    "arn:aws:iam::${var.aws_account_id}:role/${local.github_trigger_role_name}",
-  ]
   bootstrap_pipeline_role_arn_patterns = [
     "arn:aws:iam::${var.aws_account_id}:role/stark-ballot-sim*-${local.deployment_target.accountLabel}-${local.deployment_target.environmentId}*",
     "arn:aws:iam::${var.aws_account_id}:role/sbs-*-${local.deployment_target.accountLabel}-${local.deployment_target.environmentId}*",
@@ -104,38 +37,6 @@ locals {
     aws_iam_role.github_trigger[0].arn,
   ]
 
-  terraform_distribution_sha256 = (
-    "d25ce7b6902013ad905db3d2eab0be4cd905887fe88b81a6171b8d5503c31f3d"
-  )
-
-  pipeline_tfvars = {
-    account_alias                                  = local.deployment_target.accountLabel
-    aws_account_id                                 = local.deployment_target.accountId
-    aws_region                                     = local.deployment_target.region
-    backend_principal_arns                         = var.backend_principal_arns
-    deployment_environment                         = local.deployment_target.environmentId
-    development_app_cloudfront_acm_certificate_arn = var.development_app_cloudfront_acm_certificate_arn
-    development_app_public_hostname                = var.development_app_public_hostname
-    enable_development_app_pipeline                = true
-    enable_development_foundation_pipeline         = true
-    enable_development_pipeline                    = true
-    github_full_repository_id                      = local.deployment_target.repository
-    project_name                                   = local.deployment_target.projectId
-    source_branch                                  = local.deployment_target.sourceBranch
-    state_backend_key                              = local.bootstrap_lane_authority.backendKey
-    state_bucket_name                              = var.state_bucket_name
-    state_kms_alias                                = var.state_kms_alias
-    state_kms_key_id                               = var.state_kms_key_id
-    state_scope                                    = local.bootstrap_lane_authority.scope
-    terraform_version                              = var.terraform_version
-  }
-
-  terraform_install_commands = [
-    "set -eu",
-    "curl -fsSLo /tmp/terraform.zip \"https://releases.hashicorp.com/terraform/${var.terraform_version}/terraform_${var.terraform_version}_linux_amd64.zip\"; echo \"${local.terraform_distribution_sha256}  /tmp/terraform.zip\" | sha256sum --check --status; unzip -q -o /tmp/terraform.zip -d /usr/local/bin",
-    "terraform version -json > /tmp/stark-ballot-terraform-version.json && jq -e -c 'select(.terraform_version == \"${var.terraform_version}\" and .platform == \"linux_amd64\") | {terraform_version, platform}' /tmp/stark-ballot-terraform-version.json",
-  ]
-
 }
 
 check "bootstrap_apply_managed_policy_attachment_quota" {
@@ -151,51 +52,19 @@ resource "terraform_data" "development_pipeline_identity_guard" {
   lifecycle {
     precondition {
       condition     = local.deployment_target_inputs_exact
-      error_message = "Bootstrap inputs must match the exact reviewed stark-dev/develop target and lane configuration."
+      error_message = "Bootstrap inputs must match the exact reviewed caller target and lane configuration."
     }
 
     precondition {
       condition     = local.development_pipeline_identity_approved
       error_message = "enable_development_pipeline=true is approved only for ${local.bootstrap_lane_authority.stateIdentity} from source_branch=${local.deployment_target.sourceBranch}."
     }
-  }
-}
 
-data "aws_iam_policy_document" "pipeline_assume_role" {
-  count = local.pipeline_enabled ? 1 : 0
-
-  statement {
-    actions = ["sts:AssumeRole"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["codepipeline.amazonaws.com"]
+    precondition {
+      condition     = !local.pipeline_enabled || local.terraform_baseline_authority_enabled
+      error_message = "The reviewed deployment authority composition requires the Bootstrap, Foundation, and App deployment lanes to be enabled together."
     }
   }
-}
-
-data "aws_iam_policy_document" "codebuild_assume_role" {
-  count = local.pipeline_enabled ? 1 : 0
-
-  statement {
-    actions = ["sts:AssumeRole"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["codebuild.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_codeconnections_connection" "source" {
-  count = local.pipeline_enabled ? 1 : 0
-
-  name          = local.codeconnection_name
-  provider_type = "GitHub"
-
-  tags = merge(local.common_tags, {
-    Name = local.codeconnection_name
-  })
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
@@ -214,46 +83,46 @@ data "aws_iam_policy_document" "bootstrap_deploy_permissions_boundary" {
   count = local.pipeline_enabled ? 1 : 0
 
   statement {
+    effect    = "Allow"
+    actions   = ["sts:AssumeRole"]
+    resources = [local.bootstrap_terraform_acceptance_publisher_role_arn]
+  }
+
+  statement {
     effect  = "Allow"
     actions = ["s3:*"]
-    resources = [
-      local.terraform_authority_bucket_arn,
-      "arn:aws:s3:::${local.terraform_authority_bucket_name}/${local.terraform_baseline_prefix}/${local.bootstrap_lane_authority.stateIdentity}/executions/*",
-      "arn:aws:s3:::${local.terraform_authority_bucket_name}/${local.terraform_baseline_prefix}/${local.bootstrap_lane_authority.stateIdentity}/current.json",
-    ]
+    resources = concat(
+      [
+        local.terraform_authority_bucket_arn,
+        "arn:aws:s3:::${local.terraform_authority_bucket_name}/${local.terraform_baseline_prefix}/${local.bootstrap_lane_authority.stateIdentity}/acceptances/*",
+        "arn:aws:s3:::${local.terraform_authority_bucket_name}/${local.terraform_baseline_prefix}/${local.bootstrap_lane_authority.stateIdentity}/current.json",
+        "arn:aws:s3:::${local.pipeline_artifact_bucket_name}",
+        "arn:aws:s3:::${local.pipeline_artifact_bucket_name}/*",
+        "arn:aws:s3:::${var.state_bucket_name}",
+        "arn:aws:s3:::${var.state_bucket_name}/${var.state_backend_key}",
+        "arn:aws:s3:::${var.state_bucket_name}/${local.state_lockfile_key}",
+      ],
+      local.app_pipeline_enabled ? compact([
+        local.app_retained_artifact_bucket_arn,
+        local.app_pipeline_execution_artifact_bucket_arn,
+        local.app_static_fast_execution_artifact_bucket_arn,
+      ]) : [],
+      local.foundation_pipeline_enabled ? [
+        local.foundation_pipeline_artifact_bucket_arn,
+      ] : [],
+    )
   }
 
   statement {
     effect    = "Allow"
-    actions   = ["scheduler:*"]
-    resources = [local.terraform_drift_schedule_arn]
-  }
+    actions   = ["s3:GetObjectVersion"]
+    resources = [local.saved_plan_approval_consumers.bootstrap_terraform.object_arn]
 
-  statement {
-    effect    = "Allow"
-    actions   = ["sqs:*"]
-    resources = [local.terraform_drift_missed_queue_arn]
-  }
-
-  statement {
-    effect = "Allow"
-
-    actions = ["s3:*"]
-    resources = [
-      "arn:aws:s3:::${local.pipeline_artifact_bucket_name}",
-      "arn:aws:s3:::${local.pipeline_artifact_bucket_name}/*",
-    ]
-  }
-
-  statement {
-    effect = "Allow"
-
-    actions = ["s3:*"]
-    resources = [
-      "arn:aws:s3:::${var.state_bucket_name}",
-      "arn:aws:s3:::${var.state_bucket_name}/${var.state_backend_key}",
-      "arn:aws:s3:::${var.state_bucket_name}/${local.state_lockfile_key}",
-    ]
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:PrincipalArn"
+      values   = [local.saved_plan_approval_consumers.bootstrap_terraform.role_arn]
+    }
   }
 
   dynamic "statement" {
@@ -287,30 +156,13 @@ data "aws_iam_policy_document" "bootstrap_deploy_permissions_boundary" {
       actions = ["iam:*"]
       resources = concat(
         local.bootstrap_pipeline_policy_arn_patterns,
+        [local.source_path_start_build_guardrail_policy_arn],
         local.terraform_drift_managed_policy_arns,
         local.bootstrap_pipeline_role_arn_patterns,
+        [local.terraform_drift_on_demand_role_arn],
+        [local.app_acceptance_publisher_boundary_policy_arn],
         local.foundation_pipeline_enabled ? [
           local.foundation_ecr_retention_boundary_policy_arn,
-        ] : [],
-      )
-    }
-  }
-
-  dynamic "statement" {
-    for_each = local.app_pipeline_enabled || local.foundation_pipeline_enabled ? [1] : []
-
-    content {
-      effect = "Allow"
-
-      actions = ["s3:*"]
-      resources = concat(
-        local.app_pipeline_enabled ? [
-          local.app_retained_artifact_bucket_arn,
-          local.app_pipeline_execution_artifact_bucket_arn,
-          local.app_static_fast_execution_artifact_bucket_arn,
-        ] : [],
-        local.foundation_pipeline_enabled ? [
-          local.foundation_pipeline_artifact_bucket_arn,
         ] : [],
       )
     }
@@ -464,14 +316,18 @@ data "aws_iam_policy_document" "bootstrap_deploy_permissions_boundary" {
     }
   }
 
-  statement {
-    effect = "Allow"
+  dynamic "statement" {
+    for_each = local.app_pipeline_enabled ? [] : [1]
 
-    actions = [
-      "kms:CreateAlias",
-      "kms:UpdateAlias",
-    ]
-    resources = ["arn:aws:kms:${var.aws_region}:${var.aws_account_id}:alias/${local.deployment_target.projectId}-pipeline-${local.deployment_target.accountLabel}-${local.deployment_target.environmentId}*artifacts"]
+    content {
+      effect = "Allow"
+
+      actions = [
+        "kms:CreateAlias",
+        "kms:UpdateAlias",
+      ]
+      resources = ["arn:aws:kms:${var.aws_region}:${var.aws_account_id}:alias/${local.deployment_target.projectId}-pipeline-${local.deployment_target.accountLabel}-${local.deployment_target.environmentId}*artifacts"]
+    }
   }
 
   statement {
@@ -703,7 +559,7 @@ data "aws_iam_policy_document" "github_trigger" {
       "codepipeline:StartPipelineExecution",
     ]
 
-    resources = [aws_codepipeline.development[0].arn]
+    resources = [local.pipeline_arn]
   }
 }
 
@@ -1051,6 +907,16 @@ resource "aws_iam_role_policy" "pipeline" {
   policy = data.aws_iam_policy_document.pipeline[0].json
 }
 
+check "bootstrap_pipeline_inline_policy_size" {
+  assert {
+    condition = (
+      !local.pipeline_enabled
+      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.pipeline[0].json))) <= 10240, false)
+    )
+    error_message = "The Bootstrap pipeline inline policy must remain within IAM's 10,240-character role-policy quota."
+  }
+}
+
 data "aws_iam_policy_document" "codebuild_common" {
   count = local.pipeline_enabled ? 1 : 0
 
@@ -1181,7 +1047,6 @@ data "aws_iam_policy_document" "terraform_plan" {
       "codebuild:ListTagsForResource",
       "codeconnections:ListTagsForResource",
       "codepipeline:GetPipeline",
-      "codepipeline:ListActionExecutions",
       "codepipeline:ListTagsForResource",
       "iam:GetOpenIDConnectProvider",
       "iam:GetRole",
@@ -1197,6 +1062,13 @@ data "aws_iam_policy_document" "terraform_plan" {
       "kms:GetKeyRotationStatus",
       "kms:ListAliases",
       "kms:ListResourceTags",
+      "lambda:GetFunction",
+      "lambda:GetFunctionCodeSigningConfig",
+      "lambda:GetFunctionConcurrency",
+      "lambda:GetPolicy",
+      "lambda:GetRuntimeManagementConfig",
+      "lambda:ListTags",
+      "lambda:ListVersionsByFunction",
       "logs:DescribeLogGroups",
       "logs:ListTagsForResource",
       "s3:Get*",
@@ -1206,22 +1078,10 @@ data "aws_iam_policy_document" "terraform_plan" {
   }
 
   statement {
-    sid    = "ReadExactTerraformDriftScheduleForPlan"
-    effect = "Allow"
-
-    actions   = ["scheduler:GetSchedule"]
-    resources = [local.terraform_drift_schedule_arn]
-  }
-
-  statement {
-    sid    = "ReadExactTerraformDriftMissedQueueForPlan"
-    effect = "Allow"
-
-    actions = [
-      "sqs:GetQueueAttributes",
-      "sqs:ListQueueTags",
-    ]
-    resources = [local.terraform_drift_missed_queue_arn]
+    sid       = "ReadBootstrapPipelineActionExecutions"
+    effect    = "Allow"
+    actions   = ["codepipeline:ListActionExecutions"]
+    resources = [local.pipeline_arn]
   }
 
 }
@@ -1234,10 +1094,126 @@ resource "aws_iam_role_policy" "terraform_plan" {
   policy = data.aws_iam_policy_document.terraform_plan[0].json
 }
 
+data "aws_iam_policy_document" "terraform_plan_pipeline_state" {
+  count = local.pipeline_enabled ? 1 : 0
+
+  dynamic "statement" {
+    for_each = local.deployment_target.environmentId == "main" ? [1] : []
+    content {
+      sid       = "ReadProductionBootstrapInputExecution"
+      effect    = "Allow"
+      actions   = ["codepipeline:GetPipelineExecution"]
+      resources = [local.pipeline_arn]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = local.deployment_target.environmentId == "main" ? [1] : []
+    content {
+      sid       = "InspectFirstBootstrapAcceptanceVersion"
+      effect    = "Allow"
+      actions   = ["s3:ListBucketVersions"]
+      resources = [local.terraform_authority_bucket_arn]
+      condition {
+        test     = "StringEquals"
+        variable = "s3:prefix"
+        values   = [trimprefix(local.terraform_bootstrap_acceptance_pointer_object_arn, "${local.terraform_authority_bucket_arn}/")]
+      }
+      condition {
+        test     = "NumericEquals"
+        variable = "s3:max-keys"
+        values   = ["1"]
+      }
+    }
+  }
+
+  statement {
+    sid       = "ReadBootstrapPipelineStateForPlan"
+    effect    = "Allow"
+    actions   = ["codepipeline:GetPipelineState"]
+    resources = [local.pipeline_arn]
+  }
+
+  statement {
+    sid       = "DecryptBootstrapTerraformAuthorityThroughS3"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [var.aws_account_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${var.aws_region}.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:aws:s3:arn"
+      values   = [local.terraform_authority_bucket_arn]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "terraform_plan_pipeline_state" {
+  count = local.pipeline_enabled ? 1 : 0
+
+  name   = "${local.terraform_plan_role_name}-pipeline-state"
+  role   = aws_iam_role.terraform_plan[0].id
+  policy = data.aws_iam_policy_document.terraform_plan_pipeline_state[0].json
+}
+
+check "terraform_plan_inline_policy_size" {
+  assert {
+    condition = (
+      !local.pipeline_enabled
+      || try(
+        length(jsonencode(jsondecode(data.aws_iam_policy_document.terraform_plan[0].json)))
+        + length(jsonencode(jsondecode(data.aws_iam_policy_document.terraform_plan_pipeline_state[0].json))) <= 10240,
+        false,
+      )
+    )
+    error_message = "The Bootstrap Terraform Plan aggregate inline policies must remain within IAM's 10,240-character role-policy quota."
+  }
+}
+
 data "aws_iam_policy_document" "terraform_smoke" {
   count = local.pipeline_enabled ? 1 : 0
 
   source_policy_documents = [data.aws_iam_policy_document.terraform_plan[0].json]
+
+  statement {
+    sid       = "ReadBootstrapPipelineStateForSmoke"
+    effect    = "Allow"
+    actions   = ["codepipeline:GetPipelineState"]
+    resources = [local.pipeline_arn]
+  }
+
+  statement {
+    sid       = "AssumeBootstrapAcceptancePublisher"
+    effect    = "Allow"
+    actions   = ["sts:AssumeRole"]
+    resources = [local.bootstrap_terraform_acceptance_publisher_role_arn]
+  }
+
+  statement {
+    sid    = "ReadAuthorityBucketPoliciesForSmoke"
+    effect = "Allow"
+
+    actions = [
+      "s3:GetBucketPolicy",
+      "s3:GetBucketVersioning",
+    ]
+    resources = [
+      local.app_retained_artifact_bucket_arn,
+      local.terraform_authority_bucket_arn,
+    ]
+  }
 
   statement {
     sid       = "DenyCrossAccountBootstrapStateKeyUse"
@@ -1292,7 +1268,12 @@ resource "aws_iam_role_policy" "terraform_smoke" {
 data "aws_iam_policy_document" "terraform_apply" {
   count = local.pipeline_enabled ? 1 : 0
 
-  source_policy_documents = [data.aws_iam_policy_document.codebuild_common[0].json]
+  source_policy_documents = concat(
+    [data.aws_iam_policy_document.codebuild_common[0].json],
+    local.saved_plan_approval_authority_enabled ? [
+      data.aws_iam_policy_document.saved_plan_approval_bootstrap_apply_read[0].json,
+    ] : [],
+  )
 
   statement {
     sid    = "WriteBootstrapStateBackend"
@@ -1610,6 +1591,11 @@ resource "aws_iam_role_policy_attachment" "terraform_apply_app_lane_policy_admin
 resource "aws_iam_role_policy" "terraform_apply" {
   count = local.pipeline_enabled ? 1 : 0
 
+  depends_on = [
+    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_pipeline_management,
+    terraform_data.bootstrap_apply_authorization_propagation,
+  ]
+
   name   = "${local.terraform_apply_role_name}-policy"
   role   = aws_iam_role.terraform_apply[0].id
   policy = data.aws_iam_policy_document.terraform_apply[0].json
@@ -1739,6 +1725,28 @@ data "aws_iam_policy_document" "terraform_apply_artifact_management" {
     )
   }
 
+  dynamic "statement" {
+    for_each = local.terraform_baseline_authority_enabled ? [1] : []
+
+    content {
+      sid    = "ManageExactTerraformDriftLogGroups"
+      effect = "Allow"
+      actions = [
+        "logs:CreateLogGroup",
+        "logs:DeleteLogGroup",
+        "logs:DeleteRetentionPolicy",
+        "logs:ListTagsForResource",
+        "logs:PutRetentionPolicy",
+        "logs:TagResource",
+        "logs:UntagResource",
+      ]
+      resources = concat(
+        local.terraform_drift_codebuild_log_group_arns,
+        [for arn in local.terraform_drift_codebuild_log_group_arns : "${arn}:*"],
+      )
+    }
+  }
+
   statement {
     sid    = "ManageBootstrapArtifactBucket"
     effect = "Allow"
@@ -1805,42 +1813,6 @@ resource "aws_iam_role_policy_attachment" "terraform_apply_artifact_management" 
   policy_arn = aws_iam_policy.terraform_apply_artifact_management[0].arn
 }
 
-resource "aws_codebuild_project" "validate" {
-  count = local.pipeline_enabled ? 1 : 0
-
-  name          = local.validate_project_name
-  service_role  = aws_iam_role.terraform_plan[0].arn
-  build_timeout = 20
-
-  artifacts {
-    type = "CODEPIPELINE"
-  }
-
-  environment {
-    compute_type                = "BUILD_GENERAL1_SMALL"
-    image                       = "aws/codebuild/standard:8.0"
-    type                        = "LINUX_CONTAINER"
-    image_pull_credentials_type = "CODEBUILD"
-  }
-
-  logs_config {
-    cloudwatch_logs {
-      group_name  = module.bootstrap_pipeline_codebuild_log_groups.log_groups[local.validate_project_name].name
-      stream_name = "validate"
-    }
-  }
-
-  source {
-    type = "CODEPIPELINE"
-    buildspec = templatefile("${path.module}/buildspec-bootstrap-validate.yml.tftpl", {
-      aws_account_id             = var.aws_account_id
-      terraform_install_commands = jsonencode(local.terraform_install_commands)
-    })
-  }
-
-  tags = local.common_tags
-}
-
 resource "aws_codebuild_project" "terraform_plan" {
   count = local.pipeline_enabled ? 1 : 0
 
@@ -1867,15 +1839,8 @@ resource "aws_codebuild_project" "terraform_plan" {
   }
 
   source {
-    type = "CODEPIPELINE"
-    buildspec = templatefile("${path.module}/buildspec-bootstrap-plan.yml.tftpl", {
-      aws_region                 = local.deployment_target.region
-      backend_key                = local.bootstrap_lane_authority.backendKey
-      pipeline_tfvars_base64     = base64encode(jsonencode(local.pipeline_tfvars))
-      state_bucket_name          = aws_s3_bucket.state.bucket
-      state_kms_alias            = var.state_kms_alias
-      terraform_install_commands = jsonencode(local.terraform_install_commands)
-    })
+    type      = "CODEPIPELINE"
+    buildspec = "infra/terraform/bootstrap/buildspec-bootstrap-plan.yml"
   }
 
   tags = local.common_tags
@@ -1907,14 +1872,8 @@ resource "aws_codebuild_project" "terraform_apply" {
   }
 
   source {
-    type = "CODEPIPELINE"
-    buildspec = templatefile("${path.module}/buildspec-bootstrap-apply.yml.tftpl", {
-      aws_region                 = local.deployment_target.region
-      backend_key                = local.bootstrap_lane_authority.backendKey
-      state_bucket_name          = aws_s3_bucket.state.bucket
-      state_kms_alias            = var.state_kms_alias
-      terraform_install_commands = jsonencode(local.terraform_install_commands)
-    })
+    type      = "CODEPIPELINE"
+    buildspec = "infra/terraform/bootstrap/buildspec-bootstrap-apply.yml"
   }
 
   tags = local.common_tags
@@ -1946,16 +1905,8 @@ resource "aws_codebuild_project" "bootstrap_smoke" {
   }
 
   source {
-    type = "CODEPIPELINE"
-    buildspec = templatefile("${path.module}/buildspec-bootstrap-smoke.yml.tftpl", {
-      aws_region                 = local.deployment_target.region
-      backend_key                = local.bootstrap_lane_authority.backendKey
-      pipeline_tfvars_base64     = base64encode(jsonencode(local.pipeline_tfvars))
-      state_bucket_name          = aws_s3_bucket.state.bucket
-      state_kms_alias            = var.state_kms_alias
-      state_kms_key_arn          = aws_kms_key.state.arn
-      terraform_install_commands = jsonencode(local.terraform_install_commands)
-    })
+    type      = "CODEPIPELINE"
+    buildspec = "infra/terraform/bootstrap/buildspec-bootstrap-smoke.yml"
   }
 
   tags = local.common_tags
@@ -1967,6 +1918,19 @@ resource "aws_codepipeline" "development" {
   name          = local.pipeline_name
   pipeline_type = "V2"
   role_arn      = aws_iam_role.pipeline[0].arn
+
+  dynamic "variable" {
+    for_each = local.deployment_target.environmentId == "main" ? {
+      BootstrapInputMode               = "accepted"
+      BootstrapInitializationId        = "disabled"
+      BootstrapInitializationVersionId = "disabled"
+      BootstrapInitializationSha256    = "disabled"
+    } : {}
+    content {
+      name          = variable.key
+      default_value = variable.value
+    }
+  }
 
   artifact_store {
     location = aws_s3_bucket.pipeline_artifacts[0].bucket
@@ -2001,32 +1965,6 @@ resource "aws_codepipeline" "development" {
   }
 
   stage {
-    name = "ValidatePackage"
-
-    action {
-      name             = "Validate"
-      category         = "Build"
-      owner            = "AWS"
-      provider         = "CodeBuild"
-      version          = "1"
-      input_artifacts  = ["SourceOutput"]
-      output_artifacts = ["BootstrapContextOutput"]
-
-      configuration = {
-        EnvironmentVariables = jsonencode([
-          {
-            name  = "BOOTSTRAP_SOURCE_ACTION_SHA"
-            value = "#{BootstrapSource.CommitId}"
-            type  = "PLAINTEXT"
-          },
-        ])
-        PrimarySource = "SourceOutput"
-        ProjectName   = aws_codebuild_project.validate[0].name
-      }
-    }
-  }
-
-  stage {
     name = "TerraformPlan"
 
     action {
@@ -2035,7 +1973,7 @@ resource "aws_codepipeline" "development" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "BootstrapContextOutput"]
+      input_artifacts  = ["SourceOutput"]
       output_artifacts = ["PlanOutput"]
 
       configuration = {
@@ -2049,14 +1987,14 @@ resource "aws_codepipeline" "development" {
     name = "ManualApproval"
 
     action {
-      name     = "ApproveInitialDevelopmentApply"
+      name     = local.bootstrap_approval_action
       category = "Approval"
       owner    = "AWS"
       provider = "Manual"
       version  = "1"
 
       configuration = {
-        CustomData = "Approve only after reviewing PlanOutput/infra/terraform/bootstrap/tfplan.txt and PlanOutput/infra/terraform/bootstrap/tfplan.sha256 for ${local.bootstrap_lane_authority.stateIdentity}. Approval summary must be exact JSON: {\"sourceSha\":\"#{BootstrapSource.CommitId}\",\"accountId\":\"${local.deployment_target.accountId}\",\"deploymentEnvironment\":\"${local.deployment_target.environmentId}\",\"reviewedPlanChecksum\":\"<tfplan sha256>\"}."
+        CustomData = "Review and approve this exact saved plan only through ${local.deployment_cli_command} review bootstrap --execution-id #{codepipeline.PipelineExecutionId} --source-sha #{BootstrapSource.CommitId}. The command creates the bounded approval evidence and transport for ${local.bootstrap_lane_authority.stateIdentity}; do not hand-author an approval summary."
       }
     }
   }
@@ -2065,12 +2003,13 @@ resource "aws_codepipeline" "development" {
     name = "TerraformApply"
 
     action {
-      name            = "ApplySavedPlan"
-      category        = "Build"
-      owner           = "AWS"
-      provider        = "CodeBuild"
-      version         = "1"
-      input_artifacts = ["SourceOutput", "PlanOutput", "BootstrapContextOutput"]
+      name             = "ApplySavedPlan"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      input_artifacts  = ["SourceOutput", "PlanOutput"]
+      output_artifacts = ["BootstrapApplyOutput"]
 
       configuration = {
         PrimarySource = "SourceOutput"
@@ -2088,14 +2027,10 @@ resource "aws_codepipeline" "development" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "PlanOutput", "BootstrapContextOutput"]
+      input_artifacts  = ["SourceOutput", "PlanOutput", "BootstrapApplyOutput"]
       output_artifacts = ["BootstrapSmokeEvidenceOutput"]
 
       configuration = {
-        EnvironmentVariables = jsonencode([
-          { name = "TERRAFORM_BASELINE_PIPELINE_EXECUTION_ID", value = "#{codepipeline.PipelineExecutionId}", type = "PLAINTEXT" },
-          { name = "PIPELINE_SOURCE_SHA", value = "#{BootstrapSource.CommitId}", type = "PLAINTEXT" },
-        ])
         PrimarySource = "SourceOutput"
         ProjectName   = aws_codebuild_project.bootstrap_smoke[0].name
       }

@@ -26,7 +26,7 @@
 | zkVM guest entrypoint                 | `zkvm/methods/guest/src/main.rs`                                                                                                           |
 | zkVM guest 集計ロジック               | `zkvm/methods/guest/src/tally.rs`                                                                                                          |
 | Rust shared contract core             | `zkvm/contract-core/`                                                                                                                      |
-| Journal パース                        | `packages/verification/src/verification/journal-parser.ts`                                                                                 |
+| Journal decode / host JSON admission  | `zkvm/host/src/main.rs`, `packages/zkvm-contract/src/zkvm/host-io.ts`                                                                      |
 | 検証チェック ID / required 判定の基礎 | `packages/verification/src/verification/verification-checks.ts`                                                                            |
 | 検証チェック評価                      | `packages/verification/src/verification/build-verification-checks.ts`, `packages/verification/src/verification/engine/evaluate-checks.ts`  |
 | 検証ステップ生成                      | `packages/verification/src/verification/build-verification-steps.ts`                                                                       |
@@ -37,7 +37,7 @@
 | bitmap proof                          | `apps/api/src/server/api/handlers/bitmapProof.ts`, `packages/verification/src/verification/bitmap-verifier.ts`                             |
 | 公開 bundle 生成                      | `packages/verification/src/verification/verification-bundle.ts`, `infra/docker/entrypoint.sh`                                              |
 | bundle/report 配布                    | `apps/api/src/server/api/handlers/verificationBundles.ts`                                                                                  |
-| ImageID mapping / variant policy      | `public/imageId-mapping.json`, `packages/validation/src/image-id-policy.ts`, `packages/verification/src/verification/expected-image-id.ts` |
+| ImageID mapping / variant policy      | `public/imageId-mapping.json`, `packages/validation/src/image-id-policy.js`, `packages/verification/src/verification/expected-image-id.ts` |
 
 Contract cross-check (2026-06-29):
 
@@ -188,7 +188,7 @@ vote commitment は domain-separated SHA-256 commitment である。domain tag �
 - commitment は 32 バイト固定、Merkle path は node count と 32 バイト node 列で固定する。
 
 詳細な byte layout と互換テストは `packages/zkvm-contract/src/zkvm/types.ts` と
-`packages/zkvm-contract/src/zkvm/__tests__/ts-rust-compatibility.test.ts` を参照する。
+`packages/zkvm-contract/src/zkvm/ts-rust-compatibility.test.ts` を参照する。
 
 ---
 

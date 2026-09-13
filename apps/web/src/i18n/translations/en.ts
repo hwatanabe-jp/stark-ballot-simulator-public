@@ -8,13 +8,10 @@ export const en = {
   },
   pages: {
     home: {
-      welcome: 'Welcome to STARK Ballot Simulator',
       description: 'Educational demo of verifiable voting with STARK proofs',
     },
     vote: {
       title: 'Vote',
-      overview:
-        'Select your preferred option from the choices below. Your vote will be encrypted and added to the voting pool.',
       selectionTitle: 'Select your choice',
       selectionLabel: 'Vote selection',
       optionLabel: 'Option {{option}}',
@@ -104,8 +101,6 @@ export const en = {
       },
       stepsCard: {
         preparing: 'Preparing verification...',
-        footnoteStarkLast: 'Note: STARK verification runs last',
-        footnoteClickable: 'Click an item to highlight related knowledge.',
         evidence: {
           local: 'Local',
           public: 'Public',

@@ -1,10 +1,21 @@
 data "aws_iam_policy_document" "app_apply_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  source_policy_documents = [data.aws_iam_policy_document.app_deploy_permissions_boundary[0].json]
+  source_policy_documents = [
+    data.aws_iam_policy_document.app_deploy_permissions_boundary[0].json,
+  ]
 
   statement {
-    sid    = "AppStateApplyWrite"
+    effect = "Allow"
+
+    actions = ["s3:GetObjectVersion"]
+    resources = [
+      local.saved_plan_approval_consumers.app_verifier_preflight.object_arn,
+      local.saved_plan_approval_consumers.app_terraform.object_arn,
+    ]
+  }
+
+  statement {
     effect = "Allow"
 
     actions   = ["s3:PutObject"]

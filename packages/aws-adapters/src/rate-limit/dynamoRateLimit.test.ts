@@ -4,7 +4,7 @@ import {
   resetSharedDynamoDocumentClientForTests,
   setSharedDynamoDocumentClientForTests,
 } from '@stark-ballot/aws-adapters/aws/dynamodbConfig';
-import { targetRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { targetRuntimeProfile } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { createDynamoServerRateLimiter, DynamoServerRateLimiter, DynamoVoteRateLimiter } from './dynamoRateLimit';
 import type { RateLimitStore } from './dynamoRateLimitStore';
 

@@ -1,17 +1,15 @@
 data "aws_iam_policy_document" "app_terraform_smoke" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  source_policy_documents = [data.aws_iam_policy_document.app_codebuild_common[0].json]
+  source_policy_documents = local.deployment_target.environmentId == "main" ? [
+    data.aws_iam_policy_document.app_initialization_execution_read[0].json,
+  ] : []
 
   statement {
-    sid    = "UseRetainedAcceptanceAuthority"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-      "s3:PutObject",
-    ]
-    resources = [local.app_retained_accepted_deployment_objects_arn]
+    sid       = "AssumeAppAcceptancePublisher"
+    effect    = "Allow"
+    actions   = ["sts:AssumeRole"]
+    resources = [local.app_acceptance_publisher_role_arn]
   }
 
   statement {
@@ -22,29 +20,58 @@ data "aws_iam_policy_document" "app_terraform_smoke" {
   }
 
   statement {
-    sid    = "ReadRetainedSignaturePreflightAndVerifierPackageForSmoke"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-    ]
-    resources = [
-      local.app_retained_signature_preflight_objects_arn,
-      local.app_retained_image_signature_verifier_package_objects_arn,
-    ]
+    sid     = "ReadExactAppAcceptancePreparationForSmoke"
+    effect  = "Allow"
+    actions = ["s3:GetObjectVersion"]
+    resources = concat(
+      local.app_retained_acceptance_attempt_evidence_object_arns,
+      [
+        local.app_retained_recovery_manifest_objects_arn,
+        local.app_retained_lambda_artifact_objects_arn,
+        local.app_retained_static_frontend_artifact_objects_arn,
+        local.app_foundation_acceptance_records_objects_arn,
+        local.app_toolchain_accepted_pointer_object_arn,
+        local.app_toolchain_candidate_records_objects_arn,
+        local.app_toolchain_release_records_objects_arn,
+        local.app_prover_accepted_pointer_object_arn,
+        local.app_prover_candidate_records_objects_arn,
+        local.app_prover_release_records_objects_arn,
+      ],
+    )
   }
 
   statement {
-    sid    = "ReadImmutableReleaseAuthority"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-    ]
+    sid       = "DecryptFoundationAcceptanceForAppSmoke"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [var.aws_account_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${var.aws_region}.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:aws:s3:arn"
+      values   = [local.terraform_authority_bucket_arn]
+    }
+  }
+
+  statement {
+    sid     = "ReadRetainedSignaturePreflightAndVerifierPackageForSmoke"
+    effect  = "Allow"
+    actions = ["s3:GetObjectVersion"]
     resources = [
-      local.app_deployment_record_objects_arn,
-      local.app_toolchain_artifact_records_objects_arn,
-      local.app_prover_release_records_objects_arn,
+      local.app_retained_signature_preflight_objects_arn,
+      local.app_retained_image_signature_verifier_package_objects_arn,
     ]
   }
 
@@ -124,7 +151,7 @@ data "aws_iam_policy_document" "app_terraform_smoke" {
     effect = "Allow"
 
     actions   = ["iam:SimulatePrincipalPolicy"]
-    resources = [aws_iam_role.app_terraform_smoke[0].arn]
+    resources = [local.app_terraform_smoke_role_arn]
   }
 
   statement {
@@ -216,7 +243,16 @@ data "aws_iam_policy_document" "app_terraform_smoke" {
 resource "aws_iam_role_policy" "app_terraform_smoke" {
   count = local.app_pipeline_enabled ? 1 : 0
 
+  depends_on = [aws_iam_role_policy_attachment.app_codebuild_common_smoke]
+
   name   = "${local.app_terraform_smoke_role_name}-policy"
   role   = aws_iam_role.app_terraform_smoke[0].id
   policy = data.aws_iam_policy_document.app_terraform_smoke[0].json
+
+  lifecycle {
+    precondition {
+      condition     = length(jsonencode(jsondecode(data.aws_iam_policy_document.app_terraform_smoke[0].json))) <= 10240
+      error_message = "The app Terraform smoke inline policy must remain within the IAM 10,240-character role-policy quota."
+    }
+  }
 }

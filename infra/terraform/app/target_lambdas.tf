@@ -68,6 +68,7 @@ resource "aws_lambda_function" "target" {
       local.target_lambda_common_environment,
       each.key == "public_api" ? {
         RUNTIME_PROFILE = local.dynamodb_recovery_quiesced ? "target-aws-async-quiesced" : "target-aws-async"
+        TRUSTED_PROXY   = local.cloudflare_origin_required ? "cloudflare" : "api-gateway"
       } : {},
       each.key == "semaphore_janitor" ? {
         OPS_LEDGER_LOG_GROUP_NAME     = aws_cloudwatch_log_group.ops_ledger.name
@@ -78,6 +79,9 @@ resource "aws_lambda_function" "target" {
   }
 
   depends_on = [
+    # Do not trust Cloudflare's client-IP header until all viewer behaviors
+    # enforce the source-pinned origin token and their deployment has completed.
+    aws_cloudfront_distribution.frontend,
     aws_cloudwatch_log_group.target_lambdas,
     aws_iam_role_policy.target_lambda_finalization_writer,
     aws_iam_role_policy.target_lambda_proof_dispatcher,

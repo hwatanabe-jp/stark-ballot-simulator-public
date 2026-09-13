@@ -6,10 +6,31 @@ license metadata.
 
 ## Active Helpers
 
+### audit-bundle.sh
+
+Runs the public-book local audit with the shared ZIP, artifact, journal and
+verifier-report parsers. Have `node`, `pnpm`, and `jq` on `PATH`, install the
+repository dependencies, and run these commands from the repository root:
+
+```bash
+pnpm build:verifier-service
+bash scripts/docs/audit-bundle.sh /absolute/path/to/bundle.zip
+```
+
+The build command enables `--features production` and produces the required
+release executable at `verifier-service/target/release/verifier-service`.
+The audit accepts `BUNDLE_ZIP [default|x86_64]`; the optional second argument
+selects the expected guest Image ID variant from the repository mapping and
+defaults to `default`. It does not select the auditor's CPU. Each invocation
+snapshots its input into a new temporary directory, stops on the first failed check, and retains
+that directory for inspection. A passing bundle audit is not the browser's
+complete verification verdict. The explanation lives in
+[`public-book/src/reproducibility/audit-bundle.md`](../../public-book/src/reproducibility/audit-bundle.md).
+
 ### build-mdbook.sh
 
 Builds the Public Specs with the exact supported `mdbook` 0.5.4 and
-`mdbook-mermaid` 0.17.0 pair. The preprocessor declares a semver-compatible
+`mdbook-mermaid` 0.17.1 pair. The preprocessor declares a semver-compatible
 `mdbook-preprocessor` 0.5.x dependency but emits an exact-patch mismatch
 diagnostic; the helper removes only that one known message for this exact
 pair. It preserves every other diagnostic and the original build exit status.
@@ -51,8 +72,12 @@ Compares the tracked pnpm and Cargo license JSON/CSV artifacts with the current
 lockfiles without modifying files or accessing the network. Its explicit
 eight-artifact manifest also requires each generated license file to exist, be
 tracked, and remain unignored in a Git checkout. Generated public trees enforce
-artifact existence before they become their own Git checkout. The package
-script is:
+artifact existence before they become their own Git checkout. For pnpm's
+multi-document lockfile, it selects the workspace dependency document used by
+`pnpm licenses list`; the separate environment document pins pnpm and its
+configuration dependencies. Missing or ambiguous workspace documents fail the
+check, and top-level section order does not affect package selection. The
+package script is:
 
 ```bash
 pnpm licenses:check
@@ -60,7 +85,13 @@ pnpm licenses:check
 
 ### regenerate-license-metadata.sh
 
-Regenerates sanitized third-party license metadata under `docs/licenses/`. The package script is:
+Regenerates sanitized third-party license metadata under `docs/licenses/`.
+String package descriptions have the selected emoji code points removed, then
+leading ASCII spaces stripped; this cleanup preserves package identities and
+license fields. The helper formats JSON with the shared Oxfmt configuration
+and finishes with `pnpm public-safety:scan`. The separate `pnpm licenses:check`
+checks metadata freshness without writing files; it does not perform this
+cleanup or formatting. The regeneration command is:
 
 ```bash
 pnpm licenses:regen

@@ -10,6 +10,8 @@ import { resolveCaptureOutputPath } from './lib/public-contract-cli';
 import {
   comparePublicContractSnapshots,
   computePublicContractHash,
+  parseDriftClassification,
+  parsePublicContractSnapshot,
   type PublicContractSnapshot,
 } from './lib/public-contract-policy';
 import { PUBLIC_CONTRACT_CALLER_INVENTORY } from './public-contract-callers';
@@ -23,18 +25,20 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
 }
 
 function cloneSnapshot(snapshot: PublicContractSnapshot): PublicContractSnapshot {
-  return JSON.parse(JSON.stringify(snapshot)) as PublicContractSnapshot;
+  return structuredClone(snapshot);
 }
 
 function refreshContractHash(snapshot: PublicContractSnapshot): void {
   snapshot.contractHash = computePublicContractHash(snapshot);
 }
 
-function classifyDrift(snapshot: PublicContractSnapshot, allowedDriftPaths: string[]) {
+function classifyDrift(baseline: PublicContractSnapshot, current: PublicContractSnapshot, allowedDriftPaths: string[]) {
   return {
     comparatorType: 'public-contract-drift-classification' as const,
-    baselineContractHash: snapshot.contractHash,
-    baselineSourceSha: snapshot.sourceSha,
+    baselineContractHash: baseline.contractHash,
+    baselineSourceSha: baseline.sourceSha,
+    currentContractHash: current.contractHash,
+    reason: 'Focused test classification',
     allowedDriftPaths,
   };
 }
@@ -50,10 +54,14 @@ function expectedProbeRequestId(probeId: string): string {
 }
 
 const BASELINE_CAPTURED_AT = '2026-06-17T00:00:00.000Z';
-const baselineSnapshot = await capturePublicContractSnapshot({ capturedAt: BASELINE_CAPTURED_AT });
-const reviewedBaselineSnapshot = JSON.parse(
+const baselineSnapshot = await capturePublicContractSnapshot();
+const reviewedBaselineInput: unknown = JSON.parse(
   readFileSync(path.join(process.cwd(), 'scripts/api-contract/baselines/reviewed-public-contract.json'), 'utf8'),
-) as PublicContractSnapshot;
+);
+const reviewedBaselineSnapshot = parsePublicContractSnapshot(
+  reviewedBaselineInput,
+  'Reviewed public-contract snapshot',
+);
 
 function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = process.env): string {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8', env });
@@ -523,11 +531,9 @@ describe('public contract baseline comparator', () => {
     }
   });
 
-  it('uses deterministic capture timestamps by default', async () => {
-    const snapshot = await capturePublicContractSnapshot();
-
-    expect(snapshot.capturedAt).toBe('1970-01-01T00:00:00.000Z');
-  }, 15_000);
+  it('uses deterministic capture timestamps by default', () => {
+    expect(baselineSnapshot.capturedAt).toBe('1970-01-01T00:00:00.000Z');
+  });
 
   it('requires source-ref captures to name a non-authority output path', () => {
     expect(() => resolveCaptureOutputPath({ sourceRef: 'HEAD' })).toThrow(/explicit --out/u);
@@ -535,11 +541,10 @@ describe('public contract baseline comparator', () => {
   });
 
   it('captures identical mounted behavior for the same source tree', async () => {
-    const first = await capturePublicContractSnapshot({ capturedAt: BASELINE_CAPTURED_AT });
-    const second = await capturePublicContractSnapshot({ capturedAt: BASELINE_CAPTURED_AT });
+    const snapshot = await capturePublicContractSnapshot();
 
-    expect(second.mountedBehavior).toEqual(first.mountedBehavior);
-    expect(second.contractHash).toBe(first.contractHash);
+    expect(snapshot.mountedBehavior).toEqual(baselineSnapshot.mountedBehavior);
+    expect(snapshot.contractHash).toBe(baselineSnapshot.contractHash);
   }, 15_000);
 
   it('isolates mounted behavior from conflicting callback environment values', async () => {
@@ -552,6 +557,7 @@ describe('public contract baseline comparator', () => {
       process.env['FINALIZE_CALLBACK_MAX_SKEW_MS'] = '1';
       const snapshot = await capturePublicContractSnapshot({ capturedAt: BASELINE_CAPTURED_AT });
 
+      expect(snapshot.capturedAt).toBe(BASELINE_CAPTURED_AT);
       expect(snapshot.mountedBehavior).toEqual(baselineSnapshot.mountedBehavior);
       expect(snapshot.contractHash).toBe(baselineSnapshot.contractHash);
     } finally {
@@ -623,9 +629,13 @@ describe('public contract baseline comparator', () => {
   });
 
   it('requires complete semantic evidence in the reviewed and current snapshots', () => {
-    expect(comparePublicContractSnapshots(reviewedBaselineSnapshot, baselineSnapshot)).toEqual([]);
+    const classificationInput: unknown = JSON.parse(
+      readFileSync(path.join(process.cwd(), 'scripts/api-contract/baselines/reviewed-contract-metadata.json'), 'utf8'),
+    );
+    const classification = parseDriftClassification(classificationInput);
+    expect(comparePublicContractSnapshots(reviewedBaselineSnapshot, baselineSnapshot, classification)).toEqual([]);
 
-    const baselineWithoutSemantics = cloneSnapshot(reviewedBaselineSnapshot);
+    const baselineWithoutSemantics = cloneSnapshot(baselineSnapshot);
     delete (baselineWithoutSemantics as Partial<PublicContractSnapshot>).schemaSemantics;
     refreshContractHash(baselineWithoutSemantics);
     expect(() => comparePublicContractSnapshots(baselineWithoutSemantics, baselineSnapshot)).toThrow(
@@ -635,7 +645,7 @@ describe('public contract baseline comparator', () => {
     const currentWithoutSemantics = cloneSnapshot(baselineSnapshot);
     delete (currentWithoutSemantics as Partial<PublicContractSnapshot>).schemaSemantics;
     refreshContractHash(currentWithoutSemantics);
-    expect(() => comparePublicContractSnapshots(reviewedBaselineSnapshot, currentWithoutSemantics)).toThrow(
+    expect(() => comparePublicContractSnapshots(baselineSnapshot, currentWithoutSemantics)).toThrow(
       /Current public-contract snapshot has no schema semantic evidence/u,
     );
   });
@@ -689,7 +699,11 @@ describe('public contract baseline comparator', () => {
     refreshContractHash(current);
 
     expect(
-      comparePublicContractSnapshots(baseline, current, classifyDrift(baseline, [`routeContracts.${routeId}.path`])),
+      comparePublicContractSnapshots(
+        baseline,
+        current,
+        classifyDrift(baseline, current, [`routeContracts.${routeId}.path`]),
+      ),
     ).toEqual([]);
   });
 
@@ -703,7 +717,7 @@ describe('public contract baseline comparator', () => {
     refreshContractHash(current);
 
     expect(() =>
-      comparePublicContractSnapshots(baseline, current, classifyDrift(baseline, ['routeContracts.0.path'])),
+      comparePublicContractSnapshots(baseline, current, classifyDrift(baseline, current, ['routeContracts.0.path'])),
     ).toThrow(/unused paths/u);
   });
 
@@ -730,7 +744,7 @@ describe('public contract baseline comparator', () => {
     refreshContractHash(current);
 
     expect(() =>
-      comparePublicContractSnapshots(baseline, current, classifyDrift(baseline, ['schemaExports.10'])),
+      comparePublicContractSnapshots(baseline, current, classifyDrift(baseline, current, ['schemaExports.10'])),
     ).toThrow(/unused paths/u);
   });
 
@@ -744,7 +758,7 @@ describe('public contract baseline comparator', () => {
     refreshContractHash(current);
 
     expect(() =>
-      comparePublicContractSnapshots(baseline, current, classifyDrift(baseline, ['mountedBehavior.0.status'])),
+      comparePublicContractSnapshots(baseline, current, classifyDrift(baseline, current, ['mountedBehavior.0.status'])),
     ).toThrow(/unused paths/u);
   });
 
@@ -762,18 +776,34 @@ describe('public contract baseline comparator', () => {
     expect(() => comparePublicContractSnapshots(wrongComparator, current)).toThrow(/comparatorType/u);
     expect(() =>
       comparePublicContractSnapshots(baseline, current, {
-        ...classifyDrift(baseline, ['routeContracts.unused.path']),
+        ...classifyDrift(baseline, current, ['routeContracts.unused.path']),
         baselineContractHash: '0'.repeat(64),
       }),
     ).toThrow(/not bound/u);
     expect(() =>
       comparePublicContractSnapshots(baseline, current, {
-        ...classifyDrift(baseline, ['routeContracts.unused.path']),
+        ...classifyDrift(baseline, current, ['routeContracts.unused.path']),
+        currentContractHash: '0'.repeat(64),
+      }),
+    ).toThrow(/exact current contract payload/u);
+    expect(() =>
+      comparePublicContractSnapshots(baseline, current, {
+        ...classifyDrift(baseline, current, ['routeContracts.unused.path']),
         comparatorType: 'other-classification' as 'public-contract-drift-classification',
       }),
     ).toThrow(/classification type/u);
     expect(() =>
-      comparePublicContractSnapshots(baseline, current, classifyDrift(baseline, ['routeContracts.unused.path'])),
+      comparePublicContractSnapshots(
+        baseline,
+        current,
+        classifyDrift(baseline, current, ['routeContracts.unused.path']),
+      ),
     ).toThrow(/unused paths/u);
+    expect(() => parsePublicContractSnapshot({ ...baseline, compatibilityMarker: 'retired' }, 'snapshot')).toThrow(
+      /exactly/u,
+    );
+    expect(() =>
+      parseDriftClassification({ ...classifyDrift(baseline, current, []), compatibilityMarker: 'retired' }),
+    ).toThrow(/exactly/u);
   });
 });

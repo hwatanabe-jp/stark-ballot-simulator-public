@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
 import type {
   FinalizationResultAuthority,
@@ -7,13 +8,14 @@ import type {
 } from '@stark-ballot/application/finalize/finalization-types';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import type {
+  BotVoteCommand,
   SessionIdentityRecord,
   SessionVotingRecord,
   StoredVoteRecord,
-  VoteData,
+  UserVoteCommand,
 } from '@stark-ballot/domain/types/sessionRecords';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 import { generateVoteId } from '@stark-ballot/domain/vote/voteId';
-import { createTestCommitment } from '@stark-ballot/test-support/testing/commitment-test-helpers';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
 import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
@@ -51,16 +53,19 @@ function scopedKey(sessionId: string, finalizationId: string): string {
   return `${sessionId}\u0000${finalizationId}`;
 }
 
-function buildVote(choice: VoteData['vote'], randomNibble: string, voteId = generateVoteId()): VoteData {
-  const random = `0x${randomNibble.repeat(64)}`;
-  const commitment = createTestCommitment(choice.charCodeAt(0) - 'A'.charCodeAt(0), random);
+function buildVote(choice: UserVoteCommand['vote'], randomNibble: string, voteId = generateVoteId()): UserVoteCommand {
   return {
     voteId,
     vote: choice,
-    rand: commitment.random,
-    commit: commitment.commitment,
-    path: [],
+    rand: `0x${randomNibble.repeat(64)}`,
     timestamp: 1_730_000_000_000,
+  };
+}
+
+function buildBotVote(choice: BotVoteCommand['vote'], randomNibble: string): BotVoteCommand {
+  return {
+    vote: choice,
+    rand: `0x${randomNibble.repeat(64)}`,
   };
 }
 
@@ -72,23 +77,24 @@ function buildResult(journal = createTestJournal()): FinalizationResultAuthority
 }
 
 function buildSucceededRecord(
-  sessionId: string,
+  sessionId: SessionId,
   finalizationId: string,
   result = buildResult(),
 ): Extract<FinalizationRecord, { state: { status: 'succeeded' } }> {
+  const admittedFinalizationId = asFinalizationId(finalizationId);
   return {
     sessionId,
-    finalizationId,
+    finalizationId: admittedFinalizationId,
     scenarioContext,
     state: {
       status: 'succeeded',
-      finalizationId,
+      finalizationId: admittedFinalizationId,
       queuedAtMs: 10,
       startedAtMs: 20,
       completedAtMs: 30,
     },
     finalizationResult: {
-      finalizationId,
+      finalizationId: admittedFinalizationId,
       ...result,
     },
   };
@@ -97,7 +103,7 @@ function buildSucceededRecord(
 describe('MockSessionStore', () => {
   let store: MockSessionStore;
   let identity: SessionIdentityRecord;
-  let sessionId: string;
+  let sessionId: SessionId;
   let warnLog: MockInstance<typeof logger.warn>;
 
   function consumeRejectedTransitionLogs(
@@ -121,10 +127,10 @@ describe('MockSessionStore', () => {
 
   async function succeed(
     finalizationId: string,
-    targetSessionId = sessionId,
+    targetSessionId: SessionId = sessionId,
   ): Promise<Extract<FinalizationRecord, { state: { status: 'succeeded' } }>> {
     const record = await store.markFinalizationSucceeded(targetSessionId, {
-      finalizationId,
+      finalizationId: asFinalizationId(finalizationId),
       queuedAtMs: 10,
       startedAtMs: 20,
       completedAtMs: 30,
@@ -183,7 +189,10 @@ describe('MockSessionStore', () => {
     await store.addVote(sessionId, buildVote('A', 'a', voteId));
     const before = requireValue(await store.getVotingRecord(sessionId), 'voting record');
 
-    await expect(store.addVote(sessionId, buildVote('B', 'b', voteId))).rejects.toThrow('Vote ID already exists');
+    await expect(store.addVote(sessionId, buildVote('B', 'b', voteId))).resolves.toEqual({
+      ok: false,
+      error: { code: 'DUPLICATE_VOTE', details: { duplicateKind: 'voteId' } },
+    });
 
     const after = requireValue(await store.getVotingRecord(sessionId), 'voting record');
     expect(after.votes).toEqual(before.votes);
@@ -193,7 +202,7 @@ describe('MockSessionStore', () => {
   });
 
   it('records one verification observation per current finalization idempotently', async () => {
-    const finalizationId = 'verification-observation';
+    const finalizationId = asFinalizationId('verification-observation');
     await succeed(finalizationId);
 
     await expect(
@@ -234,14 +243,14 @@ describe('MockSessionStore', () => {
   });
 
   it('persists proof-bundle delivery metadata outside pure finalization authority', async () => {
-    await store.recordAwsProofBundlePublication(sessionId, 'delivery-separate', {
+    await store.recordAwsProofBundlePublication(sessionId, asFinalizationId('delivery-separate'), {
       s3BundleKey: `sessions/${sessionId}/delivery-separate/bundle.zip`,
       s3ReportKey: `sessions/${sessionId}/delivery-separate/verification.json`,
       s3UploadedAtMs: 35,
     });
 
     expect(await store.getCurrentFinalizationRecord(sessionId)).toBeNull();
-    expect(await store.getAwsVerificationDeliveryMetadata(sessionId, 'delivery-separate')).toEqual({
+    expect(await store.getAwsVerificationDeliveryMetadata(sessionId, asFinalizationId('delivery-separate'))).toEqual({
       s3BundleKey: `sessions/${sessionId}/delivery-separate/bundle.zip`,
       s3ReportKey: `sessions/${sessionId}/delivery-separate/verification.json`,
       s3UploadedAtMs: 35,
@@ -249,7 +258,7 @@ describe('MockSessionStore', () => {
   });
 
   it('deletes staged delivery metadata when an expired session is evicted', async () => {
-    const finalizationId = 'expired-delivery';
+    const finalizationId = asFinalizationId('expired-delivery');
     await store.recordAwsProofBundlePublication(sessionId, finalizationId, {
       s3BundleKey: `sessions/${sessionId}/${finalizationId}/bundle.zip`,
       s3UploadedAtMs: 35,
@@ -268,7 +277,7 @@ describe('MockSessionStore', () => {
 
   it('persists scenario context on queue without a contract generation', async () => {
     const record = await store.markFinalizationQueued(sessionId, {
-      finalizationId: 'queue-context',
+      finalizationId: asFinalizationId('queue-context'),
       queuedAtMs: 10,
       scenarioContext: {
         ...scenarioContext,
@@ -294,7 +303,7 @@ describe('MockSessionStore', () => {
   });
 
   it('records queued to running to succeeded transitions with adapter metadata separate', async () => {
-    const finalizationId = 'transition-success';
+    const finalizationId = asFinalizationId('transition-success');
     await store.markFinalizationQueued(sessionId, {
       finalizationId,
       queuedAtMs: 10,
@@ -334,26 +343,26 @@ describe('MockSessionStore', () => {
 
   it('keeps the current running state when a competing stale finalization arrives', async () => {
     await store.markFinalizationQueued(sessionId, {
-      finalizationId: 'running-current',
+      finalizationId: asFinalizationId('running-current'),
       queuedAtMs: 10,
       scenarioContext,
     });
     await store.markAwsFinalizationRunning(sessionId, {
-      finalizationId: 'running-current',
+      finalizationId: asFinalizationId('running-current'),
       queuedAtMs: 10,
       startedAtMs: 20,
     });
 
     await expect(
       store.markAwsFinalizationRunning(sessionId, {
-        finalizationId: 'running-stale',
+        finalizationId: asFinalizationId('running-stale'),
         queuedAtMs: 11,
         startedAtMs: 21,
         scenarioContext,
         stepFunctionsArn: 'arn:stale',
       }),
     ).resolves.toMatchObject({ status: 'running', finalizationId: 'running-current' });
-    expect(await store.getAwsFinalizationRuntimeMetadata(sessionId, 'running-stale')).toBeUndefined();
+    expect(await store.getAwsFinalizationRuntimeMetadata(sessionId, asFinalizationId('running-stale'))).toBeUndefined();
     consumeRejectedTransitionLogs({
       finalizationId: 'running-stale',
       reason: 'EXECUTION_MISMATCH',
@@ -362,7 +371,7 @@ describe('MockSessionStore', () => {
   });
 
   it('keeps USER_CANCELLED failed state when a running update arrives later', async () => {
-    const finalizationId = 'cancel-sticky';
+    const finalizationId = asFinalizationId('cancel-sticky');
     await store.markFinalizationQueued(sessionId, {
       finalizationId,
       queuedAtMs: 10,
@@ -393,7 +402,7 @@ describe('MockSessionStore', () => {
     for (const status of ['succeeded', 'failed', 'timeout'] as const) {
       const localStore = new MockSessionStore();
       const localIdentity = await localStore.createSession();
-      const finalizationId = `terminal-${status}`;
+      const finalizationId = asFinalizationId(`terminal-${status}`);
       if (status === 'succeeded') {
         await localStore.markFinalizationSucceeded(localIdentity.sessionId, {
           finalizationId,
@@ -435,7 +444,7 @@ describe('MockSessionStore', () => {
   });
 
   it('does not apply success side effects when success arrives after failure', async () => {
-    const finalizationId = 'failure-before-success';
+    const finalizationId = asFinalizationId('failure-before-success');
     await store.markFinalizationFailed(sessionId, {
       finalizationId,
       queuedAtMs: 10,
@@ -511,19 +520,19 @@ describe('MockSessionStore', () => {
 
   it('prevents stale execution updates through the explicit current index', async () => {
     const current = await store.markFinalizationQueued(sessionId, {
-      finalizationId: 'indexed-current',
+      finalizationId: asFinalizationId('indexed-current'),
       queuedAtMs: 10,
       scenarioContext,
     });
     await store.markFinalizationRunning(sessionId, {
-      finalizationId: 'indexed-stale',
+      finalizationId: asFinalizationId('indexed-stale'),
       queuedAtMs: 11,
       startedAtMs: 21,
       scenarioContext,
     });
 
     expect(await store.getCurrentFinalizationRecord(sessionId)).toEqual(current);
-    expect(await store.getFinalizationRecord(sessionId, 'indexed-stale')).toBeNull();
+    expect(await store.getFinalizationRecord(sessionId, asFinalizationId('indexed-stale'))).toBeNull();
     consumeRejectedTransitionLogs({
       finalizationId: 'indexed-stale',
       reason: 'EXECUTION_MISMATCH',
@@ -532,7 +541,7 @@ describe('MockSessionStore', () => {
   });
 
   it('ignores duplicate terminal verification completion for the same finalization', async () => {
-    const finalizationId = 'verification-terminal';
+    const finalizationId = asFinalizationId('verification-terminal');
     await succeed(finalizationId);
     const completed = await store.completeVerificationResult(sessionId, finalizationId, {
       status: 'success',
@@ -550,11 +559,11 @@ describe('MockSessionStore', () => {
     await succeed('verification-authority');
 
     await expect(
-      store.completeVerificationResult(sessionId, 'verification-stale', {
+      store.completeVerificationResult(sessionId, asFinalizationId('verification-stale'), {
         status: 'success',
       }),
     ).rejects.toThrow('Finalization is unavailable for verification');
-    expect(await store.getVerificationResultRecord(sessionId, 'verification-stale')).toBeNull();
+    expect(await store.getVerificationResultRecord(sessionId, asFinalizationId('verification-stale'))).toBeNull();
   });
 
   it('rejects retired contract-generation fields without mutating authority', async () => {
@@ -572,7 +581,7 @@ describe('MockSessionStore', () => {
   it('rejects finalization results that carry a foreign bundle locator', async () => {
     await expect(
       store.markFinalizationSucceeded(sessionId, {
-        finalizationId: 'foreign-locator',
+        finalizationId: asFinalizationId('foreign-locator'),
         queuedAtMs: 10,
         startedAtMs: 20,
         completedAtMs: 30,
@@ -587,7 +596,7 @@ describe('MockSessionStore', () => {
   });
 
   it('keeps the exact semantic record authoritative after an adapter branch exists', async () => {
-    const finalizationId = 'semantic-authority';
+    const finalizationId = asFinalizationId('semantic-authority');
     await store.markFinalizationQueued(sessionId, {
       finalizationId,
       queuedAtMs: 10,
@@ -615,17 +624,18 @@ describe('MockSessionStore', () => {
 
   it('does not reconcile historical records into the explicit current index', async () => {
     const current = await store.markFinalizationQueued(sessionId, {
-      finalizationId: 'current-record',
+      finalizationId: asFinalizationId('current-record'),
       queuedAtMs: 10,
       scenarioContext,
     });
+    const historicalFinalizationId = asFinalizationId('historical-record');
     const historical: FinalizationRecord = {
       sessionId,
-      finalizationId: 'historical-record',
+      finalizationId: historicalFinalizationId,
       scenarioContext,
       state: {
         status: 'pending',
-        finalizationId: 'historical-record',
+        finalizationId: historicalFinalizationId,
         queuedAtMs: 11,
       },
     };
@@ -635,11 +645,11 @@ describe('MockSessionStore', () => {
     );
 
     expect(await store.getCurrentFinalizationRecord(sessionId)).toEqual(current);
-    expect(await store.getFinalizationRecord(sessionId, 'historical-record')).toEqual(historical);
+    expect(await store.getFinalizationRecord(sessionId, historicalFinalizationId)).toEqual(historical);
   });
 
   it('rejects write-side updates against a corrupt current finalization record', async () => {
-    const finalizationId = 'corrupt-write';
+    const finalizationId = asFinalizationId('corrupt-write');
     const record = await store.markFinalizationQueued(sessionId, {
       finalizationId,
       queuedAtMs: 10,
@@ -660,7 +670,7 @@ describe('MockSessionStore', () => {
   });
 
   it('does not expose repair APIs or repair corrupt finalization records on read', async () => {
-    const finalizationId = 'corrupt-no-repair';
+    const finalizationId = asFinalizationId('corrupt-no-repair');
     const record = await store.markFinalizationQueued(sessionId, {
       finalizationId,
       queuedAtMs: 10,
@@ -698,7 +708,7 @@ describe('MockSessionStore', () => {
   });
 
   it('does not publish receipts or consume board indexes for corrupt current records', async () => {
-    const finalizationId = 'receipt-corrupt';
+    const finalizationId = asFinalizationId('receipt-corrupt');
     const record = await store.markFinalizationQueued(sessionId, {
       finalizationId,
       queuedAtMs: 10,
@@ -728,12 +738,13 @@ describe('MockSessionStore', () => {
   });
 
   it('does not partially publish a successful outcome when voting authority disappears before commit', async () => {
-    const finalizationId = 'missing-voting-before-success';
+    const finalizationId = asFinalizationId('missing-voting-before-success');
     const includedBitmap = [true];
     const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
     const result = buildResult({
       ...createTestJournal({ totalExpected: 1, validVotes: 1 }),
       includedBitmapRoot,
+      seenBitmapRoot: includedBitmapRoot,
     });
     getPrivateMap<SessionVotingRecord>(store, 'votingRecords').delete(sessionId);
 
@@ -765,12 +776,13 @@ describe('MockSessionStore', () => {
   });
 
   it('does not partially publish a successful outcome when staged bitmap persistence fails', async () => {
-    const finalizationId = 'bitmap-write-failure-before-success';
+    const finalizationId = asFinalizationId('bitmap-write-failure-before-success');
     const includedBitmap = [true];
     const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
     const result = buildResult({
       ...createTestJournal({ totalExpected: 1, validVotes: 1 }),
       includedBitmapRoot,
+      seenBitmapRoot: includedBitmapRoot,
     });
     const pending = await store.markFinalizationQueued(sessionId, {
       finalizationId,
@@ -780,21 +792,19 @@ describe('MockSessionStore', () => {
     // Keep the native method so the prototype spy can fail only the staged bitmap write.
     // eslint-disable-next-line @typescript-eslint/unbound-method
     const originalSet = Map.prototype.set;
-    const mapSet = vi.spyOn(Map.prototype, 'set').mockImplementation(function (
-      this: Map<unknown, unknown>,
-      key,
-      value,
-    ) {
-      if (
-        key === scopedKey(sessionId, finalizationId) &&
-        typeof value === 'object' &&
-        value !== null &&
-        'includedBitmap' in value
-      ) {
-        throw new Error('forced bitmap write failure');
-      }
-      return originalSet.call(this, key, value);
-    });
+    const mapSet = vi
+      .spyOn(Map.prototype, 'set')
+      .mockImplementation(function (this: Map<unknown, unknown>, key, value) {
+        if (
+          key === scopedKey(sessionId, finalizationId) &&
+          typeof value === 'object' &&
+          value !== null &&
+          'includedBitmap' in value
+        ) {
+          throw new Error('forced bitmap write failure');
+        }
+        return originalSet.call(this, key, value);
+      });
 
     try {
       await expect(
@@ -831,12 +841,13 @@ describe('MockSessionStore', () => {
   it.each(['bitmap', 'verification'] as const)(
     'rejects a preterminal %s orphan without changing pending authority',
     async (kind) => {
-      const finalizationId = `mock-preterminal-${kind}-orphan`;
+      const finalizationId = asFinalizationId(`mock-preterminal-${kind}-orphan`);
       const includedBitmap = [true];
       const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
       const result = buildResult({
         ...createTestJournal({ totalExpected: 1, validVotes: 1 }),
         includedBitmapRoot,
+        seenBitmapRoot: includedBitmapRoot,
       });
       const pending = await store.markFinalizationQueued(sessionId, {
         finalizationId,
@@ -871,7 +882,7 @@ describe('MockSessionStore', () => {
   );
 
   it('rejects a preterminal receipt orphan without changing pending authority', async () => {
-    const finalizationId = 'mock-preterminal-receipt-orphan';
+    const finalizationId = asFinalizationId('mock-preterminal-receipt-orphan');
     const pending = await store.markFinalizationQueued(sessionId, {
       finalizationId,
       queuedAtMs: 10,
@@ -895,12 +906,13 @@ describe('MockSessionStore', () => {
   });
 
   it('routes direct success through the atomic commit and rejects a preterminal bitmap orphan', async () => {
-    const finalizationId = 'mock-direct-success-bitmap-orphan';
+    const finalizationId = asFinalizationId('mock-direct-success-bitmap-orphan');
     const includedBitmap = [true];
     const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
     const result = buildResult({
       ...createTestJournal({ totalExpected: 1, validVotes: 1 }),
       includedBitmapRoot,
+      seenBitmapRoot: includedBitmapRoot,
     });
     const pending = await store.markFinalizationQueued(sessionId, {
       finalizationId,
@@ -932,7 +944,7 @@ describe('MockSessionStore', () => {
   it.each(['missing', 'not-advanced'] as const)(
     'rejects an idempotent receipt replay when the in-memory counter is %s',
     async (counterState) => {
-      const finalizationId = `mock-receipt-counter-${counterState}`;
+      const finalizationId = asFinalizationId(`mock-receipt-counter-${counterState}`);
       const input = {
         record: buildSucceededRecord(sessionId, finalizationId),
         receipt: { receipt: '{"counter":true}', timestamp: 30 },
@@ -953,7 +965,7 @@ describe('MockSessionStore', () => {
   );
 
   it('rejects an idempotent replay when the persisted receipt hash is corrupt', async () => {
-    const finalizationId = 'mock-corrupt-receipt-hash';
+    const finalizationId = asFinalizationId('mock-corrupt-receipt-hash');
     const input = {
       record: buildSucceededRecord(sessionId, finalizationId),
       receipt: { receipt: '{"exact":true}', timestamp: 30 },
@@ -1005,7 +1017,7 @@ describe('MockSessionStore', () => {
   it('summarizes a batch of bot votes in one debug log entry', async () => {
     const debug = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
     await store.addVote(sessionId, buildVote('A', 'a'));
-    await store.addBotVotes(sessionId, [buildVote('B', 'b'), buildVote('C', 'c')]);
+    await store.addBotVotes(sessionId, [buildBotVote('B', 'b'), buildBotVote('C', 'c')]);
 
     expect(debug).toHaveBeenCalledTimes(1);
     expect(debug).toHaveBeenCalledWith(
@@ -1023,12 +1035,15 @@ describe('MockSessionStore', () => {
   it('fails closed when addBotVotes targets a finalized session', async () => {
     await store.addVote(sessionId, buildVote('A', 'a'));
     await store.markFinalizationQueued(sessionId, {
-      finalizationId: 'finalized-vote-authority',
+      finalizationId: asFinalizationId('finalized-vote-authority'),
       queuedAtMs: 10,
       scenarioContext,
     });
 
-    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b')])).rejects.toThrow('Session already finalized');
+    await expect(store.addBotVotes(sessionId, [buildBotVote('B', 'b')])).resolves.toEqual({
+      ok: false,
+      error: { code: 'SESSION_FINALIZED' },
+    });
   });
 
   it('fails closed on stale botCount without reconciling it', async () => {
@@ -1039,7 +1054,7 @@ describe('MockSessionStore', () => {
       botCount: 1,
     });
 
-    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b')])).rejects.toThrow(
+    await expect(store.addBotVotes(sessionId, [buildBotVote('B', 'b')])).rejects.toThrow(
       'Session voting record bot count is inconsistent',
     );
     expect(getPrivateMap<SessionVotingRecord>(store, 'votingRecords').get(sessionId)?.botCount).toBe(1);
@@ -1053,7 +1068,7 @@ describe('MockSessionStore', () => {
       userParticipation: undefined,
     });
 
-    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b')])).rejects.toThrow(
+    await expect(store.addBotVotes(sessionId, [buildBotVote('B', 'b')])).rejects.toThrow(
       'Session voting record is missing or invalid',
     );
     expect(
@@ -1062,9 +1077,10 @@ describe('MockSessionStore', () => {
   });
 
   it('fails closed when addBotVotes is called before the user vote exists', async () => {
-    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b')])).rejects.toThrow(
-      'USER_VOTE_REQUIRED_BEFORE_BOT_VOTES',
-    );
+    await expect(store.addBotVotes(sessionId, [buildBotVote('B', 'b')])).resolves.toEqual({
+      ok: false,
+      error: { code: 'USER_NOT_VOTED' },
+    });
     expect(requireValue(await store.getVotingRecord(sessionId), 'voting record').votes.size).toBe(0);
   });
 
@@ -1076,7 +1092,7 @@ describe('MockSessionStore', () => {
       userParticipation: { status: 'cast', voteIndex: 1 },
     });
 
-    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b')])).rejects.toThrow(
+    await expect(store.addBotVotes(sessionId, [buildBotVote('B', 'b')])).rejects.toThrow(
       'Session voting record is missing or invalid',
     );
   });
@@ -1094,7 +1110,9 @@ describe('MockSessionStore', () => {
       botCount: 1,
     });
 
-    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b')])).rejects.toThrow('NON_CANONICAL_CT_VOTE_INDICES');
+    await expect(store.addBotVotes(sessionId, [buildBotVote('B', 'b')])).rejects.toThrow(
+      'NON_CANONICAL_CT_VOTE_INDICES',
+    );
   });
 
   it('does not leave a ghost user vote when CT state is unavailable', async () => {
@@ -1120,7 +1138,7 @@ describe('MockSessionStore', () => {
     await store.addVote(sessionId, buildVote('A', 'a'));
     const before = requireValue(await store.getVotingRecord(sessionId), 'voting record');
 
-    await expect(store.addBotVotes(sessionId, [buildVote('B', 'b'), buildVote('B', 'b')])).rejects.toThrow(
+    await expect(store.addBotVotes(sessionId, [buildBotVote('B', 'b'), buildBotVote('B', 'b')])).rejects.toThrow(
       'Commitment already exists',
     );
     const after = requireValue(await store.getVotingRecord(sessionId), 'voting record');
@@ -1132,10 +1150,13 @@ describe('MockSessionStore', () => {
 
   it('returns the exact cast-time bulletin root from addVote', async () => {
     const result = await store.addVote(sessionId, buildVote('A', 'a'));
+    if (!result.ok) {
+      throw new Error(`Expected vote persistence, received ${result.error.code}`);
+    }
     const voting = requireValue(await store.getVotingRecord(sessionId), 'voting record');
 
-    expect(result.bulletinRootAtCast).toBe(voting.votes.get(0)?.rootAtCast);
-    expect(result.bulletinRootAtCast).toBe(`0x${voting.bulletin.getRootAtSize(1)}`);
+    expect(result.value.bulletinRootAtCast).toBe(voting.votes.get(0)?.rootAtCast);
+    expect(result.value.bulletinRootAtCast).toBe(`0x${voting.bulletin.getRootAtSize(1)}`);
   });
 
   it('retrieves a vote by voteId', async () => {
@@ -1205,17 +1226,21 @@ describe('MockSessionStore', () => {
   it('includes the correct bulletin index', async () => {
     const voteId = generateVoteId();
     const result = await store.addVote(sessionId, buildVote('A', 'a', voteId));
+    if (!result.ok) {
+      throw new Error(`Expected vote persistence, received ${result.error.code}`);
+    }
 
-    expect(result.leafIndex).toBe(0);
+    expect(result.value.leafIndex).toBe(0);
     await expect(store.getVoteProof(voteId)).resolves.toMatchObject({ leafIndex: 0, treeSize: 1 });
   });
 
   it('maintains the voteId index across multiple votes', async () => {
     const userVoteId = generateVoteId();
-    const firstBotId = generateVoteId();
-    const secondBotId = generateVoteId();
     await store.addVote(sessionId, buildVote('A', 'a', userVoteId));
-    await store.addBotVotes(sessionId, [buildVote('B', 'b', firstBotId), buildVote('C', 'c', secondBotId)]);
+    await store.addBotVotes(sessionId, [buildBotVote('B', 'b'), buildBotVote('C', 'c')]);
+    const voting = requireValue(await store.getVotingRecord(sessionId), 'voting record');
+    const firstBotId = requireValue(voting.votes.get(1), 'first bot vote').voteId;
+    const secondBotId = requireValue(voting.votes.get(2), 'second bot vote').voteId;
 
     await expect(store.getVoteById(sessionId, userVoteId)).resolves.toMatchObject({ index: 0 });
     await expect(store.getVoteById(sessionId, firstBotId)).resolves.toMatchObject({ index: 1 });
@@ -1224,7 +1249,6 @@ describe('MockSessionStore', () => {
 
   it('stores commitments that match the election-scoped hash', async () => {
     const vote = buildVote('C', 'c');
-    vote.commit = `0x${'f'.repeat(64)}`;
     await store.addVote(sessionId, vote);
     const voting = requireValue(await store.getVotingRecord(sessionId), 'voting record');
 
@@ -1232,10 +1256,14 @@ describe('MockSessionStore', () => {
   });
 
   it('returns bitmap data only for the matching session and finalization', async () => {
-    const finalizationId = 'bitmap-match';
+    const finalizationId = asFinalizationId('bitmap-match');
     const includedBitmap = [true];
     const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
-    const journal = { ...createTestJournal({ totalExpected: 1 }), includedBitmapRoot };
+    const journal = {
+      ...createTestJournal({ totalExpected: 1 }),
+      includedBitmapRoot,
+      seenBitmapRoot: includedBitmapRoot,
+    };
     const bitmap = {
       includedBitmap: [true],
       includedBitmapRoot,
@@ -1253,19 +1281,23 @@ describe('MockSessionStore', () => {
       finalizationId,
       includedBitmap: [true],
     });
-    await expect(store.getBitmapData(sessionId, 'bitmap-other')).resolves.toBeNull();
+    await expect(store.getBitmapData(sessionId, asFinalizationId('bitmap-other'))).resolves.toBeNull();
     await expect(store.getBitmapData(other.sessionId, finalizationId)).resolves.toBeNull();
   });
 
   it('keeps bitmap data separated between sessions', async () => {
-    const finalizationId = 'bitmap-separated';
+    const finalizationId = asFinalizationId('bitmap-separated');
     const other = await store.createSession();
     for (const [targetSessionId, includedBitmap, finalizedAtMs] of [
       [sessionId, [true], 30],
       [other.sessionId, [false], 31],
     ] as const) {
       const includedBitmapRoot = computeIncludedBitmapRoot([...includedBitmap]);
-      const journal = { ...createTestJournal({ totalExpected: 1 }), includedBitmapRoot };
+      const journal = {
+        ...createTestJournal({ totalExpected: 1 }),
+        includedBitmapRoot,
+        seenBitmapRoot: includedBitmapRoot,
+      };
       await store.commitSuccessfulFinalization({
         record: buildSucceededRecord(targetSessionId, finalizationId, buildResult(journal)),
         bitmap: {

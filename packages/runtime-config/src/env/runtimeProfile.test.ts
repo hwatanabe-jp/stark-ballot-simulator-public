@@ -311,7 +311,7 @@ describe('resolveRuntimeProfile', () => {
     expect(failure.invalidNames).toEqual(['RUNTIME_PROFILE', 'RUNTIME_DEPLOYMENT_ENV']);
   });
 
-  it('resolves protected production admission without changing proof or storage choices', () => {
+  it('requires Turnstile for public production admission with production proof and AWS storage', () => {
     const profile = resolveRuntimeProfile(targetAwsEnv('main'));
 
     expect(profile.target).toEqual({ kind: 'aws', deploymentEnvironment: 'main' });
@@ -322,7 +322,7 @@ describe('resolveRuntimeProfile', () => {
     expect(profile.turnstile).toEqual({
       mode: 'required',
       bypassEligible: false,
-      publicSessionCreate: false,
+      publicSessionCreate: true,
     });
   });
 
@@ -344,9 +344,16 @@ describe('resolveRuntimeProfile', () => {
       USE_AMPLIFY_DATA: 'true',
       USE_S3: 'false',
       VITE_USE_MOCK_API: 'true',
+      EXPECTED_IMAGEID_POC: '0xlegacy',
     });
 
-    expect(failure.invalidNames).toEqual(['USE_MOCK_STORE', 'USE_AMPLIFY_DATA', 'USE_S3', 'VITE_USE_MOCK_API']);
+    expect(failure.invalidNames).toEqual([
+      'USE_MOCK_STORE',
+      'USE_AMPLIFY_DATA',
+      'USE_S3',
+      'VITE_USE_MOCK_API',
+      'EXPECTED_IMAGEID_POC',
+    ]);
   });
 
   it('rejects target-only external references mixed into a local profile', () => {

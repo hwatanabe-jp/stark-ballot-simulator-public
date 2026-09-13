@@ -3,7 +3,7 @@
  * Following final-design.md v1.0 specifications
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ZkVMInput, VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
 import {
   asUnixTimestampMillis,
@@ -13,10 +13,12 @@ import {
   computeSTHDigest,
 } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { executeMockZkVM } from './mock-executor';
-import { createTestVoteWithProof, generateElectionConfigHash, generateDefaultLogId } from './__tests__/test-helpers';
+import { createTestVoteWithProof, generateElectionConfigHash, generateDefaultLogId } from './test-support/test-helpers';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
 import { resolveMockImageId } from './mock-image-id';
+import * as imageIdMappingLoader from '../image-id-mapping';
+import { parseImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
 
 describe('MockZkVM Executor', () => {
   let electionId: string;
@@ -142,13 +144,34 @@ describe('MockZkVM Executor', () => {
       expect(result.imageId).toBe(expectedImageId);
     });
 
-    it('uses the accepted managed Prover ImageID by default', async () => {
+    it('fails closed when the default variant awaits accepted managed Prover evidence', async () => {
       delete process.env['EXPECTED_IMAGE_ID'];
       delete process.env['EXPECTED_IMAGE_ID_VARIANT'];
-
-      await expect(resolveMockImageId(CURRENT_METHOD_VERSION)).resolves.toBe(
-        '0x8dbbe2a82c110e06c77d58fc5f1f07b7d887595315a07a5d91b28275fb42bebc',
-      );
+      const mapping = await imageIdMappingLoader.loadPublicImageIdMapping();
+      const method = mapping.mappings[mapping.current];
+      if (!method) throw new Error('Current method mapping is missing from the fixture.');
+      const unconfirmed = parseImageIdMapping({
+        ...mapping,
+        mappings: {
+          ...mapping.mappings,
+          [mapping.current]: {
+            ...method,
+            variants: {
+              ...method.variants,
+              default: { state: 'unconfirmed', requiredEvidence: 'accepted-prover-release' },
+            },
+          },
+        },
+      });
+      const loader = vi.spyOn(imageIdMappingLoader, 'loadPublicImageIdMapping').mockResolvedValue(unconfirmed);
+      try {
+        await expect(resolveMockImageId(CURRENT_METHOD_VERSION)).rejects.toMatchObject({
+          name: 'ImageIdVariantResolutionError',
+          reason: 'variant_unconfirmed',
+        });
+      } finally {
+        loader.mockRestore();
+      }
     });
 
     it('fails closed for unsupported ImageID variants', async () => {
@@ -479,14 +502,30 @@ describe('MockZkVM Executor', () => {
     });
   });
 
-  describe('Performance', () => {
-    it('should complete mock execution in ~100ms', async () => {
-      const startTime = Date.now();
-      await executeMockZkVM(basicInput);
-      const duration = Date.now() - startTime;
+  describe('Simulated processing delay', () => {
+    it('returns the tally only after the 100ms simulated delay', async () => {
+      process.env['EXPECTED_IMAGE_ID'] = '0x' + 'a'.repeat(64);
+      vi.useFakeTimers();
+      try {
+        let completed = false;
+        const execution = executeMockZkVM(basicInput).then((result) => {
+          completed = true;
+          return result;
+        });
 
-      // Mock should be fast (100ms ± 50ms tolerance)
-      expect(duration).toBeLessThan(150);
+        await vi.advanceTimersByTimeAsync(99);
+        expect(completed).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(completed).toBe(true);
+        await expect(execution).resolves.toMatchObject({
+          electionId: basicInput.electionId,
+          verifiedTally: [1, 0, 0, 0, 0],
+          validVotes: 1,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

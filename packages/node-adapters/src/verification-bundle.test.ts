@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import * as yazl from 'yazl';
+import type { VerificationBundleArtifactMap } from '@stark-ballot/verification/bundle';
 import {
   createVerificationBundleArchive,
   inspectVerificationBundleArchiveBuffer,
@@ -108,9 +109,9 @@ describe('persistVerificationBundleArtifacts path admission', () => {
       persistVerificationBundleArtifacts({
         sessionId: '../session',
         finalizationId: 'finalization-1',
-        artifacts: {},
+        artifacts: {} as VerificationBundleArtifactMap,
       }),
-    ).rejects.toThrowError(new Error('Invalid sessionId for bundle path'));
+    ).rejects.toThrow(new Error('Invalid sessionId for bundle path'));
   });
 
   it('preserves the invalid finalization identifier error', async () => {
@@ -118,9 +119,9 @@ describe('persistVerificationBundleArtifacts path admission', () => {
       persistVerificationBundleArtifacts({
         sessionId: 'session-1',
         finalizationId: '../finalization',
-        artifacts: {},
+        artifacts: {} as VerificationBundleArtifactMap,
       }),
-    ).rejects.toThrowError(new Error('Invalid finalizationId for bundle path'));
+    ).rejects.toThrow(new Error('Invalid finalizationId for bundle path'));
   });
 });
 

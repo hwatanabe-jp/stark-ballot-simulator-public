@@ -1,7 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { defineRoute, jsonResponse } from '@stark-ballot/api-contract/routes';
+import {
+  API_ROUTES,
+  defineRoute,
+  jsonResponse,
+  jsonResponseExempt,
+  textResponse,
+  type ApiRouteContract,
+} from '@stark-ballot/api-contract/routes';
 import { s } from '@stark-ballot/validation/schema';
-import { respondWithRoute } from './responseSchema';
+import {
+  respondWithBinaryRoute,
+  respondWithConditionalRoute,
+  respondWithRoute,
+  respondWithRouteError,
+  respondWithTextRoute,
+} from './responseSchema';
 import { apiResponseSchema, publicObject } from '@stark-ballot/api-contract/schemas/primitives';
 import { ErrorCode, getErrorMessage } from '@stark-ballot/api-contract/errors/apiErrors';
 import { runWithLogContext } from '@stark-ballot/diagnostics/requestLogContext';
@@ -10,6 +23,112 @@ import { logger } from '@stark-ballot/diagnostics/logger';
 describe('respondWithRoute', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('admits a declared public error code and status before serialization', async () => {
+    const response = runWithLogContext({ requestId: 'trusted-error-request-id' }, () =>
+      respondWithRouteError(API_ROUTES.progress, {
+        code: ErrorCode.SESSION_NOT_FOUND,
+        status: 404,
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: ErrorCode.SESSION_NOT_FOUND,
+        message: getErrorMessage(ErrorCode.SESSION_NOT_FOUND),
+      },
+      meta: {
+        requestId: 'trusted-error-request-id',
+      },
+    });
+  });
+
+  it('fails closed before serializing an undeclared public error pair', async () => {
+    const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const widenedRoute: ApiRouteContract = API_ROUTES.progress;
+    const response = runWithLogContext({ requestId: 'trusted-undeclared-error-id' }, () =>
+      respondWithRouteError(
+        widenedRoute,
+        {
+          code: ErrorCode.DUPLICATE_VOTE,
+          status: 409,
+        },
+        undefined as never,
+      ),
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: ErrorCode.INTERNAL_ERROR },
+      meta: { requestId: 'trusted-undeclared-error-id' },
+    });
+    expect(loggerErrorSpy).toHaveBeenCalledWith('[API] Undeclared public route error', {
+      routeId: API_ROUTES.progress.routeId,
+      code: ErrorCode.DUPLICATE_VOTE,
+      status: 409,
+    });
+  });
+
+  it('admits declared binary and text bodies before serialization', async () => {
+    const binary = respondWithBinaryRoute(
+      API_ROUTES.finalizationArtifactBundle,
+      { status: 200, content: 'binary', body: new Uint8Array([1, 2, 3]) },
+      { headers: { 'Content-Type': 'application/zip' } },
+    );
+    const textRoute = defineRoute({
+      routeId: 'text-response-schema-test',
+      method: 'GET',
+      path: '/text-response-schema-test',
+      request: {},
+      responses: [textResponse(200, 'test-text-response')],
+    });
+    const text = respondWithTextRoute(textRoute, {
+      status: 200,
+      content: 'text',
+      body: 'ready',
+    });
+
+    expect(binary.status).toBe(200);
+    expect(binary.headers.get('Content-Type')).toBe('application/zip');
+    expect(new Uint8Array(await binary.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+    expect(text.status).toBe(200);
+    await expect(text.text()).resolves.toBe('ready');
+  });
+
+  it('fails closed when a binary helper receives an invalid runtime body', () => {
+    const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const response = runWithLogContext({ requestId: 'trusted-invalid-binary-id' }, () =>
+      respondWithBinaryRoute(API_ROUTES.finalizationArtifactBundle, {
+        status: 200,
+        content: 'binary',
+        body: 'not binary' as never,
+      }),
+    );
+
+    expect(response.status).toBe(500);
+    expect(loggerErrorSpy).toHaveBeenCalledWith('[API] Binary route response admission failed', {
+      routeId: API_ROUTES.finalizationArtifactBundle.routeId,
+      status: 200,
+    });
+  });
+
+  it('models a declared 304 response as bodyless conditional output', async () => {
+    const route = defineRoute({
+      routeId: 'conditional-response-schema-test',
+      method: 'GET',
+      path: '/conditional-response-schema-test',
+      request: {},
+      responses: [jsonResponse(200, s.object({ value: s.string() })), jsonResponseExempt(304, 'not-modified')],
+    });
+    const response = respondWithConditionalRoute(route, 304, {
+      headers: { ETag: '"current"' },
+    });
+
+    expect(response.status).toBe(304);
+    expect(response.headers.get('ETag')).toBe('"current"');
+    await expect(response.text()).resolves.toBe('');
   });
 
   it('injects trusted request metadata before public response admission', async () => {

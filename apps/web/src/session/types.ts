@@ -1,6 +1,7 @@
 import type { ClientFinalizationSnapshot } from '@stark-ballot/web/finalize/client-finalization-result';
+import type { VoteChoice } from '@stark-ballot/verification/shared/constants';
 
-export type VoteChoice = 'A' | 'B' | 'C' | 'D' | 'E';
+export type { VoteChoice };
 
 export type SessionPhase = 'voting' | 'finalizing' | 'verifying';
 
@@ -15,16 +16,22 @@ export interface ServerIssuedSessionIdentity {
 interface BrowserSessionRecordBase extends ServerIssuedSessionIdentity {
   lastActivity: number;
   expiresAt: number;
-  myVote?: VoteChoice;
-  myCommit?: string;
-  myRand?: string;
-  /** Unique vote identifier returned after casting a vote */
-  voteId?: string;
-  /** Bulletin index assigned at cast time */
-  bulletinIndex?: number;
-  /** Bulletin root at cast time (hex string) */
-  bulletinRootAtCast?: string;
 }
+
+type PrivateOpening =
+  | { myVote: VoteChoice; myCommit: string; myRand: string }
+  | { myVote?: never; myCommit?: never; myRand?: never };
+
+type CastReceipt =
+  | {
+      /** Unique vote identifier returned after casting a vote */
+      voteId: string;
+      /** Bulletin index assigned at cast time */
+      bulletinIndex: number;
+      /** Bulletin root at cast time (hex string) */
+      bulletinRootAtCast: string;
+    }
+  | { voteId?: never; bulletinIndex?: never; bulletinRootAtCast?: never };
 
 interface ActiveBrowserSessionRecord extends BrowserSessionRecordBase {
   phase: 'voting' | 'finalizing';
@@ -39,4 +46,4 @@ interface VerifyingBrowserSessionRecord extends BrowserSessionRecordBase {
   finalizeResult: ClientFinalizationSnapshot;
 }
 
-export type SessionData = ActiveBrowserSessionRecord | VerifyingBrowserSessionRecord;
+export type SessionData = (ActiveBrowserSessionRecord | VerifyingBrowserSessionRecord) & PrivateOpening & CastReceipt;

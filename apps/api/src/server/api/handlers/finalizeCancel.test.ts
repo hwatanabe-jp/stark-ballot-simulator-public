@@ -9,8 +9,11 @@ import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sess
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import type { SessionIdentityRecord, SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
 import { logger } from '@stark-ballot/diagnostics/logger';
-import { createMockVoteStore, type MockVoteStore } from '../../__tests__/support/mockVoteStore';
+import { createMockVoteStore, type MockVoteStore } from '../../test-support/mockVoteStore';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import { getApiErrorCode, readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
 import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/schemas/errors';
@@ -21,7 +24,7 @@ import {
   localRuntimeProfile,
   targetRuntimeProfile,
   targetRuntimeProfileEnv,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { resolveRuntimeProfile, type ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import {
   clearRuntimeConfigReferenceResolver,
@@ -55,7 +58,7 @@ const scenarioContext: FinalizationScenarioContext = {
   },
 };
 
-function createCapabilityToken(sessionId: string): string {
+function createCapabilityToken(sessionId: SessionId): string {
   return createSessionCapabilityToken({ sessionId, ttlSeconds: 300 }, capabilitySecret);
 }
 
@@ -80,7 +83,7 @@ const quiescedAsyncRuntimeProfile = requireTargetRuntimeProfile(
   }),
 );
 
-function buildIdentity(sessionId: string): SessionIdentityRecord {
+function buildIdentity(sessionId: SessionId): SessionIdentityRecord {
   const now = Date.now();
   return {
     sessionId,
@@ -98,7 +101,7 @@ function buildIdentity(sessionId: string): SessionIdentityRecord {
   };
 }
 
-function buildVotingRecord(sessionId: string): SessionVotingRecord {
+function buildVotingRecord(sessionId: SessionId): SessionVotingRecord {
   return {
     sessionId,
     votes: new Map(),
@@ -110,7 +113,7 @@ function buildVotingRecord(sessionId: string): SessionVotingRecord {
   };
 }
 
-function buildFinalizationRecord(sessionId: string, state: FinalizationState): FinalizationRecord {
+function buildFinalizationRecord(sessionId: SessionId, state: FinalizationState): FinalizationRecord {
   if (state.status !== 'succeeded') {
     return {
       sessionId,
@@ -136,7 +139,7 @@ function buildFinalizationRecord(sessionId: string, state: FinalizationState): F
 }
 
 function buildStore(
-  sessionId: string,
+  sessionId: SessionId,
   state: FinalizationState,
   overrides: Partial<MockVoteStore> = {},
 ): MockVoteStore {
@@ -153,7 +156,9 @@ function buildStore(
   });
 }
 
-function buildSucceededState(finalizationId = 'exec-123456'): Extract<FinalizationState, { status: 'succeeded' }> {
+function buildSucceededState(
+  finalizationId: FinalizationId = asFinalizationId('exec-123456'),
+): Extract<FinalizationState, { status: 'succeeded' }> {
   const now = Date.now();
   return {
     status: 'succeeded',
@@ -251,8 +256,8 @@ describe('cancelFinalizationHandler', () => {
 
   it('returns a standard error envelope when async finalization is disabled', async () => {
     const loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-    const sessionId = 'session-disabled';
-    const finalizationId = 'exec-123456';
+    const sessionId = asSessionId('session-disabled');
+    const finalizationId = asFinalizationId('exec-123456');
     const store = buildStore(sessionId, buildSucceededState(finalizationId));
     vi.mocked(getGlobalStore).mockReturnValue(store);
 
@@ -277,7 +282,7 @@ describe('cancelFinalizationHandler', () => {
 
   it('returns a standard error envelope when the finalization state is not cancellable', async () => {
     const loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-    const sessionId = 'session-1';
+    const sessionId = asSessionId('session-1');
     const token = createCapabilityToken(sessionId);
     const store = buildStore(sessionId, buildSucceededState());
     vi.mocked(getGlobalStore).mockReturnValue(store);
@@ -310,8 +315,8 @@ describe('cancelFinalizationHandler', () => {
   });
 
   it('records a privacy-safe cancellation transition attempt at the caller boundary', async () => {
-    const sessionId = 'session-cancel-attempt';
-    const finalizationId = 'exec-cancel-attempt';
+    const sessionId = asSessionId('session-cancel-attempt');
+    const finalizationId = asFinalizationId('exec-cancel-attempt');
     const now = Date.now();
     const token = createCapabilityToken(sessionId);
     const pendingState: Extract<FinalizationState, { status: 'pending' }> = {
@@ -372,8 +377,8 @@ describe('cancelFinalizationHandler', () => {
   });
 
   it('cancels a pending finalization under the quiesced target profile', async () => {
-    const sessionId = 'session-quiesced-cancel';
-    const finalizationId = 'exec-quiesced-cancel';
+    const sessionId = asSessionId('session-quiesced-cancel');
+    const finalizationId = asFinalizationId('exec-quiesced-cancel');
     const now = Date.now();
     const pendingState: Extract<FinalizationState, { status: 'pending' }> = {
       status: 'pending',

@@ -1,5 +1,6 @@
-import { describe, expect, expectTypeOf, it } from 'vitest';
-import { resolveAllowedDeploymentTarget } from '@stark-ballot/deployment-authority';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { productionConfigurationFixture } from './test-support/deployment-target-fixtures';
+import { renderDeploymentLaneContext, resolveAllowedDeploymentTarget } from '@stark-ballot/deployment-authority';
 import type { TerraformDriftEvidence, TerraformDriftResult, TerraformDriftSummary } from './terraform-drift.js';
 import {
   MAX_REDACTED_TERRAFORM_ADDRESSES,
@@ -16,19 +17,19 @@ const sourceSha = 'a'.repeat(40);
 const target = resolveAllowedDeploymentTarget('stark-dev/develop');
 const mismatchedAccountId = `${target.accountId.startsWith('0') ? '1' : '0'}${target.accountId.slice(1)}`;
 const stateKmsKeyArn = `arn:${target.partition}:kms:${target.region}:${target.accountId}:key/11111111-2222-3333-4444-555555555555`;
-const baselineReference = {
-  key: 'terraform-baselines/app/executions/11111111-2222-3333-4444-555555555555.json',
-  versionId: 'baseline-version',
+const acceptedAuthorityReference = {
+  key: 'accepted-authority/app/executions/11111111-2222-3333-4444-555555555555.json',
+  versionId: 'accepted-authority-version',
   sha256: 'b'.repeat(64),
 };
-
-function immutableReference(name: string, fill: string): Readonly<Record<string, string>> {
-  return {
-    key: `terraform-baselines/evidence/${name}.json`,
-    versionId: `${name}-version`,
-    sha256: fill.repeat(64),
-  };
-}
+const targetConfigurationSha256 = renderDeploymentLaneContext({
+  target,
+  lane: 'app',
+  accountId: target.accountId,
+  requestedControlSourceSha: sourceSha,
+  selectedApplicationSourceSha: sourceSha,
+  frameworkSourceSha: sourceSha,
+}).targetConfigurationSha256;
 
 function driftIdentity(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -44,9 +45,7 @@ function driftIdentity(overrides: Record<string, unknown> = {}): Record<string, 
     },
     controlSourceSha: sourceSha,
     frameworkSourceSha: sourceSha,
-    context: immutableReference('context', 'c'),
-    inputManifest: immutableReference('input-manifest', 'd'),
-    providerEvidence: immutableReference('provider-evidence', 'e'),
+    targetConfigurationSha256,
     ...overrides,
   };
 }
@@ -56,10 +55,15 @@ const toolRuntime = {
   terraformVersion: '1.15.5',
   terraformPlanFormatVersion: '1.2',
 };
+const buildRuntime = {
+  configuredManagedImage: 'aws/codebuild/standard:8.0',
+  runningManagedImage: 'aws/codebuild/standard:7.0',
+};
 
 function driftEvidenceInput(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    baseline: baselineReference,
+    acceptedAuthority: acceptedAuthorityReference,
+    buildRuntime,
     expectedIdentity: driftIdentity(),
     observed: driftIdentity(),
     executionId: 'drift-check:11111111-2222-3333-4444-555555555555',
@@ -237,6 +241,17 @@ describe('Terraform drift plan summary', () => {
       delete: 0,
       readOnly: 0,
     });
+    const review = summarizeTerraformPlan({ resource_changes: changes }, 'saved-plan-review');
+    expect(review.addresses).toHaveLength(MAX_REDACTED_TERRAFORM_ADDRESSES + 5);
+    expect(review.omittedAddressCount).toBe(0);
+    expect(review.actionCounts).toEqual(forward.actionCounts);
+    expect(() => validateTerraformDriftSummary(review)).toThrow('Terraform drift addresses');
+  });
+
+  it('rejects an unknown summary purpose', () => {
+    expect(() => {
+      Reflect.apply(summarizeTerraformPlan, undefined, [{}, 'unreviewed']);
+    }).toThrow('purpose');
   });
 
   it('never traverses or serializes raw plan values and sensitive projections', () => {
@@ -350,7 +365,8 @@ describe('Terraform drift evidence', () => {
     expect(evidence).toEqual({
       evidenceType: 'terraform-drift-report',
       executionId: 'drift-check:11111111-2222-3333-4444-555555555555',
-      baseline: baselineReference,
+      acceptedAuthority: acceptedAuthorityReference,
+      buildRuntime,
       observed: driftIdentity(),
       startedAt: '2026-08-01T12:00:00.000Z',
       finishedAt: '2026-08-01T12:01:00.000Z',
@@ -387,25 +403,25 @@ describe('Terraform drift evidence', () => {
     });
   });
 
-  it('records a pre-pointer failure without fabricating baseline or observed coordinates', () => {
+  it('records a pre-pointer failure without fabricating accepted authority or observed coordinates', () => {
     const evidence = buildTerraformDriftEvidence(
       driftEvidenceInput({
-        baseline: null,
+        acceptedAuthority: null,
         expectedIdentity: null,
         observed: null,
         terraformDetailedExitCode: null,
-        failureStage: 'baseline-selection',
+        failureStage: 'authority-selection',
         summary: null,
         toolRuntime: null,
       }),
     );
 
     expect(evidence).toMatchObject({
-      baseline: null,
+      acceptedAuthority: null,
       observed: null,
       result: 'check-failed',
       terraformDetailedExitCode: null,
-      failureStage: 'baseline-selection',
+      failureStage: 'authority-selection',
       summary: null,
       reportOnly: true,
       toolRuntime: null,
@@ -450,7 +466,8 @@ describe('Terraform drift evidence', () => {
     expect(
       buildTerraformDriftEvidence(
         driftEvidenceInput({
-          baseline: null,
+          acceptedAuthority: null,
+          buildRuntime: null,
           expectedIdentity: null,
           observed: null,
           terraformDetailedExitCode: null,
@@ -462,8 +479,33 @@ describe('Terraform drift evidence', () => {
     ).toMatchObject({ result: 'check-failed', failureStage: 'runner-runtime' });
   });
 
+  it('admits plan-input-preparation as a closed report-only failure stage', () => {
+    expect(
+      buildTerraformDriftEvidence(
+        driftEvidenceInput({
+          terraformDetailedExitCode: null,
+          failureStage: 'plan-input-preparation',
+          summary: null,
+          toolRuntime: null,
+        }),
+      ),
+    ).toMatchObject({ result: 'check-failed', failureStage: 'plan-input-preparation' });
+  });
+
+  it('retains distinct configured and running AWS-managed build images', () => {
+    expect(buildTerraformDriftEvidence(driftEvidenceInput()).buildRuntime).toEqual(buildRuntime);
+  });
+
   it.each([
-    ['stateIdentity', 'other/develop/app'],
+    ['configuredManagedImage', 'registry.example.invalid/custom:latest'],
+    ['runningManagedImage', 'aws/codebuild/standard:8.0-26.08.30'],
+  ] as const)('rejects an invalid %s independently', (field, value) => {
+    expect(() =>
+      buildTerraformDriftEvidence(driftEvidenceInput({ buildRuntime: { ...buildRuntime, [field]: value } })),
+    ).toThrow(/AWS-managed|build runtime|image/iu);
+  });
+
+  it.each([
     [
       'backend',
       {
@@ -475,9 +517,7 @@ describe('Terraform drift evidence', () => {
     ],
     ['controlSourceSha', 'f'.repeat(40)],
     ['frameworkSourceSha', 'f'.repeat(40)],
-    ['context', immutableReference('other-context', 'f')],
-    ['inputManifest', immutableReference('other-input', 'f')],
-    ['providerEvidence', immutableReference('other-provider', 'f')],
+    ['targetConfigurationSha256', 'f'.repeat(64)],
   ])('rejects a successful observation whose %s differs from accepted identity', (field, value) => {
     expect(() =>
       buildTerraformDriftEvidence(
@@ -485,12 +525,13 @@ describe('Terraform drift evidence', () => {
           observed: driftIdentity({ [field]: value }),
         }),
       ),
-    ).toThrow('Terraform drift observed identity does not match the accepted baseline identity.');
+    ).toThrow('Terraform drift observed identity does not match the accepted authority identity.');
   });
 
   it.each([
     ['accountId', '999999999999'],
     ['region', 'us-east-1'],
+    ['stateIdentity', 'other/develop/app'],
   ])('rejects drift evidence whose %s conflicts with its backend authority', (field, value) => {
     expect(() =>
       buildTerraformDriftEvidence(
@@ -533,31 +574,31 @@ describe('Terraform drift evidence', () => {
 
   it.each([
     {
-      label: 'observed coordinates without a baseline',
+      label: 'observed coordinates without accepted authority',
       overrides: {
-        baseline: null,
+        acceptedAuthority: null,
         expectedIdentity: null,
         terraformDetailedExitCode: null,
-        failureStage: 'baseline-selection',
+        failureStage: 'authority-selection',
         summary: null,
       },
       message: 'Terraform drift observed identity requires an expected identity.',
     },
     {
-      label: 'expected identity without a baseline',
+      label: 'expected identity without accepted authority',
       overrides: {
-        baseline: null,
+        acceptedAuthority: null,
         observed: null,
         terraformDetailedExitCode: null,
-        failureStage: 'baseline-selection',
+        failureStage: 'authority-selection',
         summary: null,
       },
-      message: 'Terraform drift expected identity requires an admitted baseline reference.',
+      message: 'Terraform drift expected identity requires an admitted accepted authority reference.',
     },
     {
       label: 'pre-run failure without a failure stage',
       overrides: {
-        baseline: null,
+        acceptedAuthority: null,
         expectedIdentity: null,
         observed: null,
         terraformDetailedExitCode: null,
@@ -567,8 +608,8 @@ describe('Terraform drift evidence', () => {
       message: 'A pre-Terraform check failure requires an explicit failureStage.',
     },
     {
-      label: 'successful result without a baseline',
-      overrides: { baseline: null },
+      label: 'successful result without accepted authority',
+      overrides: { acceptedAuthority: null },
       message: 'Successful Terraform drift evidence requires complete admitted coordinates.',
     },
     {
@@ -616,9 +657,10 @@ describe('Terraform drift evidence', () => {
     ['top-level input', { unknown: true }],
     ['expected identity', { expectedIdentity: driftIdentity({ unknown: true }) }],
     ['observed identity', { observed: driftIdentity({ unknown: true }) }],
-    ['baseline reference', { baseline: { ...baselineReference, unknown: true } }],
+    ['accepted authority reference', { acceptedAuthority: { ...acceptedAuthorityReference, unknown: true } }],
     ['summary', { summary: { ...summarizeTerraformPlan({}), unknown: true } }],
     ['tool runtime', { toolRuntime: { ...toolRuntime, unknown: true } }],
+    ['build runtime', { buildRuntime: { ...buildRuntime, unknown: true } }],
   ])('rejects unknown keys in %s', (_label, additions) => {
     const input = 'unknown' in additions ? { ...driftEvidenceInput(), ...additions } : driftEvidenceInput(additions);
     expect(() => buildTerraformDriftEvidence(input)).toThrow();
@@ -693,4 +735,49 @@ describe('Terraform drift evidence', () => {
   ])('rejects a noncanonical summary with $label', ({ summary }) => {
     expect(() => buildTerraformDriftEvidence(driftEvidenceInput({ terraformDetailedExitCode: 2, summary }))).toThrow();
   });
+});
+
+it('admits configured production drift identity and rejects a backend from development', async () => {
+  const { configuration } = productionConfigurationFixture();
+  vi.resetModules();
+  vi.doMock('../deployment-targets.json', () => ({ default: configuration }));
+  try {
+    const configuredTargets = await import('./index.js');
+    const configuredDrift = await import('./terraform-drift.js');
+    const production = configuredTargets.resolveAllowedDeploymentTarget('stark-prod/main');
+    const context = configuredTargets.renderDeploymentLaneContext({
+      target: production,
+      lane: 'app',
+      accountId: production.accountId,
+      requestedControlSourceSha: sourceSha,
+      selectedApplicationSourceSha: sourceSha,
+      frameworkSourceSha: sourceSha,
+    });
+    const identity = {
+      ...driftIdentity(),
+      accountId: production.accountId,
+      stateIdentity: context.root.stateIdentity,
+      targetConfigurationSha256: context.targetConfigurationSha256,
+      backend: {
+        bucketName: context.names.terraformStateBucket,
+        backendKey: context.root.backendKey,
+        kmsKeyArn: `arn:${production.partition}:kms:${production.region}:${production.accountId}:key/11111111-2222-3333-4444-555555555555`,
+        region: production.region,
+      },
+    };
+    const input = driftEvidenceInput({ expectedIdentity: identity, observed: identity });
+    const evidence = configuredDrift.buildTerraformDriftEvidence(input);
+    expect(configuredDrift.validateTerraformDriftEvidence(evidence)).toEqual(evidence);
+    expect(evidence.observed).toEqual(identity);
+    for (const invalid of [
+      { ...identity, backend: driftIdentity()['backend'] },
+      { ...identity, stateIdentity: 'stark-dev/develop/app' },
+      { ...identity, accountId: target.accountId },
+    ]) {
+      expect(() => configuredDrift.buildTerraformDriftEvidence({ ...input, observed: invalid })).toThrow();
+    }
+  } finally {
+    vi.doUnmock('../deployment-targets.json');
+    vi.resetModules();
+  }
 });

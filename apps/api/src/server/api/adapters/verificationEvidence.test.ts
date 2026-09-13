@@ -1,13 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import type { SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
-import { createMockVoteStore } from '../../__tests__/support/mockVoteStore';
+import { createMockVoteStore } from '../../test-support/mockVoteStore';
 import { evaluateChecks } from '@stark-ballot/verification/check-evaluator';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
 import { acquireBitmapProofEvidence, acquireConsistencyProofEvidence } from './verificationEvidence';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 
-const sessionId = 'session-evidence';
-const finalizationId = 'finalization-evidence';
+const sessionId = asSessionId('session-evidence');
+const finalizationId = asFinalizationId('finalization-evidence');
 
 function buildBulletinSession(): SessionVotingRecord {
   const logId = `0x${'ab'.repeat(32)}`;

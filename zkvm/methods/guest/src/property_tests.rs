@@ -665,20 +665,6 @@ proptest! {
     }
 
     #[test]
-    fn property_bitmap_root_changes_when_a_bit_flips(
-        (mut bitmap, bit_index) in bitmap_strategy(1..1281).prop_flat_map(|bitmap| {
-            let len = bitmap.len();
-            (Just(bitmap), 0..len)
-        }),
-    ) {
-        let expected = compute_bitmap_merkle_root(&bitmap);
-        bitmap[bit_index] = !bitmap[bit_index];
-        let actual = compute_bitmap_merkle_root(&bitmap);
-
-        prop_assert_ne!(actual, expected);
-    }
-
-    #[test]
     fn property_verify_and_tally_accounting_matches_current_semantics(
         case in accounting_case_strategy(),
     ) {

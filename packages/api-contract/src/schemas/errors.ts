@@ -1,4 +1,5 @@
 import { s, type Infer } from '@stark-ballot/validation/schema';
+import { documentOpenApiRefinement } from '@stark-ballot/validation/schema-openapi';
 import {
   finalizationIdSchema,
   publicObject,
@@ -38,10 +39,13 @@ export const verificationStateErrorDetailSchema = publicObject({
   kind: s.literal('verificationState'),
   status: verificationStatusSchema,
   finalizationId: finalizationIdSchema.optional(),
-  errorCodes: s
-    .array(s.string().min(1).max(128))
-    .refine((values) => values.length <= 20, { message: 'Expected at most 20 error codes' })
-    .optional(),
+  errorCodes: documentOpenApiRefinement(
+    s
+      .array(s.string().min(1).max(128))
+      .refine((values) => values.length <= 20, { message: 'Expected at most 20 error codes' }),
+    'At most 20 verifier error codes are exposed.',
+    { maxItems: 20 },
+  ).optional(),
 });
 
 export const proofRangeErrorDetailSchema = publicObject({

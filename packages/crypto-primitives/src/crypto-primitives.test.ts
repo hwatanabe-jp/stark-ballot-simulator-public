@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { addHexPrefix, hexToBytesStrict, isValidHexString, normalizeHexString, sha256Hex } from './index';
+import checkedDescriptorJson from '../../../zkvm/contract-core/src/current-zkvm-semantic-contract.json';
+import {
+  addHexPrefix,
+  hexToBytesStrict,
+  isValidHexString,
+  normalizeHexString,
+  sha256Hex,
+  VOTE_COMMITMENT_DOMAIN_TAG,
+} from './index';
 
 describe('generic hex primitives', () => {
   it.each([
@@ -73,5 +81,11 @@ describe('generic SHA-256 primitive', () => {
     expect(sha256Hex(Uint8Array.of(0), Uint8Array.of(1, 2))).toBe(
       'ae4b3280e56e2faf83f414a6e3dabe9d5fbe18976544c05fed121accb85b53fc',
     );
+  });
+});
+
+describe('Rust-owned semantic projections', () => {
+  it('keeps the generated vote commitment domain tag fresh', () => {
+    expect(VOTE_COMMITMENT_DOMAIN_TAG).toBe(checkedDescriptorJson.domainTags.voteCommitment);
   });
 });

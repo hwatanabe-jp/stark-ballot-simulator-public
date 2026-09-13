@@ -13,9 +13,10 @@ import {
   type FinalizationEventReason,
 } from '@stark-ballot/diagnostics/canonicalEvents';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 
 type FinalizationStateUpdateCommon = {
-  sessionId: string;
+  sessionId: SessionId;
   finalizationId: FinalizationId;
   queuedAtMs: number;
 };
@@ -53,7 +54,7 @@ type FinalizationStateUpdateStore = Pick<
 >;
 
 export interface FinalizationStateUpdateApplyResult {
-  sessionId: string;
+  sessionId: SessionId;
   state: FinalizationState;
 }
 

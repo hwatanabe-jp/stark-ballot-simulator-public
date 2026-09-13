@@ -1,11 +1,11 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@stark-ballot/web/components/ui/Card';
 import { BotVotingProgress } from '@stark-ballot/web/components/vote/BotVotingProgress';
 import { VoteForm } from '@stark-ballot/web/components/vote/VoteForm';
 import { useTranslation } from '@stark-ballot/web/hooks';
 import { useAppRouter } from '@stark-ballot/web/navigation/appNavigation';
+import '@stark-ballot/web/components/vote/Vote.css';
 
 export default function VotePage(): React.ReactElement {
   const { t } = useTranslation();
@@ -43,28 +43,14 @@ export default function VotePage(): React.ReactElement {
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-4 md:px-6 py-6">
-      {/* Page Header */}
-      <div className="mb-8">
-        <h1 className="font-display text-[var(--text-display)] font-bold text-ink-900 mb-3 tracking-[var(--tracking-display)] leading-[var(--leading-display)]">
-          {t('pages.vote.title')}
-        </h1>
-        <p className="font-secondary text-text-secondary leading-relaxed">{t('pages.vote.overview')}</p>
+    <div className="vote-page">
+      <div className="vote-page__intro">
+        <h1>{t('pages.vote.title')}</h1>
       </div>
-
-      {/* Vote Selection Card */}
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="font-primary text-xl text-ink-800">{t('pages.vote.selectionTitle')}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <VoteForm
-            onVoteComplete={() => {
-              handleVoteComplete();
-            }}
-          />
-        </CardContent>
-      </Card>
+      <section className="vote-page__selection" aria-labelledby="vote-selection-title">
+        <h2 id="vote-selection-title">{t('pages.vote.selectionTitle')}</h2>
+        <VoteForm onVoteComplete={handleVoteComplete} />
+      </section>
     </div>
   );
 }

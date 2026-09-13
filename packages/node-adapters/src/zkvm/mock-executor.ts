@@ -4,7 +4,7 @@
  */
 
 import { Buffer } from 'buffer';
-import type { ZkVMInput, VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
+import type { VerifiedTally, VoteWithProof, ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
 import {
   CURRENT_METHOD_VERSION,
   asUnixTimestampMillis,
@@ -22,7 +22,6 @@ import { validateGuestWorkBudget } from '@stark-ballot/zkvm-contract/zkvm/work-b
 // Constants following final-design.md specifications
 const MOCK_EXECUTION_TIME_MS = 100;
 const MAX_CHOICE_VALUE = 4; // Choices are 0-4 (A-E)
-const NUM_CHOICES = 5;
 const METHOD_VERSION = CURRENT_METHOD_VERSION; // v1.1
 
 // Vote validation result
@@ -33,7 +32,6 @@ interface VoteValidation {
 
 // Store the last executed bitmap for retrieval
 let lastExecutedBitmap: boolean[] | null = null;
-let lastExecutedSeenBitmap: boolean[] | null = null;
 
 /**
  * Get the included bitmap from the last execution
@@ -42,10 +40,6 @@ let lastExecutedSeenBitmap: boolean[] | null = null;
  */
 export function getLastExecutedBitmap(): boolean[] | null {
   return lastExecutedBitmap;
-}
-
-export function getLastExecutedSeenBitmap(): boolean[] | null {
-  return lastExecutedSeenBitmap;
 }
 
 /**
@@ -78,7 +72,6 @@ export async function executeMockZkVM(input: ZkVMInput): Promise<ZkVMExecutionRe
 
   // Store the bitmap for retrieval (mock mode only)
   lastExecutedBitmap = verificationResult.includedBitmap;
-  lastExecutedSeenBitmap = verificationResult.seenBitmap;
 
   const sthDigest = computeSTHDigest(
     input.logId,
@@ -188,7 +181,7 @@ export async function executeMockZkVM(input: ZkVMInput): Promise<ZkVMExecutionRe
  * - rejectedRecords: rejected records, including duplicate/out-of-range records
  */
 function verifyAndTallyVotes(input: ZkVMInput) {
-  const verifiedTally = Array.from({ length: NUM_CHOICES }, () => 0);
+  const verifiedTally: VerifiedTally = [0, 0, 0, 0, 0];
   const includedBitmap = Array.from({ length: input.treeSize }, () => false);
   const seenBitmap = Array.from({ length: input.treeSize }, () => false);
   const seenIndices = new Set<number>();

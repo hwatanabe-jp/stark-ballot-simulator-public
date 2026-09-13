@@ -49,9 +49,19 @@ export function asSessionId(value: string): SessionId {
   return brandIdentifier<'SessionId'>(value);
 }
 
+export function parseSessionId(value: unknown): SessionId | undefined {
+  return typeof value === 'string' && SAFE_SEGMENT_PATTERN.test(value)
+    ? brandIdentifier<'SessionId'>(value)
+    : undefined;
+}
+
 export function asCapabilityToken(value: string): CapabilityToken {
   assertNonEmptyString(value, 'capabilityToken');
   return brandIdentifier<'CapabilityToken'>(value);
+}
+
+export function parseCapabilityToken(value: unknown): CapabilityToken | undefined {
+  return typeof value === 'string' && value.length > 0 ? brandIdentifier<'CapabilityToken'>(value) : undefined;
 }
 
 export function asVoteIndex(value: number): VoteIndex {

@@ -1,5 +1,7 @@
-import { parseFinalizationRecord, type FinalizationRecord } from './finalization-record';
+import { finalizationRecordCodec, type FinalizationRecord } from './finalization-record';
 import type { FinalizationSucceededPayload } from './finalization-store';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
+import { admitFinalizationResultAuthority } from './finalization-storage';
 
 export type SuccessfulFinalizationRecord = Extract<FinalizationRecord, { state: { status: 'succeeded' } }>;
 export type SuccessfulFinalizationReceipt = { receipt: string; timestamp: number };
@@ -43,11 +45,11 @@ export function admitSuccessfulFinalizationCommitRecord(value: unknown): Success
   } catch {
     throw new Error('Invalid succeeded finalization record');
   }
-  const record = parseFinalizationRecord(cloned);
+  const record = finalizationRecordCodec.admit(cloned);
   if (!record || record.state.status !== 'succeeded' || !record.finalizationResult) {
     throw new Error('Invalid succeeded finalization record');
   }
-  if (record.finalizationResult.receiptPublication !== undefined) {
+  if (record.finalizationResult.artifacts.receiptPublication.availability === 'available') {
     throw new Error('Successful finalization commit does not accept pre-populated receipt publication');
   }
   if (record.state.startedAtMs < record.state.queuedAtMs || record.state.completedAtMs < record.state.startedAtMs) {
@@ -57,16 +59,20 @@ export function admitSuccessfulFinalizationCommitRecord(value: unknown): Success
 }
 
 export function assertDirectSuccessfulFinalizationPayload(payload: FinalizationSucceededPayload): void {
-  if (payload.finalizationResult.bitmapData !== undefined) {
+  const result = admitFinalizationResultAuthority(payload.finalizationResult);
+  if (!result) {
+    return;
+  }
+  if (result.artifacts.bitmap.availability === 'available') {
     throw new Error('Direct finalization success does not accept embedded bitmap evidence');
   }
-  if (payload.finalizationResult.receiptPublication !== undefined) {
+  if (result.artifacts.receiptPublication.availability === 'available') {
     throw new Error('Direct finalization success does not accept embedded receipt publication');
   }
 }
 
 export function buildDirectSuccessfulFinalizationCommitRecord(
-  sessionId: string,
+  sessionId: SessionId,
   payload: FinalizationSucceededPayload,
   current: FinalizationRecord | null,
 ): SuccessfulFinalizationRecord {

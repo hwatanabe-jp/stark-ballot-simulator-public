@@ -1,295 +1,162 @@
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { describe, it, expect, beforeAll } from 'vitest';
+import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
 import { executeZkVM as executeRisc0ZkVM } from '@stark-ballot/node-adapters/zkvm/executor';
-import type { ZkVMInput, VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
-import { createHash } from 'crypto';
-import { existsSync } from 'fs';
-import path from 'path';
+import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
+import { buildDefaultElectionConfig, hashElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
+import {
+  asUnixTimestampMillis,
+  computeCommitment,
+  computeInputCommitment,
+  computeSTHDigest,
+  CURRENT_METHOD_VERSION,
+  type ZkVMInput,
+  type VoteWithProof,
+} from '@stark-ballot/zkvm-contract/zkvm/types';
 
 const BOT_COUNT = 63;
+const ELECTION_ID = '550e8400-e29b-41d4-a716-446655440000';
+const TIMESTAMP = asUnixTimestampMillis(1_767_225_600_000);
 const DEVELOPMENT_PROOF_PROFILE = {
   executor: 'risc0',
   evidence: 'development',
 } as const;
 
-function executeZkVM(input: ZkVMInput) {
-  return executeRisc0ZkVM(input, DEVELOPMENT_PROOF_PROFILE);
+function createInput(choices: number[]): ZkVMInput {
+  const tree = new RFC6962MerkleTree();
+  const votes: VoteWithProof[] = choices.map((choice, index) => {
+    const random = `0x${(index + 1).toString(16).padStart(64, '0')}`;
+    const commitment = computeCommitment(ELECTION_ID, choice, random);
+    tree.append(commitment);
+    return { choice, commitment, random, index, merklePath: [] };
+  });
+
+  for (const vote of votes) {
+    vote.merklePath = tree.getInclusionProof(vote.index).proofNodes.map((node) => `0x${node}`);
+  }
+
+  return {
+    votes,
+    bulletinRoot: `0x${tree.getRoot()}`,
+    treeSize: tree.size,
+    totalExpected: tree.size,
+    electionId: ELECTION_ID,
+    electionConfigHash: hashElectionConfig(buildDefaultElectionConfig()),
+    logId: `0x${'ab'.repeat(32)}`,
+    timestamp: TIMESTAMP,
+  };
 }
 
-describe('zkVM End-to-End Tests', () => {
-  const zkVMPath = path.join(process.cwd(), 'zkvm/target/release/host');
+async function executeZkVM(input: ZkVMInput, includedBitmap: boolean[], seenBitmap: boolean[]) {
+  const result = await executeRisc0ZkVM(input, DEVELOPMENT_PROOF_PROFILE);
 
+  expect(result).toMatchObject({
+    electionId: input.electionId,
+    electionConfigHash: input.electionConfigHash,
+    bulletinRoot: input.bulletinRoot,
+    treeSize: input.treeSize,
+    totalExpected: input.totalExpected,
+    methodVersion: CURRENT_METHOD_VERSION,
+    inputCommitment: computeInputCommitment(input),
+    sthDigest: computeSTHDigest(input.logId, input.treeSize, TIMESTAMP, input.bulletinRoot),
+    includedBitmap,
+    seenBitmap,
+    includedBitmapRoot: computeIncludedBitmapRoot(includedBitmap),
+    seenBitmapRoot: computeIncludedBitmapRoot(seenBitmap),
+  });
+
+  return result;
+}
+
+describe('zkVM development receipt end-to-end execution', () => {
   beforeAll(() => {
-    // Check if zkVM binary exists
-    if (!existsSync(zkVMPath)) {
-      throw new Error('zkVM binary not found. Please run: cd zkvm && cargo build --release');
+    const hostPath = path.join(process.cwd(), 'zkvm/target/release/host');
+    if (!existsSync(hostPath)) {
+      throw new Error('zkVM host binary not found. Please run: pnpm build:zkvm:dev-mode');
     }
   });
 
-  describe('Basic Voting Flow', () => {
-    it('should successfully generate proof for valid votes', async () => {
-      // Create test votes with SHA256 commitments
-      const votes: VoteWithProof[] = [];
+  it('counts every valid vote using the current commitment and CT inclusion contract', async () => {
+    const input = createInput([0, ...Array.from({ length: BOT_COUNT }, (_, index) => index % 5)]);
+    const allIncluded = Array.from({ length: BOT_COUNT + 1 }, () => true);
 
-      // Add user vote
-      const userChoice = 0; // A
-      const userRandom = '0x' + '1'.repeat(64); // 32 bytes hex
-      const userCommitment =
-        '0x' +
-        createHash('sha256')
-          .update(Buffer.from([userChoice]))
-          .update(Buffer.from(userRandom.slice(2), 'hex'))
-          .digest('hex');
+    const result = await executeZkVM(input, allIncluded, allIncluded);
 
-      votes.push({
-        choice: userChoice,
-        commitment: userCommitment,
-        random: userRandom,
-        index: 0,
-        merklePath: [],
-      });
+    expect(result).toMatchObject({
+      verifiedTally: [14, 13, 13, 12, 12],
+      totalVotes: 64,
+      validVotes: 64,
+      invalidVotes: 0,
+      seenIndicesCount: 64,
+      missingSlots: 0,
+      invalidPresentedSlots: 0,
+      rejectedRecords: 0,
+      excludedSlots: 0,
+    });
+  }, 180_000);
 
-      // Add bot votes
-      for (let i = 0; i < BOT_COUNT; i++) {
-        const choice = i % 5; // Distribute among A-E
-        const random = '0x' + (i + 2).toString(16).padStart(64, '0');
-        const commitment =
-          '0x' +
-          createHash('sha256')
-            .update(Buffer.from([choice]))
-            .update(Buffer.from(random.slice(2), 'hex'))
-            .digest('hex');
+  it('reports an omitted ballot as a missing slot while retaining the full bulletin root', async () => {
+    const input = createInput(Array.from({ length: BOT_COUNT + 1 }, () => 2));
+    input.votes = input.votes.slice(1);
+    const remainingIncluded = [false, ...Array.from({ length: BOT_COUNT }, () => true)];
 
-        votes.push({
-          choice,
-          commitment,
-          random,
-          index: i + 1,
-          merklePath: [],
-        });
-      }
+    const result = await executeZkVM(input, remainingIncluded, remainingIncluded);
 
-      // Create Merkle root from all commitments
-      const allCommitments = votes.map((v) => v.commitment).join('');
-      const merkleRoot = '0x' + createHash('sha256').update(allCommitments).digest('hex');
+    expect(result).toMatchObject({
+      verifiedTally: [0, 0, 63, 0, 0],
+      totalVotes: 63,
+      validVotes: 63,
+      invalidVotes: 0,
+      seenIndicesCount: 63,
+      missingSlots: 1,
+      invalidPresentedSlots: 0,
+      rejectedRecords: 0,
+      excludedSlots: 1,
+    });
+  }, 180_000);
 
-      // Calculate expected tally
-      const expectedTally = [13, 13, 13, 13, 12]; // Distribution of 64 votes across A-E
+  it('rejects an invalid opening while counting the other proof-bound votes', async () => {
+    const input = createInput(Array.from({ length: BOT_COUNT + 1 }, () => 1));
+    input.votes = input.votes.map((vote) => (vote.index === 0 ? { ...vote, random: `0x${'ff'.repeat(32)}` } : vote));
+    const includedBitmap = [false, ...Array.from({ length: BOT_COUNT }, () => true)];
+    const seenBitmap = Array.from({ length: BOT_COUNT + 1 }, () => true);
 
-      const input: ZkVMInput = {
-        votes,
-        bulletinRoot: merkleRoot,
-        treeSize: votes.length,
-        totalExpected: votes.length,
-        electionId: '550e8400-e29b-41d4-a716-446655440000',
-        electionConfigHash: '0x' + '00'.repeat(32),
-        logId: '0x' + '00'.repeat(32),
-        timestamp: Date.now(),
-      };
+    const result = await executeZkVM(input, includedBitmap, seenBitmap);
 
-      const result = await executeZkVM(input);
+    expect(result).toMatchObject({
+      verifiedTally: [0, 63, 0, 0, 0],
+      totalVotes: 64,
+      validVotes: 63,
+      invalidVotes: 1,
+      seenIndicesCount: 64,
+      missingSlots: 0,
+      invalidPresentedSlots: 1,
+      rejectedRecords: 1,
+      excludedSlots: 1,
+    });
+  }, 180_000);
 
-      // Verify basic structure
-      expect(result).toBeDefined();
-      expect(result.verifiedTally).toBeDefined();
-      expect(result.verifiedTally).toEqual(expectedTally);
-      expect(result.totalVotes).toBe(64);
-      expect(result.excludedSlots).toBe(0);
+  it('rejects a tampered CT path even when the vote opening is valid', async () => {
+    const input = createInput(Array.from({ length: BOT_COUNT + 1 }, () => 4));
+    input.votes = input.votes.map((vote) =>
+      vote.index === 0 ? { ...vote, merklePath: [`0x${'ff'.repeat(32)}`, ...vote.merklePath.slice(1)] } : vote,
+    );
+    const includedBitmap = [false, ...Array.from({ length: BOT_COUNT }, () => true)];
+    const seenBitmap = Array.from({ length: BOT_COUNT + 1 }, () => true);
 
-      // Verify vote distribution
-      const totalCounted = result.verifiedTally.reduce((sum: number, count: number) => sum + count, 0);
-      expect(totalCounted).toBe(64);
+    const result = await executeZkVM(input, includedBitmap, seenBitmap);
 
-      // Verify proof components
-      expect(result.includedBitmapRoot).toBeDefined();
-      expect(result.methodVersion).toBeDefined();
-    }, 180000); // 3 minutes timeout for test
-
-    it('should detect tamper when votes are excluded', async () => {
-      // Create test data with SHA256 commitments
-      const votes: VoteWithProof[] = [];
-
-      // Add user vote for C
-      const userChoice = 2; // C
-      const userRandom = '0x' + '2'.repeat(64);
-      const userCommitment =
-        '0x' +
-        createHash('sha256')
-          .update(Buffer.from([userChoice]))
-          .update(Buffer.from(userRandom.slice(2), 'hex'))
-          .digest('hex');
-
-      votes.push({
-        choice: userChoice,
-        commitment: userCommitment,
-        random: userRandom,
-        index: 0,
-        merklePath: [],
-      });
-
-      // Add 63 bot votes all voting for C
-      for (let i = 0; i < BOT_COUNT; i++) {
-        const choice = 2; // C
-        const random = '0x' + (i + 100).toString(16).padStart(64, '0');
-        const commitment =
-          '0x' +
-          createHash('sha256')
-            .update(Buffer.from([choice]))
-            .update(Buffer.from(random.slice(2), 'hex'))
-            .digest('hex');
-
-        votes.push({
-          choice,
-          commitment,
-          random,
-          index: i + 1,
-          merklePath: [],
-        });
-      }
-
-      const allCommitments = votes.map((v) => v.commitment).join('');
-      const merkleRoot = '0x' + createHash('sha256').update(allCommitments).digest('hex');
-
-      const input: ZkVMInput = {
-        votes,
-        bulletinRoot: merkleRoot,
-        treeSize: votes.length,
-        totalExpected: votes.length,
-        electionId: '550e8400-e29b-41d4-a716-446655440000',
-        electionConfigHash: '0x' + '00'.repeat(32),
-        logId: '0x' + '00'.repeat(32),
-        timestamp: Date.now(),
-      };
-
-      const result = await executeZkVM(input);
-
-      // Should count all votes correctly
-      expect(result.verifiedTally).toEqual([0, 0, 64, 0, 0]); // All 64 votes for C
-      expect(result.totalVotes).toBe(64);
-      expect(result.excludedSlots).toBe(0); // No votes excluded
-    }, 180000);
-
-    it('should handle invalid vote commitments', async () => {
-      // Create a vote with mismatched commitment
-      const votes: VoteWithProof[] = [];
-
-      // Add user vote with wrong commitment
-      const userChoice = 1; // B
-      const userRandom = '0x' + '3'.repeat(64);
-      const wrongCommitment = '0x' + 'f'.repeat(64); // Invalid commitment
-
-      votes.push({
-        choice: userChoice,
-        commitment: wrongCommitment,
-        random: userRandom,
-        index: 0,
-        merklePath: [],
-      });
-
-      // Add bot votes with valid commitments
-      for (let i = 0; i < BOT_COUNT; i++) {
-        const choice = 1;
-        const random = '0x' + (i + 200).toString(16).padStart(64, '0');
-        const commitment =
-          '0x' +
-          createHash('sha256')
-            .update(Buffer.from([choice]))
-            .update(Buffer.from(random.slice(2), 'hex'))
-            .digest('hex');
-
-        votes.push({
-          choice,
-          commitment,
-          random,
-          index: i + 1,
-          merklePath: [],
-        });
-      }
-
-      const merkleRoot = '0x' + '1234567890abcdef'.padStart(64, '0');
-
-      const input: ZkVMInput = {
-        votes,
-        bulletinRoot: merkleRoot,
-        treeSize: votes.length,
-        totalExpected: votes.length,
-        electionId: '550e8400-e29b-41d4-a716-446655440000',
-        electionConfigHash: '0x' + '00'.repeat(32),
-        logId: '0x' + '00'.repeat(32),
-        timestamp: Date.now(),
-      };
-
-      const result = await executeZkVM(input);
-
-      // The invalid commitment should be detected
-      // The vote should be marked as invalid and not counted
-      expect(result.verifiedTally).toEqual([0, 63, 0, 0, 0]); // Only valid bot votes
-      expect(result.totalVotes).toBe(63); // Invalid vote not counted
-      expect(result.excludedSlots).toBeGreaterThan(0); // Invalid vote excluded
-    }, 180000);
-  });
-
-  describe('Tamper Detection', () => {
-    it('should detect various tally manipulations', async () => {
-      const votes: VoteWithProof[] = [];
-
-      // Add user vote for E
-      const userChoice = 4; // E
-      const userRandom = '0x' + '4'.repeat(64);
-      const userCommitment =
-        '0x' +
-        createHash('sha256')
-          .update(Buffer.from([userChoice]))
-          .update(Buffer.from(userRandom.slice(2), 'hex'))
-          .digest('hex');
-
-      votes.push({
-        choice: userChoice,
-        commitment: userCommitment,
-        random: userRandom,
-        index: 0,
-        merklePath: [],
-      });
-
-      // Add bot votes all for E
-      for (let i = 0; i < BOT_COUNT; i++) {
-        const choice = 4; // E
-        const random = '0x' + (i + 300).toString(16).padStart(64, '0');
-        const commitment =
-          '0x' +
-          createHash('sha256')
-            .update(Buffer.from([choice]))
-            .update(Buffer.from(random.slice(2), 'hex'))
-            .digest('hex');
-
-        votes.push({
-          choice,
-          commitment,
-          random,
-          index: i + 1,
-          merklePath: [],
-        });
-      }
-
-      const allCommitments = votes.map((v) => v.commitment).join('');
-      const merkleRoot = '0x' + createHash('sha256').update(allCommitments).digest('hex');
-
-      const input: ZkVMInput = {
-        votes,
-        bulletinRoot: merkleRoot,
-        treeSize: votes.length,
-        totalExpected: votes.length,
-        electionId: '550e8400-e29b-41d4-a716-446655440000',
-        electionConfigHash: '0x' + '00'.repeat(32),
-        logId: '0x' + '00'.repeat(32),
-        timestamp: Date.now(),
-      };
-
-      const result = await executeZkVM(input);
-
-      // Should count all votes correctly
-      expect(result.verifiedTally).toEqual([0, 0, 0, 0, 64]); // All 64 votes for E
-      expect(result.totalVotes).toBe(64);
-      expect(result.excludedSlots).toBe(0); // No exclusions when all votes are valid
-    }, 180000);
-  });
+    expect(result).toMatchObject({
+      verifiedTally: [0, 0, 0, 0, 63],
+      totalVotes: 64,
+      validVotes: 63,
+      invalidVotes: 1,
+      seenIndicesCount: 64,
+      missingSlots: 0,
+      invalidPresentedSlots: 1,
+      rejectedRecords: 1,
+      excludedSlots: 1,
+    });
+  }, 180_000);
 });

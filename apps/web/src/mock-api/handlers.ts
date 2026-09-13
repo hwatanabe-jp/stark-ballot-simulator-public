@@ -1,3 +1,4 @@
+import { normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { getMockState, resetMockState, updateMockState } from './state';
 import {
   buildSessionResponse,
@@ -307,6 +308,21 @@ export const handleMockRoute = (request: MockRouteRequest): Response => {
       return parsed.response;
     }
     const body = parsed.data;
+    const previous = getMockState();
+    if (previous.voteTimestamp !== undefined) {
+      if (
+        previous.voteChoice !== body.vote ||
+        normalizeHexString(previous.random ?? '') !== normalizeHexString(body.rand) ||
+        normalizeHexString(previous.commitment ?? '') !== normalizeHexString(body.commitment)
+      ) {
+        const error = createApiErrorResult(ErrorCode.ALREADY_VOTED, requestId);
+        return toResponse(error.payload, requestId, error.status);
+      }
+      const payload = buildVoteResponse(previous);
+      validateMockPayload(VoteResponseSchema, payload, routeId);
+      return toResponse(payload, requestId);
+    }
+
     const state = updateMockState((current) => {
       current.voteChoice = body.vote;
       current.random = body.rand;
@@ -630,14 +646,13 @@ export const handleMockRoute = (request: MockRouteRequest): Response => {
     }
 
     const currentStatus = state.verificationStatus ?? 'not_run';
-    const verificationStatus = currentStatus === 'not_run' ? 'running' : currentStatus;
+    const verificationStatus = currentStatus === 'not_run' ? 'dev_mode' : currentStatus;
     if (currentStatus === 'not_run') {
       updateMockState((current) => {
-        current.verificationStatus = 'running';
+        // The browser fixture resolves synchronously and never provides production proof.
+        current.verificationStatus = 'dev_mode';
         current.verificationReport = {
-          status: 'running',
-          duration_ms: 3800,
-          errors: [],
+          status: 'dev_mode',
         };
       });
     }

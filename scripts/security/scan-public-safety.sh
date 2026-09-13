@@ -228,6 +228,7 @@ sub is_publishable_documentation_scope {
   my ($path) = @_;
   return 0 unless $path =~ /\.md$/;
   return 1 if $is_generated_public_snapshot eq 'true';
+  return 1 if $path =~ m{^techdocs/docs/};
   return 1 if $public_documentation_paths{$path};
   return scalar grep { index($path, $_) == 0 } @public_documentation_prefixes;
 }
@@ -236,6 +237,8 @@ sub is_account_id_hygiene_scope {
   my ($path) = @_;
   return 1 if $path =~ /\.tfvars(?:\.json)?(?:\.example)?$/;
   return 1 if $path eq 'README.md' || $path eq 'SECURITY.md' || $path eq 'docs/README.md';
+  return 1 if $path eq 'catalog-info.yaml';
+  return 1 if $path =~ m{^(?:openapi|techdocs)/};
   return 1 if $path =~ m{^public-book/};
   return 0 if grep { index($path, $_) == 0 } @private_doc_prefixes;
   return 1 if $path =~ m{^docs/};

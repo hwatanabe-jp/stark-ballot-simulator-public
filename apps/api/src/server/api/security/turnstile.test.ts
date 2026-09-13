@@ -9,7 +9,7 @@ import {
   localRuntimeProfile,
   targetRuntimeProfile,
   targetRuntimeProfileEnv,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { resolveRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
@@ -301,6 +301,32 @@ describe('extractTurnstileToken', () => {
 });
 
 describe('getRequestIp', () => {
+  const cloudflareProfile = resolveRuntimeProfile({
+    ...targetRuntimeProfileEnv('main'),
+    TRUSTED_PROXY: 'cloudflare',
+  });
+
+  it.each(['203.0.113.10', '2001:db8::1'])(
+    'uses authenticated Cloudflare client IP %s for the production target',
+    (clientIp) => {
+      const headers = new Headers({
+        'cf-connecting-ip': clientIp,
+        'x-forwarded-for': '198.51.100.1',
+        'x-real-ip': '198.51.100.2',
+      });
+      expect(getRequestIp(cloudflareProfile, headers, '198.51.100.3')).toBe(clientIp);
+    },
+  );
+
+  it.each([null, '', 'unknown', '999.0.0.1', '1:2:3', '203.0.113.1, 203.0.113.2', '203.0.113.1:443', '[2001:db8::1]'])(
+    'rejects absent or invalid Cloudflare client IP %s without trusting other proxy addresses',
+    (clientIp) => {
+      const headers = new Headers({ 'x-forwarded-for': '203.0.113.11', 'x-real-ip': '203.0.113.12' });
+      if (clientIp !== null) headers.set('cf-connecting-ip', clientIp);
+      expect(getRequestIp(cloudflareProfile, headers, '198.51.100.1')).toBeUndefined();
+    },
+  );
+
   it('prefers cf-connecting-ip header when Cloudflare is trusted', () => {
     process.env['TRUSTED_PROXY'] = 'cloudflare';
     // Given

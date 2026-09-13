@@ -27,21 +27,25 @@ phases:
               ;;
           esac
           if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
-            for coordinate in \
-              "${EXISTING_TOOLCHAIN_ARTIFACT_KEY:-}" \
-              "${EXISTING_TOOLCHAIN_ARTIFACT_VERSION_ID:-}" \
-              "${EXISTING_TOOLCHAIN_ARTIFACT_SHA256:-}"; do
-              if [ "$coordinate" != "__NOT_APPLICABLE__" ]; then
-                echo "existing Toolchain coordinates must be __NOT_APPLICABLE__ in build mode." >&2
-                exit 1
-              fi
-            done
+            if [ "${EXISTING_TOOLCHAIN_RECORD_KEY:-}" != "__NOT_APPLICABLE__" ]; then
+              echo "EXISTING_TOOLCHAIN_RECORD_KEY must be __NOT_APPLICABLE__ in build mode." >&2
+              exit 1
+            fi
+          elif [ -z "${EXISTING_TOOLCHAIN_RECORD_KEY:-}" ] || [ "$EXISTING_TOOLCHAIN_RECORD_KEY" = "__NOT_APPLICABLE__" ]; then
+            echo "EXISTING_TOOLCHAIN_RECORD_KEY is required in existing mode." >&2
+            exit 1
           fi
           printf '%s' "$RESOLVED_SOURCE_SHA" > /tmp/source-sha
         )
       - |
+        deployment_target_key="$(
+          node scripts/aws/assert-source-path-build-runtime.js select-target \
+            --lane toolchain \
+            --project-key toolchainCandidateProject \
+            --role-key toolchainCandidateRole
+        )"
         node scripts/aws/render-deployment-context.js render \
-          --target stark-dev/develop \
+          --target "$deployment_target_key" \
           --lane toolchain \
           --account-id "$AWS_ACCOUNT_ID" \
           --requested-control-source-sha "$REQUESTED_SOURCE_SHA" \
@@ -55,6 +59,14 @@ phases:
           toolchain \
           toolchainCandidateRole \
           toolchainCandidateProject
+        node scripts/aws/assert-source-path-build-runtime.js \
+          --context /tmp/deployment-context.json \
+          --project-key toolchainCandidateProject \
+          --role-key toolchainCandidateRole \
+          --buildspec-path buildspec-risc0-toolchain.yml \
+          --compute-type BUILD_GENERAL1_LARGE \
+          --environment-type ARM_CONTAINER \
+          --privileged-mode true
         export AWS_ACCOUNT_ID="$DEPLOYMENT_CONTEXT_TARGET_ACCOUNT_ID"
         export AWS_REGION="$DEPLOYMENT_CONTEXT_TARGET_REGION"
         export AWS_DEFAULT_REGION="$DEPLOYMENT_CONTEXT_TARGET_REGION"
@@ -136,16 +148,12 @@ phases:
         if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
           echo "Building RISC Zero toolchain v${RISC0_VERSION} for ARM64 with host Rust ${RUST_VERSION} and guest toolchain ${RUST_TOOLCHAIN_TAG}..."
         else
-          node infra/terraform/bootstrap/foundation-pipeline-scripts/resolve-existing-toolchain-artifact.mjs \
-            --bucket "$TOOLCHAIN_RELEASE_BUCKET" \
-            --artifact-key "$EXISTING_TOOLCHAIN_ARTIFACT_KEY" \
-            --artifact-version-id "$EXISTING_TOOLCHAIN_ARTIFACT_VERSION_ID" \
-            --artifact-sha256 "$EXISTING_TOOLCHAIN_ARTIFACT_SHA256" \
-            --control-source-sha "$REQUESTED_SOURCE_SHA" \
-            --expected-account-id "$AWS_ACCOUNT_ID" \
-            --region "$AWS_DEFAULT_REGION" \
-            --repository-name "$IMAGE_REPO_NAME" \
-            --record-output /tmp/selected-toolchain-artifact-record.json \
+          node infra/terraform/bootstrap/foundation-pipeline-scripts/toolchain-release-ledger-adapter.mjs \
+            --context /tmp/deployment-context.json \
+            --context-sha256 /tmp/deployment-context.sha256 \
+            --action select-candidate \
+            --record-key "$EXISTING_TOOLCHAIN_RECORD_KEY" \
+            --publication-output /tmp/toolchain-candidate-publication.json \
             --metadata-output /tmp/image-info.json
         fi
 
@@ -314,6 +322,15 @@ phases:
             > /tmp/image-info.json
         fi
         cat /tmp/image-info.json
+      - |
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          node infra/terraform/bootstrap/foundation-pipeline-scripts/toolchain-release-ledger-adapter.mjs \
+            --context /tmp/deployment-context.json \
+            --context-sha256 /tmp/deployment-context.sha256 \
+            --action publish-candidate \
+            --metadata /tmp/image-info.json \
+            --publication-output /tmp/toolchain-candidate-publication.json
+        fi
       - echo "[OK] Toolchain artifact selection completed successfully"
 
 artifacts:
@@ -321,4 +338,5 @@ artifacts:
     - deployment-context.json
     - deployment-context.sha256
     - image-info.json
+    - toolchain-candidate-publication.json
   base-directory: /tmp

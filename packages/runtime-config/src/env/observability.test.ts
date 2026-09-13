@@ -1,15 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import {
-  collectInvalidTargetObservabilityEnvNames as collectInvalidTargetObservabilityEnvNamesForProfile,
-  validateTargetObservabilityEnv as validateTargetObservabilityEnvForProfile,
-} from './observability';
-import { localRuntimeProfile, targetRuntimeProfile } from './__tests__/runtimeProfileFixtures';
-
-function collectInvalidTargetObservabilityEnvNames(
-  env: NodeJS.ProcessEnv,
-): ReturnType<typeof collectInvalidTargetObservabilityEnvNamesForProfile> {
-  return collectInvalidTargetObservabilityEnvNamesForProfile(targetRuntimeProfile(), env);
-}
+import { validateTargetObservabilityEnv as validateTargetObservabilityEnvForProfile } from './observability';
+import { localRuntimeProfile, targetRuntimeProfile } from './test-support/runtimeProfileFixtures';
 
 function validateTargetObservabilityEnv(env: NodeJS.ProcessEnv): void {
   validateTargetObservabilityEnvForProfile(targetRuntimeProfile(), env);
@@ -29,39 +20,15 @@ function targetObservabilityEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proce
 
 describe('validateTargetObservabilityEnv', () => {
   it('applies target requirements only to the injected target profile', () => {
-    expect(
-      collectInvalidTargetObservabilityEnvNamesForProfile(
-        targetRuntimeProfile(),
-        targetObservabilityEnv({ LOG_FORMAT: 'text' }),
-      ),
-    ).toContain('LOG_FORMAT');
+    expect(() =>
+      validateTargetObservabilityEnvForProfile(targetRuntimeProfile(), targetObservabilityEnv({ LOG_FORMAT: 'text' })),
+    ).toThrow(expect.objectContaining({ invalidNames: ['LOG_FORMAT'] }));
     expect(() =>
       validateTargetObservabilityEnvForProfile(localRuntimeProfile(), {
         ...targetObservabilityEnv(),
         LOG_FORMAT: 'text',
       }),
     ).not.toThrow();
-  });
-
-  it('collects exact invalid variable names without deriving them from exception messages', () => {
-    const env = targetObservabilityEnv({
-      LOG_FORMAT: 'text',
-      LOG_IP_HASH_SALT: 'stark-ballot-log-salt',
-      DEPLOYMENT_ID: 'dep_example',
-      APP_SOURCE_SHA: 'not-a-source-sha',
-      DEPLOY_MODE: 'static-fast',
-    });
-    delete env['LOG_IP_HASH_SALT_REF'];
-
-    expect(collectInvalidTargetObservabilityEnvNames(env)).toEqual([
-      'LOG_IP_HASH_SALT_REF',
-      'LOG_IP_HASH_SALT',
-      'LOG_FORMAT',
-      'DEPLOYMENT_ID',
-      'APP_SOURCE_SHA',
-      'DEPLOY_MODE',
-    ]);
-    expect(collectInvalidTargetObservabilityEnvNamesForProfile(localRuntimeProfile(), {})).toEqual([]);
   });
 
   it('accepts the complete target observability contract without unrelated app configuration', () => {

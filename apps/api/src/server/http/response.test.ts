@@ -53,6 +53,7 @@ describe('errorResponse', () => {
   it('drops retired artifact-state and generation details', async () => {
     const response = runWithLogContext({ requestId: 'trusted-details-request-id' }, () =>
       errorResponse(ErrorCode.INVALID_FINALIZATION_ARTIFACT, {
+        // @ts-expect-error Retired untrusted details must remain outside the closed public input type.
         artifactState: 'corrupt_or_unreadable',
         persistedContractGeneration: 'private-generation',
       }),

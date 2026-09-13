@@ -45,12 +45,19 @@ const result = await invokeVerifierService({
 });
 
 if (result.status === 'success') {
-  // verified
+  // Receipt verification passed; the overall verdict requires the other checks.
 }
 ```
 
-The adapter preserves the JSON report for exit codes `2` and `3`, which is
-required for `dev_mode` and failure handling.
+The adapter reads the report from `reportPath`, with a 1 MiB limit, and admits
+only the exit-code/report-status pairs `0/success`, `2/dev_mode`, and
+`3/failed`. Missing or malformed reports, unsupported exits, and mismatched
+pairs fail closed. Stdout is drained and is not a report source.
+
+The shared wire parser validates the complete report before the adapter checks
+that its expected ImageID and bundle basename match the invocation. The report
+file retains the basename-only `bundle_path` and `receipt_path` fields;
+`result.report` is the application projection with those fields removed.
 
 For the target runtime, the app pipeline runs:
 
@@ -91,6 +98,13 @@ suppressed with `--quiet` and no `--output` path is provided. Exit codes still m
 For exit codes `2` and `3`, callers should still read the JSON report written to stdout or `--output`.
 Use `--output` whenever invoking with `--quiet`.
 General errors such as invalid arguments or missing bundle paths exit with code `1` and do not emit a JSON report.
+
+The `decode-journal` command is the receipt-to-host-JSON audit boundary. It
+loads the receipt once, verifies that exact receipt against the expected ImageID,
+decodes its opaque RISC Zero journal with the current Rust contract, and only
+then emits the camelCase host projection. It refuses development, failed,
+missing-ImageID, and non-current-method receipts; it is not a generic byte-layout
+parser.
 
 ## Quick Start
 
@@ -164,8 +178,9 @@ For deployed or bundle-based flows, you can resolve the mapped ImageID from
 
 Only `state: "confirmed"` variants resolve. An unconfirmed variant fails
 closed; it does not fall back to the other architecture. For methodVersion
-`14`, `x86_64` is the confirmed local production guest authority, while the
-target `default` is confirmed only from an accepted managed Prover release.
+`14`, the current guest source's `default` is confirmed by the accepted
+managed ARM64 Prover release. `x86_64` is independently confirmed from a fresh
+local production build and must be selected explicitly for its receipts.
 
 ```bash
 # Current local x86_64 verification
@@ -192,6 +207,7 @@ prefix and normalizes it to lowercase with the prefix.
 
 ```text
 verifier-service verify [OPTIONS] <BUNDLE_PATH> [IMAGE_ID]
+verifier-service decode-journal [OPTIONS] <BUNDLE_PATH> [IMAGE_ID]
 
 ARGS:
     <BUNDLE_PATH>    Path to receipt bundle (file, directory, or zip archive)
@@ -200,10 +216,25 @@ ARGS:
 OPTIONS:
     -b, --bundle <PATH>      Path to receipt bundle (alternative to positional arg)
     -i, --image-id <ID>      Expected ImageID (alternative to positional arg)
-    -o, --output <PATH>      Write verification report to file
+    -o, --output <PATH>      Write the command's JSON result to file
     -q, --quiet              Suppress stdout output
     -h, --help               Print help message
 ```
+
+To materialize the proof-bound journal for an independent comparison with a
+bundle's `journal.json`:
+
+```bash
+./verifier-service/target/release/verifier-service decode-journal \
+  --bundle /path/to/bundle.zip \
+  --image-id "$EXPECTED_IMAGE_ID" \
+  --output /tmp/receipt-journal.json \
+  --quiet
+```
+
+The output is the current camelCase journal projection plus the verified receipt
+metadata `imageId`. RISC Zero serde bytes and offsets remain opaque and are not
+part of this JSON contract.
 
 ## Environment Variables
 
@@ -233,6 +264,14 @@ Notes:
 
 - `bundle_path` and `receipt_path` are basename-only by design.
 - `errors` is omitted when empty.
+- Reports are emitted from a closed status algebra: `success` always has
+  `dev_mode_receipt: false` and no `errors`; `dev_mode` always has
+  `dev_mode_receipt: true`; and `failed` always has one or more nonempty
+  `errors`.
+- Rust owns the deterministic current report sentinels under
+  `testdata/current-verifier-report-*.json`. Its unit test checks them against
+  the serializer, and the TypeScript verification package admits every file
+  from `unknown` through the exact wire parser and exit/status protocol.
 
 ### Status Values
 

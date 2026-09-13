@@ -15,6 +15,7 @@ import {
   deriveVerificationPresentationPolicy,
   type VerificationPresentationPolicyResult,
 } from '@stark-ballot/verification/presentation-policy';
+import type { PublicVerificationReport } from '@stark-ballot/verification/public-result';
 import type { VerificationStatus, VoteReceipt } from '@stark-ballot/verification/shared/types';
 import type { Receipt as DetectionReceipt, VoteData as DetectionVoteData } from '@stark-ballot/verification/types';
 import type { VoteChoice } from '@stark-ballot/verification/shared/constants';
@@ -33,14 +34,7 @@ export interface VerificationPayload {
   totalVotes?: number;
   scenarioId?: string;
   verificationStatus?: VerificationStatus;
-  verificationReport?: {
-    status: VerificationStatus;
-    duration_ms?: number;
-    errors?: string[];
-    expected_image_id?: string;
-    receipt_image_id?: string | null;
-    dev_mode_receipt?: boolean;
-  };
+  verificationReport?: PublicVerificationReport;
   verificationSteps?: Array<{
     id: VerificationStepId;
     status: VerificationStepStatus;
@@ -169,9 +163,14 @@ function projectUserVote(resource: AvailableVerificationResource): NonNullable<V
       },
     };
   }
+  if (evidence.reason === 'exact_proof_unavailable') {
+    return {
+      commitment: evidence.userVote.commitment,
+      voteId: evidence.userVote.voteId,
+    };
+  }
   return {
     commitment: evidence.userVote.commitment,
-    ...(evidence.userVote.voteId ? { voteId: evidence.userVote.voteId } : {}),
   };
 }
 
@@ -210,7 +209,7 @@ export function projectVerificationResource(
       tally: {
         counts: { ...resource.presentation.tally.counts },
         totalVotes: resource.presentation.tally.totalVotes,
-        tamperedCount: resource.presentation.tally.tamperedCount ?? 0,
+        tamperedCount: resource.presentation.tally.tamperedCount,
       },
       totalVotes: resource.presentation.tally.totalVotes,
       scenarioId: resource.presentation.scenarioId,
@@ -218,14 +217,8 @@ export function projectVerificationResource(
       ...(report
         ? {
             verificationReport: {
-              status: report.status,
-              ...omitUndefinedProperties({
-                duration_ms: report.duration_ms,
-                errors: report.errors ? [...report.errors] : undefined,
-                expected_image_id: report.expected_image_id,
-                receipt_image_id: report.receipt_image_id,
-                dev_mode_receipt: report.dev_mode_receipt,
-              }),
+              ...report,
+              ...('errors' in report && report.errors ? { errors: [...report.errors] } : {}),
             },
           }
         : {}),

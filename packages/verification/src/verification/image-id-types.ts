@@ -13,7 +13,7 @@ export type {
   ImageIdVariantAuthority,
   LocalGuestBuildProvenance,
   UnconfirmedImageIdVariant,
-} from '@stark-ballot/validation/image-id-mapping-types';
+} from '@stark-ballot/validation/image-id-mapping';
 
 /**
  * Receipt structure from zkVM execution with ImageID
@@ -32,15 +32,4 @@ export interface ReceiptWithImageId {
     isFake?: boolean;
     [key: string]: unknown;
   };
-}
-
-/**
- * Multi-source verification result
- */
-export interface MultiSourceVerificationResult {
-  verified: boolean;
-  sourcesChecked: number;
-  consensus: boolean;
-  error?: string;
-  discrepancies?: string[];
 }

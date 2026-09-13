@@ -14,6 +14,7 @@ default-theme = "light"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/hwatanabe-jp/stark-ballot-simulator-public"
 git-repository-icon = "fab-github"
+additional-css = ["diagrams.css"]
 additional-js = ["fzf.umd.js", "elasticlunr-fzf.js", "mermaid.min.js", "mermaid-init.js"]
 
 [preprocessor.mermaid]

@@ -17,7 +17,7 @@ interface FinalizeButtonProps {
 /**
  * Finalize Button - CTA for starting aggregation
  *
- * Uses the verify/stamp style variant for visual emphasis
+ * Uses the shared primary action style.
  */
 export function FinalizeButton({
   onClick,
@@ -35,7 +35,6 @@ export function FinalizeButton({
       onClick={onClick}
       disabled={disabled}
       loading={loading}
-      fullWidth
       className={className}
       data-testid="execute-button"
     >

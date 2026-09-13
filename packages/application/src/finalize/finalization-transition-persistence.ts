@@ -2,6 +2,8 @@ import type {
   FinalizationLifecycleAuthority,
   FinalizationLifecycleMutations,
 } from '@stark-ballot/application/finalize/finalization-transition-policy';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 
 /**
  * Adapter-neutral optimistic concurrency token. Concrete stores may derive it
@@ -61,11 +63,14 @@ export type FinalizationLifecycleApplyResult =
  * policy and then attempt one expected-current mutation.
  */
 export interface FinalizationLifecyclePersistencePort {
-  loadFinalizationLifecycle(sessionId: string, finalizationId: string): Promise<FinalizationLifecycleLoadResult>;
+  loadFinalizationLifecycle(
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
+  ): Promise<FinalizationLifecycleLoadResult>;
 
   applyFinalizationLifecycleMutation(input: {
-    sessionId: string;
-    finalizationId: string;
+    sessionId: SessionId;
+    finalizationId: FinalizationId;
     expectedRevision: FinalizationLifecycleRevision;
     mutations: FinalizationLifecycleMutations;
   }): Promise<FinalizationLifecycleApplyResult>;

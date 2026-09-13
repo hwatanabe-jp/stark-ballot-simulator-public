@@ -4,23 +4,17 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { interpolateProgress } from '@stark-ballot/application/finalize/finalization-progress';
 import { ProgressBar } from '@stark-ballot/web/components/ui/ProgressBar';
 import { useTranslation } from '@stark-ballot/web/hooks';
+import './AggregationViews.css';
 
 type FinalizationStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'timeout';
 
 interface ProgressDisplayProps {
-  /** Timestamp when job was queued (epoch ms or ISO string) */
-  queuedAt?: number | string | null;
   /** Timestamp when job started running (epoch ms or ISO string) */
   startedAt?: number | string | null;
-  /** Timestamp when job completed (epoch ms or ISO string) */
-  completedAt?: number | string | null;
   /** Estimated duration in milliseconds */
   estimatedDurationMs?: number;
   /** Current status */
   status: FinalizationStatus;
-  /** Ignored legacy queue-position props retained only to fail closed for stale callers. */
-  queuePosition?: number;
-  queueDepth?: number;
   /** Optional concurrency limit */
   concurrencyLimit?: number;
 }
@@ -218,29 +212,26 @@ export function ProgressDisplay({
   const formattedTypicalDuration = formatTypicalDuration(estimatedDurationMs, t);
 
   return (
-    <div className="space-y-3">
+    <div className="aggregation-progress-values">
       {/* Progress bar */}
-      <ProgressBar value={progress} max={100} variant={variant} showPercentage={false} />
+      <ProgressBar value={progress} max={100} variant={variant} ariaLabel={getPhaseText()} />
 
       {/* Status text */}
-      <div className="flex justify-between items-center text-sm">
+      <div className="aggregation-progress-status">
         <span className="text-text-secondary">{getPhaseText()}</span>
-        <span className="font-mono font-features-none text-text-primary">{progress}%</span>
+        <span className="font-features-none font-mono text-text-primary">{progress}%</span>
       </div>
 
       {/* Queue info panel (shown when pending with queue info) */}
       {status === 'pending' && hasQueueInfo && (
-        <div className="mt-4 p-3 bg-paper-cream rounded-lg border border-paper-border">
-          <div className="flex items-center gap-2 mb-3">
-            <span className="animate-pulse w-2 h-2 rounded-full bg-ink-500" />
-            <span className="font-secondary text-sm text-text-secondary">
-              {t('pages.aggregate.progress.queue.waiting')}
-            </span>
+        <div className="aggregation-progress-queue">
+          <div>
+            <span className="text-text-secondary">{t('pages.aggregate.progress.queue.waiting')}</span>
           </div>
 
-          <div className="flex justify-between items-center text-sm">
+          <div className="aggregation-progress-status">
             <span className="text-text-muted">{t('pages.aggregate.progress.queue.typicalDuration')}</span>
-            <span className="font-mono font-features-none text-text-secondary">{formattedTypicalDuration}</span>
+            <span className="font-features-none font-mono text-text-secondary">{formattedTypicalDuration}</span>
           </div>
         </div>
       )}

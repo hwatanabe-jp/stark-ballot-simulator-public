@@ -15,22 +15,8 @@ export function useMediaQuery(query: string, defaultValue = false): boolean {
 
     updateMatch();
 
-    if ('addEventListener' in mediaQueryList) {
-      mediaQueryList.addEventListener('change', updateMatch);
-      return () => mediaQueryList.removeEventListener('change', updateMatch);
-    }
-
-    if ('addListener' in mediaQueryList) {
-      const legacyMediaQueryList = mediaQueryList as MediaQueryList & {
-        addListener: (listener: () => void) => void;
-        removeListener: (listener: () => void) => void;
-      };
-
-      legacyMediaQueryList.addListener(updateMatch);
-      return () => legacyMediaQueryList.removeListener(updateMatch);
-    }
-
-    return;
+    mediaQueryList.addEventListener('change', updateMatch);
+    return () => mediaQueryList.removeEventListener('change', updateMatch);
   }, [query]);
 
   return matches;

@@ -5,7 +5,7 @@ import {
 } from '@stark-ballot/application/finalize/finalization-work-item';
 import { computeInputCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
 import type { ElectionConfig } from '@stark-ballot/zkvm-contract/zkvm/election-config';
-import { ApplicationErrorCode } from '@stark-ballot/application/finalize/finalization-types';
+import { ApplicationErrorCode } from '@stark-ballot/application';
 import type {
   FinalizationId,
   FinalizationScenarioContext,
@@ -18,6 +18,7 @@ import { logger } from '@stark-ballot/diagnostics/logger';
 import { emitCanonicalEvent } from '@stark-ballot/diagnostics/canonicalEvents';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import type { FinalizeAcceptedPayload, FinalizeSessionError, Result } from './types';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 
 function toScenarioCode(value: string): FinalizationScenarioCode {
   if (value !== 'S0' && value !== 'S1' && value !== 'S2' && value !== 'S3' && value !== 'S4' && value !== 'S5') {
@@ -27,14 +28,14 @@ function toScenarioCode(value: string): FinalizationScenarioCode {
 }
 
 export type PersistAsyncProverInput = (input: {
-  sessionId: string;
+  sessionId: SessionId;
   finalizationId: FinalizationId;
   zkvmInput: ZkVMInput;
   electionConfig: ElectionConfig;
 }) => Promise<unknown>;
 
 export interface FinalizeAsyncInput {
-  sessionId: string;
+  sessionId: SessionId;
   finalizationId: FinalizationId;
   queuedAtMs: number;
   zkvmInput: ZkVMInput;

@@ -1,22 +1,32 @@
 import type { RouteLike } from './route';
+import type { ErrorCode } from '../errors/apiErrors';
 
 export type ApiContractRouteKind = 'readonly' | 'mutation';
 export type ApiContractLifecycle = 'active' | 'internal-operator-only';
 export type ApiContractAuthScope = 'public-mutation' | 'path-session-capability' | 'callback-authenticity' | 'none';
 export type ApiContractDataClassification =
-  'public-session-issued' | 'owner-scoped-public-projection' | 'owner-scoped-private-report' | 'internal-operator';
-export type ApiContractBodySizeLimitPolicy = 'API_REQUEST_BODY_LIMIT_BYTES' | 'finalization-callback-body';
-export type ApiContractProductionBypassPosture =
-  'not-applicable' | 'deny-outside-approved-non-production' | 'operator-gated-develop-only' | 'internal-operator-only';
+  | 'public-session-issued'
+  | 'owner-scoped-public-projection'
+  | 'owner-scoped-private-report'
+  | 'internal-operator';
+export type BodySizeLimit = 'API_REQUEST_BODY_LIMIT_BYTES' | 'finalization-callback-body';
+export type ProductionBypass =
+  | 'not-applicable'
+  | 'deny-outside-approved-non-production'
+  | 'operator-gated-develop-only'
+  | 'internal-operator-only';
 export type ApiContractErrorEnvelope =
-  'standard-error-envelope' | 'route-specific-error-envelope' | 'mixed-error-envelopes' | 'plain-text';
+  | 'standard-error-envelope'
+  | 'route-specific-error-envelope'
+  | 'mixed-error-envelopes'
+  | 'plain-text';
 export type ApiContractPublicErrorStatus = number | 'upstream-response-status';
 export type ApiContractPublicErrorContentType = 'application/json' | 'text/plain; charset=UTF-8';
 export type ApiContractConcreteErrorEnvelope = Exclude<ApiContractErrorEnvelope, 'mixed-error-envelopes'>;
 
 export type ApiContractPublicErrorResponse =
   | {
-      code: string;
+      code: ErrorCode;
       case?: string;
       status: ApiContractPublicErrorStatus;
       contentType: ApiContractPublicErrorContentType;
@@ -30,25 +40,28 @@ export type ApiContractPublicErrorResponse =
       envelope: 'route-specific-error-envelope' | 'plain-text';
     };
 
-export interface ApiContractPublicErrors {
-  envelope: ApiContractErrorEnvelope;
-  codes: readonly string[];
-  responses: readonly ApiContractPublicErrorResponse[];
+export interface ApiContractPublicErrors<
+  TEnvelope extends ApiContractErrorEnvelope = ApiContractErrorEnvelope,
+  TResponses extends readonly ApiContractPublicErrorResponse[] = readonly ApiContractPublicErrorResponse[],
+> {
+  envelope: TEnvelope;
+  codes: readonly ErrorCode[];
+  responses: TResponses;
 }
 
 export interface ApiContractBodySize {
   applies: boolean;
-  limitPath?: ApiContractBodySizeLimitPolicy;
+  limitPath?: BodySizeLimit;
 }
 
 export interface ApiContractSourceIp {
   dependency: 'not-required' | 'trusted-proxy-required-for-target-runtime';
-  runtimeEnforcementHandoff: 'none' | 'plans-07-and-11';
+  runtimeEnforcementHandoff: 'none' | 'trusted-proxy-and-public-admission';
 }
 
 export interface ApiContractRateLimit {
   required: boolean;
-  scope: 'none' | 'client-ip' | 'session' | 'session-and-client-ip' | 'callback-authenticity';
+  scope: 'none' | 'client-ip' | 'client-ip-and-global' | 'callback-authenticity';
   sourceIpDependency: ApiContractSourceIp['dependency'];
 }
 
@@ -64,7 +77,7 @@ export interface ApiContractTargetAdmission {
   nonOperatorDevelop: 'blocked-by-outer-operator-gate';
   operatorGatedDevelop: 'enabled-for-production-equivalent-smoke';
   ungatedPublic: 'requires-explicit-public-enable-and-server-turnstile';
-  runtimeEnforcementHandoff: 'plans-07-and-11';
+  runtimeEnforcementHandoff: 'trusted-proxy-and-public-admission';
 }
 
 export interface ApiRouteVariantContract {
@@ -87,7 +100,7 @@ export interface ApiRouteContract extends RouteLike {
   readonly sourceIp: ApiContractSourceIp;
   readonly rateLimit?: ApiContractRateLimit;
   readonly turnstile?: ApiContractTurnstile;
-  readonly productionBypass: ApiContractProductionBypassPosture;
+  readonly productionBypass: ProductionBypass;
   readonly targetAdmission?: ApiContractTargetAdmission;
   readonly variants?: readonly ApiRouteVariantContract[];
 }
@@ -99,17 +112,13 @@ export const apiBodySize: ApiContractBodySize = {
   applies: true,
   limitPath: 'API_REQUEST_BODY_LIMIT_BYTES',
 };
-export const callbackBodySize: ApiContractBodySize = {
-  applies: true,
-  limitPath: 'finalization-callback-body',
-};
 export const noSourceIp: ApiContractSourceIp = {
   dependency: 'not-required',
   runtimeEnforcementHandoff: 'none',
 };
 export const trustedProxySourceIp: ApiContractSourceIp = {
   dependency: 'trusted-proxy-required-for-target-runtime',
-  runtimeEnforcementHandoff: 'plans-07-and-11',
+  runtimeEnforcementHandoff: 'trusted-proxy-and-public-admission',
 };
 export const noRateLimit: ApiContractRateLimit = {
   required: false,
@@ -121,9 +130,9 @@ export const clientIpRateLimit: ApiContractRateLimit = {
   scope: 'client-ip',
   sourceIpDependency: 'trusted-proxy-required-for-target-runtime',
 };
-export const sessionRateLimit: ApiContractRateLimit = {
+export const clientIpAndGlobalRateLimit: ApiContractRateLimit = {
   required: true,
-  scope: 'session-and-client-ip',
+  scope: 'client-ip-and-global',
   sourceIpDependency: 'trusted-proxy-required-for-target-runtime',
 };
 export const noTurnstile: ApiContractTurnstile = {
@@ -131,53 +140,30 @@ export const noTurnstile: ApiContractTurnstile = {
   productionBypass: 'not-applicable',
 };
 
-export function publicErrors(
-  envelope: ApiContractErrorEnvelope,
-  responses: readonly ApiContractPublicErrorResponse[],
-): ApiContractPublicErrors {
+export function publicErrors<
+  const TEnvelope extends ApiContractErrorEnvelope,
+  const TResponses extends readonly ApiContractPublicErrorResponse[],
+>(envelope: TEnvelope, responses: TResponses): ApiContractPublicErrors<TEnvelope, TResponses> {
   return {
     envelope,
     codes: Array.from(
-      new Set(responses.map((response) => response.code).filter((code): code is string => typeof code === 'string')),
+      new Set(responses.map((response) => response.code).filter((code): code is ErrorCode => typeof code === 'string')),
     ),
     responses,
   };
 }
 
-export function standardJsonError(
-  code: string,
-  status: ApiContractPublicErrorStatus,
+export function standardJsonError<const TCode extends ErrorCode, const TStatus extends ApiContractPublicErrorStatus>(
+  code: TCode,
+  status: TStatus,
   errorCase?: string,
-): ApiContractPublicErrorResponse {
+): ApiContractPublicErrorResponse & { code: TCode; status: TStatus; envelope: 'standard-error-envelope' } {
   return {
     code,
     ...(errorCase ? { case: errorCase } : {}),
     status,
     contentType: 'application/json',
     envelope: 'standard-error-envelope',
-  };
-}
-
-export function routeSpecificJsonError(
-  code: string,
-  status: ApiContractPublicErrorStatus,
-  errorCase?: string,
-): ApiContractPublicErrorResponse {
-  return {
-    code,
-    ...(errorCase ? { case: errorCase } : {}),
-    status,
-    contentType: 'application/json',
-    envelope: 'route-specific-error-envelope',
-  };
-}
-
-export function uncodedRouteSpecificJsonError(errorCase: string, status: number): ApiContractPublicErrorResponse {
-  return {
-    case: errorCase,
-    status,
-    contentType: 'application/json',
-    envelope: 'route-specific-error-envelope',
   };
 }
 

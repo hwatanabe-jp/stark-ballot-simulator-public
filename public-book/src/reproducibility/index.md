@@ -1,66 +1,28 @@
-# 第三者検証ガイド
+# 証拠を持ち帰って確かめる
 
-この章は、検証ページでダウンロードした [`bundle.zip`](../appendix/glossary.md#配布対象アーカイブbundlezip) と対応する公開 repository snapshot を使い、第三者がローカルに行える最小監査手順をまとめます。
-`/verify` 画面の最終判定を完全に再現する手順ではなく、下表の不変条件を確認する手順です。
+画面に表示された「証明の検証に成功した」という報告を、自分の環境でも確認できます。検証画面から取得する `bundle.zip` には、STARK レシートと、その計算に対応する公開入力・出力が入っています。
 
-> **公開 snapshot に関する注意**
-> すべての Step には、検証対象リリースと対応する公開 repository snapshot が必要です。
-> 加えて、ZIP の admission と展開を行う Step 3 以降には、ダウンロード済み ZIP が必要です。
+確かめるときに大切なのは、ファイルを一つずつ読むだけで終わらないことです。正しい証明に、別の集計の `journal.json` や公開入力を添えても、その一組の証拠が正しいことにはなりません。
 
-**`bundle.zip` 単体では揃わないもの**（検証材料として ZIP に入らないもの）：
+```mermaid
+flowchart TB
+  I["手元で選んだ期待 Image ID"] --> R["STARK レシートを検証"]
+  R --> J["証明内の出力と journal.json を比較"]
+  J --> P["公開入力・選挙設定と照合"]
+```
 
-- `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` が返す claimed tally
-  （`presentation.tally`）、`verification.checks`、`verification.steps`
-- 投票者端末に残る投票意図、乱数、投票レシート
-- `/verify` の Recorded-as-Cast 判定に使う session-scoped な自票 receipt / root-at-cast proof state と、サーバー側の整合性評価結果
-- 自票 inclusion 用のビットマップ証明
-- 有効化されている場合の第三者 STH ソース照合
+## ZIP で確かめられること
 
-`public-input.json` には zkVM 入力として提示された各投票の index、commitment、Merkle path が含まれます。
-この範囲は PoC の設計意図に沿っています。
-[配布対象アーカイブ](../verification/bundle-structure.md) の構成も参照してください。
+監査では、期待したプログラムの production STARK 証明が検証できること、証明内の出力が `journal.json` と一致すること、公開入力と選挙設定・締切時の掲示板がその出力に結び付くことを順に確認します。投票位置の欠落や不採用がないことと、得票数の合計も調べます。
 
-## この部の章
+期待する Image ID は、検証したいリリースに対応するソースの `public/imageId-mapping.json` から選びます。受け取ったレシートに書かれた ID をそのまま期待値にすると、別のプログラムの証明を受け入れてしまうためです。
 
-- [ZIP ローカル検証（Ubuntu）](audit-bundle.md)：`bundle.zip` を取得した第三者が Ubuntu 上で実行できる最小監査手順
+## 画面の結果との違い
 
-## 想定読者と前提
+S2 は、証明に使う入力を変えず、画面へ渡す集計表示を変えます。そのため ZIP 内の証拠が整合していても、画面の表示と一致するとは限りません。表示用の `presentation.tally` は検証 API が返し、ZIP には入りません。
 
-- 想定読者：配布された `bundle.zip` を独立にローカル監査したい第三者
-- 前提：Ubuntu 系 Linux と `jq`、`unzip` などの基本 CLI、対応する公開リポジトリ snapshot へのアクセス。
-  詳細は [はじめに](../introduction.md#公開状態) を参照してください。
+同様に、投票時にブラウザへ残した選択・乱数、投票レシートと投票時ルートの照合状態、自票のビットマップ証明、第三者の掲示板との照合結果も ZIP だけでは揃いません。手元の監査の成功は、画面の四段階すべてを再実行したという意味にはなりません。
 
-<a id="本章で扱わないもの"></a>
+実際の準備とコマンドは [手元で証拠を検証する](audit-bundle.md) にまとめています。ZIP のファイル形式を確認したい場合は [バンドル構造](../verification/bundle-structure.md) を参照できます。
 
-## この部で扱わないもの
-
-- `/verify` UI 最終判定の完全再現と、投票者端末のローカル証跡を使った Cast-as-Intended 検証（必要な材料は上の「`bundle.zip` 単体では揃わないもの」を参照）
-- AWS インフラのデプロイと運用手順
-
-## 関連する章
-
-この章は `bundle.zip` のローカル監査に絞ります。
-範囲外の作業は次のページを参照してください。
-
-- [チェック一覧](../verification/checks-catalog.md)：チェック ID と判定ロジック
-- [API エンドポイント一覧](../api/endpoints.md)：手動検証に使う API 契約
-- [検出メカニズム](../tamper/detection-mechanism.md)：改ざんシナリオごとの失敗パターン
-- [非同期プローバー](../aws/async-prover.md)：非同期 finalize の処理と障害調査導線
-- [バンドル構造](../verification/bundle-structure.md)：配布対象アーカイブの公開可能なアーティファクトと非公開アーティファクト
-- [用語集](../appendix/glossary.md#検証パイプライン)：「検証」と「監査」の使い分けほか
-
-## 最低限確認する不変条件
-
-| 項目                      | 合格条件                                                                                               |
-| ------------------------- | ------------------------------------------------------------------------------------------------------ |
-| STARK レシート            | `verifier-service verify` が `status: "success"`                                                       |
-| receipt と journal の結合 | receipt 内の journal bytes を現行 contract で decode した全 proof-bound field が `journal.json` と一致 |
-| 投票の除外有無            | `excludedSlots == 0` かつ `missingSlots == 0` かつ `invalidPresentedSlots == 0`                        |
-| 期待投票数整合            | `totalExpected == treeSize`                                                                            |
-| 処理投票数                | `totalVotes > 0`                                                                                       |
-| 集計合計整合              | `journal.json` の `verifiedTally` の合計が `validVotes` と一致                                         |
-| 公開入力の基本整合性      | `public-input.json` が現行 contract に沿い、入力数、root、重複検査が成立                               |
-| 公開監査アーティファクト  | `election-manifest.json` と `close-statement.json` の自己整合と相互整合が成立                          |
-| 入力整合性                | `inputCommitment` の再計算値が `journal.json` と一致                                                   |
-
-<!-- source: apps/web/src/api/artifacts.ts, apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/lib/verification-data.ts, apps/api/src/server/api/handlers/verify.ts, apps/api/src/server/api/handlers/verificationBundles.ts, packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/verification.ts, packages/verification/src/verification/local-cast-checks.ts, packages/verification/src/verification/public-bundle-manifest.json, packages/verification/src/verification/verification-bundle.ts, packages/verification/src/verification/public-audit-artifacts.ts, packages/verification/src/verification/public-input-contract.ts, packages/verification/src/verification/journal-parser.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/verification-presentation-policy.ts, packages/verification/src/verification/verification-summary.ts, packages/zkvm-contract/src/zkvm/types.ts, verifier-service/src/lib.rs, public/imageId-mapping.json -->
+<!-- source: apps/web/src/api/artifacts.ts, apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/lib/verification-data.ts, apps/api/src/server/api/handlers/verify.ts, apps/api/src/server/api/handlers/verificationBundles.ts, packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/verification.ts, packages/verification/src/verification/local-cast-checks.ts, packages/verification/src/verification/public-bundle-manifest.json, packages/verification/src/verification/verification-bundle.ts, packages/verification/src/verification/public-audit-artifacts.ts, packages/verification/src/verification/public-input-contract.ts, packages/verification/src/verification/verifier-service-report.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/verification-presentation-policy.ts, packages/verification/src/verification/verification-summary.ts, packages/zkvm-contract/src/zkvm/host-io.ts, packages/zkvm-contract/src/zkvm/types.ts, zkvm/host/src/main.rs, verifier-service/src/lib.rs, public/imageId-mapping.json -->

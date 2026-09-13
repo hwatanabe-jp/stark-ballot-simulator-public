@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import fs from 'fs-extra';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type { FinalizationScenarioContext } from '@stark-ballot/application/finalize/finalization-types';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { MockSessionStore } from '../store/mockSessionStore';
@@ -34,7 +35,7 @@ describe('MockSessionStore finalization transition ownership', () => {
     info.mockClear();
 
     const queuedPayload = {
-      finalizationId: 'exec-store-observation',
+      finalizationId: asFinalizationId('exec-store-observation'),
       queuedAtMs: 1_700_000_000_000,
       scenarioContext,
       observability: { source: 'finalize', reason: 'FINALIZE_REQUESTED' },
@@ -64,7 +65,7 @@ describe('MockSessionStore finalization transition ownership', () => {
     info.mockClear();
     warn.mockClear();
     await store.markFinalizationRunning(session.sessionId, {
-      finalizationId: 'exec-stale-observation',
+      finalizationId: asFinalizationId('exec-stale-observation'),
       queuedAtMs: queuedPayload.queuedAtMs,
       startedAtMs: queuedPayload.queuedAtMs + 1,
       observability: { source: 'writer_update', reason: 'RUNTIME_UPDATE_RECEIVED' },
@@ -92,7 +93,7 @@ describe('FileMockSessionStore finalization transition ownership', () => {
       info.mockClear();
 
       await store.markFinalizationQueued(session.sessionId, {
-        finalizationId: 'exec-file-observation',
+        finalizationId: asFinalizationId('exec-file-observation'),
         queuedAtMs: 1_700_000_000_000,
         scenarioContext,
         observability: { source: 'finalize', reason: 'FINALIZE_REQUESTED' },
@@ -260,14 +261,15 @@ describe('recordFinalizationPersistenceOutcome', () => {
     const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
 
+    const finalizationId = asFinalizationId('exec-corrupt-artifact');
     recordFinalizationStorePersistenceOutcome({
       sessionId: 'session-corrupt-artifact',
-      requestedFinalizationId: 'exec-corrupt-artifact',
+      requestedFinalizationId: finalizationId,
       requestedTo: 'running',
-      before: { status: 'pending', finalizationId: 'exec-corrupt-artifact' },
+      before: { status: 'pending', finalizationId },
       actual: {
         status: 'failed',
-        finalizationId: 'exec-corrupt-artifact',
+        finalizationId,
         queuedAtMs: 1_700_000_000_000,
         failedAtMs: 1_700_000_001_000,
         error: {

@@ -1,13 +1,11 @@
 import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
-import type { ApiHandlerArguments, SessionAdmittedContext } from '../context';
-import { ApiError } from '@stark-ballot/api-contract/errors/apiErrors';
-import { errorResponse } from '../../http/response';
+import type { ApiHandlerArguments, RouteBoundResponse, SessionAdmittedContext } from '../context';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { sessionBulletinSthRoute } from '@stark-ballot/api-contract/routes';
 import type { SthResponse } from '@stark-ballot/api-contract/schemas/bulletin';
 import type { ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
-import { respondWithRoute } from '../utils/responseSchema';
+import { respondWithRoute, respondWithRouteError } from '../utils/responseSchema';
 
 export interface SessionSthProjectionInput {
   journal: Pick<ZkVMJournal, 'sthDigest' | 'bulletinRoot' | 'treeSize'>;
@@ -32,7 +30,9 @@ export function projectSessionSthData({ journal, timestamp, logId }: SessionSthP
  */
 export function getSessionBulletinSthHandler({
   context,
-}: ApiHandlerArguments<typeof sessionBulletinSthRoute, SessionAdmittedContext>): Response {
+}: ApiHandlerArguments<typeof sessionBulletinSthRoute, SessionAdmittedContext>): RouteBoundResponse<
+  typeof sessionBulletinSthRoute
+> {
   try {
     const { sessionId, session } = context;
 
@@ -42,13 +42,11 @@ export function getSessionBulletinSthHandler({
         session_id_hash: hashSessionIdForLogging(sessionId),
       });
       // Return 404 to distinguish "not ready" from "tampered" per reviewer feedback
-      return errorResponse(
-        new ApiError(
-          ErrorCode.SESSION_NOT_FINALIZED,
-          404,
-          'Session has not been finalized yet. STH data is not available.',
-        ),
-      );
+      return respondWithRouteError(sessionBulletinSthRoute, {
+        code: ErrorCode.SESSION_NOT_FINALIZED,
+        status: 404,
+        message: 'Session has not been finalized yet. STH data is not available.',
+      });
     }
     const { journal } = session.finalization.finalizationResult;
 
@@ -84,6 +82,6 @@ export function getSessionBulletinSthHandler({
     });
   } catch (error) {
     logger.error('[STH API] Unexpected error:', error);
-    return errorResponse(ErrorCode.INTERNAL_ERROR);
+    return respondWithRouteError(sessionBulletinSthRoute, { code: ErrorCode.INTERNAL_ERROR, status: 500 });
   }
 }

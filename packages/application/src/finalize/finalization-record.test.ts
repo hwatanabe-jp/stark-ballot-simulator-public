@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
-import { parseFinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
+import {
+  finalizationRecordCodec,
+  parseFinalizationRecord,
+} from '@stark-ballot/application/finalize/finalization-record';
 import type { FinalizationScenarioContext } from '@stark-ballot/application/finalize/finalization-types';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 
@@ -21,10 +24,9 @@ const finalizationResult = buildFinalizationResultFromJournal({
   journal: createTestJournal(),
   imageId: `0x${'11'.repeat(32)}`,
 });
-const finalizationResultRecord = {
-  finalizationId,
-  ...finalizationResult,
-};
+const { artifacts: _artifacts, ...persistedFinalizationResult } = finalizationResult;
+void _artifacts;
+const finalizationResultRecord = { finalizationId, ...persistedFinalizationResult };
 
 function succeededRecord() {
   return {
@@ -129,7 +131,20 @@ describe('finalization record admission', () => {
     ).toBeUndefined();
   });
 
-  it('round-trips one exact succeeded record', () => {
-    expect(parseFinalizationRecord(succeededRecord())).toEqual(succeededRecord());
+  it('round-trips one exact-current flat record through the admitted nested authority', () => {
+    const persisted = succeededRecord();
+    const admitted = finalizationRecordCodec.decode(persisted);
+
+    expect(admitted).toMatchObject({
+      finalizationResult: {
+        artifacts: {
+          publicAudit: { availability: 'unavailable' },
+          receipt: { availability: 'unavailable' },
+          receiptPublication: { availability: 'unavailable' },
+          bitmap: { availability: 'unavailable' },
+        },
+      },
+    });
+    expect(admitted && finalizationRecordCodec.encode(admitted)).toEqual(persisted);
   });
 });

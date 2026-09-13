@@ -98,15 +98,29 @@ data "aws_iam_policy_document" "release_manifests" {
       "${aws_s3_bucket.release_manifests.arn}/artifacts/*",
       "${aws_s3_bucket.release_manifests.arn}/candidates/*",
       "${aws_s3_bucket.release_manifests.arn}/promotions/*",
-      "${aws_s3_bucket.release_manifests.arn}/deployments/*",
-      "${aws_s3_bucket.release_manifests.arn}/rollbacks/*",
     ]
 
     condition {
-      test     = "Null"
+      test     = "StringNotEquals"
       variable = "s3:if-none-match"
-      values   = ["true"]
+      values   = ["*"]
     }
+  }
+
+  statement {
+    sid    = "DenyAppHistoryPrefixWrites"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.release_manifests.arn}/deployments/*",
+      "${aws_s3_bucket.release_manifests.arn}/rollbacks/*",
+    ]
   }
 
   statement {
@@ -123,11 +137,93 @@ data "aws_iam_policy_document" "release_manifests" {
   }
 
   statement {
+    sid    = "DenyObsoleteToolchainManifestWrites"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.release_manifests.arn}/${local.deployment_shared_names.toolchainArtifactPrefix}/*/manifest.json",
+    ]
+  }
+
+  statement {
+    sid    = "DenyObsoleteProverManifestWrites"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.release_manifests.arn}/${local.deployment_shared_names.proverReleasePrefix}/*/manifest.json",
+    ]
+  }
+
+  dynamic "statement" {
+    for_each = local.release_authority_publisher_restrictions
+
+    content {
+      sid    = statement.value.sid
+      effect = "Deny"
+
+      principals {
+        type        = "*"
+        identifiers = ["*"]
+      }
+
+      actions   = ["s3:PutObject"]
+      resources = statement.value.object_arns
+
+      condition {
+        test     = "ArnNotEquals"
+        variable = "aws:PrincipalArn"
+        values   = statement.value.publisher_role_arns
+      }
+    }
+  }
+
+  statement {
     sid    = "DenyUnconditionalAcceptedPointerWrites"
     effect = "Deny"
 
-    # IAM combines these Null conditions with AND. First publication may use
-    # If-None-Match, while every later pointer promotion must use If-Match.
+    # First publication must use the exact If-None-Match wildcard. Every later
+    # pointer promotion must use If-Match, and a separate deny rejects a request
+    # that ambiguously supplies both headers.
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.release_manifests.arn}/${local.deployment_shared_names.toolchainAcceptedPointerKey}",
+      "${aws_s3_bucket.release_manifests.arn}/${local.deployment_shared_names.proverAcceptedPointerKey}",
+    ]
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-match"
+      values   = ["true"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:if-none-match"
+      values   = ["*"]
+    }
+  }
+
+  statement {
+    sid    = "DenyAmbiguousAcceptedPointerWrites"
+    effect = "Deny"
 
     principals {
       type        = "*"
@@ -143,18 +239,18 @@ data "aws_iam_policy_document" "release_manifests" {
     condition {
       test     = "Null"
       variable = "s3:if-none-match"
-      values   = ["true"]
+      values   = ["false"]
     }
 
     condition {
       test     = "Null"
       variable = "s3:if-match"
-      values   = ["true"]
+      values   = ["false"]
     }
   }
 
   statement {
-    sid    = "DenyFoundationImageSigningAuthorityWritesOutsidePublisher"
+    sid    = "DenyRetiredFoundationImageSigningAuthorityWrites"
     effect = "Deny"
 
     principals {
@@ -164,12 +260,6 @@ data "aws_iam_policy_document" "release_manifests" {
 
     actions   = ["s3:PutObject"]
     resources = [local.foundation_image_signing_authority_objects_arn]
-
-    condition {
-      test     = "ArnNotEquals"
-      variable = "aws:PrincipalArn"
-      values   = [local.foundation_image_signing_authority_publisher_role_arn]
-    }
   }
 
   statement {
@@ -189,7 +279,7 @@ data "aws_iam_policy_document" "release_manifests" {
   }
 
   statement {
-    sid    = "DenyUnconditionalFoundationAppNetworkingWrites"
+    sid    = "DenyRetiredFoundationAppNetworkingWrites"
     effect = "Deny"
 
     principals {
@@ -199,37 +289,6 @@ data "aws_iam_policy_document" "release_manifests" {
 
     actions   = ["s3:PutObject"]
     resources = [local.foundation_app_networking_object_arn]
-
-    condition {
-      test     = "Null"
-      variable = "s3:if-none-match"
-      values   = ["true"]
-    }
-
-    condition {
-      test     = "Null"
-      variable = "s3:if-match"
-      values   = ["true"]
-    }
-  }
-
-  statement {
-    sid    = "DenyFoundationAppNetworkingWritesOutsidePublisher"
-    effect = "Deny"
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    actions   = ["s3:PutObject"]
-    resources = [local.foundation_app_networking_object_arn]
-
-    condition {
-      test     = "ArnNotEquals"
-      variable = "aws:PrincipalArn"
-      values   = [local.foundation_app_networking_publisher_role_arn]
-    }
   }
 }
 

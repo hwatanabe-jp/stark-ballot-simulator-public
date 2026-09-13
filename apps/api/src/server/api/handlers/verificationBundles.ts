@@ -17,20 +17,23 @@ import {
 } from '@stark-ballot/diagnostics/canonicalEvents';
 import { hashKeyPrefixForLogging, hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 import type { ArtifactDeliveryDependencies } from '../../composition/artifactDeliveryDependencies';
 import { errorResponse } from '../../http/response';
-import type { ApiContextStore, ApiHandlerArguments, SessionIdentityContext } from '../context';
+import type { ApiContextStore, ApiHandlerArguments, SessionFinalizationIdentityContext } from '../context';
 
 const BUNDLE_RANGE_CHUNK_BYTES = ARTIFACT_DELIVERY_LIMITS.bundleRangeMaxBytes;
+type HeadersInput = NonNullable<ConstructorParameters<typeof Headers>[0]>;
 
-export interface ArtifactDeliveryHandlerContext extends SessionIdentityContext {
+export interface ArtifactDeliveryHandlerContext extends SessionFinalizationIdentityContext {
   artifactDeliveryDependencies: ArtifactDeliveryDependencies;
 }
 
 interface AuthenticatedDownloadObservation {
   endpoint: BundleDownloadEndpoint;
-  sessionId: string;
-  finalizationId: string;
+  sessionId: SessionId;
+  finalizationId: FinalizationId;
   keyMaterial: string;
 }
 
@@ -46,7 +49,7 @@ function artifactErrorResponse(
   error: ErrorCode,
   status: number,
   message: string,
-  additionalHeaders?: HeadersInit,
+  additionalHeaders?: HeadersInput,
 ): Response {
   const headers = new Headers(additionalHeaders);
   headers.set('Cache-Control', 'no-store');
@@ -62,8 +65,8 @@ function endpointNotFound(endpoint: BundleDownloadEndpoint): Response {
 async function ensureFinalizationScope(
   store: ApiContextStore,
   endpoint: BundleDownloadEndpoint,
-  sessionId: string,
-  finalizationId: string,
+  sessionId: SessionId,
+  finalizationId: FinalizationId,
 ): Promise<FinalizationScopeResult> {
   const finalization = await store.getCurrentFinalizationRecord(sessionId);
   if (
@@ -83,8 +86,8 @@ async function ensureFinalizationScope(
 
 function createAuthenticatedDownloadObservation(
   endpoint: BundleDownloadEndpoint,
-  sessionId: string,
-  finalizationId: string,
+  sessionId: SessionId,
+  finalizationId: FinalizationId,
 ): AuthenticatedDownloadObservation {
   return {
     endpoint,
@@ -159,7 +162,7 @@ function applyRepresentationHeaders(headers: Headers, representation: ArtifactRe
 function buildBundleHeaders(
   finalizationId: string,
   representation?: ArtifactRepresentationIdentity,
-  additionalHeaders?: HeadersInit,
+  additionalHeaders?: HeadersInput,
 ): Headers {
   const headers = new Headers(additionalHeaders);
   headers.set('Content-Type', 'application/zip');
@@ -367,8 +370,14 @@ export async function getVerificationBundleHandler({
   input,
   context,
 }: ApiHandlerArguments<typeof finalizationArtifactBundleRoute, ArtifactDeliveryHandlerContext>): Promise<Response> {
-  const { sessionId, finalizationId } = input.params;
-  if (!isSafeVerifierSegment(sessionId) || !isSafeVerifierSegment(finalizationId)) {
+  const { sessionId: wireSessionId, finalizationId: wireFinalizationId } = input.params;
+  const { sessionId, finalizationId } = context;
+  if (
+    !isSafeVerifierSegment(wireSessionId) ||
+    !isSafeVerifierSegment(wireFinalizationId) ||
+    wireSessionId !== sessionId ||
+    wireFinalizationId !== finalizationId
+  ) {
     return artifactErrorResponse(ErrorCode.INVALID_BUNDLE_REFERENCE, 400, 'Invalid bundle reference');
   }
 
@@ -402,8 +411,14 @@ export async function getVerificationReportHandler({
   input,
   context,
 }: ApiHandlerArguments<typeof finalizationArtifactReportRoute, ArtifactDeliveryHandlerContext>): Promise<Response> {
-  const { sessionId, finalizationId } = input.params;
-  if (!isSafeVerifierSegment(sessionId) || !isSafeVerifierSegment(finalizationId)) {
+  const { sessionId: wireSessionId, finalizationId: wireFinalizationId } = input.params;
+  const { sessionId, finalizationId } = context;
+  if (
+    !isSafeVerifierSegment(wireSessionId) ||
+    !isSafeVerifierSegment(wireFinalizationId) ||
+    wireSessionId !== sessionId ||
+    wireFinalizationId !== finalizationId
+  ) {
     return artifactErrorResponse(ErrorCode.INVALID_BUNDLE_REFERENCE, 400, 'Invalid bundle reference');
   }
 

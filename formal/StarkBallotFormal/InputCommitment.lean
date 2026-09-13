@@ -603,10 +603,7 @@ theorem canonical_encoding_duplicate_indices_deterministic
         lexPathLE left.merklePath right.merklePath
       else
         lexNatLE left.commitment right.commitment := by
-  cases left
-  cases right
-  simp [canonicalVoteLE, canonicalEncodingLE, voteEncoding] at hIndex ⊢
-  simp [hIndex]
+  simp only [canonicalVoteLE, canonicalEncodingLE, voteEncoding, hIndex, ite_true]
 
 theorem encoded_vote_index_is_u32_bounded
     (vote : CommitmentVote)

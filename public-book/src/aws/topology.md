@@ -1,295 +1,86 @@
-# トポロジー
+# 状態と証拠をどこへ保存するか
 
-AWS 上のサービス配置とコンポーネント間の通信経路を示します。
-このページは runtime の責務分担を説明します（個別環境の導入進捗は扱いません）。
+ブラウザを閉じても、受け付けた集計作業とその進捗は AWS 側に残ります。DynamoDB は「今どの状態か」を保持し、S3 は「何を入力し、どの証拠ができたか」を保持します。状態が完了を示すとき、対応する証拠を読み出せるように、両者を `sessionId` と `finalizationId` で結び付けます。
 
-本システムは次の 6 つの論理レイヤで構成されます。
+## DynamoDBに残す状態
 
-- [Web レイヤ](#web-レイヤ)：静的配信と develop signed-cookie gate
-- [API レイヤ](#api-レイヤ)：API Gateway と `public-api` Lambda
-- [Data レイヤ](#data-レイヤ)：DynamoDB による永続化
-- [Prover レイヤ](#prover-レイヤ)：SQS / Step Functions / ECS による証明生成
-- [Verification レイヤ](#verification-レイヤ)：STARK レシート検証
-- [Storage レイヤ](#storage-レイヤ)：proof artifact の S3 保存
+sessions table のパーティションキーは文字列の `sessionId` です。ただし、セッションに関する情報を一つの大きな行へ詰め込みません。作成時に固定する選挙情報と、投票で変わる掲示板、集計の進捗、検証結果を別のレコードにします。別々のワーカーが更新するときに、担当外の情報まで上書きしないためです。
 
-## レイヤ別トポロジー
+| レコード             | sessions table のキー例                                  | 保持する内容                                                                           |
+| -------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| セッションの識別情報 | `{sessionId}`                                            | `SESSION_IDENTITY`。選挙設定、`electionId`、`logId`、作成時刻                          |
+| 投票中の状態         | `VOTING#{sessionId}`                                     | `SESSION_VOTING`。掲示板ルートの履歴、ボット票数、利用者の参加、最終活動時刻、revision |
+| 集計の進捗           | `FINALIZATION_CURRENT#{sessionId}` / `FINALIZATION#...`  | 現在の集計へのポインターと、各集計の状態                                               |
+| 検証と証拠の状態     | `VERIFICATION#...` / `OBSERVATION#...` / `BITMAP#...`    | 検証結果、ブラウザの観測、検証済みビットマップ                                         |
+| AWS上の保存場所      | `FINALIZATION_RUNTIME#...` / `VERIFICATION_DELIVERY#...` | Step Functions の情報、`s3BundleKey`、`s3ReportKey` など                               |
 
-### Web レイヤ
+votes table は `(sessionId, voteIndex)` の複合キーを使い、`voteId`、暗号化した選択肢と乱数、コミットメント、時刻、`rootAtCast`、`isUserVote`、`expiresAt` を保持します。ブラウザはこれらのテーブルへ直接アクセスせず、API とワーカーがそれぞれの IAM 権限で読み書きします。
 
-CloudFront が private S3 origin の Vite/React 静的アセットを配信します。
-`/api/*` は同じ CloudFront distribution から API Gateway origin に routing されます。
-extensionless browser route は viewer-request fallback で `index.html` に解決します。
+期限のあるセッション関連レコードは用途に応じて `expiresAt` を持ちます。レシート掲示板の全体カウンターは独立した TTL なしのレコードです。API のレート制限には、別の RateLimitEvents / RateLimitCounters テーブルを PAY_PER_REQUEST で使い、プローバーの同時実行枠にも専用の DynamoDB テーブルを使います。
 
-develop で operator gate が有効な場合、static frontend、browser route、`/api`、`/api/*` の viewer access は CloudFront signed cookie を要求します。
-信頼する public key group は、追跡対象 keyset に従って Terraform が管理する非対称 KMS signing key から public key を導出して構成します。
-KMS の private signing material は CloudFront、app runtime role、Terraform state には渡しません。
-この gate は develop 固有の条件付き境界であり、すべての環境に一律適用されるものではありません。
+本番環境は Terraform が管理する primary の sessions / votes の組を参照します。develop では、[休止を伴うアプリ復旧経路](terraform.md#dynamodb-recovery-selection)で replacement の組へ切り替えられます。個々のワーカーが独自に保存先を選ぶことはありません。
 
-### API レイヤ
+## S3に残す入力と成果物
 
-API Gateway（HTTP API）が `/api/*` パスパターンのリクエストを受け取り、単一の Lambda 関数（`public-api`）にプロキシします。
-`public-api` は Hono route inventory を実行する runtime adapter で、ルーティング、セッション管理、Turnstile 検証、レート制限を処理します。
-下図の「主なリクエスト制御」は、`public-api` がルートごとに適用有無と順序を切り替える代表的な要素を示します。
-固定順のパイプラインではありません。
+証明ファイルの保存先は非公開・バージョニング有効の S3 バケットです。サーバー側暗号化は AES256 を使い、現在版と旧版のオブジェクトはともに7日で削除するライフサイクルを設定します。
 
-```mermaid
-flowchart LR
-  Client["クライアント"] --> CF["CloudFront"]
-  KMS["KMS<br/>(develop signing keys)"] --> KG["CloudFront trusted key group<br/>(public keys only)"]
-  KG -. develop signed-cookie gate .-> CF
-  CF --> FRONT["S3<br/>(static frontend)"]
-  CF --> APIGW["API Gateway<br/>(HTTP API)"]
-  APIGW --> API["public-api<br/>Lambda"]
-  API --> DDB["DynamoDB<br/>(sessions / votes / rate limits)"]
-  API --> SQS["SQS<br/>(非同期証明)"]
-  API --> VQS["SQS<br/>(検証 work queue)"]
-  API --> S3["S3<br/>(bundle / report delivery)"]
-  VQS --> VW["verification-worker<br/>Lambda"]
-  VW --> S3
-  VW --> DDB
+一回の集計のファイルは、次の同じ接頭辞にまとめます。
 
-  subgraph "主なリクエスト制御（ルートごとに適用）"
-    direction TB
-    RATE["IP / zkVM レート制限"]
-    SESS["セッション / capability 検証"]
-    TURN["Turnstile 検証"]
-    BODY["入力検証"]
-    HAND["ハンドラー実行"]
-    RATE -.-> HAND
-    SESS -.-> HAND
-    TURN -.-> HAND
-    BODY -.-> HAND
-  end
+```text
+sessions/{sessionId}/{finalizationId}/
 ```
 
-CORS 設定で `X-Session-Capability` ヘッダーを許可し、session-scoped route は path の `sessionId` と capability トークンを照合します（契約は [API リファレンス > セッション capability](../api/endpoints.md#セッション-capability)）。
-`POST /api/sessions/{sessionId}/finalizations/{finalizationId}/verification` は、target runtime では検証 work を `verification-work` キューへ登録し、HTTP 応答では `verificationStatus=running`、`finalizationId`、推定所要時間、idempotent 判定を返します。
-実際の STARK レシート検証と protected report の保存は `verification-worker` の責務です。
-後述の[エンドツーエンドのデータフロー](#エンドツーエンドのデータフロー)も参照してください。
+AWS では `S3_PROOF_PREFIX=sessions/` が Terraform と実行時検証の共通条件です。API、dispatcher、writer、verification worker は、保存キーがこの形式と対象の識別子に一致することを確認します。名前の一致を曖昧にすると、別の集計のファイルを読み込む危険があるためです。
 
-### Data レイヤ
+`input.json` はプローバーへの非公開入力です。プローバーが生成する `*-receipt.json` と `*-output.json` は host の中間出力で、それぞれ配布用の `receipt.json` と `journal.json` の元になります。配布用 ZIP の中身と、外に残すビットマップなどのファイルは[バンドル構造](../verification/bundle-structure.md)で定義しています。
 
-DynamoDB が、セッション、投票、集計結果、レート制限状態の永続化を担当します。
-データプレーンは target Lambda IAM role ごとの最小権限で制限され、ブラウザから DynamoDB へ直接アクセスする経路はありません。
+同じ S3 に保存されていても、すべてのファイルを配布するわけではありません。API は[公開境界](../verification/public-boundary.md)に従ってファイルの種類とセッション権限を確認してから返します。
 
-通常時は Terraform-owned primary sessions / votes table pair を参照します。
-DynamoDB recovery の 4 phase 定義と切替契約は [Terraform](terraform.md) を参照してください（quiesced phase の図への影響は [エンドツーエンドのデータフロー](#エンドツーエンドのデータフロー) に注記）。
+## 生成済みの証拠を検証する通信
 
-sessions table は string partition key `sessionId` を使いますが、単一の aggregate session row は保存しません。
-identity、voting、finalization、verification、artifact delivery を、責務ごとの record family と prefixed key に分離します。
-votes table は引き続き `(sessionId, voteIndex)` の複合キーを使います。
-
-| record family                   | sessions table のキー例                                  | 主な authority / field                                                                                         |
-| ------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Session identity                | `{sessionId}`                                            | `SESSION_IDENTITY`; `identity` に election config、`electionId`、`logId`、作成時刻を固定                       |
-| Session voting                  | `VOTING#{sessionId}`                                     | `SESSION_VOTING`; bulletin root history、bot count、user participation、last activity、revision                |
-| Finalization lifecycle          | `FINALIZATION_CURRENT#{sessionId}` / `FINALIZATION#...`  | current pointer と finalization ごとの lifecycle record                                                        |
-| Verification / evidence         | `VERIFICATION#...` / `OBSERVATION#...` / `BITMAP#...`    | verification result、browser observation、finalization bitmap を別々に所有                                     |
-| AWS runtime / artifact delivery | `FINALIZATION_RUNTIME#...` / `VERIFICATION_DELIVERY#...` | Step Functions / bundle metadata と `s3BundleKey` / `s3ReportKey` delivery metadata を semantic state から分離 |
-| Vote                            | votes table の `{sessionId} + {voteIndex}`               | `voteId`、encrypted `vote` / `rand`、`commit`、`timestamp`、`rootAtCast`、`isUserVote`、`expiresAt`            |
-
-session-owned record には用途に応じた `expiresAt` を持たせます。
-receipt board の global counter は sessions table 上の独立した非 TTL record です。
-
-レート制限用に 2 つの追加テーブル（RateLimitEvents、RateLimitCounters）が PAY_PER_REQUEST モードで運用されています。
-これとは別に、同時実行数を制御する prover semaphore table も DynamoDB 上で管理します。
-
-### Prover レイヤ
-
-STARK 証明の生成を担当するレイヤです。
-SQS キュー、Step Functions ステートマシン、ECS Fargate タスクで構成されます。
-詳細は [非同期プローバー](async-prover.md) を参照してください。
-
-```mermaid
-flowchart LR
-  CODEBUILD["CodeBuild<br/>プローバー候補イメージ"] --> META["S3<br/>候補 metadata / promotion evidence"]
-  CODEBUILD -. legacy / optional<br/>非 authority .-> SSM["SSM Parameter<br/>current metadata"]
-  META --> RECORD["Prover release record<br/>accepted pointer"]
-  RECORD --> PREFLIGHT["image-signature-verifier<br/>preflight alias"]
-  PREFLIGHT -. VERIFIED evidence .-> APP["App deployment record"]
-  SQS["SQS<br/>ワークキュー"] --> DP["proof-dispatcher<br/>Lambda"]
-  DP --> SFN["Step Functions<br/>ディスパッチャー"]
-  APP -. digest / verifier authority .-> SFN
-  SFN --> SIG["image-signature-verifier<br/>runtime alias"]
-  SIG -. VERIFIED .-> SFN
-  SFN <--> SEM["DynamoDB<br/>prover semaphore"]
-  JANITOR["semaphore-janitor<br/>Lambda"] --> SEM
-  SFN --> ECS["ECS Fargate<br/>ARM64 Linux / CPU-only"]
-  SFN --> CALLBACK["finalization-writer<br/>Lambda"]
-  ECS --> S3["S3<br/>証明バンドル"]
-```
-
-normal App deployment は、選択した digest 固定 Prover image を immutable verifier version の `preflight` alias で検証し、その evidence と verifier authority を App deployment record に固定します。
-runtime では Step Functions の最初の state が同じ authority の `runtime` alias を呼び、暗号学的検証に成功した場合だけ semaphore の取得と ECS 起動へ進みます。
-
-ECS タスクは ARM64 アーキテクチャの Fargate で実行され、Foundation-owned VPC（10.42.0.0/20）内のパブリックサブネットに配置されます（セキュリティグループの設定は [ネットワーク構成](#ネットワーク構成) を参照）。
-Step Functions は DynamoDB の semaphore row で prover slot を取得・解放し、`semaphore-janitor` は terminal execution event と定期 sweep から stale slot を回収します。
-
-### Verification レイヤ
-
-STARK レシート検証を担当するレイヤです。
-`public-api` は session capability、finalization state、bundle locator、Image ID を確認したうえで検証 work を SQS に登録します。
-`verification-worker` は work item に含まれる `sessionId`、`finalizationId`、`bundleKey`、expected Image ID を使って private S3 bucket から `bundle.zip` を取得します。
-その後、`verifier-service` で `Receipt::verify(expected_image_id)` を実行します。
-
-検証結果は protected report artifact（`verification.json`）として保存されます（扱いは [公開境界](../verification/public-boundary.md) と後述の [Storage レイヤ](#storage-レイヤ)）。
-
-### Storage レイヤ
-
-S3 バケットが、証明バンドルに含まれる配布対象アーティファクトと非公開ワーク入力の保存を担当します。
-Target Terraform はこれに加えて、プローバーイメージ候補の metadata、promotion evidence、release record / accepted pointer 用の非公開 S3 storage を管理します。
-実行対象は選択された app deployment record から渡される digest 固定 prover image URI で決まります。
-
-| 項目               | 設定                                                                                     |
-| ------------------ | ---------------------------------------------------------------------------------------- |
-| バケット命名       | `stark-ballot-simulator-{account-alias}-{environment}-proof-artifacts`                   |
-| 暗号化             | AES256（サーバーサイド暗号化）                                                           |
-| パブリックアクセス | 全ブロック                                                                               |
-| ライフサイクル     | `proof_artifact_lifecycle_days` 日（既定 7 日）で current / noncurrent object を自動削除 |
-| バージョニング     | Enabled                                                                                  |
-
-プローバー release metadata / evidence は foundation 側の versioned manifest storage に保存します。
-CodeBuild からの publish 仕様、legacy/optional SSM current pointer の非 authority 境界、digest 固定 runtime input の関係は [イメージ署名 > ビルドと署名の概念](image-signing.md#ビルドと署名の概念) を参照してください。
-
-証明バンドル側のオブジェクトパスは既定で `sessions/{sessionId}/{finalizationId}/` 配下です。
-target runtime では `S3_PROOF_PREFIX=sessions/` が Terraform と runtime validation の契約です。
-この prefix を変更するには、`public-api`、`verification-worker`、`proof-dispatcher`、`finalization-writer`、CLI/report delivery の S3 policy と artifact lookup を同時に変更する必要があります。
-影響範囲は [非同期プローバー > Dispatch 処理](async-prover.md#dispatch-処理) を参照してください。
-
-配布対象（`bundle.zip` とその同梱物）と保護対象（`input.json`、bitmap sibling object など）の区分は [公開境界](../verification/public-boundary.md) を、bundle member と S3 レイアウトの詳細は [バンドル構造](../verification/bundle-structure.md) を参照してください。
-このレイヤに固有のファイルは次のとおりです。
-
-| ファイル            | 区分       | 説明                                                                                                            |
-| ------------------- | ---------- | --------------------------------------------------------------------------------------------------------------- |
-| `*-receipt.json`    | 中間データ | zkVM host の生出力。`bundle.zip` 内の `receipt.json` の元データ                                                 |
-| `*-output.json`     | 中間データ | zkVM host の生出力（集計結果）。`bundle.zip` 内の `journal.json` の元データ                                     |
-| `verification.json` | 保護       | 検証サービスの出力。target runtime では protected report artifact として保存を要求し、`bundle.zip` には含めない |
-
-## エンドツーエンドのデータフロー
-
-投票から検証までのデータフローを、レイヤ間の通信として示します。
-以下は `primary_active` または `replacement_active` の非 quiesced phase における処理です。
-`*_quiesced` phase では、この図に含まれる新規 session admission と prover / verification queue consumption は利用できません。
-図では API request ごとの CloudFront hop を省略していますが、develop operator gate が有効な場合は frontend と API の両方で viewer request の signed cookie を検証します。
+集計の完了後、検証開始 API は capability、現在の集計が成功していること、集計ごとのバンドル保存場所、期待する Image ID を確認します。作業を `verification-work` に登録した応答は `verificationStatus=running` と `finalizationId`、推定所要時間、冪等な再要求かどうかを返します。
 
 ```mermaid
 sequenceDiagram
-  participant C as クライアント
-  participant W as Web レイヤ<br/>(CloudFront + S3)
-  participant A as API レイヤ<br/>(API GW + Lambda)
-  participant Q as 検証キュー<br/>(verification-work)
-  participant V as 検証レイヤ<br/>(verification-worker)
-  participant D as Data レイヤ<br/>(DynamoDB)
-  participant P as Prover レイヤ<br/>(SQS → SFN → ECS)
-  participant S as Storage レイヤ<br/>(S3)
-
-  Note over C,D: 投票フェーズ
-  C->>W: ページ読み込み
-  opt develop operator gate enabled
-    W->>W: CloudFront signed-cookie 検証
-  end
-  C->>A: POST /api/sessions
-  A->>D: セッション作成
-  C->>A: POST /api/sessions/{sessionId}/votes
-  A->>D: 投票 + コミットメント保存
-  A-->>C: 投票レシート返却
-  Note over A,D: ボット投票を自動追加
-
-  Note over C,P: 集計フェーズ
-  C->>A: POST /api/sessions/{sessionId}/finalizations
-  A->>P: SQS メッセージ送信
-  A-->>C: 202 Accepted
-  P->>S: input.json 保存（SFN 起動前）
-  P->>P: イメージ署名検証
-  P->>P: ECS タスクで証明生成
-  P->>S: 実行成果物 + 公開監査アーティファクト + bundle.zip 保存
-  P->>D: コールバックで結果書き込み
-
-  Note over C,S: 検証フェーズ
-  C->>A: GET /api/sessions/{sessionId}/finalizations/{finalizationId}/verification
-  A->>D: identity + voting + finalization + verification record 取得
-  A-->>C: 検証ペイロード返却
-  C->>A: POST /api/sessions/{sessionId}/finalizations/{finalizationId}/verification
-  A->>Q: 検証 work を登録
-  A->>D: VERIFICATION_RESULT に running を記録
-  A-->>C: verificationStatus=running + finalizationId 返却
-  Q->>V: work item 配信
-  V->>S: bundle.zip 取得
-  V->>V: verifier-service 実行
-  V->>S: verification.json を protected report として保存
-  V->>D: verification result と delivery metadata を別 record に記録
-  C->>A: GET /api/sessions/{sessionId}/finalizations/{finalizationId}/verification
-  A->>D: 最新の検証状態取得
-  A-->>C: 検証結果を含むペイロード返却
+  participant B as ブラウザ
+  participant A as API
+  participant Q as 検証キュー
+  participant W as verification-worker
+  participant S as S3
+  participant D as DynamoDB
+  B->>A: 検証を開始
+  A->>Q: 対象集計とバンドルの場所を登録
+  A-->>B: running
+  Q->>W: 作業を配送
+  W->>S: bundle.zipを取得
+  W->>W: Rustでレシートを検証
+  W->>S: verification.jsonを保存
+  W->>D: 検証結果と保存場所を記録
+  B->>A: 検証状態を取得
+  A->>D: 最新の結果を読む
+  A-->>B: 検証結果
 ```
 
-`verification-worker` は `bundle.zip` を検証入力として読み取り、target AWS runtime では `verification.json` が存在しない場合や S3 upload に失敗した場合に fail-closed に失敗します。
-保存に成功した report locator は `VERIFICATION_DELIVERY` record に、検証結果は `VERIFICATION_RESULT` record に保存し、pure finalization state には混在させません。
-report 保存に失敗しても delivery metadata の既存 `s3BundleKey` は維持されますが、verification run 自体は成功扱いになりません（report と bitmap sibling object の扱いは [バンドル構造](../verification/bundle-structure.md)）。
+ワーカーは `Receipt::verify(expected_image_id)` を実行します。AWS では検証結果を `verification.json` として保存することも完了条件です。レポートがない場合やアップロードに失敗した場合、検証作業を成功として扱いません。
 
-## ネットワーク構成
+保存に成功すると、結果は `VERIFICATION_RESULT`、バンドルとレポートの保存場所は `VERIFICATION_DELIVERY` に分けて記録します。レポート保存に失敗しても既存の `s3BundleKey` は失いません。このレポートは後続の capability 付き API から取得でき、公開 ZIP には入れません。
 
-### VPC
+この通信で得る STARK 検証結果を、ブラウザは投票時の記録や掲示板の確認と合わせます。ワーカーの成功だけで画面全体の判定は決まりません。
 
-Foundation Terraform が管理する VPC は、ECS Fargate タスク専用です。
-API Gateway、target Lambdas、DynamoDB、S3、CloudFront は VPC 外の managed service boundary で動作します。
-VPC は `10.42.0.0/20` で、最初の 2 つの available AZ に `/24` public subnet を 1 つずつ配置します。
-AZ 名は Terraform が実行時に取得するため、特定の AZ suffix には固定しません。
+## プローバーだけをVPC内に配置する
+
+本番で稼働する Fargate のプローバータスクは、Foundation が管理する VPC に配置します。develop も同じネットワーク構成を使います。API Gateway、Lambda、DynamoDB、S3、CloudFront は VPC 外のマネージドサービスとして動きます。
+
+VPC の範囲は `10.42.0.0/20`。利用可能な最初の二つの AZ に、それぞれ `10.42.0.0/24` と `10.42.1.0/24` のパブリックサブネットを置きます。AZ の末尾文字は固定せず、Terraform が取得した値を使います。
 
 ```mermaid
-flowchart TD
-  subgraph VPC["Foundation-owned VPC (10.42.0.0/20)"]
-    subgraph AZ1["available AZ 1"]
-      S1["パブリックサブネット<br/>10.42.0.0/24"]
-    end
-    subgraph AZ2["available AZ 2"]
-      S2["パブリックサブネット<br/>10.42.1.0/24"]
-    end
-    SG["セキュリティグループ<br/>Ingress: なし<br/>Egress: all protocols / ports"]
-  end
-
-  IGW["インターネット<br/>ゲートウェイ"]
-  ECR["ECR<br/>(イメージ取得)"]
-  S3["S3<br/>(バンドル保存)"]
-
-  VPC --> IGW
-  IGW --> ECR
-  IGW --> S3
+flowchart TB
+  P["Fargateタスク<br/>パブリックIPあり"] --> G["Internet Gateway"]
+  G --> E["ECR：イメージ取得"]
+  G --> S["S3：入力・証拠"]
+  G --> L["CloudWatch Logs"]
 ```
 
-ECS タスクはパブリック IP を持ちますが、セキュリティグループがインバウンドを全拒否するため、外部からのアクセスはできません。
-アウトバウンドは `0.0.0.0/0` に対する全 protocol / port を許可します。
-この egress 全許可は、public subnet から ECR、S3、CloudWatch Logs などへ到達するための develop prover の割り切りです。
+タスクのセキュリティグループは受信通信を全拒否します。パブリック IP があっても、外部から接続を開始することはできません。送信は `0.0.0.0/0` への全プロトコル・全ポートを許可します。これはプローバーが ECR、S3、ログなどへ接続するための構成であり、送信先を厳密に限定したネットワークではありません。
 
-## 監視とロギング
-
-この節はログの物理配置と保持期間を示します。
-ログ、メトリクス、alarm、operations ledger の authority と読み方は [可観測性設計](observability.md) を参照してください。
-
-### 主な CloudWatch ログ群
-
-runtime のログ群（ECS Fargate タスク、Step Functions 実行、`public-api` / `proof-dispatcher` / `finalization-writer` / `verification-worker` / `image-signature-verifier` / `semaphore-janitor` の各 Lambda、API Gateway アクセスログ）の保持期間は develop 90 日 / main 180 日で統一しています。
-例外は次の 2 つです。
-
-| ログ群                                                                                  | 対象                         | develop | main   |
-| --------------------------------------------------------------------------------------- | ---------------------------- | ------- | ------ |
-| `/aws/ecs/containerinsights/{project}-{account-alias}-{environment}-prover/performance` | ECS Container Insights       | 7 日    | 30 日  |
-| `/aws/events/{project}-{account-alias}-{environment}-ops-ledger`                        | normalized operations ledger | 365 日  | 731 日 |
-
-ロググループ名は Terraform-managed physical names と component suffix に揃えます（`image-signature-verifier` の log group だけは `stark-ballot-sim-` を name prefix に使います）。
-deployment pipeline の CodeBuild log group は bootstrap root の管理対象です。
-develop / main の保持期間は、bootstrap pipeline が 30 / 365 日、App pipeline が 180 / 365 日、Foundation と image release pipeline が 365 / 365 日です。
-
-### CloudTrail
-
-CloudTrail は current target app/bootstrap/foundation Terraform runtime の構成要素ではなく、account-plane または organization-level の監査証跡として別途管理される場合があります。
-旧構成の残存ロググループ、旧 standalone prover/toolchain CodeBuild log group、旧 Terraform の multi-region CloudTrail（main 環境のみ、90 日保持）は、この topology の runtime authority に含めません。
-
-## 関連する章
-
-- [現行構成とサービス一覧](design-and-services.md)：サービスごとの責務一覧
-- [非同期プローバー](async-prover.md)：Prover レイヤの実行時フロー
-- [可観測性設計](observability.md)：ログ、検出、相関、通知境界
-- [バンドル構造](../verification/bundle-structure.md)：Storage レイヤの artifact 境界
-
-<!-- source: packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/verification.ts, packages/runtime-config/src/env/runtimeProfile.ts, packages/domain/src/types/sessionRecords.ts, packages/aws-adapters/src/store/dynamoSessionStore.ts, packages/aws-adapters/src/finalize/artifact-key-layout.ts, infra/terraform/app, infra/terraform/bootstrap, infra/lambdas/, infra/docker/entrypoint.sh, packages/verification/src/verification/verification-bundle.ts -->
+<!-- source: packages/domain/src/types/sessionRecords.ts, packages/aws-adapters/src/store/dynamoSessionStore.ts, packages/aws-adapters/src/finalize/artifact-key-layout.ts, apps/api/src/server/api/handlers/verificationRun.ts, infra/lambdas/verification-worker, infra/terraform/app, infra/terraform/foundation, infra/docker/entrypoint.sh -->

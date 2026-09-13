@@ -90,7 +90,6 @@ async function resolveCurrentExpectedImageId(profile: ResolvedRuntimeProfile): P
         profile.external.kind === 'aws' ? profile.external.expectedImageId : process.env['EXPECTED_IMAGE_ID'],
     }),
     ...omitUndefinedProperties({
-      legacyExpectedImageIdPoc: process.env['EXPECTED_IMAGEID_POC'],
       variant: process.env['EXPECTED_IMAGE_ID_VARIANT'],
     }),
     loadImageIdMapping: loadPublicImageIdMapping,

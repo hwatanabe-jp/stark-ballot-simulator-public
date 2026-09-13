@@ -1,6 +1,6 @@
+import { parseSource } from '../../source-analysis/source';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import type { BaselineApiRouteContract } from '../typed-route-baseline-projection';
 import {
@@ -52,7 +52,7 @@ function route(
 function schemaSourceModule(source: string): SchemaSourceModule {
   return {
     source,
-    sourceFile: ts.createSourceFile('schemas.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS),
+    sourceFile: parseSource('schemas.ts', source),
   };
 }
 
@@ -83,6 +83,17 @@ describe('public contract capture policy', () => {
     expect(() =>
       parseTypedMountedRouteKeys(`${source}\nmountRoute(app, mode, runtimeProfile, API_ROUTES.vote);`),
     ).toThrow('Duplicate typed Hono route mount: vote');
+  });
+
+  it('parses route-bound handler registry entries as typed Hono mounts', () => {
+    const source = `
+      const routeMountRegistry = {
+        [API_ROUTES.progress.routeId]: defineRouteHandler(API_ROUTES.progress, getProgressHandler),
+        [API_ROUTES.bundle.routeId]: defineRawRouteHandler(API_ROUTES.bundle, getBundleHandler),
+      };
+    `;
+
+    expect(parseTypedMountedRouteKeys(source)).toEqual(['bundle', 'progress']);
   });
 
   it('normalizes route and registration order before projecting mounted modes', () => {

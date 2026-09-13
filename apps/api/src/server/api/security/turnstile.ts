@@ -58,7 +58,7 @@ function normalizeHostname(value: string): string | null {
     return null;
   }
 
-  let hostname = trimmed;
+  let hostname: string;
   try {
     if (trimmed.includes('://')) {
       hostname = new URL(trimmed).hostname;
@@ -91,10 +91,7 @@ function assertExpectedActionMatches(actual: string | undefined, expected: strin
   }
   const normalizedActual = actual?.trim();
   if (!normalizedActual || normalizedActual !== normalizedExpected) {
-    throw new ApiError(ErrorCode.CAPTCHA_FAILED, 403, 'Turnstile action mismatch', {
-      expectedAction: normalizedExpected,
-      action: normalizedActual ?? null,
-    });
+    throw new ApiError(ErrorCode.CAPTCHA_FAILED, 403, 'Turnstile action mismatch');
   }
 }
 
@@ -104,10 +101,7 @@ function assertHostnameAllowed(hostname: string | undefined, allowedHostnames: S
   }
   const normalizedHostname = hostname ? normalizeHostname(hostname) : null;
   if (!normalizedHostname || !allowedHostnames.has(normalizedHostname)) {
-    throw new ApiError(ErrorCode.CAPTCHA_FAILED, 403, 'Turnstile hostname mismatch', {
-      hostname: normalizedHostname,
-      allowedHostnames: Array.from(allowedHostnames),
-    });
+    throw new ApiError(ErrorCode.CAPTCHA_FAILED, 403, 'Turnstile hostname mismatch');
   }
 }
 
@@ -162,8 +156,8 @@ function getTurnstileSecret(profile: ResolvedRuntimeProfile, env: NodeJS.Process
         name: 'TURNSTILE_SECRET_KEY',
         reference: profile.external.secretReferences.turnstileSecretKey,
       });
-    } catch (cause) {
-      throw new ApiError(ErrorCode.INTERNAL_ERROR, 500, 'Turnstile secret key is not configured', { cause });
+    } catch {
+      throw new ApiError(ErrorCode.INTERNAL_ERROR, 500, 'Turnstile secret key is not configured');
     }
   }
   if (secret && !isUnresolvedRuntimeSecretPlaceholder(secret)) {
@@ -216,8 +210,8 @@ export async function validateTurnstileToken(
       body: payload,
       cache: 'no-store',
     });
-  } catch (error) {
-    throw new ApiError(ErrorCode.CAPTCHA_FAILED, 403, 'Turnstile verification failed', { cause: error });
+  } catch {
+    throw new ApiError(ErrorCode.CAPTCHA_FAILED, 403, 'Turnstile verification failed');
   }
 
   if (!response.ok) {
@@ -227,10 +221,8 @@ export async function validateTurnstileToken(
   let rawResult: unknown;
   try {
     rawResult = await response.json();
-  } catch (error) {
-    throw new ApiError(ErrorCode.CAPTCHA_FAILED, 403, 'Turnstile verification returned malformed response', {
-      cause: error,
-    });
+  } catch {
+    throw new ApiError(ErrorCode.CAPTCHA_FAILED, 403, 'Turnstile verification returned malformed response');
   }
 
   const result = parseTurnstileSiteVerifyResponse(rawResult);
@@ -306,7 +298,14 @@ export function getRequestIp(
   const trustedProxyMode = resolveTrustedProxyMode(profile, env);
   const normalizedFallback = normalizeIpCandidate(fallbackIp);
 
-  if (trustedProxyMode === 'cloudflare' || trustedProxyMode === 'both') {
+  if (trustedProxyMode === 'cloudflare') {
+    // This mode requires the authenticated Cloudflare -> CloudFront origin path.
+    // A missing or malformed header must not collapse callers onto a proxy IP.
+    const clientIp = headers.get('cf-connecting-ip');
+    return clientIp && isIP(clientIp) > 0 ? clientIp : undefined;
+  }
+
+  if (trustedProxyMode === 'both') {
     const cfConnectingIp = normalizeIpCandidate(headers.get('cf-connecting-ip'));
     if (cfConnectingIp) {
       return cfConnectingIp;

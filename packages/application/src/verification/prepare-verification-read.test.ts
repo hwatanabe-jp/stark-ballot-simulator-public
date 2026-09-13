@@ -1,15 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { FinalizationResultAuthority } from '../finalize/finalization-types';
+import {
+  createUnavailableFinalizationArtifacts,
+  type FinalizationResultAuthority,
+} from '../finalize/finalization-types';
 import {
   prepareVerificationRead,
   type VerificationReadPort,
   type VerificationReadSource,
 } from './prepare-verification-read';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 
 const HEX_A = `0x${'a'.repeat(64)}`;
 const HEX_B = `0x${'b'.repeat(64)}`;
 const HEX_C = `0x${'c'.repeat(64)}`;
+const SESSION_ID = asSessionId('session-1');
+const FINALIZATION_ID = asFinalizationId('finalization-1');
+const OTHER_FINALIZATION_ID = asFinalizationId('other-finalization');
 
 const authority = {
   tally: {
@@ -18,6 +26,7 @@ const authority = {
     tamperedCount: 0,
   },
   imageId: HEX_A,
+  artifacts: createUnavailableFinalizationArtifacts(),
   journal: {
     electionId: 'election-1',
     electionConfigHash: HEX_B,
@@ -42,7 +51,7 @@ const authority = {
 } satisfies FinalizationResultAuthority;
 
 const source: VerificationReadSource = {
-  sessionId: 'session-1',
+  sessionId: SESSION_ID,
   electionId: 'election-1',
   electionConfigHash: HEX_B,
   logId: HEX_C,
@@ -54,7 +63,7 @@ const source: VerificationReadSource = {
     commitment: HEX_A,
   },
   finalization: {
-    finalizationId: 'finalization-1',
+    finalizationId: FINALIZATION_ID,
     authority,
   },
 };
@@ -110,8 +119,8 @@ describe('prepareVerificationRead', () => {
     await expect(
       prepareVerificationRead(
         {
-          sessionId: 'session-1',
-          finalizationId: 'finalization-1',
+          sessionId: SESSION_ID,
+          finalizationId: FINALIZATION_ID,
         },
         reader,
       ),
@@ -128,7 +137,7 @@ describe('prepareVerificationRead', () => {
 
     expect(reader.readCurrent).toHaveBeenCalledWith('session-1');
     expect(reader.readExactVoterEvidence).toHaveBeenCalledWith({
-      sessionId: 'session-1',
+      sessionId: SESSION_ID,
       voteId: 'vote-1',
       voteIndex: 0,
       expectedCommitment: HEX_A,
@@ -142,8 +151,8 @@ describe('prepareVerificationRead', () => {
     await expect(
       prepareVerificationRead(
         {
-          sessionId: 'session-1',
-          finalizationId: 'other-finalization',
+          sessionId: SESSION_ID,
+          finalizationId: OTHER_FINALIZATION_ID,
         },
         reader,
       ),
@@ -171,8 +180,8 @@ describe('prepareVerificationRead', () => {
     await expect(
       prepareVerificationRead(
         {
-          sessionId: 'session-1',
-          finalizationId: 'finalization-1',
+          sessionId: SESSION_ID,
+          finalizationId: FINALIZATION_ID,
         },
         reader,
       ),
@@ -196,8 +205,8 @@ describe('prepareVerificationRead', () => {
     await expect(
       prepareVerificationRead(
         {
-          sessionId: 'session-1',
-          finalizationId: 'finalization-1',
+          sessionId: SESSION_ID,
+          finalizationId: FINALIZATION_ID,
         },
         reader,
       ),
@@ -226,8 +235,8 @@ describe('prepareVerificationRead', () => {
       await expect(
         prepareVerificationRead(
           {
-            sessionId: 'session-1',
-            finalizationId: 'finalization-1',
+            sessionId: SESSION_ID,
+            finalizationId: FINALIZATION_ID,
           },
           reader,
         ),

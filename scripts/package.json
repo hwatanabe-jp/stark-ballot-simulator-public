@@ -2,17 +2,21 @@
   "name": "@stark-ballot/repository-tools",
   "private": true,
   "type": "module",
+  "exports": {},
   "scripts": {
-    "lint": "pnpm --dir .. exec eslint scripts",
+    "lint": "pnpm --dir .. exec oxlint scripts",
     "test": "pnpm --dir .. exec vitest run --config vitest.config.ts --project @stark-ballot/repository-tools",
     "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
   },
-  "exports": {},
   "dependencies": {
+    "@apidevtools/swagger-parser": "13.0.0",
+    "@aws-sdk/client-codebuild": "catalog:aws-sdk",
     "@aws-sdk/client-dynamodb": "catalog:aws-sdk",
     "@aws-sdk/client-s3": "catalog:aws-sdk",
     "@aws-sdk/client-sfn": "catalog:aws-sdk",
-    "@aws-sdk/credential-providers": "3.1106.0",
+    "@aws-sdk/client-sts": "catalog:aws-sdk",
+    "@aws-sdk/credential-providers": "3.1130.0",
+    "@backstage/catalog-model": "1.10.0",
     "@stark-ballot/api": "workspace:*",
     "@stark-ballot/api-contract": "workspace:*",
     "@stark-ballot/crypto-primitives": "workspace:*",
@@ -28,16 +32,17 @@
     "@stark-ballot/zkvm-contract": "workspace:*",
     "dotenv": "17.4.2",
     "esbuild": "0.28.2",
-    "hono": "4.13.1",
-    "prettier": "3.9.6",
+    "hono": "4.13.7",
+    "oxc-parser": "catalog:testing",
+    "oxfmt": "catalog:testing",
     "typescript": "catalog:testing",
+    "yaml": "2.9.0",
     "yazl": "3.3.1"
   },
   "devDependencies": {
     "@stark-ballot/application": "workspace:*",
     "@types/node": "24.13.3",
     "@types/yazl": "3.3.1",
-    "eslint": "9.39.2",
     "vitest": "catalog:testing"
   }
 }

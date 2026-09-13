@@ -34,7 +34,6 @@ data "aws_iam_policy_document" "foundation_ecr_retention_boundary" {
     effect = "Allow"
     actions = [
       "s3:GetObject",
-      "s3:GetObjectVersion",
     ]
     resources = local.foundation_ecr_retention_app_authority_object_arns
   }
@@ -44,9 +43,8 @@ data "aws_iam_policy_document" "foundation_ecr_retention_boundary" {
     effect = "Allow"
     actions = [
       "kms:Decrypt",
-      "kms:DescribeKey",
     ]
-    resources = [aws_kms_key.app_pipeline_artifacts[0].arn]
+    resources = [aws_kms_alias.app_pipeline_artifacts[0].target_key_arn]
 
     condition {
       test     = "StringEquals"
@@ -66,7 +64,6 @@ data "aws_iam_policy_document" "foundation_ecr_retention_boundary" {
     effect = "Allow"
     actions = [
       "s3:GetObject",
-      "s3:GetObjectVersion",
     ]
     resources = local.foundation_ecr_retention_release_authority_object_arns
   }

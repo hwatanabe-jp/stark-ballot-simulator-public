@@ -10,7 +10,7 @@ const objectSchema = s.object({
   optional: s.number().optional(),
   nested: s.object({
     nullable: s.string().nullable(),
-    withDefault: s.string().optional().default('fallback'),
+    optional: s.string().optional(),
   }),
 });
 
@@ -20,17 +20,12 @@ const transformedQuerySchema = s.object({
 });
 
 const arrayUnionSchema = s.array(s.union([s.string(), s.number()]));
+const tupleSchema = s.tuple([s.string(), s.number(), s.boolean()]);
 
-const discriminatedUnionSchema = new s.DiscriminatedUnionSchema([
+const discriminatedUnionSchema = s.union([
   s.object({ kind: s.literal('text'), value: s.string() }),
   s.object({ kind: s.literal('count'), value: s.number() }),
 ]);
-
-const intersectionSchema = s.intersection(s.object({ left: s.string() }), s.object({ right: s.number() }));
-const rightWinsIntersectionSchema = s.intersection(
-  s.unknown().transform(() => ({ value: 'left' })),
-  s.unknown().transform(() => ({ value: 2 })),
-);
 
 const strictObjectSchema = s.object({ known: s.string() }).strict();
 const emptyStrictObjectSchema = s.object({}).strict();
@@ -49,6 +44,49 @@ const superRefinedSchema = s.string().superRefine((value, context) => {
   }
 });
 const transformedSchema = s.string().transform((value) => value.length);
+const optionalTransformSchema = s.string().transform((value) => (value === '' ? undefined : value));
+
+// @ts-expect-error runtime checks and structural constraints cannot be supplied independently
+new s.NumberSchema([], [{ kind: 'minimum', value: 100, exclusive: false }]);
+// @ts-expect-error runtime checks and structural constraints cannot be supplied independently
+new s.StringSchema([], undefined, [{ kind: 'minLength', value: 100 }]);
+// @ts-expect-error runtime checks and structural constraints cannot be supplied independently
+new s.ArraySchema(s.string(), [], [{ kind: 'minItems', value: 100 }]);
+// @ts-expect-error arbitrary callback constraints belong to EffectsSchema
+new s.NumberSchema([() => null]);
+
+new s.EffectsSchema<string, string | number>(s.union([s.string(), s.number()]), {
+  kind: 'transform',
+  // @ts-expect-error the input schema also admits numbers
+  transform: (value: string) => value.toUpperCase(),
+});
+new s.EffectsSchema(s.union([s.string(), s.number()]), {
+  kind: 'transform',
+  // @ts-expect-error callback inference must not narrow the admitted schema input
+  transform: (value: string) => value.toUpperCase(),
+});
+new s.EffectsSchema<string | number, string | number>(s.union([s.string(), s.number()]), {
+  kind: 'refinement',
+  // @ts-expect-error refinements must handle every admitted input
+  refine: (value: string) => {
+    void value;
+  },
+  output: (value) => value,
+});
+new s.EffectsSchema<string, string | number>(s.union([s.string(), s.number()]), {
+  kind: 'refinement',
+  refine: () => {},
+  // @ts-expect-error refinement projections must handle every admitted input
+  output: (value: string) => value,
+});
+
+const immutableObjectSchema = s.object({ tag: s.literal('one') });
+// @ts-expect-error admitted schema members cannot be replaced through their public view
+immutableObjectSchema.shape.tag = s.literal('one');
+// @ts-expect-error the complete shape is a getter-only admission view
+immutableObjectSchema.shape = { tag: s.literal('one') };
+// @ts-expect-error implementation definitions are not a public mutation boundary
+void immutableObjectSchema._def;
 
 export type SchemaInferenceAssertions = [
   Expect<
@@ -59,7 +97,7 @@ export type SchemaInferenceAssertions = [
         optional?: number | undefined;
         nested: {
           nullable: string | null;
-          withDefault: string;
+          optional?: string | undefined;
         };
       }
     >
@@ -74,11 +112,10 @@ export type SchemaInferenceAssertions = [
     >
   >,
   Expect<Equal<Infer<typeof arrayUnionSchema>, (string | number)[]>>,
+  Expect<Equal<Infer<typeof tupleSchema>, [string, number, boolean]>>,
   Expect<
     Equal<Infer<typeof discriminatedUnionSchema>, { kind: 'text'; value: string } | { kind: 'count'; value: number }>
   >,
-  Expect<Equal<Infer<typeof intersectionSchema>, { left: string; right: number }>>,
-  Expect<Equal<Infer<typeof rightWinsIntersectionSchema>, { value: number }>>,
   Expect<Equal<Infer<typeof strictObjectSchema>, { known: string }>>,
   Expect<Equal<Infer<typeof emptyStrictObjectSchema>, Record<string, never>>>,
   Expect<Extends<Infer<typeof passthroughObjectSchema>, { known: string } & Record<string, unknown>>>,
@@ -88,15 +125,15 @@ export type SchemaInferenceAssertions = [
   Expect<Equal<Infer<typeof refinedSchema>, string>>,
   Expect<Equal<Infer<typeof superRefinedSchema>, string>>,
   Expect<Equal<Infer<typeof transformedSchema>, number>>,
+  Expect<Equal<Infer<typeof optionalTransformSchema>, string | undefined>>,
 ];
 
 void [
   objectSchema,
   transformedQuerySchema,
   arrayUnionSchema,
+  tupleSchema,
   discriminatedUnionSchema,
-  intersectionSchema,
-  rightWinsIntersectionSchema,
   strictObjectSchema,
   emptyStrictObjectSchema,
   passthroughObjectSchema,
@@ -106,4 +143,5 @@ void [
   refinedSchema,
   superRefinedSchema,
   transformedSchema,
+  optionalTransformSchema,
 ];

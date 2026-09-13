@@ -1,11 +1,13 @@
 import type { ZkVMInput } from './types';
+import { CURRENT_ZKVM_SEMANTIC_CONTRACT } from './semantic-contract';
 
-export const MAX_GUEST_TOTAL_PATH_NODES = 1_000_000;
-export const MAX_GUEST_SERIALIZED_INPUT_BYTES = 64 * 1024 * 1024;
-export const MAX_GUEST_TREE_SIZE = 1_000_000;
-export const MAX_GUEST_TOTAL_EXPECTED = MAX_GUEST_TREE_SIZE;
-export const MAX_GUEST_VOTE_COUNT = MAX_GUEST_TREE_SIZE;
-export const MAX_GUEST_MERKLE_PATH_NODES_PER_RECORD = 0xffff;
+export const MAX_GUEST_TOTAL_PATH_NODES = CURRENT_ZKVM_SEMANTIC_CONTRACT.workBounds.totalMerklePathNodesMax;
+export const MAX_GUEST_SERIALIZED_INPUT_BYTES = CURRENT_ZKVM_SEMANTIC_CONTRACT.workBounds.serializedInputBytesMax;
+export const MAX_GUEST_TREE_SIZE = CURRENT_ZKVM_SEMANTIC_CONTRACT.workBounds.treeSizeMax;
+export const MAX_GUEST_TOTAL_EXPECTED = CURRENT_ZKVM_SEMANTIC_CONTRACT.workBounds.totalExpectedMax;
+export const MAX_GUEST_VOTE_COUNT = CURRENT_ZKVM_SEMANTIC_CONTRACT.workBounds.voteCountMax;
+export const MAX_GUEST_MERKLE_PATH_NODES_PER_RECORD =
+  CURRENT_ZKVM_SEMANTIC_CONTRACT.workBounds.merklePathNodesPerRecordMax;
 
 const FIXED_INPUT_BYTES = 16 + 32 + 4 + 32 + 8 + 4 + 32;
 const VOTE_FIXED_BYTES = 32 + 1 + 32 + 4;

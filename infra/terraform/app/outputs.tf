@@ -257,7 +257,7 @@ output "image_signature_preflight" {
   description = "Non-secret verifier coordinates available immediately after the isolated preflight apply."
   value = {
     function_arn       = aws_lambda_function.image_signature_verifier.arn
-    function_version   = aws_lambda_function.image_signature_verifier.version
+    function_version   = local.image_signature_verifier_alias_function_version
     architecture       = one(aws_lambda_function.image_signature_verifier.architectures)
     runtime            = aws_lambda_function.image_signature_verifier.runtime
     timeout_seconds    = aws_lambda_function.image_signature_verifier.timeout

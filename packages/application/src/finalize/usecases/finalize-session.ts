@@ -10,10 +10,8 @@ import type { ProofBundleService } from '@stark-ballot/application/finalize/proo
 import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
 import type { ZkVMExecutor } from '@stark-ballot/application/finalize/zkvm-executor';
 import { BOT_COUNT } from '@stark-ballot/domain/shared/constants';
-import {
-  ApplicationErrorCode,
-  type FinalizationScenarioContext,
-} from '@stark-ballot/application/finalize/finalization-types';
+import { ApplicationErrorCode } from '@stark-ballot/application';
+import { type FinalizationScenarioContext } from '@stark-ballot/application/finalize/finalization-types';
 import type { VerificationResultStore } from '@stark-ballot/application/finalize/finalization-result-store';
 import { buildZkVMInputFromSession, CtProofUnavailableError } from '@stark-ballot/application/zkvm-input/input-builder';
 import { applyFinalizeScenarios } from '@stark-ballot/domain/finalize/scenario-application';
@@ -23,9 +21,10 @@ import { finalizeSync } from './finalize-sync';
 import { generateFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type { FinalizeScenarioContext, FinalizeSessionError, FinalizeSessionOutcome, Result } from './types';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 
 interface FinalizeSessionInputBase {
-  sessionId: string;
+  sessionId: SessionId;
   identity: SessionIdentityRecord;
   voting: SessionVotingRecord;
   currentFinalization: FinalizationRecord | null;

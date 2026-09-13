@@ -29,8 +29,7 @@ const validVerificationReport = {
   expected_image_id: `0x${'12'.repeat(32)}`,
   receipt_image_id: `0x${'12'.repeat(32)}`,
   dev_mode_receipt: false,
-  errors: [],
-};
+} as const;
 
 function buildChecks(
   overrides: Partial<Record<VerificationCheckId, VerificationCheck['status']>> = {},
@@ -39,17 +38,18 @@ function buildChecks(
     id: definition.id,
     status: overrides[definition.id] ?? 'success',
     evidence: definition.evidence,
-    inputs: definition.inputs,
+    inputs: [...definition.inputs],
     ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
   }));
 }
 
-function verificationResult(overrides: Partial<VerificationResult> = {}): VerificationResult {
-  return {
+function verificationResult(
+  result: VerificationResult = {
     status: 'success',
     report: validVerificationReport,
-    ...overrides,
-  };
+  },
+): VerificationResult {
+  return result;
 }
 
 describe('verification observability', () => {
@@ -173,7 +173,6 @@ describe('verification observability', () => {
       persistedScenarios: ['S0'],
       verificationResult: verificationResult({
         status: 'failed',
-        failureCategory: 'none',
         report: {
           ...validVerificationReport,
           status: 'failed',

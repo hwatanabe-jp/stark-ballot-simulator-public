@@ -36,7 +36,18 @@ jobs:
         run: pnpm lint
 
       - name: Type check
-        run: pnpm type-check
+        run: pnpm type-system:verify
+
+      - name: Compare reviewed public API contract
+        env:
+          CI: 'true'
+        run: pnpm api-contract:baseline:compare
+
+      - name: Check generated OpenAPI reference
+        run: pnpm api-contract:openapi:check
+
+      - name: Check catalog and TechDocs inputs
+        run: pnpm catalog:check
 
       - name: Public Vitest subset
         env:
@@ -45,3 +56,6 @@ jobs:
 
       - name: Build Vite static frontend
         run: pnpm build:ci
+
+      - name: Build Storybook component previews
+        run: pnpm storybook:build

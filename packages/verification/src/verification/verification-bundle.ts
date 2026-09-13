@@ -11,9 +11,13 @@ import {
   resolveElectionConfigForManifest,
   type ElectionManifest,
 } from '@stark-ballot/verification/public-audit-artifacts';
-import { createIncludedBitmapArtifact } from '@stark-ballot/verification/included-bitmap-artifact';
-import { createSeenBitmapArtifact } from '@stark-ballot/verification/seen-bitmap-artifact';
-import { getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import {
+  createIncludedBitmapArtifact,
+  createSeenBitmapArtifact,
+  type IncludedBitmapArtifact,
+  type SeenBitmapArtifact,
+} from '@stark-ballot/zkvm-contract/zkvm/bitmap-artifacts';
+import { getStringProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
 import {
   buildSupportedPublicInputArtifactFromZkvmInput,
   buildPublicInputArtifactFromZkvmInput,
@@ -33,8 +37,32 @@ export interface VerificationBundleArtifactContext {
   };
 }
 
+export interface VerificationBundleArtifactMap {
+  'input.json': ReturnType<typeof serializeZkvmAggregatorInput> & {
+    election_config: {
+      totalExpected: number;
+      choices: string[];
+      version: string;
+      botCount: number;
+      merkleTreeDepth: number;
+    };
+  };
+  'public-input.json': ReturnType<typeof buildPublicInputArtifactFromZkvmInput>;
+  'election-manifest.json': ElectionManifest;
+  'close-statement.json': ReturnType<typeof buildCloseStatement>;
+  'journal.json': ReturnType<typeof toPublicZkvmJournal>;
+  'receipt.json': unknown;
+  'metadata.json': {
+    sessionId: string;
+    createdAt: string;
+    methodVersion: number;
+  };
+  'included-bitmap.json'?: IncludedBitmapArtifact;
+  'seen-bitmap.json'?: SeenBitmapArtifact;
+}
+
 export interface VerificationBundleArtifacts {
-  artifacts: Record<string, unknown>;
+  artifacts: VerificationBundleArtifactMap;
 }
 
 export function buildVerificationBundleArtifacts(
@@ -57,7 +85,6 @@ export function buildVerificationBundleArtifacts(
   const publicInputArtifact = buildSupportedPublicInputArtifactFromZkvmInput(
     context.zkvmInput,
     context.zkvmResult.methodVersion,
-    { source: 'generated' },
   );
 
   const electionManifest =
@@ -94,7 +121,7 @@ export function buildVerificationBundleArtifacts(
   }
 
   const receiptPayload = resolveReceiptPayload(context);
-  const artifacts: Record<string, unknown> = {
+  const artifacts: VerificationBundleArtifactMap = {
     'input.json': privateInputPayload,
     'public-input.json': publicInput,
     'election-manifest.json': electionManifest,
@@ -161,7 +188,10 @@ function injectImageIdentifiers(
   payload: Record<string, unknown>,
   imageId: string | undefined,
 ): Record<string, unknown> {
-  const cloned = JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
+  const cloned: unknown = JSON.parse(JSON.stringify(payload));
+  if (!isRecord(cloned)) {
+    throw new Error('Receipt payload JSON clone is not an object');
+  }
 
   if (imageId) {
     if (typeof cloned['image_id'] !== 'string') {
@@ -171,8 +201,8 @@ function injectImageIdentifiers(
       cloned['imageId'] = imageId;
     }
 
-    if (cloned['receipt'] && typeof cloned['receipt'] === 'object') {
-      const receipt = cloned['receipt'] as Record<string, unknown>;
+    const receipt = cloned['receipt'];
+    if (isRecord(receipt)) {
       if (typeof receipt['image_id'] !== 'string') {
         receipt['image_id'] = imageId;
       }

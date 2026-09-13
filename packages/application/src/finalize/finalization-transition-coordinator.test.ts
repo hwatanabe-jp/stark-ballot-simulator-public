@@ -11,9 +11,12 @@ import type {
   FinalizationTransitionCommand,
 } from '@stark-ballot/application/finalize/finalization-transition-policy';
 import { coordinateFinalizationTransition } from '@stark-ballot/application/finalize/finalization-transition-coordinator';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
 
-const SESSION_ID = 'session-transition-coordinator';
-const FINALIZATION_ID = 'exec-transition-coordinator';
+const SESSION_ID = asSessionId('session-transition-coordinator');
+const FINALIZATION_ID = asFinalizationId('exec-transition-coordinator');
 const EVALUATED_AT_MS = 1_750_000_000_000;
 const SCENARIO_CONTEXT = {
   scenarios: [],
@@ -65,17 +68,22 @@ function createQueueCommand(
 }
 
 class ScriptedFinalizationPersistence implements FinalizationLifecyclePersistencePort {
-  readonly loadCalls: Array<{ sessionId: string; finalizationId: string }> = [];
+  readonly loadCalls: Array<{ sessionId: SessionId; finalizationId: FinalizationId }> = [];
   readonly applyCalls: Array<
     Parameters<FinalizationLifecyclePersistencePort['applyFinalizationLifecycleMutation']>[0]
   > = [];
+  private readonly loads: FinalizationLifecycleLoadResult[];
+  private readonly applies: FinalizationLifecycleApplyResult[];
 
-  constructor(
-    private readonly loads: FinalizationLifecycleLoadResult[],
-    private readonly applies: FinalizationLifecycleApplyResult[] = [],
-  ) {}
+  constructor(loads: FinalizationLifecycleLoadResult[], applies: FinalizationLifecycleApplyResult[] = []) {
+    this.loads = loads;
+    this.applies = applies;
+  }
 
-  loadFinalizationLifecycle(sessionId: string, finalizationId: string): Promise<FinalizationLifecycleLoadResult> {
+  loadFinalizationLifecycle(
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
+  ): Promise<FinalizationLifecycleLoadResult> {
     this.loadCalls.push({ sessionId, finalizationId });
     const result = this.loads.shift();
     if (!result) {
@@ -158,7 +166,7 @@ describe('coordinateFinalizationTransition', () => {
   });
 
   it('returns semantic rejection and invalid admission without writing', async () => {
-    const current = pendingRecord('exec-current');
+    const current = pendingRecord(asFinalizationId('exec-current'));
     const rejectedLifecycle = createLoadedLifecycle('revision-rejected', createAuthority(current));
     const rejectedPersistence = new ScriptedFinalizationPersistence([
       { status: 'loaded', lifecycle: rejectedLifecycle },
@@ -180,7 +188,7 @@ describe('coordinateFinalizationTransition', () => {
     const invalidPersistence = new ScriptedFinalizationPersistence([{ status: 'loaded', lifecycle: invalidLifecycle }]);
     await expect(
       coordinateFinalizationTransition({
-        command: createQueueCommand({ finalizationId: '../unsafe' }),
+        command: createQueueCommand({ finalizationId: '../unsafe' as FinalizationId }),
         evaluatedAtMs: EVALUATED_AT_MS,
         persistence: invalidPersistence,
       }),

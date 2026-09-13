@@ -7,15 +7,19 @@
 ### Spec files
 
 - `voting-flow.spec.ts`
-  S0-S5 の投票→集計→検証フローを確認します。`@smoke` は現在 S0 と S2 です。S0 では正常系の verify 完走を、S2 では claimed tally tamper 時に `counted_tally_consistent=failed` かつ `stark_receipt_verify=success` / `stark_verification=success` になることを確認します。
+  S0-S5 の投票→集計→検証フローを確認します。`@smoke` は現在 S0 と S2 です。mock S0 では正常系の verify が `demo_only` で完了することを、S2 では claimed tally tamper 時に `counted_tally_consistent=failed` かつ `stark_receipt_verify=success` / `stark_verification=success` になることを確認します。
 - `a11y.spec.ts`
   `@axe` タグ付きのアクセシビリティ smoke です。対象は `/vote`, `/aggregate`, `/privacy`, `/terms` です。
 - `legal-pages.spec.ts`
   `/privacy` と `/terms` の UI 表示・導線・言語切替を確認します。
+- `knowledge-panel.spec.ts`
+  解説グループの開閉、キーボードフォーカス、狭幅への変更後も開閉状態が保たれることを確認します。通常時と動きを減らす設定の両方で、登場・開閉アニメーションがないことを検証します。
+- `voting-performance.spec.ts`
+  `@benchmark` タグ付きの性能測定です。通常の suite から除外し、`pnpm test:e2e:benchmark` で明示実行します。
 
 ### Page objects
 
-- `BasePage`: 共通の page/localStorage helper
+- `BasePage`: 共通の page navigation helper
 - `HomePage`: ホーム画面の開始導線
 - `VotePage`: 投票選択と Bot 投票待機
 - `AggregatePage`: シナリオ選択と finalize 実行
@@ -29,17 +33,23 @@
 mock proof を E2E evidence として扱います。
 
 ```bash
-# 全 Playwright suite（@axe を含む）
+# 通常の全 Playwright suite（@axe を含む、benchmark を除く）
 pnpm test:e2e
 
 # Mock zkVM 用の通常 E2E（@axe は除外）
 pnpm test:e2e:mock
 
-# CI と同じ smoke 実行
+# CI と同じ全 mock 実行（S0-S5 を含む）
+CI=true pnpm test:e2e:mock
+
+# ローカルの短い smoke 実行（S0 と S2）
 pnpm test:e2e:mock --grep @smoke --reporter=list
 
 # axe smoke のみ
 pnpm test:e2e:axe
+
+# 性能測定のみ（固定の時間閾値を評価）
+pnpm test:e2e:benchmark
 
 # デバッグ系
 pnpm test:e2e:ui
@@ -61,23 +71,29 @@ pnpm test:cli:real-prod:s0
 ## CI の現状
 
 - 公開 snapshot の自動実行は `.github/workflows/public-ui-mock-e2e.yml` です。
-- ここで `pnpm test:e2e:axe` と `pnpm test:e2e:mock --grep @smoke --reporter=list` を実行します。
-- `pnpm test:e2e:axe` は現在 `/vote`, `/aggregate`, `/privacy`, `/terms` の high-impact (`serious` / `critical`) axe violation を確認する smoke です。
-- この smoke セットは現在 S0 と S2 で、正常系と「proof は正しいが claimed tally は壊れている」系の両方をカバーします。
-- 手動再実行は repository CI の `playwright-mock` job を `workflow_dispatch`
-  で起動します。
+- `pnpm test:e2e` で mock S0-S5・legal pages・Axe smoke を一括実行します。benchmark は通常実行から除外します。
+- 一つの job で container・依存 install・mock frontend build・test server を共有します。
+- HTML / JSON / console report と失敗時の trace を保存します。
 
 ## Playwright harness と mock runtime
 
 - active project は `chromium` のみです。
 - `workers` は `1` 固定です。`fullyParallel: true` は定義されていますが、現行設定では実質直列実行です。
 - failure 時は Playwright 標準の screenshot / video が残ります。trace は `trace: 'on-first-retry'` のため、retry が走ったケースで残ります。
+- server は Playwright の `webServer` が専用ポート `3100` で起動・終了し、既存 server は再利用しません。`pnpm dev` のポート `3000` と分離しています。
+- 画面の準備完了は URL と対象要素の表示・操作可能状態で待機します。
+- benchmark command は `PLAYWRIGHT_BENCHMARK=1` で専用 spec を有効化し、`@benchmark` のみ選択します。測定値を JSON attachment として保存します。
 
 mock command の `webServer.command` は `scripts/start-test-server.sh` を実行します。
-この script は `pnpm run build:local-mock` で frontend を production build し、その後
+この script は通常 `pnpm run build:local-mock` で frontend を production build し、その後
 `pnpm tsx scripts/dev/static-hono-server.ts` で local Hono API と static frontend を
 直接起動します。server 起動は `pnpm start` を経由しないため、developer の
 `.env.local` を dotenv で server process に読み込みません。
+
+`SKIP_VITE_BUILD=1` かつ `dist/index.html` が存在する場合は既存 build を再利用します。
+ファイルがなければ build します。再利用時に script が確認するのはファイルの存在だけなので、
+実行者が今回の source と `VITE_RUNTIME_PROFILE=static-mock-e2e` に対応する build であることを
+確認してください。
 
 script は server と browser の selector をそれぞれ
 `RUNTIME_PROFILE=static-mock-e2e` / `VITE_RUNTIME_PROFILE=static-mock-e2e` に固定します。
@@ -94,7 +110,7 @@ test-only の Turnstile bypass を含みません。
 
 - `NODE_ENV=production` を固定
 - `EXPECTED_IMAGE_ID_VARIANT=x86_64` を必要時に補完
-- `VERIFIER_PUBLIC_BASE_URL=http://localhost:3000` を既定化
+- `VERIFIER_PUBLIC_BASE_URL` は server の `PORT` に合わせて既定化（Playwright は `http://localhost:3100` を指定）
 - `VITE_STH_SOURCES=/api/sessions/:sessionId/bulletin/sth,/api/sessions/:sessionId/bulletin/sth?auditorId=b`
   を既定化
 - `LOG_LEVEL=error` を必要時に補完
@@ -119,7 +135,7 @@ expect(tallySum).toBe(totalVotes);
 
 このため、mock 環境では選択肢ごとの固定分布ではなく、総数と verify check の整合性を見ます。
 
-さらに smoke では verify 画面の `data-status` を読み、S0 / S2 ともに tally・missing indices・manifest・close statement・STH・receipt・step status の主要 check を確認します。S2 では特に `counted_tally_consistent=failed` と `stark_verification=success` を確認し、「proof は正しいが claimed tally は壊れている」状態を固定します。
+さらに smoke では verify 画面の `data-status` を読み、S0 / S2 ともに tally・missing indices・manifest・close statement・STH・receipt・step status の主要 check を確認します。S2 では特に `counted_tally_consistent=failed` と `stark_receipt_verify=success`／`stark_verification=success` を確認し、mock receipt の検証状態が成功でも claimed tally の不整合を検出することを確かめます。S0 の summary は `demo_only` です。これらの mock status を production STARK proof の正しさの証拠として扱いません。
 
 ## `data-testid` の使い方
 
@@ -174,5 +190,3 @@ page.locator('text=/Tamper.*YES|Tamper.*NO|改ざん.*あり|改ざん.*なし/i
 - JSON report: `test-results/results.json`
 - manual failure screenshot (`voting-flow.spec.ts`): `test-results/failure-*.png`
 - trace / video / Playwright attachments: `test-results/` 配下
-
-`test-results/screenshots/` は `BasePage.takeScreenshot()` を明示的に呼んだときだけ使われます。現行 spec の標準フローでは常用していません。

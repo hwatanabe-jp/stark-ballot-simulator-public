@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { parseSessionIdentityRecord, type SessionIdentityRecord } from './sessionRecords';
+import { asSessionId } from './identifiers';
 
 const identity: SessionIdentityRecord = {
-  sessionId: '00000000-0000-4000-8000-000000000010',
+  sessionId: asSessionId('00000000-0000-4000-8000-000000000010'),
   electionId: '00000000-0000-4000-8000-000000000020',
   electionConfigHash: `0x${'cd'.repeat(32)}`,
   electionConfig: {

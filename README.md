@@ -10,6 +10,9 @@ verification semantics, and implementation notes live in the Public Specs and th
 - Live demo: <https://stark-ballot-sim.hwatanabe.dev/>
 - Public specs: <https://specs.stark-ballot-sim.hwatanabe.dev/>
 - Public repository: <https://github.com/hwatanabe-jp/stark-ballot-simulator-public>
+- Developer-portal catalog: [`catalog-info.yaml`](./catalog-info.yaml)
+- Generated OpenAPI reference: [`openapi/stark-ballot-api.openapi.json`](./openapi/stark-ballot-api.openapi.json)
+- Guest-safe TechDocs source: [`techdocs/docs/index.md`](./techdocs/docs/index.md)
 - Security policy: [`SECURITY.md`](./SECURITY.md)
 - License: [`Apache-2.0`](./LICENSE)
 - Public snapshot notes: generated as `docs/PUBLIC_REPOSITORY.md` during public export
@@ -66,6 +69,15 @@ For a short review pass:
 The core product invariant is simple: the UI must never show "Verified" unless all required
 cryptographic and consistency checks pass.
 
+Three design choices make useful starting points for a code review:
+
+- [Verified requires complete evidence](./public-book/src/verification/gating-logic.md): a valid STARK
+  receipt alone cannot establish that every required ballot and consistency check passed.
+- [Public bundles exclude private evidence](./public-book/src/verification/public-boundary.md): the
+  archive boundary takes precedence over reproducing every UI check from the ZIP alone.
+- [Asynchronous finalization has guarded transitions](./public-book/src/aws/async-prover.md): stale or
+  cancelled work must be rejected before starting a prover task.
+
 ## Verification and Bundles
 
 Verification covers cast-as-intended receipts, recorded-as-cast bulletin-board evidence,
@@ -91,7 +103,8 @@ verification paths and must not be counted as production STARK proofs.
 - **Session persistence:** lifecycle-owned identity, voting, finalization, verification-observation, and adapter-metadata records rather than one optional-field session aggregate
 - **Formal scope:** Lean 4 models for selected summary, count, bitmap, input-commitment, and guest-model contracts
 - **AWS path:** Terraform-managed static frontend, Hono/API, DynamoDB store, and async prover infrastructure
-- **Public docs:** mdBook in `public-book/`, published as the Public Specs
+- **Public docs:** normative mdBook chapters in `public-book/` plus a thin,
+  guest-safe TechDocs overview in `techdocs/`
 
 ## Local Quick Start
 
@@ -173,8 +186,10 @@ before adapters are created. The supported local profiles are:
 
 Target runtime definitions use `target-aws-async` for production-proof,
 DynamoDB/S3/queue-backed execution. A develop-only
-`target-aws-async-quiesced` server profile keeps existing asynchronous work
-available while rejecting new public sessions; it is not a browser profile.
+`target-aws-async-quiesced` server profile rejects new public sessions during
+recovery, and Terraform pauses both prover and verification queue consumers.
+Existing session access remains available. The quiesced profile is not a browser
+profile.
 Target definitions and deployment remain separately reviewed and authorized.
 
 These profiles are not interchangeable evidence labels: mock and development
@@ -192,18 +207,51 @@ Use the narrowest check that proves the change. For reviewer smoke tests, start 
 | Full Vitest suite         | `pnpm test:run`                                    |
 | CLI mock voting flow      | `pnpm test:cli:mock`                               |
 | Static frontend build     | `pnpm build:ci`                                    |
+| Component previews        | `pnpm storybook`                                   |
+| Static component previews | `pnpm storybook:build`                             |
 | Mock E2E smoke            | `pnpm test:e2e:mock --grep @smoke --reporter=list` |
 | Accessibility smoke       | `pnpm test:e2e:axe`                                |
 | Public safety scan        | `pnpm public-safety:scan`                          |
+| OpenAPI freshness         | `pnpm api-contract:openapi:check`                  |
+| Catalog and TechDocs      | `pnpm catalog:check`                               |
 | Public Specs build        | `pnpm docs:book:build`                             |
 | Lean formal/vector gate   | `pnpm formal:verify`                               |
+| Type-system verification  | `pnpm type-system:verify`                          |
 | Broad TypeScript/UI gate  | `pnpm ci:verify`                                   |
 
 Notes:
 
 - `pnpm build:ci` checks the Vite static frontend, browser import boundary, and generated `dist/` artifact scan. It is the reusable/deployable artifact path and rejects browser mock API or Turnstile bypass flags.
+- Storybook opens at `http://localhost:6006`; its build writes to `.tmp/storybook-static`, separately from `dist/`. See the [component review guide](./docs/ui/design-spec-transparent-trust.md#component-review-with-storybook) for story placement and test ownership.
 - Mock Playwright uses a production-mode Vite static frontend plus local Hono API test server, not the same runtime path as `pnpm dev`.
 - `pnpm formal:verify` requires the pinned Lean toolchain under `formal/`.
+
+The workspace uses pnpm 12, TypeScript 7, Oxlint, Oxfmt, and Vitest 5. pnpm schedules source-based
+workspace checks without waiting for dependency packages' checks, with bounded
+concurrency to control compiler memory and avoid overlapping Vitest pools.
+Preview a task graph with `pnpm --recursive run --dry-run type-check`.
+
+For fast local feedback, use `pnpm test:changed` or a workspace's `test` task.
+`pnpm test:profile --project @stark-ballot/verification` reports import costs.
+Vitest projects share one Vite server and reuse disk-cached transforms while
+keeping test files isolated. The complete repository gate remains
+`pnpm test:run`; selection and cache details are in the
+[test harness guide](./scripts/tests/README.md).
+
+Vitest tests live beside the code or contract they verify as `*.test.ts` or
+`*.test.tsx`; local shared helpers and fixtures live in `test-support/`.
+Browser E2E tests remain under `tests/e2e/` as `*.spec.ts`, and
+`*.type-test.ts` files are checked by TypeScript. See the
+[test placement convention](./scripts/tests/README.md#test-placement) for
+support-file boundaries and explicit test gates. Tooling tests compare current
+source files with compiler and runner discovery; no saved test-file list needs
+updating when tests are added, removed, or moved.
+
+Review dependency updates with `pnpm dependencies:outdated` and peer compatibility
+with `pnpm dependencies:peers`. When updating Actions, run
+`pnpm dependencies:actions:update` to refresh workflow and local composite-action
+SHA pins through pnpm. Registry package updates still respect the workspace's
+24-hour release-age and supply-chain policies.
 
 ## Optional: Real zkVM Checks
 

@@ -41,6 +41,7 @@ import {
   type VoteChoiceByte,
   type VoteCount,
   type VoteWithProof,
+  type VerifiedTally,
   type ZkVMInput,
 } from './types';
 import { assertZkvmWireNumericPreflight } from './wire-numeric-preflight';
@@ -71,7 +72,7 @@ export interface ValidatedCurrentZkVMJournal extends CurrentZkVMJournal {
   treeSize: TreeSize;
   totalExpected: TotalExpected;
   sthDigest: SthDigest;
-  verifiedTally: VoteCount[];
+  verifiedTally: VerifiedTally<VoteCount>;
   totalVotes: VoteCount;
   validVotes: VoteCount;
   invalidVotes: VoteCount;
@@ -117,7 +118,13 @@ export function toValidatedCurrentZkVMJournal(journal: CurrentZkVMJournal): Vali
     treeSize: asTreeSize(journal.treeSize),
     totalExpected: asTotalExpected(journal.totalExpected),
     sthDigest: asSthDigest(journal.sthDigest),
-    verifiedTally: journal.verifiedTally.map(asVoteCount),
+    verifiedTally: [
+      asVoteCount(journal.verifiedTally[0]),
+      asVoteCount(journal.verifiedTally[1]),
+      asVoteCount(journal.verifiedTally[2]),
+      asVoteCount(journal.verifiedTally[3]),
+      asVoteCount(journal.verifiedTally[4]),
+    ],
     totalVotes: asVoteCount(journal.totalVotes),
     validVotes: asVoteCount(journal.validVotes),
     invalidVotes: asVoteCount(journal.invalidVotes),

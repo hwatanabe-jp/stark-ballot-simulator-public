@@ -10,7 +10,7 @@ import {
   isCapabilityLossErrorCode,
   isFailClosedFinalizationErrorCode,
 } from '@stark-ballot/api-contract/errors/apiErrorGuards';
-import type { VerificationStatus } from '@stark-ballot/verification/shared/types';
+import { VERIFICATION_STATUS_VALUES, type VerificationStatus } from '@stark-ballot/verification/shared/types';
 
 import { isBrowserTestMode } from '@stark-ballot/runtime-config/env/browserRuntime';
 import type { VerificationResource } from '@stark-ballot/api-contract/schemas/verification';
@@ -19,8 +19,7 @@ import { readStandardApiErrorCode, readStandardApiErrorMessage } from '@stark-ba
 export const STARK_POLL_INTERVAL_MS = isBrowserTestMode() ? 50 : 500;
 export const STARK_POLL_TIMEOUT_MS = isBrowserTestMode() ? 500 : 30_000;
 
-const ALLOWED_STATUSES: VerificationStatus[] = ['success', 'failed', 'dev_mode', 'not_run', 'running'];
-const ALLOWED_STATUS_SET = new Set<VerificationStatus>(ALLOWED_STATUSES);
+const ALLOWED_STATUS_SET = new Set<VerificationStatus>(VERIFICATION_STATUS_VALUES);
 
 export type StarkVerificationSnapshot = {
   sessionId: string;

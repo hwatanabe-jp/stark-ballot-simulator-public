@@ -1,7 +1,6 @@
 'use client';
 
-import { useEffect, useCallback, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import { useEffect, useCallback, useMemo, useRef } from 'react';
 import { Header } from '@stark-ballot/web/components/layout/Header';
 import { Footer } from '@stark-ballot/web/components/layout/Footer';
 import {
@@ -13,7 +12,7 @@ import {
 } from '@stark-ballot/web/components/knowledge';
 import { KNOWLEDGE_GROUPS, type KnowledgeGroupDefinition } from '@stark-ballot/web/components/knowledge/KnowledgeGroup';
 import { StepIndicatorHorizontal } from '@stark-ballot/web/components/step';
-import { useLanguage, useMediaQuery, useDockingPanel } from '@stark-ballot/web/hooks';
+import { useLanguage } from '@stark-ballot/web/hooks';
 import {
   clearKnowledge,
   type KnowledgeData,
@@ -22,34 +21,7 @@ import {
 } from '@stark-ballot/web/knowledge';
 import { clearSession } from '@stark-ballot/web/session';
 import { useAppPathname, useAppRouter } from '@stark-ballot/web/navigation/appNavigation';
-
-/**
- * LayoutProvider - 「透明な信頼」デザインシステム
- *
- * グローバルレイアウト:
- * - Header: sticky、ロゴ、言語切替、やり直しボタン
- * - Step Indicator: 横型ステップナビ（sticky）
- * - Main: コンテンツエリア（max-w-2xl / /verify は max-w-4xl）
- * - KnowledgePanel: ドッキング浮遊パネル
- *   - デスクトップ: 画面下部に浮遊、スクロールでドッキング
- *   - モバイル: ボトムシート（従来動作）
- * - Footer: 著作権、利用規約、プライバシーポリシー、GitHub
- *
- * レスポンシブ:
- * - モバイル/デスクトップ共通でシングルカラム
- * - 640px以上: ドッキング浮遊パネル
- * - 640px未満: ボトムシート
- */
-
-const cn = (...classes: Array<string | false | undefined>): string => {
-  return classes.filter(Boolean).join(' ');
-};
-
-const FOOTER_HEIGHT_FALLBACK_PX = 72;
-const FLOATING_PANEL_OFFSET_PADDING_PX = 16;
-const FLOATING_PANEL_BOTTOM_GAP_PX = FOOTER_HEIGHT_FALLBACK_PX + FLOATING_PANEL_OFFSET_PADDING_PX;
-// Keep in sync with BOTTOM_SHEET_MIN_HEIGHT in KnowledgePanel.
-const MOBILE_BOTTOM_SHEET_SPACER_PX = 60;
+import './LayoutProvider.css';
 
 const ROUTE_GROUPS: Partial<Record<string, Array<KnowledgeGroupDefinition['id']>>> = {
   '/vote': ['session', 'vote'],
@@ -75,20 +47,8 @@ function LayoutShell({ children }: { children: React.ReactNode }): React.ReactEl
   const { language } = useLanguage();
   const router = useAppRouter();
   const pathname = useAppPathname();
-  const isMobile = useMediaQuery('(max-width: 639px)');
   const { activeTab, setActiveTab } = useVerificationTab();
-  const [floatingScrollTop, setFloatingScrollTop] = useState(0);
-  const [floatingExpandedGroups, setFloatingExpandedGroups] = useState<Array<KnowledgeGroupDefinition['id']>>([]);
   const prevPathRef = useRef<string | null>(null);
-
-  // ドッキング浮遊パネル: デスクトップのみ有効
-  const floatingBottomOffsetPx = FLOATING_PANEL_BOTTOM_GAP_PX;
-  const dockingOffsetPx = floatingBottomOffsetPx;
-  const { isDocked, dockZoneRef, panelRef, isFloating, floatingPanelHeight } = useDockingPanel({
-    enabled: !isMobile,
-    offsetPx: dockingOffsetPx,
-    minDockScrollPx: dockingOffsetPx,
-  });
 
   // Update html lang attribute
   useEffect(() => {
@@ -133,122 +93,20 @@ function LayoutShell({ children }: { children: React.ReactNode }): React.ReactEl
     pathname.startsWith('/privacy/') ||
     pathname === '/terms' ||
     pathname.startsWith('/terms/');
-  const contentWidthClass = isVerifyRoute
-    ? 'max-w-4xl'
-    : isLegalRoute
-      ? 'max-w-3xl'
-      : isHomeRoute
-        ? 'max-w-none'
-        : 'max-w-2xl';
-  const homeBackgroundClass = isHomeRoute ? 'bg-paper-texture' : undefined;
-  const homeLayoutClass = isHomeRoute ? 'flex items-center justify-center' : undefined;
+  const layoutPage = isHomeRoute ? 'home' : isVerifyRoute ? 'verify' : isLegalRoute ? 'legal' : 'flow';
   const showKnowledgePanel = pathname !== '/' && !isLegalRoute;
-  const showStepIndicator = !isLegalRoute;
+  const showStepIndicator = !isHomeRoute && !isLegalRoute;
   const visibleKeys = useMemo(() => getVisibleKeys(pathname, activeTab), [pathname, activeTab]);
-  const floatingSpacerHeight = floatingPanelHeight > 0 ? floatingPanelHeight + floatingBottomOffsetPx : 0;
-  const dockedSpacerHeight = floatingBottomOffsetPx;
-  const spacerHeight = isFloating ? floatingSpacerHeight : isDocked ? dockedSpacerHeight : 0;
 
   return (
-    <div className="flex flex-col min-h-screen bg-paper-warm">
-      {/* Header */}
+    <div className="app-layout" data-layout-page={layoutPage}>
       <Header onReset={handleReset} showReset={!isLegalRoute} />
-
-      {/* Step indicator */}
       {showStepIndicator && <StepIndicatorHorizontal language={language} onReset={handleReset} />}
-
-      {/* Main content */}
-      <main
-        className={cn(
-          'flex-1 w-full',
-          contentWidthClass,
-          'mx-auto px-4 py-8 lg:px-8',
-          homeBackgroundClass,
-          homeLayoutClass,
-          isMobile && 'pbe-24',
-        )}
-      >
+      <main className="app-layout__main">
         {children}
-
-        {/* モバイル: 従来のボトムシート表示 */}
-        {showKnowledgePanel && isMobile && <KnowledgePanel filterKeys={visibleKeys} variant="bottomSheet" />}
-
-        {/* デスクトップ: メイン終端のドッキング判定用センチネル */}
-        {showKnowledgePanel && !isMobile && (
-          <div
-            ref={dockZoneRef}
-            aria-hidden="true"
-            data-testid="knowledge-dock-sentinel"
-            className="h-px w-full pointer-events-none"
-          />
-        )}
-
-        {/* デスクトップ: ドックゾーン（ドッキング時のパネル配置場所） */}
-        {showKnowledgePanel && !isMobile && (
-          <div className="mt-8">
-            {isDocked && (
-              <KnowledgePanel
-                className="knowledge-docked"
-                filterKeys={visibleKeys}
-                variant="floating"
-                dockState="docked"
-                defaultExpandedGroups={floatingExpandedGroups}
-              />
-            )}
-          </div>
-        )}
-
-        {/* デスクトップ: スクロール余白（浮遊時はパネル分、ドッキング時は下端余白分） */}
-        {showKnowledgePanel && !isMobile && spacerHeight > 0 && (
-          <div
-            aria-hidden="true"
-            data-testid="knowledge-panel-spacer"
-            className="pointer-events-none"
-            style={{ height: `${spacerHeight}px` }}
-          />
-        )}
+        {showKnowledgePanel && <KnowledgePanel className="app-layout__knowledge" filterKeys={visibleKeys} />}
       </main>
-
-      {/* デスクトップ: 浮遊パネル（画面下部に固定） */}
-      {showKnowledgePanel && !isMobile && isFloating && (
-        <div
-          ref={panelRef}
-          className={cn(
-            'knowledge-floating-container',
-            'fixed inset-x-0 z-30',
-            'flex justify-center',
-            'pointer-events-none',
-          )}
-          style={
-            {
-              '--knowledge-floating-offset': `${floatingBottomOffsetPx}px`,
-            } as CSSProperties
-          }
-        >
-          <div className={cn('w-full px-4 lg:px-8', contentWidthClass, 'pointer-events-auto')}>
-            <KnowledgePanel
-              className="knowledge-floating"
-              filterKeys={visibleKeys}
-              variant="floating"
-              dockState="floating"
-              floatingScrollTop={floatingScrollTop}
-              onFloatingScrollTopChange={setFloatingScrollTop}
-              onExpandedGroupsChange={setFloatingExpandedGroups}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Footer */}
       <Footer />
-      {showKnowledgePanel && isMobile && (
-        <div
-          aria-hidden="true"
-          data-testid="knowledge-bottom-sheet-spacer"
-          className="pointer-events-none"
-          style={{ height: `calc(${MOBILE_BOTTOM_SHEET_SPACER_PX}px + env(safe-area-inset-bottom, 0px))` }}
-        />
-      )}
     </div>
   );
 }

@@ -1,13 +1,13 @@
 import { render, screen, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ProgressDisplay } from './ProgressDisplay';
-import { t as translate } from '@stark-ballot/web/i18n';
+import { t as translate, type TranslationKey, type TranslationParams } from '@stark-ballot/web/i18n';
 
 // Mock useTranslation hook
 vi.mock('@stark-ballot/web/hooks', () => ({
   useTranslation: () => ({
     language: 'en',
-    t: (key: string, params?: Record<string, string | number>) => translate('en', key, params),
+    t: (key: TranslationKey, params?: TranslationParams) => translate('en', key, params),
   }),
 }));
 
@@ -22,11 +22,13 @@ describe('ProgressDisplay', () => {
   });
 
   describe('basic rendering', () => {
-    it('renders with pending status', () => {
+    it('renders pending status without queue details when queue info is absent', () => {
       render(<ProgressDisplay status="pending" />);
 
       expect(screen.getByText('Waiting in queue...')).toBeInTheDocument();
       expect(screen.getByText('0%')).toBeInTheDocument();
+      expect(screen.queryByText('Queue Position')).not.toBeInTheDocument();
+      expect(screen.queryByText('Typical duration')).not.toBeInTheDocument();
     });
 
     it('renders with running status', () => {
@@ -66,40 +68,9 @@ describe('ProgressDisplay', () => {
       expect(screen.queryByText('Queue Position')).not.toBeInTheDocument();
       expect(screen.queryByText(/position in queue/i)).not.toBeInTheDocument();
     });
-
-    it('does not show queue panel when no queue info', () => {
-      render(<ProgressDisplay status="pending" />);
-
-      expect(screen.queryByText('Queue Position')).not.toBeInTheDocument();
-      expect(screen.queryByText('Typical duration')).not.toBeInTheDocument();
-    });
-
-    it('does not render legacy position or depth even when stale props are supplied', () => {
-      render(
-        <ProgressDisplay
-          status="pending"
-          concurrencyLimit={2}
-          estimatedDurationMs={360000}
-          queuePosition={3}
-          queueDepth={8}
-        />,
-      );
-
-      expect(screen.queryByText('Queue Position')).not.toBeInTheDocument();
-      expect(screen.queryByText('3 / 8')).not.toBeInTheDocument();
-      expect(screen.queryByText(/position in queue/i)).not.toBeInTheDocument();
-    });
   });
 
   describe('running state', () => {
-    it('uses estimated duration for progress interpolation during running state', () => {
-      const startedAt = Date.now() - 30000;
-      render(<ProgressDisplay status="running" startedAt={startedAt} estimatedDurationMs={360000} />);
-
-      expect(screen.getByText('Processing...')).toBeInTheDocument();
-      expect(screen.queryByText('Queue Position')).not.toBeInTheDocument();
-    });
-
     it('does not show queue panel when running', () => {
       const startedAt = Date.now() - 30000;
       render(

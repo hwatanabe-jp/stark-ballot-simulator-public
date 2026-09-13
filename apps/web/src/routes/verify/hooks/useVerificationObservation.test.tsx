@@ -1,5 +1,5 @@
 import { renderHook, waitFor } from '@testing-library/react';
-import type { MutableRefObject } from 'react';
+import type { RefObject } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionIdentity } from '@stark-ballot/web/session';
 import { VERIFICATION_CHECK_DEFINITIONS } from '@stark-ballot/verification/checks';
@@ -45,7 +45,7 @@ function payload(): VerificationPayload {
         id,
         status: 'success',
         evidence: definition.evidence,
-        inputs: definition.inputs,
+        inputs: [...definition.inputs],
       };
     }),
   };
@@ -71,7 +71,7 @@ describe('useVerificationObservation', () => {
         sessionId: 'session-1',
         capabilityToken: 'redacted-capability',
       },
-    } as MutableRefObject<SessionIdentity | null>;
+    } satisfies RefObject<SessionIdentity | null>;
     const data = payload();
     type ObservationProps = {
       sequenceComplete: boolean;
@@ -134,7 +134,7 @@ describe('useVerificationObservation', () => {
         sessionId: 'session-1',
         capabilityToken: 'redacted-capability',
       },
-    } as MutableRefObject<SessionIdentity | null>;
+    } satisfies RefObject<SessionIdentity | null>;
 
     renderHook(() =>
       useVerificationObservation({
@@ -179,7 +179,7 @@ describe('useVerificationObservation', () => {
         sessionId: 'session-1',
         capabilityToken: 'redacted-capability',
       },
-    } as MutableRefObject<SessionIdentity | null>;
+    } satisfies RefObject<SessionIdentity | null>;
     type ObservationProps = { data: VerificationPayload };
     const { rerender } = renderHook<void, ObservationProps>(
       ({ data }) =>

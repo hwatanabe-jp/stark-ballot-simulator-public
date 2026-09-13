@@ -19,7 +19,7 @@ const content = {
   ja: {
     title: 'プライバシーポリシー（STARK Ballot Simulator）',
     effectiveDateLabel: '施行日',
-    effectiveDate: '2026-01-18',
+    effectiveDate: '2026-09-10',
     intro:
       '本ポリシーは、stark-ballot-sim.hwatanabe.dev で提供する「STARK Ballot Simulator」（以下「本サービス」）における情報の取り扱いを説明します。',
     sections: {
@@ -92,6 +92,8 @@ const content = {
           'Cloudflare: 不正アクセス対策（Turnstile）。ウィジェット表示および検証のため、トークン、IPアドレスを含むリクエスト情報がCloudflareに送信される場合があります。',
           'Amazon Web Services (AWS): インフラ基盤。データはAWSのサーバー（東京リージョン）に保存されます。',
         ],
+        turnstileNotice:
+          'Turnstileは画面に表示せず、バックグラウンドで検証を行う場合があります。詳細は次を参照してください。',
         note: '個人情報を第三者に販売することはありません。',
       },
       amendment: {
@@ -103,7 +105,7 @@ const content = {
   en: {
     title: 'Privacy Policy (STARK Ballot Simulator)',
     effectiveDateLabel: 'Effective Date',
-    effectiveDate: '2026-01-18',
+    effectiveDate: '2026-09-10',
     intro:
       'This policy explains how I handle information in "STARK Ballot Simulator" (the "Service") provided at stark-ballot-sim.hwatanabe.dev.',
     sections: {
@@ -179,6 +181,8 @@ const content = {
           'Amazon Web Services (AWS): Infrastructure platform. Data is stored on AWS servers (Tokyo region).',
         ],
         note: 'I do not sell personal information to third parties.',
+        turnstileNotice:
+          'Turnstile may run verification in the background without displaying a widget. For details, see:',
       },
       amendment: {
         title: '6. Amendments',
@@ -241,6 +245,12 @@ export default function PrivacyPolicyPage(): React.ReactElement {
       <LegalSection title={s.thirdParty.title}>
         <p>{s.thirdParty.intro}</p>
         <LegalList items={s.thirdParty.services} />
+        <p className="mt-2">
+          {s.thirdParty.turnstileNotice}{' '}
+          <a href="https://www.cloudflare.com/turnstile-privacy-policy/" target="_blank" rel="noopener noreferrer">
+            Cloudflare Turnstile Privacy Addendum
+          </a>
+        </p>
         <p className="mt-2 text-text-muted">{s.thirdParty.note}</p>
       </LegalSection>
 

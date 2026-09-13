@@ -81,6 +81,19 @@ data "aws_iam_policy_document" "foundation_deploy_permissions_boundary" {
   }
 
   statement {
+    sid    = "FoundationAcceptanceReadGuardrail"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+    ]
+    resources = [
+      local.terraform_foundation_acceptance_pointer_object_arn,
+      local.terraform_foundation_acceptance_object_arn_pattern,
+    ]
+  }
+
+  statement {
     sid    = "FoundationEcrSigningConfigurationGuardrail"
     effect = "Allow"
     actions = [

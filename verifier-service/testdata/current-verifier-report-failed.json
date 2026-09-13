@@ -1,0 +1,12 @@
+{
+  "status": "failed",
+  "verifier_version": "0.1.0",
+  "verified_at": "2026-08-11T09:10:11.123456789Z",
+  "duration_ms": 42,
+  "expected_image_id": "0x98465a16a6776bd5fc35299e06dfea5886f87d2f94aac5fd79353af50caa01f4",
+  "receipt_image_id": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "bundle_path": "bundle.zip",
+  "receipt_path": "receipt.json",
+  "dev_mode_receipt": false,
+  "errors": ["receipt metadata image_id mismatch"]
+}

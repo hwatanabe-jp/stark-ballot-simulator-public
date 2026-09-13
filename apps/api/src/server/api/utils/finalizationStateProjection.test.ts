@@ -4,12 +4,15 @@ import { buildFinalizationResultFromJournal } from '@stark-ballot/application/fi
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import { projectFinalizationResultForPublicResponse } from './finalizationResultProjection';
 import { projectFinalizationResourceForPublicResponse } from './finalizationStateProjection';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+
+const FINALIZATION_ID = asFinalizationId('exec-123');
 
 describe('projectFinalizationResourceForPublicResponse', () => {
   it('removes private provider and callback details from public failed states', () => {
     const state: AwsFinalizationRuntimeState = {
       status: 'failed',
-      finalizationId: 'exec-123',
+      finalizationId: FINALIZATION_ID,
       queuedAtMs: 1730000000000,
       startedAtMs: 1730000001000,
       failedAtMs: 1730000005000,
@@ -34,7 +37,7 @@ describe('projectFinalizationResourceForPublicResponse', () => {
       }),
     ).toEqual({
       status: 'failed',
-      finalizationId: 'exec-123',
+      finalizationId: FINALIZATION_ID,
       queuedAtMs: 1730000000000,
       runtimeDiagnostics: { asyncMode: 'enabled' },
       startedAtMs: 1730000001000,
@@ -49,7 +52,7 @@ describe('projectFinalizationResourceForPublicResponse', () => {
   it('removes private bundle metadata from public succeeded states', () => {
     const state: AwsFinalizationRuntimeState = {
       status: 'succeeded',
-      finalizationId: 'exec-123',
+      finalizationId: FINALIZATION_ID,
       queuedAtMs: 1730000000000,
       startedAtMs: 1730000001000,
       completedAtMs: 1730000005000,

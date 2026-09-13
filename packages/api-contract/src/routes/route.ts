@@ -1,6 +1,6 @@
-import { type Infer, type SchemaShape, type SchemaTypeAny } from '@stark-ballot/validation/schema';
+import { type Infer, type SchemaShape, type AnySchema } from '@stark-ballot/validation/schema';
 
-export type ApiContractMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS';
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS';
 
 export interface AuthenticatedRawBodyPolicy<TLimitPath extends string = string> {
   readonly kind: 'authenticated-raw-body';
@@ -10,31 +10,31 @@ export interface AuthenticatedRawBodyPolicy<TLimitPath extends string = string> 
 
 export type RouteRequestSchemas =
   | {
-      readonly params?: SchemaTypeAny;
-      readonly query?: SchemaTypeAny;
-      readonly headers?: SchemaTypeAny;
+      readonly params?: AnySchema;
+      readonly query?: AnySchema;
+      readonly headers?: AnySchema;
       readonly body?: never;
       readonly emptyBody?: never;
       readonly rawBody?: never;
     }
   | {
-      readonly params?: SchemaTypeAny;
-      readonly query?: SchemaTypeAny;
-      readonly headers?: SchemaTypeAny;
-      readonly body: SchemaTypeAny;
+      readonly params?: AnySchema;
+      readonly query?: AnySchema;
+      readonly headers?: AnySchema;
+      readonly body: AnySchema;
       readonly emptyBody?: 'empty-object';
       readonly rawBody?: never;
     }
   | {
-      readonly params?: SchemaTypeAny;
-      readonly query?: SchemaTypeAny;
-      readonly headers?: SchemaTypeAny;
+      readonly params?: AnySchema;
+      readonly query?: AnySchema;
+      readonly headers?: AnySchema;
       readonly body?: never;
       readonly emptyBody?: never;
       readonly rawBody: AuthenticatedRawBodyPolicy;
     };
 
-export interface JsonRouteResponse<TStatus extends number = number, TSchema extends SchemaTypeAny = SchemaTypeAny> {
+export interface JsonRouteResponse<TStatus extends number = number, TSchema extends AnySchema = AnySchema> {
   readonly status: TStatus;
   readonly content: 'json';
   readonly schema: TSchema;
@@ -62,12 +62,17 @@ export type RouteResponse = JsonRouteResponse | ExemptJsonRouteResponse | Binary
 
 export interface RouteLike {
   readonly routeId: string;
-  readonly method: ApiContractMethod;
+  readonly method: HttpMethod;
   readonly path: string;
   readonly request: RouteRequestSchemas;
   readonly responses: readonly RouteResponse[];
   readonly serializeQuery?: (query: never) => Readonly<Record<string, QueryWireValue>>;
 }
+
+export type OrdinaryJsonRoute = RouteLike & {
+  readonly request: Exclude<RouteRequestSchemas, { readonly rawBody: AuthenticatedRawBodyPolicy }>;
+  readonly responses: readonly JsonRouteResponse[];
+};
 
 type QueryWirePrimitive = string | number | boolean;
 export type QueryWireValue = QueryWirePrimitive | readonly QueryWirePrimitive[] | null | undefined;
@@ -78,20 +83,20 @@ export type RoutePathParameter<TPath extends string> = TPath extends `${infer TH
   ? SegmentParameter<THead> | RoutePathParameter<TTail>
   : SegmentParameter<TPath>;
 
-type ShapeKeys<TSchema extends SchemaTypeAny> = TSchema extends {
+type ShapeKeys<TSchema extends AnySchema> = TSchema extends {
   readonly shape: infer TShape extends SchemaShape;
 }
   ? keyof TShape
   : keyof Infer<TSchema>;
 
 type RequestParamsSchema<TRequest extends RouteRequestSchemas> = TRequest extends {
-  readonly params: infer TSchema extends SchemaTypeAny;
+  readonly params: infer TSchema extends AnySchema;
 }
   ? TSchema
   : never;
 
 type RequestQuerySchema<TRequest extends RouteRequestSchemas> = TRequest extends {
-  readonly query: infer TSchema extends SchemaTypeAny;
+  readonly query: infer TSchema extends AnySchema;
 }
   ? TSchema
   : never;
@@ -105,7 +110,7 @@ type PathParameterDifference<TPath extends string, TRequest extends RouteRequest
 
 interface RouteDefinitionShape {
   readonly routeId: string;
-  readonly method: ApiContractMethod;
+  readonly method: HttpMethod;
   readonly path: string;
   readonly request: RouteRequestSchemas;
   readonly responses: readonly RouteResponse[];
@@ -125,7 +130,8 @@ type QuerySerializerMismatch<TDefinition extends RouteDefinitionShape> = TDefini
   : never;
 
 type RouteDefinitionMismatch<TDefinition extends RouteDefinitionShape> =
-  PathParameterDifference<TDefinition['path'], TDefinition['request']> | QuerySerializerMismatch<TDefinition>;
+  | PathParameterDifference<TDefinition['path'], TDefinition['request']>
+  | QuerySerializerMismatch<TDefinition>;
 
 type RouteDefinitionValidation<TDefinition extends RouteDefinitionShape> =
   RouteDefinitionMismatch<TDefinition> extends never
@@ -145,23 +151,13 @@ export function defineRoute<const TDefinition extends RouteDefinitionShape>(
 }
 
 export function createQuerySerializer<
-  const TSchema extends SchemaTypeAny,
+  const TSchema extends AnySchema,
   const TSerializer extends (query: Infer<TSchema>) => Readonly<Record<string, QueryWireValue>>,
 >(_schema: TSchema, serializer: TSerializer): TSerializer {
   return serializer;
 }
 
-export function authenticatedRawBody<const TLimitPath extends string>(
-  limitPath: TLimitPath,
-): AuthenticatedRawBodyPolicy<TLimitPath> {
-  return {
-    kind: 'authenticated-raw-body',
-    limitPath,
-    authenticateBeforeParse: true,
-  };
-}
-
-export function jsonResponse<const TStatus extends number, const TSchema extends SchemaTypeAny>(
+export function jsonResponse<const TStatus extends number, const TSchema extends AnySchema>(
   status: TStatus,
   schema: TSchema,
 ): JsonRouteResponse<TStatus, TSchema> {
@@ -192,7 +188,7 @@ export function textResponse<const TStatus extends number>(
 type Simplify<TValue> = { [TKey in keyof TValue]: TValue[TKey] };
 
 type InputLocation<TRequest extends RouteRequestSchemas, TLocation extends 'params' | 'query' | 'headers' | 'body'> =
-  TRequest extends Record<TLocation, infer TSchema extends SchemaTypeAny>
+  TRequest extends Record<TLocation, infer TSchema extends AnySchema>
     ? { [TKey in TLocation]: Infer<TSchema> }
     : Record<never, never>;
 
@@ -211,7 +207,7 @@ export type RouteInput<TRoute extends Pick<RouteLike, 'request'>> = Simplify<
 >;
 
 type ResponseBody<TResponse extends RouteResponse> =
-  TResponse extends JsonRouteResponse<number, infer TSchema extends SchemaTypeAny>
+  TResponse extends JsonRouteResponse<number, infer TSchema extends AnySchema>
     ? Infer<TSchema>
     : TResponse extends TextRouteResponse
       ? string
@@ -229,23 +225,6 @@ type RouteResponseOutput<TResponse extends RouteResponse> = TResponse extends Ro
 
 export type RouteOutput<TRoute extends Pick<RouteLike, 'responses'>> =
   TRoute['responses'][number] extends infer TResponse extends RouteResponse ? RouteResponseOutput<TResponse> : never;
-
-export type RouteHandler<TRoute extends RouteLike, TContext = unknown> = (arguments_: {
-  input: RouteInput<TRoute>;
-  context: TContext;
-}) => RouteOutput<TRoute> | Promise<RouteOutput<TRoute>>;
-
-export interface RouteBinding<TRoute extends RouteLike, TContext = unknown> {
-  readonly route: TRoute;
-  readonly handler: RouteHandler<TRoute, TContext>;
-}
-
-export function bindRoute<const TRoute extends RouteLike, TContext>(
-  route: TRoute,
-  handler: RouteHandler<TRoute, TContext>,
-): RouteBinding<TRoute, TContext> {
-  return { route, handler };
-}
 
 type RouteStatus<TRoute extends Pick<RouteLike, 'responses'>> = TRoute['responses'][number]['status'];
 
@@ -298,7 +277,7 @@ export function declaredResponse<const TRoute extends RouteLike, const TStatus e
 }
 
 type RouteParams<TRoute extends Pick<RouteLike, 'request'>> = TRoute['request'] extends {
-  readonly params: infer TSchema extends SchemaTypeAny;
+  readonly params: infer TSchema extends AnySchema;
 }
   ? Infer<TSchema>
   : never;
@@ -336,7 +315,7 @@ export function buildRoutePath<const TRoute extends RouteLike>(
 }
 
 type RouteQuery<TRoute extends Pick<RouteLike, 'request'>> = TRoute['request'] extends {
-  readonly query: infer TSchema extends SchemaTypeAny;
+  readonly query: infer TSchema extends AnySchema;
 }
   ? Infer<TSchema>
   : never;
@@ -388,7 +367,8 @@ function buildRouteUrlWithBasePath<const TRoute extends RouteLike>(
   }
 
   const serializer = route.serializeQuery as
-    ((query: RouteQuery<TRoute>) => Readonly<Record<string, QueryWireValue>>) | undefined;
+    | ((query: RouteQuery<TRoute>) => Readonly<Record<string, QueryWireValue>>)
+    | undefined;
   const wireQuery = serializer
     ? serializer(options.query)
     : serializeDefaultQuery(options.query as Readonly<Record<string, unknown>>);
@@ -412,6 +392,15 @@ export function buildApiRouteUrl<const TRoute extends RouteLike>(
   ...arguments_: BuildUrlArguments<TRoute>
 ): string {
   return buildRouteUrlWithBasePath(route, arguments_[0], '/api');
+}
+
+export function buildApiRouteUrlFromInput<const TRoute extends RouteLike>(
+  route: TRoute,
+  input: RouteInput<TRoute>,
+): string {
+  // Both types derive their params/query members from this route. The request
+  // input additionally carries headers/body, which URL construction ignores.
+  return buildRouteUrlWithBasePath(route, input as unknown as BuildUrlOptions<TRoute>, '/api');
 }
 
 function decodePathSegment(segment: string): string | null {

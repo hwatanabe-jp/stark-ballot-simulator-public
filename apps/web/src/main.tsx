@@ -29,10 +29,10 @@ function resolveStaticInitialLanguage(): 'ja' | 'en' {
 
 function NotFoundPage(): React.ReactElement {
   return (
-    <div className="max-w-2xl mx-auto px-4 md:px-6 py-12">
-      <h1 className="font-display text-[var(--text-display)] font-bold text-ink-900 mb-4">Page not found</h1>
-      <p className="font-secondary text-text-secondary mb-6">The requested browser route is not part of this demo.</p>
-      <AppLink className="text-vermillion-600 hover:text-vermillion-700 font-secondary font-medium" href="/">
+    <div className="mx-auto max-w-2xl px-4 py-12 md:px-6">
+      <h1 className="mb-4 font-bold font-display text-[var(--text-display)] text-ink-900">Page not found</h1>
+      <p className="mb-6 font-secondary text-text-secondary">The requested browser route is not part of this demo.</p>
+      <AppLink className="font-medium font-secondary text-ink-600 hover:text-ink-700" href="/">
         Return home
       </AppLink>
     </div>

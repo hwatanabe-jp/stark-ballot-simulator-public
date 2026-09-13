@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import * as yazl from 'yazl';
 import { handler } from './handler';
-import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { REPLACED_RUNTIME_SELECTOR_NAMES } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 vi.mock('@stark-ballot/aws-adapters/config/awsRuntimeConfigReferenceResolver', () => ({
@@ -161,7 +161,7 @@ describe('target verification-worker handler', () => {
         receipt_image_id: '0x' + '1'.repeat(64),
         bundle_path: bundlePath,
         receipt_path: path.join(bundlePath, 'receipt.json'),
-        dev_mode_receipt: false,
+        dev_mode_receipt: false as const,
       };
       await fs.writeFile(reportPath, JSON.stringify(report), 'utf-8');
       return {
@@ -572,7 +572,7 @@ describe('target verification-worker handler', () => {
         duration_ms: 1,
         expected_image_id: '0x' + '1'.repeat(64),
         receipt_image_id: '0x' + '1'.repeat(64),
-        dev_mode_receipt: false,
+        dev_mode_receipt: false as const,
       };
       await fs.writeFile(reportPath, JSON.stringify(report), 'utf-8');
       return {
@@ -644,7 +644,7 @@ describe('target verification-worker handler', () => {
         duration_ms: 1,
         expected_image_id: '0x' + '1'.repeat(64),
         receipt_image_id: '0x' + '1'.repeat(64),
-        dev_mode_receipt: false,
+        dev_mode_receipt: false as const,
       };
       await fs.writeFile(reportPath, JSON.stringify(report), 'utf-8');
       return { status: 'success', bundlePath, reportPath, report };
@@ -703,7 +703,7 @@ describe('target verification-worker handler', () => {
         duration_ms: 1,
         expected_image_id: '0x' + '1'.repeat(64),
         receipt_image_id: '0x' + '1'.repeat(64),
-        dev_mode_receipt: false,
+        dev_mode_receipt: false as const,
       };
       await fs.writeFile(reportPath, JSON.stringify(report), 'utf-8');
       return {
@@ -826,7 +826,8 @@ describe('target verification-worker handler', () => {
         duration_ms: 1,
         expected_image_id: '0x' + '1'.repeat(64),
         receipt_image_id: '0x' + '2'.repeat(64),
-        dev_mode_receipt: false,
+        dev_mode_receipt: false as const,
+        errors: ['receipt verification failed'],
       };
       await fs.writeFile(reportPath, JSON.stringify(report), 'utf-8');
       return {
@@ -867,7 +868,6 @@ describe('target verification-worker handler', () => {
     expect(completedFinalizationId).toBe(finalizationId);
     expect(completedPayload).toMatchObject({
       status: 'failed',
-      failureCategory: 'none',
       report: {
         status: 'failed',
       },
@@ -1003,7 +1003,7 @@ describe('target verification-worker handler', () => {
         duration_ms: 1,
         expected_image_id: '0x' + '1'.repeat(64),
         receipt_image_id: '0x' + '1'.repeat(64),
-        dev_mode_receipt: false,
+        dev_mode_receipt: false as const,
       };
       await fs.writeFile(reportPath, JSON.stringify(report), 'utf-8');
       return {
@@ -1204,7 +1204,7 @@ describe('target verification-worker handler', () => {
         duration_ms: 1,
         expected_image_id: '0x' + '1'.repeat(64),
         receipt_image_id: '0x' + '1'.repeat(64),
-        dev_mode_receipt: false,
+        dev_mode_receipt: false as const,
       };
       await fs.writeFile(reportPath, JSON.stringify(report), 'utf-8');
       return {

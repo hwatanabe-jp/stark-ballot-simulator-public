@@ -22,41 +22,26 @@ resource "aws_codepipeline" "development_prover_release" {
   }
 
   variable {
+    name          = "ProverSelection"
+    default_value = "build"
+    description   = "Prover candidate selector: build creates a new candidate; existing selects one exact retained candidate ledger record."
+  }
+
+  variable {
+    name          = "ExistingProverCandidateRecordKey"
+    default_value = "__NOT_APPLICABLE__"
+    description   = "Exact content-addressed Prover candidate ledger key when ProverSelection is existing."
+  }
+
+  variable {
     name        = "RequestedSourceSha"
     description = "Required full lowercase prover source Git SHA; the Source override and every release stage must match it exactly."
   }
 
   variable {
-    name        = "FoundationSigningAuthorityKey"
-    description = "Required immutable Foundation image-signing authority S3 key emitted by the reviewed Foundation PostApplySmoke execution."
-  }
-
-  variable {
-    name        = "FoundationSigningAuthorityVersionId"
-    description = "Required exact S3 VersionId for the reviewed Foundation image-signing authority."
-  }
-
-  variable {
-    name        = "FoundationSigningAuthoritySha256"
-    description = "Required SHA-256 of the exact reviewed Foundation image-signing authority body."
-  }
-
-  variable {
-    name          = "PinnedToolchainArtifactKey"
-    default_value = "__NO_PINNED_TOOLCHAIN_ARTIFACT_KEY__"
-    description   = "Pinned immutable toolchain artifact record key when ToolchainSelection is pinned."
-  }
-
-  variable {
-    name          = "PinnedToolchainArtifactVersionId"
-    default_value = "__NO_PINNED_TOOLCHAIN_ARTIFACT_VERSION_ID__"
-    description   = "Pinned immutable toolchain artifact record S3 VersionId when ToolchainSelection is pinned."
-  }
-
-  variable {
-    name          = "PinnedToolchainArtifactSha256"
-    default_value = "__NO_PINNED_TOOLCHAIN_ARTIFACT_SHA256__"
-    description   = "Pinned immutable toolchain artifact record checksum when ToolchainSelection is pinned."
+    name          = "PinnedToolchainRecordKey"
+    default_value = "__NO_PINNED_TOOLCHAIN_RECORD_KEY__"
+    description   = "Pinned immutable Toolchain release ledger record key when ToolchainSelection is pinned."
   }
 
   stage {
@@ -82,16 +67,16 @@ resource "aws_codepipeline" "development_prover_release" {
   }
 
   stage {
-    name = "ResolveFoundationSigningAuthority"
+    name = "ResolveFoundationConsumerAuthority"
 
     action {
-      name             = "ResolveFoundationSigningAuthority"
+      name             = "ResolveFoundationConsumerAuthority"
       category         = "Build"
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
       input_artifacts  = ["SourceOutput"]
-      output_artifacts = ["FoundationSigningAuthorityOutput"]
+      output_artifacts = ["FoundationConsumerAuthorityOutput"]
 
       configuration = {
         EnvironmentVariables = jsonencode([
@@ -103,21 +88,6 @@ resource "aws_codepipeline" "development_prover_release" {
           {
             name  = "PIPELINE_SOURCE_SHA"
             value = "#{ProverReleaseSource.CommitId}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "FOUNDATION_SIGNING_AUTHORITY_KEY"
-            value = "#{variables.FoundationSigningAuthorityKey}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "FOUNDATION_SIGNING_AUTHORITY_VERSION_ID"
-            value = "#{variables.FoundationSigningAuthorityVersionId}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "FOUNDATION_SIGNING_AUTHORITY_SHA256"
-            value = "#{variables.FoundationSigningAuthoritySha256}"
             type  = "PLAINTEXT"
           },
         ])
@@ -136,7 +106,7 @@ resource "aws_codepipeline" "development_prover_release" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "FoundationSigningAuthorityOutput"]
+      input_artifacts  = ["SourceOutput", "FoundationConsumerAuthorityOutput"]
       output_artifacts = ["ToolchainAuthorityOutput"]
 
       configuration = {
@@ -147,18 +117,8 @@ resource "aws_codepipeline" "development_prover_release" {
             type  = "PLAINTEXT"
           },
           {
-            name  = "PINNED_TOOLCHAIN_ARTIFACT_KEY"
-            value = "#{variables.PinnedToolchainArtifactKey}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "PINNED_TOOLCHAIN_ARTIFACT_VERSION_ID"
-            value = "#{variables.PinnedToolchainArtifactVersionId}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "PINNED_TOOLCHAIN_ARTIFACT_SHA256"
-            value = "#{variables.PinnedToolchainArtifactSha256}"
+            name  = "PINNED_TOOLCHAIN_RECORD_KEY"
+            value = "#{variables.PinnedToolchainRecordKey}"
             type  = "PLAINTEXT"
           },
           {
@@ -189,7 +149,7 @@ resource "aws_codepipeline" "development_prover_release" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve to start the prover candidate build on the resolved digest-pinned toolchain (review ToolchainAuthorityOutput/toolchain-authority.json). Verify the execution's Source revision first: a pending execution does not follow later pushes, so approving an old execution builds its own resolved source. This starts a build only; prover promotion still requires ApproveProverPromotion after candidate evidence exists."
+        CustomData = "Approve the Prover candidate action for the selected mode after reviewing the exact Source, FoundationConsumerAuthorityOutput approval projection, and ToolchainAuthorityOutput. build creates and validates a new Prover image; existing selects one exact Prover candidate ledger record and never rebuilds, pushes, scans, or signs an image. Prover promotion remains separately gated."
       }
     }
   }
@@ -203,7 +163,7 @@ resource "aws_codepipeline" "development_prover_release" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "FoundationSigningAuthorityOutput", "ToolchainAuthorityOutput"]
+      input_artifacts  = ["SourceOutput", "FoundationConsumerAuthorityOutput", "ToolchainAuthorityOutput"]
       output_artifacts = ["CandidateOutput"]
 
       configuration = {
@@ -226,6 +186,16 @@ resource "aws_codepipeline" "development_prover_release" {
           {
             name  = "RELEASE_PIPELINE_EXECUTION_ID"
             value = "#{codepipeline.PipelineExecutionId}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "PROVER_SELECTION"
+            value = "#{variables.ProverSelection}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "EXISTING_PROVER_CANDIDATE_RECORD_KEY"
+            value = "#{variables.ExistingProverCandidateRecordKey}"
             type  = "PLAINTEXT"
           },
         ])
@@ -260,7 +230,7 @@ resource "aws_codepipeline" "development_prover_release" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "FoundationSigningAuthorityOutput", "CandidateOutput"]
+      input_artifacts  = ["SourceOutput", "FoundationConsumerAuthorityOutput", "CandidateOutput"]
       output_artifacts = ["AcceptedPointerOutput"]
 
       configuration = {
@@ -283,6 +253,16 @@ resource "aws_codepipeline" "development_prover_release" {
           {
             name  = "RELEASE_PIPELINE_EXECUTION_ID"
             value = "#{codepipeline.PipelineExecutionId}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "PROVER_SELECTION"
+            value = "#{variables.ProverSelection}"
+            type  = "PLAINTEXT"
+          },
+          {
+            name  = "EXISTING_PROVER_CANDIDATE_RECORD_KEY"
+            value = "#{variables.ExistingProverCandidateRecordKey}"
             type  = "PLAINTEXT"
           },
         ])

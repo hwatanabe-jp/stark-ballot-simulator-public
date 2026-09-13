@@ -3,6 +3,8 @@ import { toApiErrorResult } from '@stark-ballot/api-contract/errors/errorPayload
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { resolvePublicRequestId } from './publicRequestId';
 
+type HeadersInput = NonNullable<ConstructorParameters<typeof Headers>[0]>;
+
 /**
  * Build a JSON response with consistent headers.
  */
@@ -25,7 +27,7 @@ export function jsonResponse<T>(payload: T, init?: ResponseInit): Response {
 export function errorResponse(
   error: ApiError | ErrorCode,
   details?: ErrorDetails,
-  init?: { headers?: HeadersInit },
+  init?: { headers?: HeadersInput },
 ): Response {
   const result = toApiErrorResult(error, resolvePublicRequestId(), details);
   return jsonResponse(result.payload, {

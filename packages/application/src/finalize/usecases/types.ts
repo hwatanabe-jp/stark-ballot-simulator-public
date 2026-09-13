@@ -1,6 +1,5 @@
+import type { ApplicationExpectedError } from '@stark-ballot/application';
 import type {
-  ApplicationErrorCode,
-  ApplicationErrorDetails,
   FinalizationState,
   FinalizeAcceptedPayload,
   FinalizeSyncPayload,
@@ -9,16 +8,12 @@ import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
 import type { ScenarioResult } from '@stark-ballot/domain/scenarios/processor';
 import type { ScenarioTamperMode } from '@stark-ballot/domain/types/scenario';
 
-export type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
+export type { Result } from '@stark-ballot/application';
 
 export type { FinalizeAcceptedPayload, FinalizeSyncPayload };
 
 export type FinalizeSessionError =
-  | {
-      kind: 'api';
-      code: ApplicationErrorCode;
-      details?: ApplicationErrorDetails;
-    }
+  | ({ kind: 'api' } & ApplicationExpectedError)
   | {
       kind: 'invalid_image_id';
       expected: string;

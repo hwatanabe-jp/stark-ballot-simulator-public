@@ -1,582 +1,305 @@
 # 用語集
 
-本書で使用する主要な用語を定義します。
-暗号と検証の基礎用語、実装用語、運用用語に分けて掲載します。
-
-カテゴリ: [暗号プリミティブ](#暗号プリミティブ) / [STARK 証明](#stark-証明) / [検証パイプライン](#検証パイプライン) / [掲示板と透明性](#掲示板と透明性) / [改ざんシナリオ](#改ざんシナリオ) / [インフラストラクチャ](#インフラストラクチャ) / [セッションと API](#セッションと-api) / [定数](#定数)
+本文で使う言葉を、証拠や処理との関係から引けるようにまとめています。
 
 ## 暗号プリミティブ
 
 ### コミットメント（総称）
 
-本書で「コミットメント」と書く場合、文脈に応じて次のいずれかを指します。
-両者は対象とドメイン分離タグが異なるため、明示が必要な箇所では下位用語（**投票コミットメント** / **入力コミットメント**）を使います。
-
-| 用語               | 対象                                              | ドメイン分離タグ            |
-| ------------------ | ------------------------------------------------- | --------------------------- |
-| 投票コミットメント | 個々の投票（選挙 ID、選択肢、乱数）の束縛         | `stark-ballot:commit\|v1.0` |
-| 入力コミットメント | zkVM の公開可能入力（掲示板状態と投票一覧）の束縛 | `stark-ballot:input\|v1.0`  |
+内容を決めた後で取り替えていないかを確かめるための値です。本書では、一票の選択肢と乱数に結び付く「投票コミットメント」と、集計へ渡す公開入力の一部に結び付く「入力コミットメント」を区別します。
 
 ### 投票コミットメント（Vote Commitment）
 
-ドメイン分離タグ、選挙 ID、投票選択肢、乱数を結合して SHA-256 でハッシュした値です。
-投票内容を秘匿しつつ（隠蔽性）、後から変更できないことを保証します（束縛性）。
-投票の Cast-as-Intended 検証の起点です。
-
-詳細: [コミットメントスキーム](../protocol/commitment.md)
+選挙 ID、選択肢、乱数を定めた形式で SHA-256 に入力して得る値です。公開された値から投票先を推測しにくくし、後から別の選択肢へ開き直すことを困難にします。このデモのサーバーは投票先と乱数を受け取ります。[符号化と性質](../protocol/commitment.md)。
 
 ### Merkle ルート（Bulletin Root）
 
-掲示板上の全投票コミットメントから RFC 6962 の規則に従って計算されるハッシュ値です。
-掲示板の特定時点における状態を一意に表します。
-新しい投票が追加されるたびに更新されます。
+掲示板上のコミットメントを Merkle ツリーにまとめた、頂点のハッシュです。票の内容や順序を変えると通常は値が変わるため、保持したルートとの比較で変更を検出できます。
 
 ### Merkle パス（Audit Path）
 
-特定のリーフ（投票コミットメント）からルートまでを再構成するために必要な兄弟ノードのハッシュ列です。
-包含証明の構成要素であり、対数オーダーの検証コストを実現します。
+葉からルートを計算し直すために必要な、兄弟ノードのハッシュ列です。全票を受け取らずに自票の包含を確かめるために使います。
 
 ### 包含証明（Inclusion Proof）
 
-特定の投票コミットメントが掲示板に含まれていることを暗号学的に証明するデータです。
-リーフインデックス、Merkle パス、ツリーサイズから構成されます。
-RFC 6962 のハッシュ規則に従い、リーフとパスからルートを再計算して期待値と照合します。
-
-詳細: [CT Merkle ツリー](../protocol/ct-merkle.md)
+ある位置の票が、指定したルートとツリーサイズの掲示板に含まれることを確かめる証拠です。位置と Merkle パスからルートを再計算します。[掲示板の証明](../protocol/ct-merkle.md)。
 
 ### 整合性証明（Consistency Proof）
 
-RFC 6962 で定義された、2 つの時点のツリーが追記関係にあることを暗号学的に証明するデータです。
-古いツリーが新しいツリーのプレフィックスであること（投票の削除や並べ替えが行われていないこと）を保証します。
-
-詳細: [CT Merkle ツリー](../protocol/ct-merkle.md)
+古いツリーが新しいツリーの先頭部分として残っていることを確かめる証拠です。比較する二つのルートとサイズを基準に、追記以外の変更がないかを検査します。[RFC 6962 の整合性証明](../protocol/ct-merkle.md#整合性証明consistency-proof)。
 
 ### 入力コミットメント（Input Commitment）
 
-zkVM が処理した公開可能な入力フィールドの一部を、固定のドメインタグと version を含む正準エンコーディングで SHA-256 ハッシュした値です。
-現行実装では `electionId`、`bulletinRoot`、`treeSize`、`totalExpected`、`votesCount`、各投票の `index`、コミットメント、Merkle パスを束縛します。
-対象は `public-input.json` より狭い部分集合です。
-
-詳細: [入力コミットメント](../protocol/input-commitment.md)
+ゲストへ渡した公開入力のうち、選挙 ID、掲示板のルートとサイズ、期待数、票数、各票の位置・コミットメント・Merkle パスをハッシュした値です。`public-input.json` 全体のハッシュではありません。[正確な対象フィールド](../protocol/input-commitment.md)。
 
 ### STH ダイジェスト（Signed Tree Head Digest）
 
-掲示板のログ ID、ツリーサイズ、タイムスタンプ、ルートハッシュを結合して SHA-256 でハッシュした値です。
-特定の時点における掲示板の状態を一意に識別し、複数の独立した監視者間で掲示板の一貫性を検証するために使用します。
-
-詳細: [STH ダイジェスト](../protocol/sth-digest.md)
+ログ ID、ツリーサイズ、時刻、ルートをハッシュした値です。比較対象が同じ掲示板の状態を指しているかを調べます。このデモのダイジェスト照合は STH の署名検証ではありません。[照合方法](../protocol/sth-digest.md)。
 
 ### 包含ビットマップルート（Included Bitmap Root）
 
-zkVM ゲストが生成するビットマップ（各投票インデックスが集計に含まれたか否か）の Merkle ルートです。
-投票者は自分のインデックスに対応するビットが 1 であることを Merkle 証明で確認できます。
-
-詳細: [ビットマップ Merkle](../protocol/bitmap-merkle.md)
+各位置が集計に採用されたかを表すビットマップの Merkle ルートです。位置に対応するビットが 1 かを、区画と Merkle 証明で確かめます。[ビットマップ](../protocol/bitmap-merkle.md)。
 
 ### 提示ビットマップルート（Seen Bitmap Root）
 
-zkVM ゲストに提示された投票インデックスを表すビットマップの Merkle ルートです。
-`includedBitmapRoot` と組み合わせることで、自票が「counted された」「提示されたが無効だった」「そもそも prover に提示されなかった」のどれに該当するかを説明できます。
-
-詳細: [ビットマップ Merkle](../protocol/bitmap-merkle.md)
+ゲストに提示された範囲内の位置を表すビットマップの Merkle ルートです。採用済みビットマップと比べて、未提示と提示後の不採用を区別します。[ビットマップ](../protocol/bitmap-merkle.md)。
 
 ### 正準エンコーディング（Canonical Encoding）
 
-固定のドメインタグ、バージョン番号、フィールド順を含む決定論的なバイト列表現です。
-同一の入力から常に同一のバイト列が得られることを保証します。
-本システムではコミットメントと入力コミットメントの計算に使用します。
+フィールドの順序、整数の幅、バイト順、並べ替え規則などを固定したバイト列表現です。同じ意味の入力から同じハッシュを計算するために使います。
 
 ### ドメイン分離タグ（Domain Separation Tag）
 
-ハッシュ計算において異なる用途のデータが衝突しないように付与するプレフィックス文字列です。
-本システムでは、コミットメント、入力コミットメント、CT Merkle のリーフハッシュ、ノードハッシュにそれぞれ固有のタグを使用します。
+ハッシュするデータの用途を区別する先頭の値です。投票コミットメントと入力コミットメント、Merkle ツリーの葉と内部ノードなどが、同じバイト列の意味を取り違えないようにします。
 
 ### 投票レシート（Vote Receipt）
 
-投票受理時にサーバーが返す応答データです。
-`voteId`、`commitment`、`bulletinIndex`、`bulletinRootAtCast` を含みます。
-検証では `voteReceipt` として参照されます。
-投票者がローカルに保持する投票時データ（選挙 ID、選択肢、乱数）とは別物であり、zkVM が生成する STARK レシート（Receipt）とも別物です。
-Cast-as-Intended 検証では、投票時データからコミットメントを再計算し、投票レシートのコミットメント値と照合します。
-
-詳細: [コミットメントスキーム](../protocol/commitment.md)、[4 段階検証モデル](../verification/four-stage-model.md#stage-1-cast-as-intended)
+投票を受理したサーバーが返す記録です。`voteId`、`commitment`、`bulletinIndex`、`bulletinRootAtCast`、`castAtMs` を含みます。投票時の選択肢と乱数から再計算した値を、このコミットメントと照合します。計算の証明を含む STARK レシートとは別です。
 
 ## STARK 証明
 
 ### STARK（Scalable Transparent ARgument of Knowledge）
 
-Trusted setup（信頼されたセットアップ）を必要としない暗号証明方式です。
-ハッシュベースの構成により耐量子計算機性に優位があります。
-本システムでは RISC Zero zkVM によって投票集計の正当性を証明するために使用します。
-
-詳細: [zkVM の基礎](../zkvm/foundations.md)
+計算が定めた規則に従ったことを検証する暗号証明の方式です。このデモでは RISC Zero の STARK 証明を使い、秘密の初期設定値を必要とする trusted setup は行いません。[zkVM の基礎](../zkvm/foundations.md)。
 
 ### RISC Zero zkVM
 
-RISC-V アーキテクチャ上で通常の Rust コードを実行し、その実行が正しく行われたことの STARK 証明を生成するゼロ知識仮想マシンです。
-ゲストプログラムとホストプログラムから構成されます。
-
-詳細: [zkVM の基礎](../zkvm/foundations.md)
+RISC-V のプログラムを実行し、その実行に対する証明を作る仮想マシンです。このデモのゲストは Rust で投票の検査・集計を実装しています。[構成](../zkvm/foundations.md)。
 
 ### レシート（Receipt）
 
-zkVM が生成する暗号証明オブジェクトです。
-内部に Seal（STARK 証明本体）とジャーナル（公開出力）を含みます。
-`Receipt::verify(image_id)` によって、特定のゲストプログラムが正しく実行されたことを第三者が検証できます。
+zkVM の計算の証明と公開出力を運ぶオブジェクトです。別途選んだ期待 Image ID を `Receipt::verify` に渡して検証します。
 
 ### ジャーナル（Journal）
 
-zkVM ゲストプログラムの公開出力です。
-現行契約は `methodVersion=14` で、検証済み集計結果、`missingSlots` / `invalidPresentedSlots` / `excludedSlots`、`inputCommitment`、`includedBitmapRoot`、`seenBitmapRoot` などを含みます。
-レシートに暗号学的に束縛されており、改ざんできません。
+ゲストが公開する出力です。得票数、位置の欠落・不採用数、入力コミットメント、ビットマップルートなどを含み、レシートの証明に結び付きます。別ファイルの `journal.json` は、検証済みレシートから取り出した値と照合して使います。[フィールドの定義](../zkvm/guest-program.md)。
 
 ### Image ID
 
-コンパイル済みのゲストプログラムバイナリを一意に識別するハッシュ値です。
-レシート検証時に期待される Image ID と照合することで、意図したゲストプログラムによって生成された証明であることを確認します。
-プローバーイメージの更新時には同期して更新が必要です。
-
-詳細: [Image ID](../zkvm/image-id.md)
+実行するゲストのメモリーイメージを識別する 256 ビットの値です。検証者が期待値を指定し、別のプログラムの証明を受け入れないようにします。コンテナイメージのダイジェストとは別です。[選択方法](../zkvm/image-id.md)。
 
 ### ゲストプログラム（Guest Program）
 
-zkVM 内部で実行される Rust プログラムです。
-投票データの検証と集計を行い、結果をジャーナルとして出力します。
-ゲストの実行内容は STARK 証明によって保証されます。
-
-詳細: [ゲストプログラム](../zkvm/guest-program.md)
+zkVM 内で投票を検査・集計し、ジャーナルを出力するプログラムです。証明は、この指定プログラムの実行と出力を結び付けます。[処理順序](../zkvm/guest-program.md)。
 
 ### ホストプログラム（Host Program）
 
-zkVM の外部で動作し、ゲストプログラムの実行と証明生成を制御する Rust プログラムです。
-入力データの読み込み、zkVM の起動、レシートとジャーナルの出力を担います。
-
-詳細: [ホストと証明生成](../zkvm/host-and-proving.md)
+zkVM の外で入力を読み、ゲスト実行と証明生成を進め、レシートなどのファイルを書き出すプログラムです。[証明生成](../zkvm/host-and-proving.md)。
 
 ### 検証サービス（Verifier Service）
 
-Rust で実装された独立した STARK レシート検証プログラムです。
-`Receipt::verify(expected_image_id)` を実行し、レシートの暗号学的正当性を確認します。
-結果は `verification.json` として保存されます。
-
-詳細: [検証サービス](../zkvm/verifier-service.md)
+STARK レシートを検証する Rust バイナリ `verifier-service` です。期待 Image ID とレシートから結果を計算し、レポートを出力します。[終了コードとレポート](../zkvm/verifier-service.md)。
 
 ### フェイクレシート（Fake Receipt）
 
-`RISC0_DEV_MODE=1` で生成される暗号学的保証のないレシートです。
-開発効率のためのモックであり、検証サービスは `InnerReceipt::Fake` を自動検出して `dev_mode` ステータスを返します。
-本番環境では使用してはなりません。
-
-詳細: [ゲーティングロジック](../verification/gating-logic.md#stark-検証のゲーティング)
+RISC Zero の開発モードで作る、production STARK の暗号学的保証を持たないレシートです。開発モードを扱える検証ビルドは `dev_mode` として区別し、production feature のビルドは開発モードを無効にします。[検証サービス](../zkvm/verifier-service.md)。
 
 ### ジャーナル契約（Journal Contract）
 
-`methodVersion` で識別されるジャーナル出力構造の仕様です。
-ゲストプログラムが出力するフィールドの集合と意味を定義します。
-現行契約は `methodVersion=14`（v1.4）です。
-ゲストプログラムの変更は新しい Image ID の生成を伴い、検証時には期待 Image ID との一致が確認されます。
+ゲストが出すフィールドと意味を定める仕様です。現行は `methodVersion=14`。バージョンだけでプログラムを信用せず、レシート検証では期待 Image ID も指定します。
 
 ### レシートラッパー JSON
 
-ホストバイナリが出力する `{ "receipt": ..., "image_id": "0x..." }` 形式のラッパー JSON です。
-STARK レシート本体を `image_id` と一緒に運ぶための受け渡し形式で、検証サービスはこの形式を読み込んで `Receipt::verify(expected_image_id)` を実行します。
-配布対象アーカイブ内のファイル名は `receipt.json` です。
-本書では「レシート」「STARK レシート」「`receipt.json`」「レシートラッパー JSON」を次のように使い分けます。
-
-| 表記                          | 指すもの                                 |
-| ----------------------------- | ---------------------------------------- |
-| 投票レシート（`voteReceipt`） | サーバーが投票受理時に返す応答データ     |
-| STARK レシート（Receipt）     | zkVM が生成する暗号証明オブジェクト      |
-| `receipt.json`                | レシートラッパー JSON のファイル名       |
-| レシートラッパー JSON         | `{ receipt, image_id }` 構造のホスト出力 |
-
-詳細: [ホストと証明生成](../zkvm/host-and-proving.md#出力ファイル)
+ホストが出力する `{ "receipt": ..., "image_id": "0x..." }` という形式です。ファイル名は `receipt.json`。添えられた `image_id` は、検証者が別途選ぶ期待 Image ID の代わりにはなりません。
 
 ## 検証パイプライン
 
-> **「検証」と「監査」の使い分け**
-> 本書では、`/verify` 画面と内部パイプラインによる判定を **検証**、第三者が `bundle.zip` をローカルに取得して独立に行う確認作業を **監査** と呼び分けます。
-> `reproducibility/` 章は主に「監査」の文脈で書かれており、`verification/` 章は「検証」の文脈で書かれています。
-
 ### fail-closed
 
-検証 API と検証パイプラインが、データ不在や未解決状態を成功側に倒さず、`not_run`、失敗、Warning 側へ確定させる方針です。
-要求された証拠が揃わない限り Verified に到達させない設計姿勢を指します。
-[cast-time 証跡](#cast-time-証跡cast-time-ct-artifact)の `not_run` 扱い、[ゲーティングロジックの不変条件](../verification/gating-logic.md#不変条件のまとめ)、[重要度](#重要度criticality)の required 扱いは、いずれもこの方針の具体化です。
+証拠の不足やデータの不整合を、推測で成功として扱わない方針です。状況に応じて待機、証拠不足、失敗を表示し、必要な条件が満たされるまで Verified にしません。[表示条件](../verification/gating-logic.md)。
 
 ### E2E 検証可能投票（End-to-End Verifiable Voting）
 
-投票者が自票について「意図通りに投じた」「正しく記録された」「正しく集計された」の 3 段階を独立に検証できる投票方式です。
-システム運営者を信頼せずとも投票の完全性を確認できることを目標とします。
-
-詳細: [4 段階検証モデル](../verification/four-stage-model.md)
+意図した票が記録され、その記録が集計されたことを確かめられる投票の考え方です。このデモの画面は Cast をブラウザで確認し、その他のチェックはサーバーの報告を使います。[実行場所と信頼関係](../verification/design-and-flow.md)。
 
 ### Cast-as-Intended（意図通りの投票）
 
-検証の第 1 段階です。
-投票者がローカルに保持する投票時データ（選挙 ID、選択肢、乱数）からコミットメントを再計算し、投票レシート（`voteReceipt`）のコミットメント値と照合します。
-これにより、投票時に意図した選択が正しくコミットメントに反映されたことを確認します。
-クライアント側で完結します。
-
-詳細: [4 段階検証モデル](../verification/four-stage-model.md#stage-1-cast-as-intended)
+手元の選択肢と乱数から投票コミットメントを作り直し、投票レシートと一致するかをブラウザで確かめる段階です。[第1段階](../verification/four-stage-model.md#stage-1-cast-as-intended)。
 
 ### Recorded-as-Cast（記録通りの保存）
 
-検証の第 2 段階です。
-コミットメントが掲示板に正しく記録されたことを、RFC 6962 の包含証明と整合性証明によって確認します。
-掲示板が追記専用であること（投票が削除や改変を受けていないこと）を暗号学的に保証します。
-
-詳細: [4 段階検証モデル](../verification/four-stage-model.md#stage-2-recorded-as-cast)
+投票時の包含証明と、その後の整合性証明を使い、送った票が掲示板に残っているかを確かめる段階です。[第2段階](../verification/four-stage-model.md#stage-2-recorded-as-cast)。
 
 ### cast-time 証跡（Cast-Time CT Artifact）
 
-投票受理時に CT ツリーへ書き込んだ時点の証跡です。
-具体的には `voteReceipt`（投票レシート）と `userVote.proof`（包含証明パラメータ: `leafIndex`、`treeSize`、`auditPath`）の 2 つを指します。
-Recorded-as-Cast の検証では両方が必要で、Cast-as-Intended では `voteReceipt` のみを使用します。
-取得経路と fail-closed 挙動の詳細は[設計と実行フロー](../verification/design-and-flow.md)を参照してください。
-
-詳細: [4 段階検証モデル](../verification/four-stage-model.md#stage-2-recorded-as-cast)
+投票受理時のレシートと、その時点の掲示板ルートに対する包含証明です。最終掲示板への包含とは確認する時点が違います。[証拠の取得](../verification/design-and-flow.md)。
 
 ### Counted-as-Recorded（記録通りの集計）
 
-検証の第 3 段階です。
-掲示板に記録された全投票が zkVM の集計に過不足なく含まれたことを確認します。
-除外されたスロットがないこと（`excludedSlots == 0`）は最重要不変条件です。
-
-詳細: [4 段階検証モデル](../verification/four-stage-model.md#stage-3-counted-as-recorded)
+全位置の採用、自票の採用、公開入力と証明の一致、表示集計と証明の出力の一致などを確かめる段階です。[第3段階](../verification/four-stage-model.md#stage-3-counted-as-recorded)。
 
 ### STARK 検証（STARK Verification）
 
-検証の第 4 段階です。
-STARK レシートが暗号学的に正当であること、および期待される Image ID で生成されたことを確認します。
-ジャーナルの内容が正しい実行結果であることの最終的な保証です。
-
-詳細: [4 段階検証モデル](../verification/four-stage-model.md#stage-4-stark-verification)
+期待するゲストの実行に、レシート内の公開出力が結び付くことを暗号学的に確かめる段階です。この成功だけで四段階全体の成功にはなりません。[第4段階](../verification/four-stage-model.md#stage-4-stark-verification)。
 
 ### 検証チェック（Verification Check）
 
-検証パイプラインを構成する個別の原子的な検証項目です。
-それぞれ一意の ID、所属する検証段階、証拠種別、重要度を持ちます（現行のチェック数と内訳は [チェック一覧](../verification/checks-catalog.md) を参照）。
-Counted-as-Recorded には `counted_election_manifest_consistent` と `counted_close_statement_consistent` も含まれ、公開監査アーティファクトとの整合も required 条件です。
-
-詳細: [チェック一覧](../verification/checks-catalog.md)
+検証の中で個別に結果を持つ項目です。ID、段階、証拠種別、必須・補助の区分を定義します。[全22チェック](../verification/checks-catalog.md)。
 
 ### ゲーティングロジック（Gating Logic）
 
-検証チェックの結果を集約し、「Verified」「Verification Failed」「Warning」のいずれを表示するかを決定するロジックです。
-required 扱いのチェックが 1 つでも `failed` なら Verified は表示されず、`not_run` / `pending` / `running` や必須証拠欠落でも Verified にはなりません。
-Stage のステータスも、その Stage で required 扱いになるチェック群全体から導出されます。
-
-詳細: [ゲーティングロジック](../verification/gating-logic.md)
+チェック結果、証拠、実行状態を合わせて最終表示を決める規則です。必須成功に加えて、全体の整合条件と補助チェックの状態も評価します。[判定の優先順位](../verification/gating-logic.md)。
 
 ### 公開監査アーティファクト
 
-`election-manifest.json`（選挙設定の公開監査用スナップショット）と `close-statement.json`（集計締切時点のログ境界を表す公開監査レコード）の総称です。
-Counted-as-Recorded 段階の必須チェック（`counted_election_manifest_consistent`、`counted_close_statement_consistent`）で整合性が検証されます。
-
-詳細: [チェック一覧](../verification/checks-catalog.md)、[バンドル構造](../verification/bundle-structure.md)
+選挙設定の `election-manifest.json` と、締切時点の掲示板を示す `close-statement.json` です。公開入力・ジャーナルと照合します。[バンドル構造](../verification/bundle-structure.md)。
 
 ### 締切ステートメント（`close-statement.json`）
 
-集計締切時点のログ境界を表す公開監査レコードです。
-`logId`、`treeSize`、`bulletinRoot`、`sthDigest`、`timestamp` を宣言し、`counted_close_statement_consistent` チェックで検証入力やジャーナルとの整合が確認されます。
-本書では `close-statement.json` の和訳呼称として「締切ステートメント」を使います。
-
-詳細: [チェック一覧](../verification/checks-catalog.md#counted_close_statement_consistent)、[バンドル構造](../verification/bundle-structure.md)
+集計締切時点のログ ID、ツリーサイズ、ルート、時刻、STH ダイジェストをまとめたファイルです。本文では「締切宣言」とも呼びます。[照合条件](../verification/checks-catalog.md#counted_close_statement_consistent)。
 
 ### 公開可能アーティファクト
 
-秘密データを含まず、第三者検証や監査に利用できるアーティファクトの機密性区分です。
-ここでの「公開可能」は無認証で取得できることを意味しません。
-通常の配布や取得は capability 保護 API が担当し、対象が S3 にある場合も API が読み出して返します。
-
-詳細: [公開境界](../verification/public-boundary.md#public-bundle-の-default-deny-manifest)、[バンドル構造](../verification/bundle-structure.md#公開境界の要約)
+投票の秘密を含めず、第三者へ渡せるようにした証拠ファイルです。「公開可能」は内容の分類であり、ダウンロード時にはセッション認証が必要です。[公開境界](../verification/public-boundary.md)。
 
 ### 配布対象アーカイブ（`bundle.zip`）
 
-公開許可リストに基づいて作成される ZIP アーカイブです。
-[証明バンドル](#証明バンドルproof-bundle) のうち公開可能アーティファクトだけを束ねた部分集合で、`bundle.zip` というファイル名で配布されます。
-現行構成は `public-input.json`、`election-manifest.json`、`close-statement.json`、`receipt.json`、`journal.json` などを含みます。
-`input.json`、`verification.json`、`included-bitmap.json`、`seen-bitmap.json` は含まれません。
-`bundle.zip` が公開可能アーティファクトだけを含むことは、無認証公開を意味しません。
-
-詳細: [バンドル構造](../verification/bundle-structure.md)
+公開を許可した証拠だけをまとめた ZIP です。秘密入力、検証レポート、完全なビットマップは同梱しません。[同期・非同期の構成](../verification/bundle-structure.md)。
 
 ### 保護された検証レポート（`verification.json`）
 
-サーバー側検証の詳細結果を記録する protected report artifact です。
-配布対象アーカイブ `bundle.zip` には含まれず、通常のブラウザ / CLI 契約では capability 保護された
-`GET /api/sessions/:sessionId/finalizations/:finalizationId/artifacts/report` から API レスポンスとして取得します。
-
-詳細: [エンドポイント一覧](../api/endpoints.md#get-apisessionssessionidfinalizationsfinalizationidartifactsreport)
+検証サービスの結果を記録したファイルです。ZIP とは別に、セッション認証が必要な report API から取得します。[取得 API](../api/endpoints.md#get-apisessionssessionidfinalizationsfinalizationidartifactsreport)。
 
 ### 無認証公開
 
-セッション ID や capability トークンなしで誰でも取得できる公開状態です。
-本書では「公開可能」や「外部クライアント向け API」と区別して扱います。
-現行のセッションスコープ API や `bundle.zip` 取得経路の多くは capability 保護されており、無認証公開ではありません。
-
-詳細: [バンドル構造](../verification/bundle-structure.md#バンドルのアクセス方法)
+セッションの鍵などを提示せず取得できる状態です。公開可能な `bundle.zip` も、通常の取得 API は認証を要求します。
 
 ### zkGate
 
-STARK 検証の結果に基づいて Counted-as-Recorded チェックの評価を制御するゲートです。
-STARK 未解決（`not_run` / `running`）の間、zkGate 対象チェックは `not_run` または `pending` になります。
-STARK が `failed` の場合、zkGate 対象チェックも `failed` になり得ます。
-
-詳細: [ゲーティングロジック](../verification/gating-logic.md#zkgate-stark-結果に基づく-counted-チェックの制御)
+STARK の検証状態に応じて、一部の Counted チェックを待機・失敗・デモ用評価へ切り替える処理です。[対象と優先順位](../verification/checks-catalog.md#stark-結果への依存)。
 
 ### 証拠種別
 
-検証チェックに使用するデータの出所を示す分類です。
-`local`（投票時に確定したユーザー固有データ）、`public`（掲示板や capability 保護 API から取得する、秘密データを含まない検証用データ）、`zk`（zkVM ジャーナルに含まれるデータ）、`demo`（dev-mode receipt を許可した場合に、`zk` 証拠の表示用結果として使うデモ証拠）の 4 種別があります。
-`demo` 証拠は production STARK proof としての `Verified` にはなりません。
-
-詳細: [チェック一覧](../verification/checks-catalog.md#証拠種別)
+チェックの入力元の分類です。`local` は投票者の手元の情報、`public` は公開可能な検証データ、`zk` はゲストの公開出力、`demo` は開発用レシートを許した際のデモ用評価を示します。[チェック一覧](../verification/checks-catalog.md#証拠種別)。
 
 ### 重要度（Criticality）
 
-検証チェックの必須性を示す分類です。
-`required`（失敗、未実行、未解決なら Verified をブロック）と `optional`（補助的で、単独では Verified をブロックしない）の 2 段階です。
-`recorded_sth_third_party` のように、設定状況に応じて optional から blocking な required 相当に昇格するチェックもあります。
-
-詳細: [ゲーティングロジック](../verification/gating-logic.md)、[チェック一覧](../verification/checks-catalog.md)
+チェックを `required`（必須）と `optional`（補助）に分ける属性です。補助でも失敗や未実行があれば完全成功ではなく制限付きになり、実行中なら待機します。第三者 STH のチェックは、照合先の設定によって必須になります。[表示条件](../verification/gating-logic.md)。
 
 ## 掲示板と透明性
 
 ### 掲示板（Public Bulletin Board）
 
-全投票コミットメントを時系列で記録する追記専用のログです。
-RFC 6962 の Certificate Transparency モデルに基づき、包含証明と整合性証明によって第三者が監査可能な透明性を実現します。
-
-詳細: [CT Merkle ツリー](../protocol/ct-merkle.md)
+投票コミットメントを順に追記するログです。Merkle ルートと証明を使って、特定の記録の包含や追記前後の関係を検査できます。[掲示板](../protocol/ct-merkle.md)。
 
 ### RFC 6962
 
-Certificate Transparency（証明書の透明性）の標準規格です。
-追記専用の Merkle ツリー、リーフハッシュ（`0x00` プレフィックス）とノードハッシュ（`0x01` プレフィックス）のドメイン分離、包含証明、整合性証明の仕様を定義します。
-本システムの掲示板は、この規格のハッシュ規則と証明アルゴリズムを参照した CT スタイル実装を採用しています。
-
-詳細: [CT Merkle ツリー](../protocol/ct-merkle.md)
+Certificate Transparency の仕様です。このデモは、その Merkle ツリーのハッシュ規則と包含・整合性証明を利用します。CT の署名や監視の仕組み全体を実装したという意味ではありません。[利用している規則](../protocol/ct-merkle.md)。
 
 ### STH（Signed Tree Head）
 
-掲示板の特定時点における状態の要約です。
-ログ ID、ツリーサイズ、タイムスタンプ、ルートハッシュを含みます。
-複数の独立したソースからの STH を比較することで、サーバーが異なるクライアントに異なるツリーを提示するスプリットビュー攻撃を検出します。
-
-詳細: [STH ダイジェスト](../protocol/sth-digest.md)
+ログ ID、ツリーサイズ、時刻、ルートで表す掲示板の状態です。名前は CT に由来しますが、このデモはそれらのダイジェストを比較し、STH 署名そのものは検証しません。[STH ダイジェスト](../protocol/sth-digest.md)。
 
 ### スプリットビュー攻撃（Split-View Attack）
 
-掲示板サーバーが異なるクライアントに異なるツリー状態を提示する攻撃です。
-特定の投票者に対してのみ投票を除外したツリーを見せることで、不正を隠蔽しようとします。
-整合性証明と STH の第三者検証によって検出されます。
-
-詳細: [STH ダイジェスト](../protocol/sth-digest.md#スプリットビュー攻撃と検出メカニズム)
+相手によって異なる掲示板を見せる攻撃です。それぞれの掲示板の中だけで包含・整合性を調べても見逃し得るため、独立した観測先と状態を照合します。[照合の条件](../protocol/sth-digest.md)。
 
 ### ルート履歴（Root History）
 
-掲示板のルートハッシュ、ツリーサイズ、タイムスタンプの時系列記録です。
-投票時のルートが最終ツリーの有効なプレフィックスであることを、整合性証明で検証する際に参照します。
-
-詳細: [CT Merkle ツリー](../protocol/ct-merkle.md#整合性証明consistency-proof)
+追記に伴う掲示板のルート、サイズ、時刻の記録です。投票時から最終時点までの追記関係を検証するために使います。
 
 ## 改ざんシナリオ
 
 ### 改ざんシナリオ（Tamper Scenario）
 
-検証システムが不正をどのように検出するかを教育的に示すシミュレーションです。
-S0（正常）から S5（ランダムに選んだ 1 票の除外）まで 6 種類が定義されています。
-
-詳細: [改ざんシナリオ](../tamper/scenarios.md)
+検出の仕組みを観察するための操作です。S0 は正常、S1・S3・S5 は一票の入力除外、S2・S4 は表示集計の変更を行います。[シナリオ一覧](../tamper/scenarios.md)。
 
 ### 投票除外（Vote Exclusion）
 
-一部の投票を集計から意図的に除外する攻撃です。
-zkVM ジャーナルの `excludedSlots > 0` として検出されます。
-本システムの最重要不変条件により、投票除外がある場合は「Verified」を表示しません。
+掲示板上の票を集計入力へ渡さないなど、集計に採用しないことです。未提示や不採用の位置は `excludedSlots` に残ります。
 
 ### 主張集計改ざん（Claimed-Tally Tampering）
 
-公開表示する集計値（claimed tally）を、zkVM が証明した実際の集計値と異なる値に書き換える攻撃の教育的シミュレーションです。
-zkVM の入力、レシート、ジャーナルは正常なまま、公開表示のみを改ざんします。
-`counted_tally_consistent` チェックで検出されます。
+表示用の得票数だけを、証明内の集計と違う値に変える操作です。入力と証明が正常でも、`counted_tally_consistent` で不一致を検出します。
 
 ### excludedSlots
 
-zkVM ジャーナルに含まれる、除外されたスロットの総数です。
-0 でなければなりません。
-0 より大きい場合は投票の未提示または未計上が発生しており、いかなる場合も「Verified」を表示してはなりません。
-`excludedSlots` が現行の authoritative な公開除外数です。
-`excludedCount` は古い入力を安全側に倒すための互換フィールドとしてだけ扱います。
-現行レスポンスでは `excludedCount` を新規に返しません。
-
-詳細: [4 段階検証モデル](../verification/four-stage-model.md#stage-3-counted-as-recorded)、[ゲーティングロジック](../verification/gating-logic.md)
+集計に採用されなかった掲示板上の位置数です。`missingSlots + invalidPresentedSlots` に等しく、ゼロでなければ Verified にはできません。拒否レコード数 `rejectedRecords` とは異なります。[位置とレコード](../zkvm/guest-program.md)。
 
 ## インフラストラクチャ
 
 ### ECS Fargate
 
-AWS のサーバーレスコンテナ実行環境です。
-本システムでは target の STARK 証明生成 task を実行するために使用します。
-アイドル時のコストは 0 です。
-
-詳細: [非同期プローバー](../aws/async-prover.md#実行リソースと-mode-境界)
+サーバーを直接管理せずコンテナを実行する AWS のサービスです。このデモの重い証明生成を担当します。[実行資源](../aws/design-and-services.md)。
 
 ### Step Functions
 
-AWS のワークフローオーケストレーションサービスです。
-イメージ署名検証、ECS プローバー実行、コールバックの一連のフローを管理します。
-
-詳細: [非同期プローバー](../aws/async-prover.md)
+処理の順序、待機、失敗時の分岐を管理する AWS のサービスです。署名検証、プローバー起動、結果の通知などをつなぎます。[非同期処理](../aws/async-prover.md)。
 
 ### 非同期証明モード（Async Proving）
 
-SQS、Step Functions、ECS Fargate の経路で STARK 証明を非同期に生成するモードです。
-集計リクエスト（`POST /api/sessions/:sessionId/finalizations`）は 202 Accepted を返し、クライアントはステータスポーリングで完了を待ちます。
-
-詳細: [非同期プローバー](../aws/async-prover.md)
+集計要求に受付結果を返した後、別のジョブで証明を生成する方式です。ブラウザは進捗を問い合わせて完了を待ちます。[非同期プローバー](../aws/async-prover.md)。
 
 ### 同期証明モード（Sync Proving）
 
-ローカルプロセスで zkVM ホストバイナリを直接実行し、STARK 証明を同期的に生成するモードです。
-開発環境で使用されます。
+要求を処理するローカルプロセスからホストを起動し、結果を待つ方式です。使うレシートの種類は実行プロファイルによって異なります。
 
 ### Prover semaphore
 
-DynamoDB の単一 lock item で、証明生成（`RunProver`）への同時進入数を制限する仕組みです。
-通常の解放は Step Functions が行い、`semaphore-janitor` Lambda が terminal execution event と定期 sweep で残った owner を補償的に解放します。
-
-詳細: [非同期プローバー](../aws/async-prover.md)
+同時に証明を生成するジョブ数を制限する仕組みです。DynamoDB に利用中の枠を記録し、通常は Step Functions が解放します。残った枠は専用の清掃処理が終了確認後に回収します。[非同期プローバー](../aws/async-prover.md)。
 
 ### Quiesced phase
 
-DynamoDB recovery の 4 phase（`primary_active`、`primary_quiesced`、`replacement_quiesced`、`replacement_active`）のうち、新規 session admission と prover / verification queue の consumption を止める切替中 phase です。
-切替中の新規書き込みや非同期処理を fail-closed に抑止します。
-
-詳細: [Terraform](../aws/terraform.md#dynamodb-recovery-selection)
+DynamoDB の復旧・切替の途中で、新規セッションと非同期キューの処理を停止する状態です。[復旧時の段階](../aws/terraform.md#dynamodb-recovery-selection)。
 
 ### Develop operator gate
 
-develop target で静的 frontend と API への viewer access を制限する、CloudFront signed-cookie gate です。
-署名用の秘密鍵は KMS 内で管理し、導出した公開鍵だけを CloudFront trusted key group に登録します。
-環境全体への入口を制限するもので、session-scoped な capability token の代わりにはなりません。
-
-詳細: [AWS runtime 境界](../aws/runtime-boundary.md)
+開発環境のページと API への入口を制限する CloudFront の署名付き Cookie です。環境へのアクセスと、個々のセッションへの capability 認証を別々に確認します。[入口の認証](../aws/runtime-boundary.md)。
 
 ### Saved-plan lane
 
-plan stage が作成した exact saved plan だけを apply する deployment lane です。
-`normal` と `rollback` を分け、`rollback` は Terraform plan が空でも approval を必須とします。
-
-詳細: [Terraform](../aws/terraform.md)
+Terraform が作成して保存した計画を承認し、その同じ計画を適用する変更経路です。通常変更とロールバックで承認条件を定めます。[計画と承認](../aws/terraform.md)。
 
 ### Release authority
 
-どの toolchain / prover image と application artifact をデプロイに使えるかを決める、受理済みの記録群です。
-承認済み prover release record、それを選択する accepted pointer、そこから生成された app deployment record、および必要な承認・scan・signing evidence で構成されます。
-target は現行 AWS 構成、legacy は退役対象の旧構成を指し、legacy 側のリソースは target runtime の authority に含めません。
-
-詳細: [イメージ署名](../aws/image-signing.md)、[Terraform](../aws/terraform.md)
+どのビルド済みイメージやアプリ成果物を採用できるかを決める、検査済みの記録と、それを選ぶポインターです。[イメージの選択](../aws/image-signing.md)と[受入記録](../aws/terraform.md)を参照できます。
 
 ### イメージ署名検証（Image Signing）
 
-ECS タスクで使用するプローバーコンテナイメージが、信頼できるビルドパイプラインから生成されたことを検証する仕組みです。
-AWS Signer を使用し、Step Functions のゲートとして機能します。
-
-詳細: [イメージ署名](../aws/image-signing.md)
+起動するコンテナのダイジェストに対し、許可した署名元の署名が有効かを確認する処理です。ゲストの Image ID とレシートの検証とは別に行います。[イメージ署名](../aws/image-signing.md)。
 
 ### 証明バンドル（Proof Bundle）
 
-zkVM の実行結果を検証可能な形で保存、配布するためのアーティファクト群を指す **上位概念** です。
-公開可能アーティファクト（`public-input.json` など）、protected report artifact（`verification.json`）、非公開アーティファクト（`input.json`、`included-bitmap.json`、`seen-bitmap.json` など）を含み得ます。
-`public` /「公開可能」は秘密情報を含まず検証に利用可能であるという機密性の分類であり、無認証公開を意味しません。
-
-公開許可リストで取り出した部分集合が [配布対象アーカイブ](#配布対象アーカイブbundlezip) であり、それを ZIP 化したファイル名が `bundle.zip` です。
-3 者の関係は次のとおりです。
-
-```text
-証明バンドル ⊃ 配布対象アーカイブ ⊃ bundle.zip（ファイル）
-```
-
-「証明バンドル」は、AWS / S3 上の隣接オブジェクトや非公開アーティファクトも含めて議論したい箇所で使います。
-単に公開可能な ZIP を指す場合は `bundle.zip` または「配布対象アーカイブ」を使います。
-
-詳細: [バンドル構造](../verification/bundle-structure.md)
+証明生成・検証に関わるファイル群を指す語です。秘密入力や保護対象のファイルも含めて述べるときに使います。配布する ZIP を指す場合は `bundle.zip` と明記します。[ファイルの配置](../verification/bundle-structure.md)。
 
 ### 隣接オブジェクト（Sibling Object）
 
-S3 上で `bundle.zip` と同じ prefix（`sessions/{sessionId}/{finalizationId}/`）に配置される非 bundle ファイルです。
-`included-bitmap.json`、`seen-bitmap.json`、`verification.json` などを指します。
-`bundle.zip` には含まれませんが、コールバック復元や capability 保護された検証レポート配信で利用されます。
-
-詳細: [バンドル構造](../verification/bundle-structure.md#バンドルディレクトリ構造)
+S3 で ZIP と同じ集計用の接頭辞の下に保存する、ZIP 外のファイルです。完全なビットマップや検証レポートなどを保存します。[保存構造](../verification/bundle-structure.md#バンドルディレクトリ構造)。
 
 ## セッションと API
 
 ### セッション（Session）
 
-一連の投票フロー（セッション作成、投票、集計、検証）を管理する単位です。
-一意の `sessionId`（UUID v4）で識別されます。
-クライアント側のローカルセッション TTL は投票 / 集計中が 30 分、検証中が 24 時間です。
-サーバー側の保存 TTL は store 実装と runtime config に依存します。
-
-詳細: [セッションライフサイクル](../api/session-lifecycle.md)
+作成から投票、集計、検証までの一連の操作を管理する単位です。`sessionId` で識別し、capability token でアクセスを保護します。[保存と継続](../api/session-lifecycle.md)。
 
 ### 選挙（Election）
 
-投票の論理的な単位です。
-一意の `electionId`（UUID v4）で識別され、コミットメントのドメイン分離に使用されます。
-選挙設定ハッシュ（`electionConfigHash`）が期待投票数などの設定を束縛します。
+候補や期待票数などの設定に結び付く投票の単位です。`electionId` を投票コミットメントにも含め、別の選挙の票と取り違えないようにします。
 
 ### 集計確定（Finalization）
 
-全投票の収集後に zkVM 入力を構築し、STARK 証明を生成するプロセスです。
-同期モード（ローカル実行）と非同期モード（ECS Fargate）の 2 つの実行パスがあります。
-
-### X-Session-ID
-
-過去の contract で使われていたセッションスコーピング用の HTTP ヘッダーです。
-現行 contract には含まれません。
-現行のセッション特定は、path の `sessionId` と `X-Session-Capability` ヘッダーで行います。
-
-詳細: [エンドポイント一覧](../api/endpoints.md#共通-contract)
+票を集めた後、集計入力を作り、ゲストを実行して証拠を生成し、結果を保存する作業です。STARK レシートを検証する作業とは別の状態を持ちます。
 
 ### X-Session-Capability
 
-`POST /api/sessions` のレスポンスで返る署名付きセッショントークンを運ぶ HTTP ヘッダーです。
-このヘッダーが運ぶ値を capability トークンと呼びます。
-session-scoped / capability 保護 API で必須です（`POST /api/sessions` は新規セッション作成のため対象外）。
-retired / debug route の扱いは[エンドポイント一覧の Retired route と internal surface](../api/endpoints.md#retired-route-と-internal-surface)を参照してください。
-
-詳細: [エンドポイント一覧](../api/endpoints.md#共通-contract)
+セッションへのアクセス権を示す署名付きトークンを送る HTTP ヘッダーです。トークンは `POST /api/sessions` の成功応答で受け取ります。[API の共通仕様](../api/endpoints.md#共通仕様)。
 
 ### capability 保護 API
 
-セッション capability（`X-Session-Capability` ヘッダーが運ぶトークン）の提示を要求する API です。
-外部クライアント向けに文書化されていても、無認証公開 API ではありません。
-
-詳細: [エンドポイント一覧](../api/endpoints.md#共通-contract)
+セッションの鍵を `X-Session-Capability` で提示して呼び出す API です。URL のセッション ID だけでは取得できません。[API の共通仕様](../api/endpoints.md#共通仕様)。
 
 ### Turnstile
 
-Cloudflare が提供する CAPTCHA サービスです。
-`POST /api/sessions`、`POST /api/sessions/:sessionId/votes`、`POST /api/sessions/:sessionId/finalizations` が body の `turnstileToken` で Bot による不正アクセスを防止します。
-token を要求するかどうかは実行環境の設定に依存します。
-bypass の可否は runtime profile が一体として選び、production の bypass は認めません。session 作成の develop 例外も operator-gated runtime に限定されます。
-
-詳細: [エンドポイント一覧](../api/endpoints.md#ボディサイズturnstileレート制限)、[AWS runtime 境界](../aws/runtime-boundary.md#semantic-runtime-profiles)
+自動化された不正アクセスを抑えるための Cloudflare の仕組みです。セッション作成、投票、集計要求でトークンを使い、必須条件は実行環境の設定に従います。[要求の条件](../api/endpoints.md#ボディサイズturnstileレート制限)。
 
 ## 定数
 
-| 定数名               | 値                          | 説明                                         |
-| -------------------- | --------------------------- | -------------------------------------------- |
-| `BOT_COUNT`          | 63                          | サーバーが自動生成するボット投票数           |
-| `MERKLE_TREE_DEPTH`  | 6                           | Merkle ツリーの深度（2^6 = 64 リーフに対応） |
-| `VOTE_CHOICES`       | A, B, C, D, E               | 投票で選択可能な選択肢                       |
-| コミットドメインタグ | `stark-ballot:commit\|v1.0` | コミットメントハッシュのドメイン分離タグ     |
-| 入力ドメインタグ     | `stark-ballot:input\|v1.0`  | 入力コミットメントのドメイン分離タグ         |
-| リーフドメインタグ   | `stark-ballot:leaf\|v1`     | CT Merkle リーフハッシュのドメイン分離タグ   |
+| 名前                | 値            | 用途                       |
+| ------------------- | ------------- | -------------------------- |
+| `BOT_COUNT`         | 63            | 自分の一票に加えるボット票 |
+| `MERKLE_TREE_DEPTH` | 6             | 64 葉に対応する深さ        |
+| `VOTE_CHOICES`      | A、B、C、D、E | 候補                       |
+
+ハッシュに使うタグとバイト列は、[投票コミットメント](../protocol/commitment.md)、[入力コミットメント](../protocol/input-commitment.md)、[掲示板](../protocol/ct-merkle.md)で定義します。
 
 <!-- source: packages/zkvm-contract/src/zkvm/types.ts, packages/merkle/src/rfc6962-merkle-tree.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/verification-summary.ts, packages/verification/src/verification/consistency-verifier.ts, packages/verification/src/verification/sth-verifier.ts, packages/verification/src/verification/verification-bundle.ts, apps/api/src/server/api/handlers/bitmapProof.ts, packages/zkvm-contract/src/zkvm/bitmap.ts, packages/domain/src/shared/constants.ts, packages/domain/src/types/server.ts, packages/domain/src/types/voteStore.ts, zkvm/methods/guest/src/main.rs -->

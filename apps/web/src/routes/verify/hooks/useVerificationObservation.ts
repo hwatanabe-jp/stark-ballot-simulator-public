@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import type { MutableRefObject } from 'react';
+import type { RefObject } from 'react';
 import { ApiClientError } from '@stark-ballot/web/api/client';
 import { recordVerificationObservation } from '@stark-ballot/web/api/verification';
 import { getSessionDataForIdentity, type SessionIdentity } from '@stark-ballot/web/session';
@@ -18,7 +18,7 @@ interface UseVerificationObservationOptions {
   hasCheckPending: boolean;
   serverValidated: boolean;
   verificationStatus: VerificationStatus;
-  sessionIdentityRef: MutableRefObject<SessionIdentity | null>;
+  sessionIdentityRef: RefObject<SessionIdentity | null>;
 }
 
 function isTerminalVerificationStatus(status: VerificationStatus): boolean {

@@ -7,7 +7,6 @@ import type {
   SessionIdentityRecord,
   SessionVotingRecord,
   StoredVoteRecord,
-  VoteData,
 } from '@stark-ballot/domain/types/sessionRecords';
 import { BOT_COUNT } from '@stark-ballot/domain/shared/constants';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
@@ -24,14 +23,18 @@ function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
 
 const SNAPSHOT_TIMESTAMP = 1_695_000_000_000;
 
-type TestVoteData = VoteData & Partial<Pick<StoredVoteRecord, 'voteId' | 'timestamp' | 'rootAtCast'>>;
+type TestVoteFixture = Omit<StoredVoteRecord, 'voteId' | 'timestamp' | 'rootAtCast'> &
+  Partial<Pick<StoredVoteRecord, 'voteId' | 'timestamp' | 'rootAtCast'>> & {
+    path?: string[];
+    treeSize?: number;
+  };
 type SessionOverrides = {
   sessionId?: string;
   electionId?: string | undefined;
   electionConfigHash?: string | undefined;
   electionConfig?: SessionIdentityRecord['electionConfig'] | undefined;
   logId?: string | undefined;
-  votes?: Map<number, TestVoteData>;
+  votes?: Map<number, TestVoteFixture>;
   bulletin?: SimpleBulletinBoard | undefined;
   botCount?: number;
   bulletinRootHistory?: SessionVotingRecord['bulletinRootHistory'];
@@ -41,7 +44,7 @@ function createVoteId(index: number): string {
   return `00000000-0000-4000-8000-${index.toString().padStart(12, '0')}`;
 }
 
-function createVoteData(overrides?: Partial<TestVoteData>): TestVoteData {
+function createVoteData(overrides?: Partial<TestVoteFixture>): TestVoteFixture {
   const vote = overrides?.vote ?? 'A';
   const commitmentDigit = vote === 'A' ? '2' : '3';
   return {
@@ -60,7 +63,7 @@ function createSession(overrides: SessionOverrides = {}): ZkVMInputSessionRecord
     : defaultElectionConfig;
   const rawVotes =
     overrides.votes ??
-    new Map<number, TestVoteData>([
+    new Map<number, TestVoteFixture>([
       [
         0,
         createVoteData({
@@ -142,7 +145,7 @@ describe('buildZkVMInputFromSession', () => {
 
   it('prefers CT inclusion proofs from bulletin board when available', () => {
     const baseSession = createSession();
-    const votes = new Map<number, TestVoteData>([
+    const votes = new Map<number, TestVoteFixture>([
       [
         0,
         {
@@ -225,7 +228,7 @@ describe('buildZkVMInputFromSession', () => {
       ...buildDefaultElectionConfig(),
       totalExpected: 17,
     };
-    const votes = new Map<number, TestVoteData>([
+    const votes = new Map<number, TestVoteFixture>([
       [0, createVoteData({ treeSize: 2 })],
       [1, createVoteData({ vote: 'B', treeSize: 2 })],
     ]);
@@ -245,7 +248,7 @@ describe('buildZkVMInputFromSession', () => {
       electionConfig: undefined,
     });
 
-    expect(() => buildZkVMInputFromSession(session)).toThrowError('Missing electionConfig for session');
+    expect(() => buildZkVMInputFromSession(session)).toThrow('Missing electionConfig for session');
   });
 
   it('throws when authoritative election config does not match the stored hash', () => {
@@ -254,7 +257,7 @@ describe('buildZkVMInputFromSession', () => {
       electionConfigHash: '0x' + 'd'.repeat(64),
     });
 
-    expect(() => buildZkVMInputFromSession(session)).toThrowError(
+    expect(() => buildZkVMInputFromSession(session)).toThrow(
       'Session electionConfig does not match electionConfigHash',
     );
   });
@@ -265,11 +268,11 @@ describe('buildZkVMInputFromSession', () => {
       bulletinRootHistory: [],
     });
 
-    expect(() => buildZkVMInputFromSession(session)).toThrowError('Missing STH snapshot data');
+    expect(() => buildZkVMInputFromSession(session)).toThrow('Missing STH snapshot data');
   });
 
   it('throws when CT proofs are unavailable', () => {
-    const missingPathVotes = new Map<number, TestVoteData>([
+    const missingPathVotes = new Map<number, TestVoteFixture>([
       [0, createVoteData({ path: [] })],
       [1, createVoteData({ vote: 'B', path: [] })],
     ]);
@@ -279,7 +282,7 @@ describe('buildZkVMInputFromSession', () => {
     });
     vi.spyOn(session.voting.bulletin, 'getInclusionProof').mockReturnValue(undefined);
 
-    expect(() => buildZkVMInputFromSession(session)).toThrowError('CT proof unavailable for vote index 0');
+    expect(() => buildZkVMInputFromSession(session)).toThrow('CT proof unavailable for vote index 0');
   });
 
   it('throws when bulletin proof leafIndex does not match the stored vote index', () => {
@@ -293,12 +296,12 @@ describe('buildZkVMInputFromSession', () => {
       rootHash: '0x' + 'a'.repeat(64),
     }));
 
-    expect(() => buildZkVMInputFromSession(session)).toThrowError('CT proof unavailable for vote index 0');
+    expect(() => buildZkVMInputFromSession(session)).toThrow('CT proof unavailable for vote index 0');
   });
 
   it('does not fall back to legacy proof fields on vote data', () => {
     const session = createSession({
-      votes: new Map<number, TestVoteData>([
+      votes: new Map<number, TestVoteFixture>([
         [
           0,
           createVoteData({
@@ -318,12 +321,12 @@ describe('buildZkVMInputFromSession', () => {
     });
     vi.spyOn(session.voting.bulletin, 'getInclusionProof').mockReturnValue(undefined);
 
-    expect(() => buildZkVMInputFromSession(session)).toThrowError('CT proof unavailable for vote index 0');
+    expect(() => buildZkVMInputFromSession(session)).toThrow('CT proof unavailable for vote index 0');
   });
 
   it('rebuilds bulletin snapshots from votes when persisted root history is stale', () => {
     const session = createSession({
-      votes: new Map<number, TestVoteData>([
+      votes: new Map<number, TestVoteFixture>([
         [0, createVoteData({ voteId: createVoteId(0), timestamp: 1000, treeSize: 2 })],
         [1, createVoteData({ vote: 'B', voteId: createVoteId(1), timestamp: 1001, treeSize: 2 })],
       ]),
@@ -346,7 +349,7 @@ describe('buildZkVMInputFromSession', () => {
   it('fails closed when stored vote indices are sparse', () => {
     const session = createSession({
       bulletin: undefined,
-      votes: new Map<number, TestVoteData>([
+      votes: new Map<number, TestVoteFixture>([
         [
           0,
           createVoteData({
@@ -366,7 +369,7 @@ describe('buildZkVMInputFromSession', () => {
       ]),
     });
 
-    expect(() => buildZkVMInputFromSession(session)).toThrowError(NON_CANONICAL_CT_VOTE_INDICES);
+    expect(() => buildZkVMInputFromSession(session)).toThrow(NON_CANONICAL_CT_VOTE_INDICES);
   });
 
   it('allows sparse vote indices for exclusion projections when explicitly enabled', () => {
@@ -379,7 +382,7 @@ describe('buildZkVMInputFromSession', () => {
     }
 
     const session = createSession({
-      votes: new Map<number, TestVoteData>([[1, { ...remainingVote, path: [] }]]),
+      votes: new Map<number, TestVoteFixture>([[1, { ...remainingVote, path: [] }]]),
       bulletin,
       bulletinRootHistory: [],
     });
@@ -394,8 +397,8 @@ describe('buildZkVMInputFromSession', () => {
 
   it('throws when vote data is missing for a known index', () => {
     const session = createSession();
-    const votes = session.voting.votes as Map<number, VoteData> & {
-      get: (index: number) => VoteData | undefined;
+    const votes = session.voting.votes as Map<number, StoredVoteRecord> & {
+      get: (index: number) => StoredVoteRecord | undefined;
     };
     const originalGet = votes.get.bind(votes);
     votes.get = vi.fn((index: number) => {
@@ -405,12 +408,12 @@ describe('buildZkVMInputFromSession', () => {
       return originalGet(index);
     });
 
-    expect(() => buildZkVMInputFromSession(session)).toThrowError('Vote data not found for index 0');
+    expect(() => buildZkVMInputFromSession(session)).toThrow('Vote data not found for index 0');
   });
 
   it('validates hex inputs and throws helpful errors', () => {
     const session = createSession({
-      votes: new Map<number, TestVoteData>([
+      votes: new Map<number, TestVoteFixture>([
         [
           0,
           createVoteData({
@@ -421,7 +424,7 @@ describe('buildZkVMInputFromSession', () => {
       ]),
     });
 
-    expect(() => buildZkVMInputFromSession(session)).toThrowError(/Invalid hex value/);
+    expect(() => buildZkVMInputFromSession(session)).toThrow(/Invalid hex value/);
   });
 
   it('throws when no bulletin roots are available at all', () => {
@@ -430,7 +433,7 @@ describe('buildZkVMInputFromSession', () => {
       bulletinRootHistory: [],
     });
 
-    expect(() => buildZkVMInputFromSession(session)).toThrowError('Missing STH snapshot data');
+    expect(() => buildZkVMInputFromSession(session)).toThrow('Missing STH snapshot data');
   });
 
   it('throws when no tree size metadata is available at all', () => {
@@ -439,16 +442,16 @@ describe('buildZkVMInputFromSession', () => {
       bulletinRootHistory: [],
     });
 
-    expect(() => buildZkVMInputFromSession(session)).toThrowError('Missing STH snapshot data');
+    expect(() => buildZkVMInputFromSession(session)).toThrow('Missing STH snapshot data');
   });
 
   it('throws when CT proof is missing', () => {
     const session = createSession({
-      votes: new Map<number, TestVoteData>([[0, createVoteData({ path: [] })]]),
+      votes: new Map<number, TestVoteFixture>([[0, createVoteData({ path: [] })]]),
     });
     vi.spyOn(session.voting.bulletin, 'getInclusionProof').mockReturnValue(undefined);
 
-    expect(() => buildZkVMInputFromSession(session)).toThrowError('CT proof unavailable for vote index 0');
+    expect(() => buildZkVMInputFromSession(session)).toThrow('CT proof unavailable for vote index 0');
   });
 
   it('throws when logId is missing from the session', () => {
@@ -456,6 +459,6 @@ describe('buildZkVMInputFromSession', () => {
       logId: undefined,
     });
 
-    expect(() => buildZkVMInputFromSession(session)).toThrowError('Missing logId for session');
+    expect(() => buildZkVMInputFromSession(session)).toThrow('Missing logId for session');
   });
 });

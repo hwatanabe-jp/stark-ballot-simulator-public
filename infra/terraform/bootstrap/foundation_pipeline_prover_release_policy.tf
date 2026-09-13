@@ -2,6 +2,13 @@ data "aws_iam_policy_document" "foundation_prover_release_toolchain_resolver_bui
   count = local.foundation_pipeline_enabled ? 1 : 0
 
   statement {
+    sid       = "ReadExactProverToolchainResolverProjectConfiguration"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [aws_codebuild_project.prover_release_toolchain_resolver[0].arn]
+  }
+
+  statement {
     sid    = "UseProverReleaseToolchainResolverPipelineArtifacts"
     effect = "Allow"
 
@@ -55,8 +62,8 @@ data "aws_iam_policy_document" "foundation_prover_release_toolchain_resolver_bui
     ]
     resources = [
       local.foundation_toolchain_accepted_pointer_object_arn,
-      local.foundation_toolchain_artifact_records_objects_arn,
-      "${local.foundation_release_manifest_bucket_arn}/promotions/develop/toolchain/*",
+      local.foundation_toolchain_candidate_records_objects_arn,
+      local.foundation_toolchain_release_records_objects_arn,
     ]
   }
 
@@ -72,6 +79,13 @@ resource "aws_iam_role_policy" "foundation_prover_release_toolchain_resolver_bui
 
 data "aws_iam_policy_document" "foundation_prover_release_candidate_build" {
   count = local.foundation_pipeline_enabled ? 1 : 0
+
+  statement {
+    sid       = "ReadExactProverCandidateProjectConfiguration"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [aws_codebuild_project.prover_release_candidate[0].arn]
+  }
 
   statement {
     sid    = "UseProverReleaseCandidatePipelineArtifacts"
@@ -114,6 +128,32 @@ data "aws_iam_policy_document" "foundation_prover_release_candidate_build" {
     ]
     resources = [
       "arn:aws:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/codebuild/${local.prover_release_candidate_project_name}:*",
+    ]
+  }
+
+  statement {
+    sid    = "UseProverCandidateLedgerRecords"
+    effect = "Allow"
+
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+      "s3:PutObject",
+    ]
+    resources = [local.foundation_prover_candidate_records_objects_arn]
+  }
+
+  statement {
+    sid    = "ReadProverCandidateToolchainLedgerClosure"
+    effect = "Allow"
+
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+    ]
+    resources = [
+      local.foundation_toolchain_candidate_records_objects_arn,
+      local.foundation_toolchain_release_records_objects_arn,
     ]
   }
 
@@ -185,6 +225,13 @@ data "aws_iam_policy_document" "foundation_prover_release_update_accepted_pointe
   count = local.foundation_pipeline_enabled ? 1 : 0
 
   statement {
+    sid       = "ReadExactProverPointerProjectConfiguration"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [aws_codebuild_project.prover_release_update_accepted_pointer[0].arn]
+  }
+
+  statement {
     sid    = "UseProverReleaseAcceptedPointerArtifacts"
     effect = "Allow"
 
@@ -229,14 +276,37 @@ data "aws_iam_policy_document" "foundation_prover_release_update_accepted_pointe
   }
 
   statement {
-    sid    = "PublishProverReleaseRecord"
+    sid    = "ReadProverLedgerRecords"
     effect = "Allow"
 
     actions = [
       "s3:GetObject",
       "s3:GetObjectVersion",
-      "s3:PutObject",
     ]
+    resources = [
+      local.foundation_prover_candidate_records_objects_arn,
+      local.foundation_prover_release_records_objects_arn,
+    ]
+  }
+
+  statement {
+    sid    = "ReadProverPromotionToolchainLedgerClosure"
+    effect = "Allow"
+
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+    ]
+    resources = [
+      local.foundation_toolchain_candidate_records_objects_arn,
+      local.foundation_toolchain_release_records_objects_arn,
+    ]
+  }
+
+  statement {
+    sid       = "PublishProverReleaseLedgerRecords"
+    effect    = "Allow"
+    actions   = ["s3:PutObject"]
     resources = [local.foundation_prover_release_records_objects_arn]
   }
 
@@ -252,19 +322,6 @@ data "aws_iam_policy_document" "foundation_prover_release_update_accepted_pointe
     resources = [local.foundation_prover_accepted_pointer_object_arn]
   }
 
-  statement {
-    sid    = "ListAcceptedPointerAuthority"
-    effect = "Allow"
-
-    actions   = ["s3:ListBucket"]
-    resources = [local.foundation_release_manifest_bucket_arn]
-
-    condition {
-      test     = "StringEqualsIfExists"
-      variable = "s3:prefix"
-      values   = [local.deployment_shared_names.proverAcceptedPointerKey]
-    }
-  }
 }
 
 resource "aws_iam_role_policy" "foundation_prover_release_update_accepted_pointer_build" {

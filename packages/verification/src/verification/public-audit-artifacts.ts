@@ -4,27 +4,47 @@ import {
   hasMatchingElectionConfigHash,
   type ElectionConfig,
 } from '@stark-ballot/zkvm-contract/zkvm/election-config';
-import { asUnixTimestampMillis, computeSTHDigest } from '@stark-ballot/zkvm-contract/zkvm/types';
-import { getNumberProperty, getStringProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { asUnixTimestampMillis, computeSTHDigest, UINT32_MAX } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
+import { s, type Infer } from '@stark-ballot/validation/schema';
+import { documentOpenApiRefinement } from '@stark-ballot/validation/schema-openapi';
 
-export interface ElectionManifest {
-  electionId: string;
-  totalExpected: number;
-  choices: readonly string[];
-  version: string;
-  botCount: number;
-  merkleTreeDepth: number;
-  electionConfigHash: string;
-}
+const publicAuditHex32Schema = documentOpenApiRefinement(
+  s.string().refine((value) => isValidHexString(value, 32), {
+    message: 'Expected 32-byte hex string',
+  }),
+  'The value is exactly 32 bytes of hexadecimal, with an optional case-insensitive 0x prefix.',
+  { pattern: '^(?:0[xX])?[0-9A-Fa-f]{64}$' },
+);
+const publicAuditUint32Schema = s.number().int().nonnegative().max(UINT32_MAX);
+const publicAuditPositiveUint32Schema = publicAuditUint32Schema.min(1);
 
-export interface CloseStatement {
-  logId: string;
-  treeSize: number;
-  timestamp: number;
-  bulletinRoot: string;
-  sthDigest: string;
-}
+export const electionManifestArtifactSchema = s
+  .object({
+    electionId: s.string().uuid(),
+    totalExpected: publicAuditUint32Schema,
+    choices: s.array(s.string().min(1)).min(1),
+    version: s.string().min(1),
+    botCount: publicAuditUint32Schema,
+    merkleTreeDepth: publicAuditPositiveUint32Schema,
+    electionConfigHash: publicAuditHex32Schema,
+  })
+  .strict();
+
+export const closeStatementArtifactSchema = s
+  .object({
+    logId: publicAuditHex32Schema,
+    treeSize: publicAuditPositiveUint32Schema,
+    timestamp: s.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    bulletinRoot: publicAuditHex32Schema,
+    sthDigest: publicAuditHex32Schema,
+  })
+  .strict();
+
+export type ElectionManifest = Omit<Readonly<Infer<typeof electionManifestArtifactSchema>>, 'choices'> & {
+  readonly choices: Readonly<Infer<typeof electionManifestArtifactSchema>['choices']>;
+};
+export type CloseStatement = Readonly<Infer<typeof closeStatementArtifactSchema>>;
 
 function normalizeHex32(value: string, label: string): string {
   if (!isValidHexString(value, 32)) {
@@ -102,50 +122,9 @@ export function buildCloseStatement(input: {
 }
 
 export function isElectionManifest(value: unknown): value is ElectionManifest {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  const electionId = getStringProperty(value, 'electionId');
-  const totalExpected = getNumberProperty(value, 'totalExpected');
-  const choices = value['choices'];
-  const version = getStringProperty(value, 'version');
-  const botCount = getNumberProperty(value, 'botCount');
-  const merkleTreeDepth = getNumberProperty(value, 'merkleTreeDepth');
-  const electionConfigHash = getStringProperty(value, 'electionConfigHash');
-
-  return Boolean(
-    electionId &&
-    Number.isInteger(totalExpected) &&
-    Array.isArray(choices) &&
-    choices.every((choice) => typeof choice === 'string') &&
-    version &&
-    Number.isInteger(botCount) &&
-    Number.isInteger(merkleTreeDepth) &&
-    electionConfigHash &&
-    isValidHexString(electionConfigHash, 32),
-  );
+  return electionManifestArtifactSchema.safeParse(value).success;
 }
 
 export function isCloseStatement(value: unknown): value is CloseStatement {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  const logId = getStringProperty(value, 'logId');
-  const treeSize = getNumberProperty(value, 'treeSize');
-  const timestamp = getNumberProperty(value, 'timestamp');
-  const bulletinRoot = getStringProperty(value, 'bulletinRoot');
-  const sthDigest = getStringProperty(value, 'sthDigest');
-
-  return Boolean(
-    logId &&
-    isValidHexString(logId, 32) &&
-    Number.isInteger(treeSize) &&
-    Number.isInteger(timestamp) &&
-    bulletinRoot &&
-    isValidHexString(bulletinRoot, 32) &&
-    sthDigest &&
-    isValidHexString(sthDigest, 32),
-  );
+  return closeStatementArtifactSchema.safeParse(value).success;
 }

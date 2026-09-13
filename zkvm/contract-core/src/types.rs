@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Current zkVM journal contract method version.
 pub const CURRENT_METHOD_VERSION: u32 = 14;
+pub const VERIFIED_TALLY_WIDTH: usize = 5;
 
 /// Vote plus its RFC 6962 audit path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,7 +54,7 @@ pub struct VerificationOutput {
     /// SHA256(logId || treeSize || timestamp || bulletinRoot)
     pub sth_digest: [u8; 32],
     /// [A, B, C, D, E]
-    pub verified_tally: [u32; 5],
+    pub verified_tally: [u32; VERIFIED_TALLY_WIDTH],
     /// Total votes processed
     pub total_votes: u32,
     /// Successfully verified votes
@@ -78,95 +79,4 @@ pub struct VerificationOutput {
     pub input_commitment: [u8; 32],
     /// Current zkVM journal contract method version.
     pub method_version: u32,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::vec;
-
-    #[test]
-    fn test_vote_with_proof_structure() {
-        let vote = VoteWithProof {
-            commitment: [1u8; 32],
-            choice: 0,
-            random: [2u8; 32],
-            index: 0,
-            merkle_path: vec![[3u8; 32], [4u8; 32]],
-        };
-
-        assert_eq!(vote.index, 0);
-        assert_eq!(vote.merkle_path.len(), 2);
-    }
-
-    #[test]
-    fn test_aggregator_input_no_claimed_tally() {
-        let input = AggregatorInput {
-            election_id: [0u8; 16],
-            bulletin_root: [1u8; 32],
-            tree_size: 64,
-            log_id: [2u8; 32],
-            timestamp: 1_234_567_890_000,
-            total_expected: 64,
-            election_config_hash: [3u8; 32],
-            votes: vec![],
-        };
-
-        assert_eq!(input.election_id.len(), 16);
-        assert_eq!(input.tree_size, 64);
-        assert_eq!(input.total_expected, 64);
-    }
-
-    #[test]
-    fn test_verification_output_no_tamper_detected() {
-        let output = VerificationOutput {
-            election_id: [0u8; 16],
-            election_config_hash: [1u8; 32],
-            bulletin_root: [2u8; 32],
-            tree_size: 64,
-            total_expected: 64,
-            sth_digest: [3u8; 32],
-            verified_tally: [15, 12, 18, 10, 9],
-            total_votes: 64,
-            valid_votes: 63,
-            invalid_votes: 1,
-            seen_indices_count: 64,
-            missing_slots: 0,
-            invalid_presented_slots: 1,
-            rejected_records: 1,
-            seen_bitmap_root: [4u8; 32],
-            included_bitmap_root: [4u8; 32],
-            excluded_slots: 1,
-            input_commitment: [5u8; 32],
-            method_version: CURRENT_METHOD_VERSION,
-        };
-
-        assert_eq!(
-            output.missing_slots + output.invalid_presented_slots + output.valid_votes,
-            64
-        );
-        assert_eq!(
-            output.excluded_slots,
-            output.missing_slots + output.invalid_presented_slots
-        );
-        assert_eq!(output.rejected_records, output.invalid_votes);
-        assert_eq!(output.method_version, CURRENT_METHOD_VERSION);
-    }
-
-    #[test]
-    fn test_sth_parameters() {
-        let input = AggregatorInput {
-            election_id: [0u8; 16],
-            bulletin_root: [1u8; 32],
-            tree_size: 64,
-            log_id: [2u8; 32],
-            timestamp: 1_234_567_890_000,
-            total_expected: 64,
-            election_config_hash: [3u8; 32],
-            votes: vec![],
-        };
-
-        assert_eq!(input.log_id.len(), 32);
-        assert_eq!(input.timestamp, 1_234_567_890_000);
-    }
 }

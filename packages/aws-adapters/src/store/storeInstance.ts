@@ -5,7 +5,7 @@
 import { MockSessionStore } from './mockSessionStore';
 import { FileMockSessionStore } from './fileMockSessionStore';
 import { DynamoSessionStore } from './dynamoSessionStore';
-import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
+import type { ApplicationVoteStore } from '@stark-ballot/application/session/session-vote-store';
 import type { VerificationResultStore } from '@stark-ballot/application/finalize/finalization-result-store';
 import type { FinalizationStore } from '@stark-ballot/application/finalize/finalization-store';
 import type { AwsFinalizationDeliveryMetadataStore } from '@stark-ballot/aws-adapters/finalize/finalizationDeliveryMetadataStore';
@@ -18,7 +18,7 @@ import { validateEnv } from '@stark-ballot/runtime-config/env/validate';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { getSharedDynamoDocumentClient } from '@stark-ballot/aws-adapters/aws/dynamodbConfig';
 
-export type ApiSessionStore = VoteStore &
+export type ApiSessionStore = ApplicationVoteStore &
   FinalizationStore &
   VerificationResultStore &
   AwsFinalizationDeliveryMetadataStore &

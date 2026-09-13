@@ -211,27 +211,26 @@ export class ScenarioRunner {
     report += '║         Test Summary Report              ║\n';
     report += '╚══════════════════════════════════════════╝\n\n';
 
-    report += '📊 Overall Statistics:\n';
+    report += 'Overall Statistics:\n';
     report += `  • Total Tests: ${totalTests}\n`;
     report += `  • Passed: ${passedTests} (${successRate}%)\n`;
     report += `  • Failed: ${failedTests}\n`;
     report += `  • Total Duration: ${(totalDuration / 1000).toFixed(2)}s\n`;
     report += `  • Average Duration: ${(avgDuration / 1000).toFixed(2)}s\n`;
 
-    report += '\n📋 Detailed Results:\n';
+    report += '\nDetailed Results:\n';
     report += '─────────────────────────────────────\n';
 
     for (const result of results) {
-      const status = result.passed ? '✅' : '❌';
-      const tamperIcon = result.tamperDetected ? '🚨' : '✓';
+      const status = result.passed ? 'PASS' : 'FAIL';
+      const tamperStatus = result.tamperDetected ? 'tamper detected' : 'no tamper';
 
-      report += `\n${status} ${result.scenario}: `;
-      report += result.passed ? 'PASS' : 'FAIL';
-      report += ` ${tamperIcon} (${result.duration}ms)\n`;
+      report += `\n${result.scenario}: ${status}`;
+      report += ` (${tamperStatus}, ${result.duration}ms)\n`;
 
       // Include metrics if available
       if (result.metrics) {
-        report += `   ⏱ Performance:\n`;
+        report += `   Performance:\n`;
         if (result.metrics.sessionCreationTime !== undefined) {
           report += `     • Session: ${result.metrics.sessionCreationTime}ms\n`;
         }
@@ -245,7 +244,7 @@ export class ScenarioRunner {
 
       // Include errors
       if (result.errors.length > 0) {
-        report += `   ⚠️ Errors:\n`;
+        report += `   Errors:\n`;
         for (const error of result.errors) {
           report += `     • ${error}\n`;
         }
@@ -254,7 +253,7 @@ export class ScenarioRunner {
       // Include tally details
       if (result.details) {
         if (result.details.verifiedTally) {
-          report += `   📊 Tally:\n`;
+          report += `   Tally:\n`;
           report += `     • Verified: [${result.details.verifiedTally.join(', ')}]\n`;
         }
 
@@ -264,7 +263,7 @@ export class ScenarioRunner {
           typeof result.details.validVotes === 'number' ||
           typeof result.details.excludedSlots === 'number'
         ) {
-          report += `   📈 Counts: missingSlots=${result.details.missingSlots ?? 'n/a'}, invalidPresentedSlots=${
+          report += `   Counts: missingSlots=${result.details.missingSlots ?? 'n/a'}, invalidPresentedSlots=${
             result.details.invalidPresentedSlots ?? 'n/a'
           }, validVotes=${result.details.validVotes ?? 'n/a'}, excludedSlots=${
             result.details.excludedSlots ?? 'n/a'
@@ -294,7 +293,7 @@ export class ScenarioRunner {
     report += '\n--- Results ---\n';
 
     for (const result of results) {
-      const status = result.passed ? '✅ PASS' : '❌ FAIL';
+      const status = result.passed ? 'PASS' : 'FAIL';
       const tamper = result.tamperDetected ? '(tamper detected)' : '(no tamper)';
       report += `${result.scenario}: ${status} ${tamper}\n`;
 
@@ -313,7 +312,7 @@ export class ScenarioRunner {
    */
   private generateScenarioLegend(): string {
     return `
-📖 Scenario Legend:
+Scenario Legend:
   • S0: Normal case (no tampering)
   • S1: Ignore user vote
   • S2: Tamper claimed tally for your vote

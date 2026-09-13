@@ -9,11 +9,20 @@ import { isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primi
 import { explainVoteInclusionStatus, verifyMyVoteWasCounted } from '@stark-ballot/verification/bitmap-verifier';
 import { asAuthenticatedBitmapTreeSize } from '@stark-ballot/verification/bitmap-proof-types';
 import { toCanonicalRfc6962Proof } from '@stark-ballot/merkle/rfc6962-proof';
-import type { CheckResult, VerificationContext, VerificationStatus } from './types';
+import type {
+  AdmittedVerificationEvidence,
+  AdmittedVerifierOutcome,
+  CheckResult,
+  VerificationCheckContext,
+  VerificationEvaluationInput,
+} from './types';
 import { asBulletinIndex, asLeafIndex } from '../index-identifiers';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { verifyConsistencyProof } from '../consistency-verifier';
 import { evaluateLocalCastChecks, type LocalCastCheckResults } from '@stark-ballot/verification/local-cast-checks';
+import { admitVerificationEvidence, evidenceValue } from './admit-evidence';
+
+export { admitVerifierOutcome } from './admit-evidence';
 
 export interface EvaluateChecksOptions {
   applyZkGate?: boolean;
@@ -29,13 +38,34 @@ interface EvaluationHelpers {
   evaluate: (id: VerificationCheckId) => Promise<CheckResult>;
 }
 
-type CheckEvaluator = (
-  ctx: VerificationContext,
+const ZK_GATE_CONTROLLED_CHECK_IDS = new Set<VerificationCheckId>([
+  'counted_tally_consistent',
+  'counted_expected_vs_tree_size',
+  'counted_election_manifest_consistent',
+  'counted_close_statement_consistent',
+  'counted_my_vote_included',
+  'counted_input_commitment_match',
+]);
+
+/** Identifies checks whose status is replaced outright by a non-success zkVM gate. */
+export function isCheckStatusZkGateControlled(id: VerificationCheckId): boolean {
+  return ZK_GATE_CONTROLLED_CHECK_IDS.has(id);
+}
+
+type CheckEvaluator<Id extends VerificationCheckId> = (
+  ctx: VerificationCheckContext<Id>,
   runtime: EvaluationRuntime,
   helpers: EvaluationHelpers,
 ) => CheckResult | Promise<CheckResult>;
 
-export const CHECK_EVALUATORS: Record<VerificationCheckId, CheckEvaluator> = {
+type CheckEvaluatorMap = { readonly [Id in VerificationCheckId]: CheckEvaluator<Id> };
+type CheckContextSelectorMap = {
+  readonly [Id in VerificationCheckId]: (evidence: AdmittedVerificationEvidence) => VerificationCheckContext<Id>;
+};
+
+const NO_CHECK_EVIDENCE = {};
+
+export const CHECK_EVALUATORS: CheckEvaluatorMap = {
   cast_receipt_present: (_ctx, runtime) => runtime.localCastResults.cast_receipt_present,
   cast_choice_range: (_ctx, runtime) => runtime.localCastResults.cast_choice_range,
   cast_random_format: (_ctx, runtime) => runtime.localCastResults.cast_random_format,
@@ -62,28 +92,126 @@ export const CHECK_EVALUATORS: Record<VerificationCheckId, CheckEvaluator> = {
   stark_receipt_verify: (_ctx, runtime) => ({ status: runtime.starkStatus }),
 };
 
+const CHECK_CONTEXT_SELECTORS: CheckContextSelectorMap = {
+  cast_receipt_present: () => NO_CHECK_EVIDENCE,
+  cast_choice_range: () => NO_CHECK_EVIDENCE,
+  cast_random_format: () => NO_CHECK_EVIDENCE,
+  cast_commitment_match: () => NO_CHECK_EVIDENCE,
+  recorded_commitment_in_bulletin: () => NO_CHECK_EVIDENCE,
+  recorded_index_in_range: (evidence) => ({
+    voteReceipt: evidenceValue(evidence.userReceipt.voteReceipt),
+    treeSize: evidenceValue(evidence.artifacts.treeSize),
+  }),
+  recorded_root_at_cast_consistent: () => NO_CHECK_EVIDENCE,
+  recorded_inclusion_proof: (evidence) => ({
+    voteReceipt: evidenceValue(evidence.userReceipt.voteReceipt),
+    userVote: evidenceValue(evidence.userReceipt.userVote),
+  }),
+  recorded_consistency_proof: (evidence) => ({
+    voteReceipt: evidenceValue(evidence.userReceipt.voteReceipt),
+    userVote: evidenceValue(evidence.userReceipt.userVote),
+    bulletinRoot: evidenceValue(evidence.artifacts.bulletinRoot),
+    treeSize: evidenceValue(evidence.artifacts.treeSize),
+    consistencyProof: evidence.artifacts.consistencyProof,
+  }),
+  recorded_sth_third_party: (evidence) => ({
+    journal: evidenceValue(evidence.artifacts.journal),
+    sthDigest: evidenceValue(evidence.artifacts.sthDigest),
+    bulletinRoot: evidenceValue(evidence.artifacts.bulletinRoot),
+    treeSize: evidenceValue(evidence.artifacts.treeSize),
+    sthSourcesConfigured: evidenceValue(evidence.identity.sthSourcesConfigured),
+    sthVerification: evidenceValue(evidence.artifacts.sthVerification),
+  }),
+  counted_input_sanity: (evidence) => ({
+    publicInputAuthority: evidenceValue(evidence.artifacts.publicInputAuthority),
+  }),
+  counted_unique_indices: (evidence) => ({
+    publicInputAuthority: evidenceValue(evidence.artifacts.publicInputAuthority),
+  }),
+  counted_unique_commitments: (evidence) => ({
+    publicInputAuthority: evidenceValue(evidence.artifacts.publicInputAuthority),
+  }),
+  counted_tally_consistent: (evidence) => ({
+    journal: evidenceValue(evidence.artifacts.journal),
+    tally: evidenceValue(evidence.tally.tally),
+    verifiedTally: evidenceValue(evidence.tally.verifiedTally),
+  }),
+  counted_missing_indices_zero: (evidence) => ({
+    journal: evidenceValue(evidence.artifacts.journal),
+    missingSlots: evidenceValue(evidence.tally.missingSlots),
+    invalidPresentedSlots: evidenceValue(evidence.tally.invalidPresentedSlots),
+    excludedSlots: evidenceValue(evidence.tally.excludedSlots),
+  }),
+  counted_expected_vs_tree_size: (evidence) => ({
+    journal: evidenceValue(evidence.artifacts.journal),
+    totalExpected: evidenceValue(evidence.tally.totalExpected),
+    treeSize: evidenceValue(evidence.artifacts.treeSize),
+  }),
+  counted_election_manifest_consistent: (evidence) => ({
+    electionManifest: evidenceValue(evidence.artifacts.electionManifest),
+    electionId: evidenceValue(evidence.identity.electionId),
+    electionConfigHash: evidenceValue(evidence.identity.electionConfigHash),
+    publicInputAuthority: evidenceValue(evidence.artifacts.publicInputAuthority),
+    journal: evidenceValue(evidence.artifacts.journal),
+  }),
+  counted_close_statement_consistent: (evidence) => ({
+    closeStatement: evidenceValue(evidence.artifacts.closeStatement),
+    publicInputAuthority: evidenceValue(evidence.artifacts.publicInputAuthority),
+    logId: evidenceValue(evidence.identity.logId),
+    treeSize: evidenceValue(evidence.artifacts.treeSize),
+    journal: evidenceValue(evidence.artifacts.journal),
+    bulletinRoot: evidenceValue(evidence.artifacts.bulletinRoot),
+    sthDigest: evidenceValue(evidence.artifacts.sthDigest),
+  }),
+  counted_my_vote_included: (evidence) => ({
+    journal: evidenceValue(evidence.artifacts.journal),
+    includedBitmapRoot: evidenceValue(evidence.artifacts.includedBitmapRoot),
+    seenBitmapRoot: evidenceValue(evidence.artifacts.seenBitmapRoot),
+    treeSize: evidenceValue(evidence.artifacts.treeSize),
+    voteReceipt: evidenceValue(evidence.userReceipt.voteReceipt),
+    bitmapProofSource: evidenceValue(evidence.artifacts.bitmapProofSource),
+    includedBitmapProof: evidence.artifacts.includedBitmapProof,
+    seenBitmapProof: evidence.artifacts.seenBitmapProof,
+    missingSlots: evidenceValue(evidence.tally.missingSlots),
+    invalidPresentedSlots: evidenceValue(evidence.tally.invalidPresentedSlots),
+    excludedSlots: evidenceValue(evidence.tally.excludedSlots),
+  }),
+  counted_input_commitment_match: (evidence) => ({
+    journal: evidenceValue(evidence.artifacts.journal),
+    inputCommitment: evidenceValue(evidence.tally.inputCommitment),
+    publicInputAuthority: evidenceValue(evidence.artifacts.publicInputAuthority),
+  }),
+  stark_image_id_match: (evidence) => ({
+    claimedImageId: evidenceValue(evidence.identity.claimedImageId),
+    comparisonImageId: evidenceValue(evidence.identity.comparisonImageId),
+    verificationReport:
+      evidence.verifierOutcome.report.availability === 'available' ? evidence.verifierOutcome.report.value : undefined,
+  }),
+  stark_receipt_verify: () => NO_CHECK_EVIDENCE,
+};
+
 /**
  * Evaluate a targeted subset of verification checks.
  */
 export async function evaluateChecks(
-  ctx: VerificationContext,
+  input: VerificationEvaluationInput,
   checkIds: readonly VerificationCheckId[],
   options: EvaluateChecksOptions = {},
 ): Promise<Map<VerificationCheckId, CheckResult>> {
+  const evidence = admitVerificationEvidence(input);
   const applyZkGate = options.applyZkGate ?? true;
   const starkStatus = resolveStarkStatus(
-    ctx.verificationStatus,
-    ctx.verificationReportStatus,
-    ctx.allowDevModeVerification,
+    evidence.verifierOutcome,
+    evidenceValue(evidence.identity.allowDevModeVerification),
   );
   const runtime: EvaluationRuntime = {
     starkStatus,
     localCastResults: evaluateLocalCastChecks(
       omitUndefinedProperties({
-        electionId: ctx.electionId,
-        voteReceipt: ctx.voteReceipt,
-        choice: ctx.userVote?.vote,
-        random: ctx.userVote?.random,
+        electionId: evidenceValue(evidence.identity.electionId),
+        voteReceipt: evidenceValue(evidence.userReceipt.voteReceipt),
+        choice: evidenceValue(evidence.userReceipt.userVote)?.vote,
+        random: evidenceValue(evidence.userReceipt.userVote)?.random,
       }),
     ),
     ...omitUndefinedProperties({ zkGateStatus: applyZkGate ? resolveZkGateStatus(starkStatus) : undefined }),
@@ -96,8 +224,7 @@ export async function evaluateChecks(
       if (cached) {
         return cached;
       }
-      const evaluator = CHECK_EVALUATORS[id];
-      const resultPromise = Promise.resolve(evaluator(ctx, runtime, helpers));
+      const resultPromise = Promise.resolve(evaluateSelectedCheck(id, evidence, runtime, helpers));
       cache.set(id, resultPromise);
       return resultPromise;
     },
@@ -109,13 +236,26 @@ export async function evaluateChecks(
 }
 
 export async function evaluateAllChecks(
-  ctx: VerificationContext,
+  ctx: VerificationEvaluationInput,
   options: EvaluateChecksOptions = {},
 ): Promise<Map<VerificationCheckId, CheckResult>> {
   return evaluateChecks(ctx, VERIFICATION_CHECK_IDS, options);
 }
 
-async function resolveRecordedInclusionProof(ctx: VerificationContext): Promise<CheckResult> {
+function evaluateSelectedCheck<Id extends VerificationCheckId>(
+  id: Id,
+  evidence: AdmittedVerificationEvidence,
+  runtime: EvaluationRuntime,
+  helpers: EvaluationHelpers,
+): CheckResult | Promise<CheckResult> {
+  // Both mapped registries are checked over the same closed ID set above;
+  // TypeScript does not retain that key correlation for the evaluator lookup.
+  const evaluator = CHECK_EVALUATORS[id] as CheckEvaluator<Id>;
+  const selectContext = CHECK_CONTEXT_SELECTORS[id];
+  return evaluator(selectContext(evidence), runtime, helpers);
+}
+
+export function resolveRecordedInclusionProof(ctx: VerificationCheckContext<'recorded_inclusion_proof'>): CheckResult {
   const userVote = ctx.userVote;
   const voteReceipt = ctx.voteReceipt;
   const proof = toCanonicalRfc6962Proof(userVote?.proof);
@@ -152,8 +292,12 @@ async function resolveRecordedInclusionProof(ctx: VerificationContext): Promise<
     return { status: 'failed', error: 'Inclusion proof root does not match receipt root at cast.' };
   }
   try {
-    const included = await Promise.resolve(
-      verifyCTMerkleInclusion(commitment, proof.merklePath, proof.leafIndex, proof.bulletinRootAtCast, proof.treeSize),
+    const included = verifyCTMerkleInclusion(
+      commitment,
+      proof.merklePath,
+      proof.leafIndex,
+      proof.bulletinRootAtCast,
+      proof.treeSize,
     );
     return included ? { status: 'success' } : { status: 'failed', error: 'Inclusion proof verification failed.' };
   } catch (error) {
@@ -164,7 +308,10 @@ async function resolveRecordedInclusionProof(ctx: VerificationContext): Promise<
   }
 }
 
-function resolveRecordedIndexInRange(voteReceipt: VerificationContext['voteReceipt'], treeSize?: number): CheckResult {
+export function resolveRecordedIndexInRange(
+  voteReceipt: VerificationCheckContext<'recorded_index_in_range'>['voteReceipt'],
+  treeSize?: number,
+): CheckResult {
   if (!voteReceipt || typeof treeSize !== 'number') {
     return { status: 'not_run' };
   }
@@ -182,7 +329,7 @@ function resolveRecordedIndexInRange(voteReceipt: VerificationContext['voteRecei
     : { status: 'failed', error: 'Invalid bulletin index' };
 }
 
-function resolveRecordedConsistencyProof(input: VerificationContext): CheckResult {
+function resolveRecordedConsistencyProof(input: VerificationCheckContext<'recorded_consistency_proof'>): CheckResult {
   const { consistencyProof, voteReceipt, bulletinRoot, treeSize, userVote } = input;
   if (!voteReceipt || !voteReceipt.bulletinRootAtCast || !bulletinRoot || typeof treeSize !== 'number') {
     return { status: 'not_run' };
@@ -222,7 +369,7 @@ function resolveRecordedConsistencyProof(input: VerificationContext): CheckResul
     return { status: 'failed', error: 'Consistency proof tree size exceeds final bulletin size.' };
   }
 
-  if (!consistencyProof || consistencyProof.kind === 'unavailable') {
+  if (consistencyProof.kind === 'unavailable') {
     return { status: 'not_run' };
   }
   if (consistencyProof.kind !== 'admitted') {
@@ -243,7 +390,7 @@ function resolveRecordedConsistencyProof(input: VerificationContext): CheckResul
     : { status: 'failed', error: result.error ?? 'Consistency proof verification failed.' };
 }
 
-function resolveRecordedSthThirdParty(input: VerificationContext): CheckResult {
+function resolveRecordedSthThirdParty(input: VerificationCheckContext<'recorded_sth_third_party'>): CheckResult {
   const sthDigest = input.journal?.sthDigest ?? input.sthDigest;
   const bulletinRoot = input.journal?.bulletinRoot ?? input.bulletinRoot;
   const treeSize = input.journal?.treeSize ?? input.treeSize;
@@ -263,7 +410,7 @@ function resolveRecordedSthThirdParty(input: VerificationContext): CheckResult {
   return { status };
 }
 
-function resolveCountedInputSanity(input: VerificationContext): CheckResult {
+function resolveCountedInputSanity(input: VerificationCheckContext<'counted_input_sanity'>): CheckResult {
   const publicInput = input.publicInputAuthority;
   if (!publicInput) {
     return { status: 'not_run' };
@@ -282,7 +429,7 @@ function resolveCountedInputSanity(input: VerificationContext): CheckResult {
   return normalizeHexString(bulletinRoot) === '0'.repeat(64) ? { status: 'failed' } : { status: 'success' };
 }
 
-function resolveCountedUniqueIndices(input: VerificationContext): CheckResult {
+function resolveCountedUniqueIndices(input: VerificationCheckContext<'counted_unique_indices'>): CheckResult {
   const publicInput = input.publicInputAuthority;
   if (!publicInput) {
     return { status: 'not_run' };
@@ -290,7 +437,7 @@ function resolveCountedUniqueIndices(input: VerificationContext): CheckResult {
   return publicInput.uniqueIndices ? { status: 'success' } : { status: 'failed' };
 }
 
-function resolveCountedUniqueCommitments(input: VerificationContext): CheckResult {
+function resolveCountedUniqueCommitments(input: VerificationCheckContext<'counted_unique_commitments'>): CheckResult {
   const publicInput = input.publicInputAuthority;
   if (!publicInput) {
     return { status: 'not_run' };
@@ -298,7 +445,10 @@ function resolveCountedUniqueCommitments(input: VerificationContext): CheckResul
   return publicInput.uniqueCommitments ? { status: 'success' } : { status: 'failed' };
 }
 
-function resolveCountedTallyConsistent(input: VerificationContext, zkGateStatus?: VerificationStepStatus): CheckResult {
+export function resolveCountedTallyConsistent(
+  input: VerificationCheckContext<'counted_tally_consistent'>,
+  zkGateStatus?: VerificationStepStatus,
+): CheckResult {
   if (zkGateStatus) {
     return { status: zkGateStatus };
   }
@@ -346,8 +496,8 @@ function resolveCountedTallyConsistent(input: VerificationContext, zkGateStatus?
   return { status: 'success' };
 }
 
-function resolveCountedMissingIndicesZero(
-  input: VerificationContext,
+export function resolveCountedMissingIndicesZero(
+  input: VerificationCheckContext<'counted_missing_indices_zero'>,
   zkGateStatus?: VerificationStepStatus,
 ): CheckResult {
   const journalCountError = resolveInvalidJournalCounts(input.journal);
@@ -377,8 +527,8 @@ function resolveCountedMissingIndicesZero(
   return { status: 'success' };
 }
 
-function resolveCountedExpectedVsTreeSize(
-  input: VerificationContext,
+export function resolveCountedExpectedVsTreeSize(
+  input: VerificationCheckContext<'counted_expected_vs_tree_size'>,
   zkGateStatus?: VerificationStepStatus,
 ): CheckResult {
   if (zkGateStatus) {
@@ -397,7 +547,7 @@ function resolveCountedExpectedVsTreeSize(
 }
 
 function resolveCountedInputCommitmentMatch(
-  input: VerificationContext,
+  input: VerificationCheckContext<'counted_input_commitment_match'>,
   zkGateStatus?: VerificationStepStatus,
 ): CheckResult {
   if (zkGateStatus) {
@@ -425,7 +575,7 @@ function resolveCountedInputCommitmentMatch(
 }
 
 function resolveCountedElectionManifestConsistent(
-  input: VerificationContext,
+  input: VerificationCheckContext<'counted_election_manifest_consistent'>,
   zkGateStatus?: VerificationStepStatus,
 ): CheckResult {
   if (zkGateStatus) {
@@ -468,7 +618,7 @@ function resolveCountedElectionManifestConsistent(
 }
 
 function resolveCountedCloseStatementConsistent(
-  input: VerificationContext,
+  input: VerificationCheckContext<'counted_close_statement_consistent'>,
   zkGateStatus?: VerificationStepStatus,
 ): CheckResult {
   if (zkGateStatus) {
@@ -536,7 +686,9 @@ function resolveCountedCloseStatementConsistent(
   return { status: 'success' };
 }
 
-function resolveInvalidJournalCounts(journal: VerificationContext['journal']): CheckResult | undefined {
+function resolveInvalidJournalCounts(
+  journal: VerificationCheckContext<'counted_missing_indices_zero'>['journal'],
+): CheckResult | undefined {
   if (!journal) {
     return undefined;
   }
@@ -569,7 +721,10 @@ function isValidCount(value: number | undefined): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
-function resolveCountedMyVoteIncluded(input: VerificationContext, zkGateStatus?: VerificationStepStatus): CheckResult {
+function resolveCountedMyVoteIncluded(
+  input: VerificationCheckContext<'counted_my_vote_included'>,
+  zkGateStatus?: VerificationStepStatus,
+): CheckResult {
   if (zkGateStatus) {
     return { status: zkGateStatus };
   }
@@ -601,7 +756,7 @@ function resolveCountedMyVoteIncluded(input: VerificationContext, zkGateStatus?:
     return noteKey ? { status: 'not_run', noteKey } : { status: 'not_run' };
   }
 
-  if (!input.includedBitmapProof || input.includedBitmapProof.kind !== 'admitted') {
+  if (input.includedBitmapProof.kind !== 'admitted') {
     const noteKey = resolveCountedMyVoteIncludedNoteKey(input, 'not_run', zkGateStatus);
     return noteKey ? { status: 'not_run', noteKey } : { status: 'not_run' };
   }
@@ -616,7 +771,7 @@ function resolveCountedMyVoteIncluded(input: VerificationContext, zkGateStatus?:
           },
           {
             includedProof: input.includedBitmapProof.value,
-            ...(input.seenBitmapProof?.kind === 'admitted' ? { seenProof: input.seenBitmapProof.value } : {}),
+            ...(input.seenBitmapProof.kind === 'admitted' ? { seenProof: input.seenBitmapProof.value } : {}),
             treeSize: authenticatedTreeSize,
           },
         )
@@ -647,7 +802,7 @@ function resolveCountedMyVoteIncluded(input: VerificationContext, zkGateStatus?:
 }
 
 function resolveCountedMyVoteIncludedNoteKey(
-  input: VerificationContext,
+  input: VerificationCheckContext<'counted_my_vote_included'>,
   status: VerificationStepStatus | undefined,
   zkGateStatus?: VerificationStepStatus,
 ): VerificationCheckNoteKey | undefined {
@@ -687,7 +842,10 @@ function isValidImageId(value: unknown): value is string {
   return typeof value === 'string' && isValidHexString(value, 32);
 }
 
-function resolveStarkImageIdMatch(ctx: VerificationContext, status: VerificationStepStatus): CheckResult {
+function resolveStarkImageIdMatch(
+  ctx: VerificationCheckContext<'stark_image_id_match'>,
+  status: VerificationStepStatus,
+): CheckResult {
   if (status === 'running' || status === 'not_run' || status === 'failed') {
     return { status };
   }
@@ -739,38 +897,16 @@ function resolveStarkImageIdMatch(ctx: VerificationContext, status: Verification
 }
 
 export function resolveStarkStatus(
-  verificationStatus?: VerificationStatus,
-  verificationReportStatus?: VerificationStatus,
+  outcome: AdmittedVerifierOutcome,
   allowDevModeVerification?: boolean,
 ): VerificationStepStatus {
-  if (verificationStatus === 'running' || verificationStatus === 'not_run') {
-    return verificationStatus;
-  }
-
-  const resolvedReportStatus = normalizeVerificationStatus(verificationReportStatus, allowDevModeVerification);
-  if (resolvedReportStatus) {
-    return resolvedReportStatus;
-  }
-
-  return normalizeVerificationStatus(verificationStatus, allowDevModeVerification) ?? 'not_run';
-}
-
-function normalizeVerificationStatus(
-  status: VerificationStatus | undefined,
-  allowDevModeVerification?: boolean,
-): VerificationStepStatus | undefined {
-  if (!status) {
-    return undefined;
-  }
-
-  if (status === 'dev_mode') {
+  if (outcome.status === 'dev_mode') {
     return allowDevModeVerification ? 'success' : 'not_run';
   }
-
-  return status;
+  return outcome.status;
 }
 
-function resolveZkGateStatus(starkStatus: VerificationStepStatus): VerificationStepStatus | undefined {
+export function resolveZkGateStatus(starkStatus: VerificationStepStatus): VerificationStepStatus | undefined {
   if (starkStatus === 'running') {
     return 'pending';
   }

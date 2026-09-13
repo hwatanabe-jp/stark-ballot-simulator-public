@@ -1,6 +1,5 @@
-import { API_ROUTES, buildApiRouteUrl } from '@stark-ballot/api-contract/routes';
+import { API_ROUTES } from '@stark-ballot/api-contract/routes';
 import {
-  FinalizationResourceSchema,
   type FinalizationCancelRequest,
   type FinalizationCreateRequest,
   type FinalizationResource,
@@ -14,7 +13,8 @@ import {
 } from './client';
 
 export type StartFinalizationResult =
-  { status: 200; data: FinalizationResource } | { status: 202; data: FinalizationResource };
+  | { status: 200; data: FinalizationResource }
+  | { status: 202; data: FinalizationResource };
 
 export async function startFinalization(
   identity: ApiSessionIdentity,
@@ -23,15 +23,13 @@ export async function startFinalization(
 ): Promise<StartFinalizationResult> {
   const result = await requestJsonRoute(
     API_ROUTES.createFinalization,
-    buildApiRouteUrl(API_ROUTES.createFinalization, {
-      params: { sessionId: identity.sessionId },
-    }),
-    'finalization',
     {
-      ...options,
+      params: { sessionId: identity.sessionId },
       headers: buildPathSessionHeaders(identity),
       body: request,
     },
+    'finalization',
+    options,
   );
   return { status: result.status, data: result.body.data };
 }
@@ -42,25 +40,14 @@ export async function fetchCurrentFinalization(
 ): Promise<FinalizationResource | null> {
   const result = await requestJsonRoute(
     API_ROUTES.currentFinalization,
-    buildApiRouteUrl(API_ROUTES.currentFinalization, {
-      params: { sessionId: identity.sessionId },
-    }),
-    'current finalization',
     {
-      ...options,
+      params: { sessionId: identity.sessionId },
       headers: buildPathSessionHeaders(identity),
     },
+    'current finalization',
+    options,
   );
   return result.body.data;
-}
-
-export function parseFinalizationResource(input: unknown): FinalizationResource {
-  const parsed = FinalizationResourceSchema.safeParse(input);
-  if (!parsed.success) {
-    const issueMessage = parsed.error.issues[0]?.message ?? 'schema validation failed';
-    throw new Error(`Invalid finalization resource payload: ${issueMessage}`);
-  }
-  return parsed.data;
 }
 
 export async function cancelFinalization(
@@ -71,18 +58,16 @@ export async function cancelFinalization(
 ): Promise<FinalizationResource> {
   const result = await requestJsonRoute(
     API_ROUTES.cancelFinalization,
-    buildApiRouteUrl(API_ROUTES.cancelFinalization, {
+    {
       params: {
         sessionId: identity.sessionId,
         finalizationId,
       },
-    }),
-    'finalization cancellation',
-    {
-      ...options,
       headers: buildPathSessionHeaders(identity),
       body: request,
     },
+    'finalization cancellation',
+    options,
   );
   return result.body.data;
 }

@@ -1,5 +1,5 @@
 data "aws_iam_policy_document" "app_github_trigger" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   statement {
     sid    = "TriggerAndObserveDevelopmentAppPipelines"
@@ -19,7 +19,7 @@ data "aws_iam_policy_document" "app_github_trigger" {
 }
 
 resource "aws_iam_role_policy" "app_github_trigger" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  count = local.app_static_fast_enabled ? 1 : 0
 
   name   = "${local.app_github_trigger_role_name}-policy"
   role   = aws_iam_role.app_github_trigger[0].id

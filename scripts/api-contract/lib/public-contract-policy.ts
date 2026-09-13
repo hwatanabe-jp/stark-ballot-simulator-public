@@ -88,7 +88,163 @@ export interface DriftClassification {
   comparatorType: typeof CLASSIFICATION_TYPE;
   baselineContractHash: string;
   baselineSourceSha: string;
+  currentContractHash: string;
+  reason: string;
   allowedDriftPaths: string[];
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireExactKeys(record: Record<string, unknown>, keys: readonly string[], label: string): void {
+  const actual = Object.keys(record).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`${label} must contain exactly: ${expected.join(', ')}`);
+  }
+}
+
+function requireString(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${label} must be a nonempty string`);
+  }
+  return value;
+}
+
+function requireArray(value: unknown, label: string): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array`);
+  }
+  return value;
+}
+
+function requireStringArray(value: unknown, label: string): string[] {
+  const entries = requireArray(value, label);
+  if (entries.some((entry) => typeof entry !== 'string')) {
+    throw new Error(`${label} must contain only strings`);
+  }
+  return [...entries] as string[];
+}
+
+function requireStringMap(value: unknown, label: string): Record<string, string> {
+  const record = requireRecord(value, label);
+  if (Object.values(record).some((entry) => typeof entry !== 'string')) {
+    throw new Error(`${label} must contain only string values`);
+  }
+  return { ...record } as Record<string, string>;
+}
+
+export function parseSchemaSemanticSnapshot(value: unknown, label: string): SchemaSemanticSnapshot {
+  const snapshot = requireRecord(value, label);
+  requireExactKeys(snapshot, ['algorithm', 'fingerprints'], label);
+  if (snapshot['algorithm'] !== SCHEMA_SEMANTIC_ALGORITHM) {
+    throw new Error(`${label} has unsupported schema semantic algorithm`);
+  }
+  return {
+    algorithm: snapshot['algorithm'],
+    fingerprints: requireStringMap(snapshot['fingerprints'], `${label}.fingerprints`),
+  };
+}
+
+export function parsePublicContractSnapshot(value: unknown, label: string): PublicContractSnapshot {
+  const snapshot = requireRecord(value, label);
+  requireExactKeys(
+    snapshot,
+    [
+      'capturedAt',
+      'comparatorType',
+      'contractHash',
+      'dirtyStatus',
+      'mountedBehavior',
+      'mountedBehaviorCoverage',
+      'mountedRoutes',
+      'routeContracts',
+      'schemaAuthorityFingerprints',
+      'schemaExports',
+      'schemaFingerprints',
+      'schemaSemantics',
+      'sourceRef',
+      'sourceSha',
+    ],
+    label,
+  );
+  if (snapshot['comparatorType'] !== PUBLIC_CONTRACT_COMPARATOR_TYPE) {
+    throw new Error(`${label} has unsupported comparatorType: ${String(snapshot['comparatorType'])}`);
+  }
+  const dirtyStatus = snapshot['dirtyStatus'];
+  if (!['clean', 'dirty', 'source-ref', 'source-archive'].includes(String(dirtyStatus))) {
+    throw new Error(`${label}.dirtyStatus is unsupported`);
+  }
+  const admitted: PublicContractSnapshot = {
+    comparatorType: snapshot['comparatorType'],
+    sourceRef: requireString(snapshot['sourceRef'], `${label}.sourceRef`),
+    sourceSha: requireString(snapshot['sourceSha'], `${label}.sourceSha`),
+    dirtyStatus: dirtyStatus as PublicContractSnapshot['dirtyStatus'],
+    capturedAt: requireString(snapshot['capturedAt'], `${label}.capturedAt`),
+    contractHash: requireString(snapshot['contractHash'], `${label}.contractHash`),
+    routeContracts: requireArray(snapshot['routeContracts'], `${label}.routeContracts`) as BaselineApiRouteContract[],
+    mountedRoutes: requireArray(snapshot['mountedRoutes'], `${label}.mountedRoutes`) as MountedRouteSnapshot[],
+    mountedBehavior: requireArray(
+      snapshot['mountedBehavior'],
+      `${label}.mountedBehavior`,
+    ) as MountedBehaviorProbeSnapshot[],
+    mountedBehaviorCoverage: requireArray(
+      snapshot['mountedBehaviorCoverage'],
+      `${label}.mountedBehaviorCoverage`,
+    ) as MountedBehaviorCoverageEntry[],
+    schemaExports: requireStringArray(snapshot['schemaExports'], `${label}.schemaExports`),
+    schemaFingerprints: requireStringMap(snapshot['schemaFingerprints'], `${label}.schemaFingerprints`),
+    schemaAuthorityFingerprints: requireStringMap(
+      snapshot['schemaAuthorityFingerprints'],
+      `${label}.schemaAuthorityFingerprints`,
+    ),
+    schemaSemantics: parseSchemaSemanticSnapshot(snapshot['schemaSemantics'], `${label}.schemaSemantics`),
+  };
+  assertValidPublicContractSnapshot(admitted, label);
+  return admitted;
+}
+
+export function parseDriftClassification(value: unknown): DriftClassification {
+  const classification = requireRecord(value, 'public-contract drift classification');
+  requireExactKeys(
+    classification,
+    [
+      'allowedDriftPaths',
+      'baselineContractHash',
+      'baselineSourceSha',
+      'comparatorType',
+      'currentContractHash',
+      'reason',
+    ],
+    'public-contract drift classification',
+  );
+  if (classification['comparatorType'] !== CLASSIFICATION_TYPE) {
+    throw new Error('public-contract drift classification has unsupported comparatorType');
+  }
+  return {
+    comparatorType: classification['comparatorType'],
+    baselineContractHash: requireString(
+      classification['baselineContractHash'],
+      'public-contract drift classification.baselineContractHash',
+    ),
+    baselineSourceSha: requireString(
+      classification['baselineSourceSha'],
+      'public-contract drift classification.baselineSourceSha',
+    ),
+    currentContractHash: requireString(
+      classification['currentContractHash'],
+      'public-contract drift classification.currentContractHash',
+    ),
+    reason: requireString(classification['reason'], 'public-contract drift classification.reason'),
+    allowedDriftPaths: requireStringArray(
+      classification['allowedDriftPaths'],
+      'public-contract drift classification.allowedDriftPaths',
+    ),
+  };
 }
 
 type ComparableMountedRouteSnapshot = Omit<MountedRouteSnapshot, 'routeIds' | 'routes'> & {
@@ -142,6 +298,9 @@ export function comparePublicContractSnapshots(
     classification.baselineSourceSha !== baseline.sourceSha
   ) {
     throw new Error('Public-contract drift classification is not bound to the reviewed baseline');
+  }
+  if (classification.currentContractHash !== current.contractHash) {
+    throw new Error('Public-contract drift classification is not bound to the exact current contract payload');
   }
   const allowed = new Set(classification.allowedDriftPaths);
   if (allowed.size !== classification.allowedDriftPaths.length) {

@@ -1,108 +1,43 @@
-# 利用フロー
+# 投票して、結果を確かめる
 
-このページは、ブラウザでの通常利用順と、その裏で使われる API を一続きで示します。
-検証モデルや zkVM の詳細に入る前に、どの画面で何が作られ、どの時点で何を検証するのかを把握するための入口です。
+最初は改ざんのない通常シナリオ **S0** で、B に一票を入れてみます。操作は「開始する → 投票する → 集計する → 検証する」の順です。
 
-## 画面と API の対応
+## 投票する
 
-| 順序 | 画面 / 状態     | 主な操作                                                                                                                                                                                                                                                                                                                      | 役割                                                                                |
-| ---- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| 1    | Home            | [セッション作成](api/endpoints.md#post-apisessions)                                                                                                                                                                                                                                                                           | セッション、capability token、選挙設定の識別子を作る                                |
-| 2    | Vote            | [投票送信](api/endpoints.md#post-apisessionssessionidvotes)                                                                                                                                                                                                                                                                   | 投票コミットメントを送信し、投票レシートと掲示板上の位置を受け取る                  |
-| 3    | Bot progress    | [ボット投票進捗](api/endpoints.md#get-apisessionssessionidprogress)                                                                                                                                                                                                                                                           | デモ用ボット投票の進捗をポーリングする                                              |
-| 4    | Aggregate       | [集計/証明生成](api/endpoints.md#post-apisessionssessionidfinalizations)                                                                                                                                                                                                                                                      | 集計、zkVM 実行、監査用アーティファクト生成を要求する                               |
-| 5    | Async status    | [current finalization 取得](api/endpoints.md#get-apisessionssessionidfinalizationscurrent)                                                                                                                                                                                                                                    | current finalization の pending / running / succeeded / failed / timeout を確認する |
-| 6    | Result          | [current finalization 取得](api/endpoints.md#get-apisessionssessionidfinalizationscurrent)、[STARK 検証実行](api/endpoints.md#post-apisessionssessionidfinalizationsfinalizationidverification)                                                                                                                               | finalization output を表示し、必要なら STARK verification を開始する                |
-| 7    | Verify          | [検証 resource 取得](api/endpoints.md#get-apisessionssessionidfinalizationsfinalizationidverification)、[STARK 検証実行](api/endpoints.md#post-apisessionssessionidfinalizationsfinalizationidverification)、[cast 観測の記録](api/endpoints.md#post-apisessionssessionidfinalizationsfinalizationidverificationobservations) | 検証ペイロードの取得、STARK verification の開始、非 gating の観測記録を行う         |
-| 8    | Bundle / report | [バンドル ZIP 取得](api/endpoints.md#get-apisessionssessionidfinalizationsfinalizationidartifactsbundle)、[検証レポート取得](api/endpoints.md#get-apisessionssessionidfinalizationsfinalizationidartifactsreport)                                                                                                             | capability 保護 API から public `bundle.zip` と protected report を取得する         |
+Home で開始すると、自分用のセッションが作られます。Vote 画面で A〜E から B を選んで送信すると、投票レシートが返ります。レシートには、票を識別する値と掲示板上の位置が記録されています。このデモでは自分の票はインデックス 0 に置かれます。
 
-正確な path、request/response schema、公開エラーは [エンドポイント一覧](api/endpoints.md) を参照してください。
+ブラウザは、選択した B と、その投票用に作った乱数を手元に残します。あとで「返ってきたレシートは、確かに自分が送った票のものか」を確認するためです。続いて 63 票のボット投票が加わり、進捗表示が完了すると集計へ進めます。
 
-`POST /api/sessions` を除く session-scoped API は、path の `:sessionId` と `X-Session-Capability` ヘッダーだけで現在の session を特定して保護します。
-finalization、verification、bundle / report の resource は path の `:finalizationId` にも結び付けられ、session capability と一致した場合だけ返されます。
-ヘッダー要件の詳細は [エンドポイント一覧 > 共通 contract](api/endpoints.md#共通-contract) を参照してください。
+セッションのデータを取得するための鍵もブラウザに保存されます。この鍵が capability token です。別のセッションのデータを取り違えたり、鍵を失ったりした場合は検証に必要な情報を取得できません。
 
-## 1. Home
+## 集計する
 
-Home で開始すると、ブラウザは `POST /api/sessions` を送ります。
-サーバーは `sessionId`、`capabilityToken`、`electionId`、`electionConfigHash`、`logId` などを返し、ブラウザはそれらをローカル session state に保存して Vote へ進みます。
+Aggregate 画面で S0 を選び、集計を開始します。サーバーは票を数えるとともに、どの入力からどの結果を得たかを示す証拠を作ります。この一連の作業を **集計確定（finalization）** と呼びます。
 
-この session が以後の API 呼び出しの権限境界です。
-別タブや古い session が現在の session と食い違う場合、後続画面は fail-closed に扱います。
+集計プログラムを実行したことを、あとから確かめられる暗号学的な証拠が **STARK 証明**です。AWS 上でこの証明を作る場合は時間がかかるため、画面で完了を待ちます。ブラウザはサーバーへ定期的に進捗を問い合わせます。成功すると Result 画面へ進み、候補ごとの得票数を表示します。失敗やタイムアウトであれば、結果の成功として扱いません。
 
-## 2. Vote と bot progress
+ここで得られたのは、集計結果と検証用の材料です。まだ結果の数字だけを信用する必要はありません。
 
-Vote では、ブラウザが投票選択と乱数からコミットメントを作り、`POST /api/sessions/:sessionId/votes` に送信します。
-成功すると、投票者は `voteId`、`bulletinIndex`、`bulletinRootAtCast` を含む投票レシートを受け取ります。
+## 検証する
 
-その後、デモ用のボット投票が進むあいだ `GET /api/sessions/:sessionId/progress` をポーリングします。
-これは最終的な集計に十分な投票が揃うまでの進捗表示であり、検証の成功判定ではありません。
+Result から Verify へ進むと、票の記録、集計への反映、計算の証明を確かめます。証明を運ぶデータを **STARK レシート**と呼びます。その検証が未開始なら開始し、実行中は結果を待ちます。ブラウザに残した投票時の情報も、この段階で使います。
 
-## 3. Aggregate と async status
+画面の **Verified** は、必要なチェックがすべて通った場合にだけ表示できます。実行中や証拠不足ならその状態を示し、データが食い違えば失敗を示します。計算の証明だけが成功しても、投票者の票が抜けていれば全体の成功にはなりません。
 
-Aggregate では、ユーザーが通常シナリオまたは教育用 tamper scenario を選び、`POST /api/sessions/:sessionId/finalizations` を送ります。
-この段階で、集計結果、zkVM の公開出力、receipt、`bundle.zip` 用の公開可能アーティファクトなどが作られます。
+S0 でも、第三者が観測する掲示板との照合先を設定していない場合は Warning（制限付き）になります。改ざんを見つけたという意味ではなく、その外部照合を行っていないことを示します。
 
-finalization 作成要求は同期結果を返す場合も、`202 Accepted` で非同期 queue に入る場合もあります。
-非同期の場合、ブラウザは `GET /api/sessions/:sessionId/finalizations/current` をポーリングします。
-current finalization resource は `pending`、`running`、`succeeded`、`failed`、`timeout` のいずれかであり（status ごとのフィールドは [エンドポイント一覧 > Finalization resource](api/endpoints.md#finalization-resource)）、ブラウザは `succeeded` の result だけを Result へ引き継ぎ、`failed` と `timeout` は失敗として扱います。
+ローカル開発用の `pnpm dev` では、証明の代わりに動作確認用の代替データ（mock）を使います。また、実際の zkVM を動かしていても開発用レシートを使う構成があります。これらは画面や処理の動作を試すためのもので、本番用の STARK 証明と同じ成功表示にはしません。
 
-finalization と STARK receipt verification は同一ではありません。
-finalization は proof material と結果を作る段階ですが、STARK verification が常にこの時点で完了しているとは限りません。
+## 票を抜いたら、何が起きるか
 
-## 4. Result から Verify へ
+通常の流れを確認できたら、新しいセッションで **S1** を選んでみます。S1 は、自分の票を掲示板には残したまま、集計プログラムに渡す入力から抜くシナリオです。
 
-Result は current finalization resource の succeeded result から、tally、scenario、journal / receipt 由来の表示材料などを表示します。
-finalization response のアーティファクト情報は `available` / `unavailable` の bounded availability であり、raw locator やダウンロード URL ではありません。
+この場合、掲示板に票があることは確認できても、集計に反映されたことは確認できません。「記録されている」と「数えられている」が別々のチェックになっている理由を、画面上で確かめられます。他の変更も [改ざんシナリオ](tamper/scenarios.md) で試せます。
 
-ユーザーが検証へ進むと、ブラウザは STARK verification が未開始なら `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification` を送ってから `/verify` へ遷移します。
-この要求は terminal status まで待たず、`/verify` 側で同じ finalization-scoped resource を `GET` でポーリングしながら状態を解決します。
+## 証拠を持ち帰る
 
-verification POST 応答の `verificationStatus` と、available な verification GET resource の
-`verifierResult.status` は STARK receipt verification の状態を示す信号であり、Cast-as-Intended、
-Recorded-as-Cast、Counted-as-Recorded を含む overall verdict そのものではありません。
-UI が "Verified" を表示できるかは、全 required checks の評価と hard-failure 条件から別途導かれます。
+検証画面から `bundle.zip` をダウンロードできます。中には計算の証明と、公開して照合できる入力・出力が入っています。サーバーの検証結果に頼らず、自分の環境で証明を検証するための材料です。
 
-## 5. Verify
-
-Verify は `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` で検証ペイロードを取得します。
-resource は `available`、`unavailable`、`corrupt` を明示します。`available` の場合は
-`proofAuthority`、`presentation`、`verifierResult`、`verification.checks` / `verification.steps`、
-`voterEvidence`、journal の included / omitted discriminator を返します。投票レシートと自票 proof は
-`voterEvidence.availability = "available"` の場合だけ存在し、それ以外は理由を伴って unavailable になります。
-
-STARK verification が `not_run` の場合、Verify は同じ finalization-scoped verification resource への
-`POST` を一度起動します。`not_run` または `running` の間は、terminal status に到達するまで `GET` をポーリングします。
-その後、4 段階のチェック結果から最終表示を解決します。
-required check が未実行、実行中、失敗、または hard-failure に該当する場合、成功した overall verification にはなりません。
-
-server-validated な検証シーケンスが terminal status まで完了すると、ブラウザは `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification/observations` で Cast-as-Intended の観測結果を best-effort に記録します。
-これは telemetry であり、送信の成否が画面の verdict を変更することはありません。
-
-検証の詳しい評価順序は [検証パイプライン](verification/design-and-flow.md) と [ゲーティングロジック](verification/gating-logic.md) を参照してください。
-
-## 6. Bundle と report
-
-検証画面から取得できる `bundle.zip` は、秘密を含まない公開可能アーティファクトだけを含む監査用 ZIP です。
-一方、`verification.json` は検証サービスの protected report artifact であり、`bundle.zip` のメンバーではありません。
-
-ブラウザは、検証レスポンスで admit した `finalizationId` と現在の session identity から authenticated artifact URL を組み立てます。
-通常の取得経路はどちらも capability 保護 API であり、レスポンス内の raw locator をたどる方式ではありません。
-
-| API                                                                           | 返すもの                                      |
-| ----------------------------------------------------------------------------- | --------------------------------------------- |
-| `GET /api/sessions/:sessionId/finalizations/:finalizationId/artifacts/bundle` | public `bundle.zip`                           |
-| `GET /api/sessions/:sessionId/finalizations/:finalizationId/artifacts/report` | protected `verification.json` report artifact |
-
-ここでいう `public` は「秘密を含まず第三者検証に使える」という機密性の分類であり、無認証公開を意味しません。
-ファイル構成と除外対象は [公開境界](verification/public-boundary.md) と [バンドル構造](verification/bundle-structure.md) を参照してください。
-
-## Receipt と proof mode の読み分け
-
-ローカル UI 開発では `local-demo` の mock zkVM、実装連携確認では `local-proof-development` の development receipt、本番相当の検証では `local-proof-production` または target runtime の production STARK proof を使います。
-mock や dev-mode receipt はデモや開発速度のための経路であり、production STARK proof と同じ保証を持ちません。
-
-このページでは利用順だけを扱います。
-receipt の意味、Image ID、dev-mode の fail-closed ルールは [zkVM 設計](zkvm/index.md) と [4 段階検証モデル](verification/four-stage-model.md) を参照してください。
+ダウンロードにはセッションの鍵が必要ですが、ZIP の中身は第三者に渡せるよう秘密情報を除いてあります。検証サービスのレポート `verification.json` は別ファイルとして取得し、ZIP には含めません。実行手順は [手元で証拠を検証する](reproducibility/audit-bundle.md) に続きます。
 
 <!-- source: packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/finalizations.ts, packages/api-contract/src/schemas/verification.ts, packages/runtime-config/src/env/runtimeProfile.ts, apps/web/src/api/client.ts, apps/web/src/api/finalizations.ts, apps/web/src/api/verification.ts, apps/web/src/api/artifacts.ts, apps/web/src/routes/HomePage.tsx, apps/web/src/components/vote/VoteForm.tsx, apps/web/src/components/vote/BotVotingProgress.tsx, apps/web/src/routes/aggregate/page.tsx, apps/web/src/routes/result/page.tsx, apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/hooks/useVerificationData.ts, apps/web/src/routes/verify/hooks/useVerificationSequence.ts, apps/web/src/routes/verify/hooks/useVerificationObservation.ts, public-book/src/verification/public-boundary.md -->

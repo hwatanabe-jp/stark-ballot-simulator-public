@@ -1,12 +1,15 @@
 import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 import { SAFE_VERIFIER_SEGMENT_PATTERN } from '@stark-ballot/validation/safe-verifier-segment';
 
 export const VERIFICATION_WORK_RECORD_TYPE = 'verification-work' as const;
 
 export interface VerificationWorkMessage {
   recordType: typeof VERIFICATION_WORK_RECORD_TYPE;
-  sessionId: string;
-  finalizationId: string;
+  sessionId: SessionId;
+  finalizationId: FinalizationId;
   queuedAtMs: number;
   bundleKey: string;
   expectedImageId: string;
@@ -69,8 +72,8 @@ export function parseVerificationWorkMessage(value: unknown): VerificationWorkMe
   }
   return {
     recordType: VERIFICATION_WORK_RECORD_TYPE,
-    sessionId: parseSafeSegment(value['sessionId'], 'sessionId'),
-    finalizationId: parseSafeSegment(value['finalizationId'], 'finalizationId'),
+    sessionId: asSessionId(parseSafeSegment(value['sessionId'], 'sessionId')),
+    finalizationId: asFinalizationId(parseSafeSegment(value['finalizationId'], 'finalizationId')),
     queuedAtMs: parseInteger(value['queuedAtMs'], 'queuedAtMs'),
     bundleKey: parseNonEmptyString(value['bundleKey'], 'bundleKey'),
     expectedImageId: parseExpectedImageId(value['expectedImageId']),

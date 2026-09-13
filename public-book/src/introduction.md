@@ -1,110 +1,17 @@
 # はじめに
 
-> **最終更新:** 2026-08-10
+> **最終更新:** 2026-09-13
 
-このドキュメントは、`STARK Ballot Simulator` の公開向けガイドです。
-`STARK Ballot Simulator` は投票の完全性を段階的に検証する教育・ポートフォリオ向けの PoC であり、実運用の選挙基盤ではありません。
+投票結果に「B は 20 票」と表示されたとします。その数字を見ただけでは、自分が B に入れた一票が数えられたかは分かりません。集計する側が票を抜いたり、表示する数字を書き換えたりしても、結果の画面は作れてしまいます。
 
-## 目的
+STARK Ballot Simulator は、この疑問を実際に確かめるための投票デモです。投票するとレシートを受け取り、掲示板に載った自分の票を確認し、集計に使われたことと計算の正しさを検証します。意図的に票を抜く、集計表示を変えるといった操作も試せるので、「何を変えると、どの証拠が食い違うか」を観察できます。
 
-- システムの全体像を短時間で把握できるようにする
-- 暗号プロトコルと検証パイプラインの設計根拠を説明する
-- 検証手順を再現できる情報を提供する
+説明の中心に置くのは、A〜E の選択肢から **B に投票した一人**です。この一票と 63 票のボット投票を合わせた、64 票の小さな選挙を追います。暗号の用語は、それが必要になる場面で説明します。
+
+実際の選挙に使うシステムとしては設計していません。たとえば、このデモでは集計するサーバーに投票先と乱数を送ります。公開される証拠から投票先を隠す仕組みはありますが、運営者に対しても秘密投票を実現しているわけではありません。
 
 ## 公開状態
 
-本書は、ライブデモと公開用ソース snapshot の読者に向けたドキュメントです。
-公開 repository snapshot は [hwatanabe-jp/stark-ballot-simulator-public](https://github.com/hwatanabe-jp/stark-ballot-simulator-public) で確認できます。
+実装は [公開ソースリポジトリ](https://github.com/hwatanabe-jp/stark-ballot-simulator-public) で確認できます。検証画面から取得した `bundle.zip` と、そのリリースに対応するソースを使えば、手元のコンピューターでも証明と公開データを照合できます。
 
-再現手順は、対象リリースの `bundle.zip` と対応する公開 repository snapshot を照合して実行してください。
-必要な材料と `bundle.zip` 単体では揃わない証拠は [第三者検証ガイド](reproducibility/index.md) にまとめています。
-
-公開仕様は、runtime、検証、artifact の 3 つの境界を説明します。
-これらは利用者、監査者、実装追跡者が確認できる範囲です。
-内部の作業記録や運用証跡は本書の範囲外であり、完了状態として主張しません。
-
-## 想定読者
-
-- 暗号検証や監査、本アプリケーションの設計に関心のある技術者
-
-## 本書の用語表記
-
-本書では、語彙の揺れを避けるために次の表記へ統一します。
-詳細な定義は [用語集](appendix/glossary.md) を参照してください。
-
-- **日本語に統一する語**：コミットメント（文脈に応じて「投票コミットメント」「入力コミットメント」を区別）、包含証明、整合性証明、投票レシート、掲示板、ジャーナル
-- **英語のまま使う語**：STARK、zkVM、Image ID、RFC 6962、capability、`bundle.zip`、fail-closed、finalization（集計確定）
-- **識別子は原文のまま**：ファイル名、API フィールド、契約名（`journal.json`、`verificationStatus` など）はコードフォントの英語表記を保ちます。
-- **コンポーネント名**：概念としては「検証サービス」、バイナリ名・パスとしては `verifier-service` を使います。
-- **役割名とリソース名**：概念・役割としては「プローバー」「検証 worker」、リソース・コンポーネント固有名（prover semaphore、`proof-dispatcher`、`verification-worker` など）は原文の英語表記を保ちます。
-
-バンドル関連は、次の 3 語を使い分けます。
-
-| 指すもの                             | 表記               |
-| ------------------------------------ | ------------------ |
-| 配布されるファイル本体               | `bundle.zip`       |
-| 配布対象としての論理名               | 配布対象アーカイブ |
-| 非公開アーティファクトを含む上位概念 | 証明バンドル       |
-
-`verification.json` は protected report artifact であり、public `bundle.zip` のメンバーではありません。
-階層関係は [バンドル構造](verification/bundle-structure.md) と [公開境界](verification/public-boundary.md) を参照してください。
-
-## 本書の読み方
-
-### 標準ルート
-
-1. まず [全体像](overview.md) でシステムの概要を掴む
-2. [利用フロー](usage-flow.md) で Home から Verify までの画面と API の流れを確認する
-3. [暗号プロトコル](protocol/index.md) でコミットメントや Merkle ツリーなどの基盤を理解する
-4. [zkVM 設計](zkvm/index.md) でゲストプログラムと証明生成の仕組みを学ぶ
-5. [検証パイプライン](verification/index.md) で 4 段階検証モデルの全体と公開境界を把握する
-6. [改ざんシナリオ](tamper/index.md) で教育的シミュレーションの動作を確認する
-7. [品質保証と形式手法](quality/index.md) でテスト、PBT、Lean による品質境界を確認する
-8. [AWS アーキテクチャ](aws/index.md) で runtime の責務分担を理解する
-9. [API リファレンス](api/index.md) でエンドポイント仕様を参照する
-10. 実際に検証する場合は [第三者検証ガイド](reproducibility/index.md) で `bundle.zip` を使ったローカル検証手順を実行する
-
-PoC として受け入れている制約は [全体像](overview.md#poc-として受け入れている制約)、
-設計背景の一次資料は [参考文献](appendix/references.md) から参照してください。
-
-### 読者別ルート
-
-いずれも標準ルートの 1〜2（[全体像](overview.md)、[利用フロー](usage-flow.md)）を読み終えていることを前提に、そこから先の重点だけを示します。
-
-#### 監査者向け
-
-`bundle.zip` を検証ページから取得し、独立にローカル監査したい読者向けです。
-
-1. [検証パイプライン](verification/index.md) で `/verify` の最終判定ロジックを理解する
-2. [公開境界](verification/public-boundary.md) で public `bundle.zip` と protected report artifact（`verification.json`）の境界を確認する
-3. [チェック一覧](verification/checks-catalog.md) で各チェック ID と判定条件を確認する
-4. [第三者検証ガイド](reproducibility/index.md) で `bundle.zip` のローカル監査手順を実行する
-
-[用語集](appendix/glossary.md) を手元に置き、テストと形式化が守る境界は [品質保証と形式手法](quality/index.md) で補足してください。
-飛ばしてよい: [暗号プロトコル](protocol/index.md) の数式詳細、[AWS アーキテクチャ](aws/index.md) のインフラ詳細
-
-#### 実装者向け
-
-クライアント、サーバー、zkVM のいずれかの実装を変更または追従したい読者向けです。
-
-1. [暗号プロトコル](protocol/index.md) でコミットメント、Merkle、入力コミットメントの正準形を把握する
-2. [zkVM 設計](zkvm/index.md) でゲストとホストの責務分担と Image ID 管理を理解する
-3. [検証パイプライン](verification/index.md) でチェック評価、ゲーティング、公開境界を把握する
-4. [API リファレンス](api/index.md) でエンドポイント仕様と session-scoped 認可を確認する
-
-テストのレイヤー分担は [品質保証と形式手法](quality/index.md) を参照してください。
-飛ばしてよい: [第三者検証ガイド](reproducibility/index.md)（実装変更後の動作確認には [改ざんシナリオ](tamper/index.md) を使う方が早い）
-
-#### 運用者向け
-
-AWS インフラ、非同期プローバー、デプロイを担当する読者向けです。
-
-1. [AWS runtime 境界](aws/runtime-boundary.md) で frontend、API、DynamoDB、async prover、artifact delivery の責務分担を把握する
-2. [AWS アーキテクチャ](aws/index.md) で runtime 構成、環境分離、Terraform-managed infrastructure の連携点を把握する
-3. [非同期プローバー](aws/async-prover.md) で SQS、Step Functions、ECS の責務を理解する
-4. [可観測性設計](aws/observability.md) で構造化ログ、検出、相関、通知境界を確認する
-5. [イメージ署名](aws/image-signing.md) と [Image ID](zkvm/image-id.md) で署名検証と Image ID 解決の連動を確認する
-6. [公開境界](verification/public-boundary.md) と [バンドル構造](verification/bundle-structure.md) で artifact の公開 / 保護境界を把握する
-
-観測対象となるエンドポイントの契約は [API リファレンス](api/index.md) を参照してください。
-飛ばしてよい: [暗号プロトコル](protocol/index.md) の数式、[改ざんシナリオ](tamper/index.md) の教育的デモ詳細
+まずは [投票して、結果を確かめる](usage-flow.md) ところから始めましょう。結果を受け取ることと、その結果を信用できる根拠を得ることの違いが、画面を通して見えてきます。

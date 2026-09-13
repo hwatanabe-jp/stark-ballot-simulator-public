@@ -1,3 +1,5 @@
+import { resolveUserVoteReplay } from './user-vote-replay';
+import { BOT_COUNT } from '@stark-ballot/domain/shared/constants';
 import {
   assertCanonicalUserVoteIndexForBotVotes,
   buildCanonicalCtSessionProjection,
@@ -6,14 +8,16 @@ import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bullet
 import { stageCtVoteWrites, type StagedVoteWrite } from '@stark-ballot/domain/bulletin/stagedCtVoteWrite';
 import type {
   AddVoteResult,
+  BotVoteCommand,
+  PreparedVote,
   SessionIdentityRecord,
   SessionVotingRecord,
-  StoredVoteRecord,
-  VoteData,
+  UserVoteCommand,
 } from '@stark-ballot/domain/types/sessionRecords';
 import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
 import { normalizeHex } from '@stark-ballot/domain/utils/hex';
 import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
+import { ApplicationErrorCode, type ApplicationExpectedErrorOf, type Result } from '@stark-ballot/application';
 
 export interface SessionCreationInput extends Omit<SessionIdentityRecord, 'createdAtMs'> {
   createdAtMs: number;
@@ -32,11 +36,11 @@ export interface SessionVoteAuthority extends SessionRecords {
 export type SessionVoteCommand =
   | {
       kind: 'append_user_vote';
-      vote: VoteData;
+      vote: UserVoteCommand;
     }
   | {
       kind: 'append_bot_votes';
-      votes: readonly VoteData[];
+      votes: readonly BotVoteCommand[];
     };
 
 export interface SessionMutationDependencies {
@@ -59,9 +63,19 @@ export type SessionVoteMutation =
       kind: 'user_vote_appended';
       castResult: AddVoteResult;
     })
+  | { kind: 'user_vote_replayed'; castResult: AddVoteResult }
   | (SessionVoteMutationBase & {
       kind: 'bot_votes_appended';
     });
+
+export type SessionVoteMutationError = ApplicationExpectedErrorOf<
+  | typeof ApplicationErrorCode.ALREADY_VOTED
+  | typeof ApplicationErrorCode.SESSION_FINALIZED
+  | typeof ApplicationErrorCode.DUPLICATE_VOTE
+  | typeof ApplicationErrorCode.USER_NOT_VOTED
+>;
+
+export type SessionVoteMutationResult = Result<SessionVoteMutation, SessionVoteMutationError>;
 
 function assertNever(value: never): never {
   throw new Error(`Unsupported session vote command: ${JSON.stringify(value)}`);
@@ -71,42 +85,19 @@ function currentUserVoteIndex(voting: SessionVotingRecord): number | undefined {
   return voting.userParticipation.status === 'cast' ? voting.userParticipation.voteIndex : undefined;
 }
 
-function requireWritableVoteAuthority(authority: SessionVoteAuthority): void {
-  if (authority.finalization !== null) {
-    throw new Error('Session already finalized');
-  }
-}
-
-function formatVoteData(
+function prepareVote(
   identity: SessionIdentityRecord,
-  vote: VoteData,
-  dependencies: SessionMutationDependencies,
-): VoteData {
+  vote: BotVoteCommand,
+  mutationIdentity: Pick<UserVoteCommand, 'voteId' | 'timestamp'>,
+): PreparedVote {
   const normalizedRandom = normalizeHex(vote.rand, { allowEmpty: true });
   const choiceNumber = vote.vote.charCodeAt(0) - 'A'.charCodeAt(0);
 
   return {
-    ...vote,
-    voteId: vote.voteId ?? dependencies.generateVoteId(),
+    ...mutationIdentity,
+    vote: vote.vote,
     rand: normalizedRandom,
     commit: computeCommitment(identity.electionId, choiceNumber, normalizedRandom),
-    timestamp: vote.timestamp ?? dependencies.nowMs(),
-  };
-}
-
-function requireStoredVote(stagedVote: StagedVoteWrite): StoredVoteRecord {
-  const vote = stagedVote.storedVote;
-  const requiredFields = vote as Partial<Pick<StoredVoteRecord, 'voteId' | 'timestamp' | 'rootAtCast'>>;
-  if (!requiredFields.voteId || requiredFields.timestamp === undefined || !requiredFields.rootAtCast) {
-    throw new Error('Stored vote invariant violated');
-  }
-  return {
-    voteId: vote.voteId,
-    vote: vote.vote,
-    rand: vote.rand,
-    commit: vote.commit,
-    timestamp: vote.timestamp,
-    rootAtCast: vote.rootAtCast,
   };
 }
 
@@ -123,7 +114,7 @@ function buildNextVoting(
 ): SessionVotingRecord {
   const votes = new Map(voting.votes);
   for (const stagedVote of stagedVotes) {
-    votes.set(stagedVote.index, requireStoredVote(stagedVote));
+    votes.set(stagedVote.index, stagedVote.storedVote);
   }
 
   return {
@@ -151,21 +142,11 @@ function toIndexIntents(stagedVotes: readonly StagedVoteWrite[]): VoteIndexInten
 
 function evaluateUserVoteMutation(
   authority: SessionVoteAuthority,
-  vote: VoteData,
+  vote: UserVoteCommand,
   dependencies: SessionMutationDependencies,
 ): SessionVoteMutation {
-  const formattedVote = formatVoteData(authority.identity, { ...vote }, dependencies);
-  const voteId = formattedVote.voteId;
-  if (!voteId) {
-    throw new Error('Vote ID missing after formatting');
-  }
-  if (Array.from(authority.voting.votes.values()).some((storedVote) => storedVote.voteId === voteId)) {
-    throw new Error('Vote ID already exists');
-  }
-  if (authority.voting.userParticipation.status === 'cast' || authority.voting.votes.size > 0) {
-    throw new Error('User vote already exists');
-  }
-
+  const preparedVote = prepareVote(authority.identity, vote, vote);
+  const voteId = preparedVote.voteId;
   const index = authority.voting.votes.size;
   const staged = stageCtVoteWrites(
     {
@@ -174,7 +155,7 @@ function evaluateUserVoteMutation(
       bulletin: authority.voting.bulletin,
       bulletinRootHistory: authority.voting.bulletinRootHistory,
     },
-    [{ index, vote: formattedVote }],
+    [{ index, vote: preparedVote }],
   );
   const stagedVote = staged.votes[0];
   if (!stagedVote) {
@@ -216,7 +197,7 @@ function evaluateUserVoteMutation(
 
 function evaluateBotVoteMutation(
   authority: SessionVoteAuthority,
-  votes: readonly VoteData[],
+  votes: readonly BotVoteCommand[],
   dependencies: SessionMutationDependencies,
 ): SessionVoteMutation {
   const userVoteIndex = currentUserVoteIndex(authority.voting);
@@ -244,7 +225,10 @@ function evaluateBotVoteMutation(
     },
     votes.map((vote, offset) => ({
       index: projection.nextIndex + offset,
-      vote: formatVoteData(authority.identity, { ...vote }, dependencies),
+      vote: prepareVote(authority.identity, vote, {
+        voteId: dependencies.generateVoteId(),
+        timestamp: dependencies.nowMs(),
+      }),
     })),
   );
 
@@ -287,14 +271,57 @@ export function evaluateSessionVoteMutation(
   authority: SessionVoteAuthority,
   command: SessionVoteCommand,
   dependencies: SessionMutationDependencies,
-): SessionVoteMutation {
-  requireWritableVoteAuthority(authority);
+): SessionVoteMutationResult {
+  if (command.kind === 'append_user_vote') {
+    const replay = resolveUserVoteReplay(authority, command.vote);
+
+    if (replay.kind === 'replay') {
+      const proof = authority.voting.bulletin.getInclusionProof(replay.vote.voteId, replay.index + 1);
+      if (!proof) throw new Error('CT_PROOF_UNAVAILABLE');
+      return {
+        ok: true,
+        value: {
+          kind: 'user_vote_replayed',
+          castResult: {
+            leafIndex: replay.index,
+            merklePath: proof.proofNodes.map((node) => normalizeHex(node)),
+            bulletinRootAtCast: replay.vote.rootAtCast,
+          },
+        },
+      };
+    }
+  }
+  if (authority.finalization !== null) {
+    return { ok: false, error: { code: ApplicationErrorCode.SESSION_FINALIZED } };
+  }
 
   switch (command.kind) {
-    case 'append_user_vote':
-      return evaluateUserVoteMutation(authority, command.vote, dependencies);
+    case 'append_user_vote': {
+      const duplicateVoteId = Array.from(authority.voting.votes.values()).some(
+        (storedVote) => storedVote.voteId === command.vote.voteId,
+      );
+      if (duplicateVoteId) {
+        return {
+          ok: false,
+          error: {
+            code: ApplicationErrorCode.DUPLICATE_VOTE,
+            details: { duplicateKind: 'voteId' },
+          },
+        };
+      }
+      if (authority.voting.userParticipation.status === 'cast' || authority.voting.votes.size > 0) {
+        return { ok: false, error: { code: ApplicationErrorCode.ALREADY_VOTED } };
+      }
+      return { ok: true, value: evaluateUserVoteMutation(authority, command.vote, dependencies) };
+    }
     case 'append_bot_votes':
-      return evaluateBotVoteMutation(authority, command.votes, dependencies);
+      if (authority.voting.userParticipation.status === 'not_cast') {
+        return { ok: false, error: { code: ApplicationErrorCode.USER_NOT_VOTED } };
+      }
+      if (authority.voting.botCount + command.votes.length > BOT_COUNT) {
+        return { ok: false, error: { code: ApplicationErrorCode.ALREADY_VOTED } };
+      }
+      return { ok: true, value: evaluateBotVoteMutation(authority, command.votes, dependencies) };
     default:
       return assertNever(command);
   }

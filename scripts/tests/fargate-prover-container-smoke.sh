@@ -43,7 +43,9 @@ docker run "${container_posture[@]}" \
     test "$HOME" = "$prover_home"
     test "$RISC0_HOME" = /opt/risc0
     test "$RISC0_SERVER_PATH" = /opt/risc0/bin/r0vm
+    test "$PROVER_ARTIFACT_TOOL_BIN" = /opt/zkvm/bin/prover-artifacts
     test -x /opt/risc0/bin/r0vm
+    test -x "$PROVER_ARTIFACT_TOOL_BIN"
     /opt/risc0/bin/r0vm --version >/dev/null
     test -r /opt/risc0/settings.toml
     touch /tmp/probe /var/task/output/probe

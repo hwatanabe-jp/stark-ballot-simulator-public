@@ -1,0 +1,157 @@
+{
+  "descriptorType": "stark-ballot.zkvm-semantic-contract.current",
+  "method": {
+    "methodVersion": 14,
+    "inputCommitmentFormatVersion": 10
+  },
+  "domainTags": {
+    "voteCommitment": "stark-ballot:commit|v1.0",
+    "inputCommitment": "stark-ballot:input|v1.0"
+  },
+  "workBounds": {
+    "treeSizeMin": 1,
+    "treeSizeMax": 1000000,
+    "totalExpectedMax": 1000000,
+    "voteCountMax": 1000000,
+    "merklePathNodesPerRecordMax": 65535,
+    "totalMerklePathNodesMax": 1000000,
+    "serializedInputBytesMax": 67108864
+  },
+  "hostInputJson": {
+    "fields": [
+      { "name": "election_id", "type": "bytes[16]" },
+      { "name": "bulletin_root", "type": "bytes[32]" },
+      { "name": "tree_size", "type": "u32" },
+      { "name": "log_id", "type": "bytes[32]" },
+      { "name": "timestamp", "type": "u64" },
+      { "name": "total_expected", "type": "u32" },
+      { "name": "election_config_hash", "type": "bytes[32]" },
+      { "name": "votes", "type": "vote[]" },
+      { "name": "election_config", "type": "electionConfig?" }
+    ],
+    "voteFields": [
+      { "name": "commitment", "type": "bytes[32]" },
+      { "name": "choice", "type": "u8" },
+      { "name": "random", "type": "bytes[32]" },
+      { "name": "index", "type": "u32" },
+      { "name": "merkle_path", "type": "bytes[32][]" }
+    ],
+    "electionConfigFields": [
+      { "name": "totalExpected", "type": "u32" },
+      { "name": "choices", "type": "string[]" },
+      { "name": "version", "type": "string" },
+      { "name": "botCount", "type": "u32" },
+      { "name": "merkleTreeDepth", "type": "u32" }
+    ]
+  },
+  "logicalJournal": {
+    "fields": [
+      { "name": "election_id", "type": "bytes[16]" },
+      { "name": "election_config_hash", "type": "bytes[32]" },
+      { "name": "bulletin_root", "type": "bytes[32]" },
+      { "name": "tree_size", "type": "u32" },
+      { "name": "total_expected", "type": "u32" },
+      { "name": "sth_digest", "type": "bytes[32]" },
+      { "name": "verified_tally", "type": "u32[tallyWidth]" },
+      { "name": "total_votes", "type": "u32" },
+      { "name": "valid_votes", "type": "u32" },
+      { "name": "invalid_votes", "type": "u32" },
+      { "name": "seen_indices_count", "type": "u32" },
+      { "name": "missing_slots", "type": "u32" },
+      { "name": "invalid_presented_slots", "type": "u32" },
+      { "name": "rejected_records", "type": "u32" },
+      { "name": "seen_bitmap_root", "type": "bytes[32]" },
+      { "name": "included_bitmap_root", "type": "bytes[32]" },
+      { "name": "excluded_slots", "type": "u32" },
+      { "name": "input_commitment", "type": "bytes[32]" },
+      { "name": "method_version", "type": "u32" }
+    ],
+    "tallyWidth": 5
+  },
+  "hostJsonProjection": {
+    "fields": [
+      { "name": "electionId", "type": "bytes[16]" },
+      { "name": "electionConfigHash", "type": "bytes[32]" },
+      { "name": "bulletinRoot", "type": "bytes[32]" },
+      { "name": "treeSize", "type": "u32" },
+      { "name": "totalExpected", "type": "u32" },
+      { "name": "sthDigest", "type": "bytes[32]" },
+      { "name": "verifiedTally", "type": "u32[tallyWidth]" },
+      { "name": "totalVotes", "type": "u32" },
+      { "name": "validVotes", "type": "u32" },
+      { "name": "invalidVotes", "type": "u32" },
+      { "name": "seenIndicesCount", "type": "u32" },
+      { "name": "missingSlots", "type": "u32" },
+      { "name": "invalidPresentedSlots", "type": "u32" },
+      { "name": "rejectedRecords", "type": "u32" },
+      { "name": "seenBitmapRoot", "type": "bytes[32]" },
+      { "name": "includedBitmapRoot", "type": "bytes[32]" },
+      { "name": "excludedSlots", "type": "u32" },
+      { "name": "inputCommitment", "type": "bytes[32]" },
+      { "name": "methodVersion", "type": "u32" },
+      { "name": "imageId", "type": "hex[32]" }
+    ],
+    "outputFileSuffix": "-output.json"
+  },
+  "artifacts": {
+    "receipt": {
+      "hostFileSuffix": "-receipt.json",
+      "canonicalFileName": "receipt.json",
+      "fields": [
+        { "name": "receipt", "type": "opaque-risc0-serde" },
+        { "name": "image_id", "type": "hex[32]" }
+      ],
+      "receiptPayload": "opaque"
+    },
+    "publicInput": {
+      "canonicalFileName": "public-input.json",
+      "schema": "stark-ballot.public_input",
+      "version": "1.1",
+      "fields": [
+        { "name": "schema", "type": "literal" },
+        { "name": "version", "type": "literal" },
+        { "name": "electionId", "type": "uuid" },
+        { "name": "electionConfigHash", "type": "hex[32]" },
+        { "name": "bulletinRoot", "type": "hex[32]" },
+        { "name": "treeSize", "type": "u32" },
+        { "name": "totalExpected", "type": "u32" },
+        { "name": "logId", "type": "hex[32]" },
+        { "name": "timestamp", "type": "u64" },
+        { "name": "methodVersion", "type": "u32" },
+        { "name": "votes", "type": "publicInputVote[]" }
+      ],
+      "voteFields": [
+        { "name": "index", "type": "u32" },
+        { "name": "commitment", "type": "hex[32]" },
+        { "name": "merklePath", "type": "hex[32][]" }
+      ]
+    },
+    "includedBitmap": {
+      "hostFileSuffix": "-bitmap.json",
+      "canonicalFileName": "included-bitmap.json",
+      "schema": "stark-ballot.included_bitmap",
+      "version": "1.0",
+      "fields": [
+        { "name": "schema", "type": "literal" },
+        { "name": "version", "type": "literal" },
+        { "name": "treeSize", "type": "u32" },
+        { "name": "includedBitmapRoot", "type": "hex[32]" },
+        { "name": "includedBitmap", "type": "boolean[]" }
+      ]
+    },
+    "seenBitmap": {
+      "hostFileSuffix": "-seen-bitmap.json",
+      "canonicalFileName": "seen-bitmap.json",
+      "schema": "stark-ballot.seen_bitmap",
+      "version": "1.0",
+      "fields": [
+        { "name": "schema", "type": "literal" },
+        { "name": "version", "type": "literal" },
+        { "name": "treeSize", "type": "u32" },
+        { "name": "seenBitmapRoot", "type": "hex[32]" },
+        { "name": "seenBitmap", "type": "boolean[]" }
+      ]
+    }
+  },
+  "semanticSha256": "b10614a70535aeeac6cadd40ff9cee5a49d90702513a4dd743fbd8be111539af"
+}

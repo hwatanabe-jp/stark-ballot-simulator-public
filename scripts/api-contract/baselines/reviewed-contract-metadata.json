@@ -1,0 +1,30 @@
+{
+  "comparatorType": "public-contract-drift-classification",
+  "baselineContractHash": "6e975258e1d68d1fdbd20517426fabf4acb818b9306906cbe93952c6d9333e81",
+  "baselineSourceSha": "b1526c7e1bc6",
+  "currentContractHash": "35e66bf5bf7ea3bfab986a13d5fca2630b6d2794fe7551be8bef708fa0c20c62",
+  "reason": "The comparator-observed drift is limited to source fingerprints and coverage descriptions: OpenAPI effect annotations now live in schema-openapi.ts, their consumers use that owner, and freezing constructs the discriminated metadata without a type assertion. The previous reviewed source cleanup and test-reference relocations remain included. Route declarations, mounted probe responses, schema exports, semantic descriptors, and serialized schema fingerprints match the retained wire baseline. Separately, vote.post intentionally waits for bot persistence and admits same-opening retries with the original receipt; those stateful semantics are outside the mounted snapshot and are tested in vote.test.ts, sessionStoreContract.ts, VoteForm.test.tsx, and vote-retry.spec.ts. This classification does not label that application behavior change as behavior-preserving.",
+  "allowedDriftPaths": [
+    "mountedBehaviorCoverage.include-journal-query.exemption",
+    "mountedBehaviorCoverage.progress-read-flow.exemption",
+    "mountedBehaviorCoverage.verification-observation-flow.exemption",
+    "mountedBehaviorCoverage.verification-resource-flow.exemption",
+    "mountedBehaviorCoverage.verification-run-flow.exemption",
+    "mountedBehaviorCoverage.vote-success-flow.exemption",
+    "schemaAuthorityFingerprints.packages/api-contract/src/schemas/errors.ts",
+    "schemaAuthorityFingerprints.packages/api-contract/src/schemas/finalizations.ts",
+    "schemaAuthorityFingerprints.packages/api-contract/src/schemas/primitives.ts",
+    "schemaAuthorityFingerprints.packages/api-contract/src/schemas/verification.ts",
+    "schemaAuthorityFingerprints.packages/validation/src/schema-openapi.ts",
+    "schemaAuthorityFingerprints.packages/validation/src/schema.ts",
+    "schemaAuthorityFingerprints.packages/verification/src/verification/consistency-verifier.ts",
+    "schemaAuthorityFingerprints.packages/verification/src/verification/engine/types.ts",
+    "schemaAuthorityFingerprints.packages/verification/src/verification/local-cast-checks.ts",
+    "schemaAuthorityFingerprints.packages/verification/src/verification/public-audit-artifacts.ts",
+    "schemaAuthorityFingerprints.packages/verification/src/verification/public-verification-result.ts",
+    "schemaAuthorityFingerprints.packages/verification/src/verification/verification-presentation-policy.ts",
+    "schemaAuthorityFingerprints.packages/verification/src/verification/verification-summary.ts",
+    "schemaAuthorityFingerprints.packages/verification/src/verification/verifier-service-report.ts",
+    "schemaAuthorityFingerprints.packages/zkvm-contract/src/zkvm/election-config.ts"
+  ]
+}

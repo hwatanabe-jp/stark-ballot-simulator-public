@@ -33,10 +33,6 @@ function buildS3ProverPayload(
   return { inputS3Key, outputS3Prefix, bundleS3Key };
 }
 
-export function setSqsClient(client: SQSClient | null): void {
-  sqsClient = client;
-}
-
 export function resetSqsClients(): void {
   sqsClient = null;
 }

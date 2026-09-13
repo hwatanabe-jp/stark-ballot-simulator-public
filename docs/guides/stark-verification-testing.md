@@ -53,6 +53,17 @@ CLI が server を所有する場合、実行前に選択した local runtime pr
 pnpm test:cli -- --user-choice A --skip-build
 ```
 
+local adapter 経由の real host 実行には600秒の期限があります。期限到達やhost終了時は、所有する
+POSIX process group に SIGTERM を送り、5秒後に SIGKILL、さらに1秒の終了確認待ちを行います。
+process group の終了を確認できなければ成功にはしません。この期限管理は、host CLI や
+`test-zkvm.sh` の直接実行には適用されません。
+
+real-mode CLI の finalize HTTP 待ちは既定900秒、最低636秒です。`CLI_FINALIZE_TIMEOUT_MS` に
+短い値を指定しても、host期限600秒、終了処理6秒、応答余裕30秒を確保します。HTTP待ちを延ばしても
+hostの期限は延びません。失敗時はhostの期限・外部signal・非zero exitを区別し、CLI report の
+requested/effective timeout と実行条件を確認してください。保存先と収録範囲は
+[CLI guide の Run Evidence and Failures](./cli.md#run-evidence-and-failures) にまとめています。
+
 ## Custom host input の上限
 
 host は proving を始める前に serialized size と shared contract / structural budget を検証し、guest は
@@ -89,46 +100,67 @@ pnpm build:zkvm:dev-mode
 
 同じ guest output に由来していても、次の表現は交換可能ではありません。
 
-| 表現                                        | 内容と用途                                                                                                                                             |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `*-receipt.json` / bundle の `receipt.json` | RISC Zero receipt envelope。内部の `receipt.journal.bytes` は RISC Zero serde encoding であり、下記の 272-byte parser へ直接渡さない                   |
-| host の `*-output.json`                     | host が `receipt.journal.decode::<VerificationOutput>()` した結果と host-provided `imageId`。local host 診断で field を確認する入口                    |
-| bundle の `journal.json`                    | decoded proof-bound field を allowlist した canonical public artifact。application / bundle audit で journal field を確認する入口                      |
-| `parseJournalBytes()` の 272-byte layout    | `packages/verification/src/verification/journal-parser.ts` とその unit test が所有する低レベル packed layout。固定 layout の test bytes にだけ使用する |
+| 表現                                        | 内容と用途                                                                                                                                                 |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `*-receipt.json` / bundle の `receipt.json` | RISC Zero receipt envelope。内部の `receipt.journal.bytes` は RISC Zero serde encoding であり、TypeScript で固定 offset として解釈しない                   |
+| host の `*-output.json`                     | host が `receipt.journal.decode::<VerificationOutput>()` した結果と host-provided `imageId`。UUID/hash field は byte array のままの camelCase JSON         |
+| `decode-journal` の出力                     | production検証に成功したreceiptをRust serdeでdecodeしたhost形式JSON。UUID/hash field は byte array、`imageId` は検証済みreceipt envelope由来               |
+| bundle の `journal.json`                    | UUID/hash field を文字列化した canonical public artifact。sync は TypeScript の `toPublicZkvmJournal()`、async は Rust の `public_journal()` がprojectする |
 
-272-byte parser の現行 contract は次の test で確認します。
+bundle journal の `imageId` は比較用metadataです。journal単体の存在やhostのdecode成功はreceipt検証の
+代わりにはなりません。receipt journal bytes のencodingは RISC Zero 3.0.6 のserde実装が所有し、
+Rustの `Journal::decode` で解釈します。
+
+実際の serde round-trip と host JSON projection は Rust owner の test で確認します。
 
 ```bash
-pnpm vitest run packages/verification/src/verification/journal-parser.test.ts
+pnpm rust:zkvm:test
+pnpm --filter @stark-ballot/zkvm-contract test
 ```
 
-`parseJournalBytes()` は `methodVersion=14` だけを受け付け、次の順序を要求します。
+logical `VerificationOutput` は `methodVersion=14` で次の field 順序を持ちます。型と配列長は
+`zkvm/contract-core/src/types.rs` に従います。以下はserialized byte offsetの表ではありません。
 
 1. `electionId` (16 bytes)
 2. `electionConfigHash` (32 bytes)
 3. `bulletinRoot` (32 bytes)
-4. `treeSize` (u32 LE)
-5. `totalExpected` (u32 LE)
+4. `treeSize` (u32)
+5. `totalExpected` (u32)
 6. `sthDigest` (32 bytes)
-7. `verifiedTally` (5 x u32 LE)
-8. `totalVotes` (u32 LE)
-9. `validVotes` (u32 LE)
-10. `invalidVotes` (u32 LE)
-11. `seenIndicesCount` (u32 LE)
-12. `missingSlots` (u32 LE)
-13. `invalidPresentedSlots` (u32 LE)
-14. `rejectedRecords` (u32 LE)
+7. `verifiedTally` (5 x u32)
+8. `totalVotes` (u32)
+9. `validVotes` (u32)
+10. `invalidVotes` (u32)
+11. `seenIndicesCount` (u32)
+12. `missingSlots` (u32)
+13. `invalidPresentedSlots` (u32)
+14. `rejectedRecords` (u32)
 15. `seenBitmapRoot` (32 bytes)
 16. `includedBitmapRoot` (32 bytes)
-17. `excludedSlots` (u32 LE)
+17. `excludedSlots` (u32)
 18. `inputCommitment` (32 bytes)
-19. `methodVersion` (u32 LE、現行は `14`)
+19. `methodVersion` (u32、現行は `14`)
 
 host fixture の decoded output は次のように確認できます。
 
 ```bash
 pnpm tsx -e "import fs from 'node:fs'; const output = JSON.parse(fs.readFileSync('zkvm/test-data/test-fixture-valid-output.json','utf-8')); console.log({ methodVersion: output.methodVersion, excludedSlots: output.excludedSlots, rejectedRecords: output.rejectedRecords, inputCommitment: output.inputCommitment });"
 ```
+
+production receiptからfieldを確認する場合は、`verifier-service` の `decode-journal` を使います。
+次はlocal x86_64 receiptの例です。対象を生成したguest buildに一致するexpected ImageIDを指定します。
+
+```bash
+export EXPECTED_IMAGE_ID="$(node verifier-service/scripts/read-image-id.mjs public/imageId-mapping.json --variant x86_64)"
+
+./verifier-service/target/release/verifier-service decode-journal \
+  --bundle /path/to/bundle-or-receipt \
+  --output /path/to/decoded-host-output.json --quiet
+```
+
+このcommandはreceiptを一度読み、そのreceiptのproduction検証成功後にcurrent methodのjournalを
+decodeします。fake receipt、検証失敗、ImageID欠落、非current methodではdecoded JSONを出力しません。
+出力先はbundleの `journal.json` と別にしてください。host形式のbyte arrayを保持するためです。
 
 ## Bundle から receipt / ImageID を検証する
 
@@ -155,9 +187,12 @@ export EXPECTED_IMAGE_ID="$(node verifier-service/scripts/read-image-id.mjs publ
 ./verifier-service/target/release/verifier-service verify /path/to/bundle-or-receipt
 ```
 
-現行 methodVersion `14` は、target の accepted managed ARM64 Prover release に対応する `default` と、
-local production guest build に対応する `x86_64` の trust material を持ちます。variant 間の fallback は
-ないため、検証対象を生成した guest build / deployment と一致する variant を選択してください。
+checked-in `public/imageId-mapping.json` の現行 methodVersion `14` では、変更後のguestに対応する
+`default` は承認済みのmanaged ARM64 Prover releaseを根拠に `confirmed` です。
+`x86_64` は新しい出力先で行ったlocal production guest buildから独立にconfirmedです。
+通常のApp deploymentは選択したProver releaseとdefaultの一致を確認します。稼働中deploymentの
+receiptを検証する場合は、そのreleaseに対応するソースとconfirmed variantを使ってください。
+variant間のfallbackはありません。
 
 `verifier-service` が bundle directory または zip を受け取った場合、内部の `receipt.json` を探して
 `Receipt::verify(expectedImageId)` と top-level `image_id` の一致を検証します。これは **bundle 内の
@@ -174,8 +209,8 @@ verifier の主な結果は次のとおりです。
 | `3` / `failed`     | receipt または ImageID の検証失敗                  |
 
 ImageID mismatch の場合は `public/imageId-mapping.json` の method version、variant、state を確認します。
-`*-output.json` がない場合は development host の `test-zkvm.sh`、または目的に合う build の host CLI を
-先に実行してください。
+production receiptがあれば、hostを再実行せず上記の `decode-journal` でfieldを確認できます。
+fake receiptの診断には、development hostが生成した `*-output.json` を使います。
 
 ## 関連資料
 

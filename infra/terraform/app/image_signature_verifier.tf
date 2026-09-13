@@ -43,20 +43,44 @@ locals {
     ) <= var.image_signature_verifier_handler_deadline_ms
   )
   image_signature_verifier_authority_selection_valid = (
-    var.image_signature_preflight_prover_image_uri != null
+    local.image_signature_verifier_initialization
     ? (
-      var.image_signature_verifier_base_prover_image_uri == null
+      local.image_signature_verifier_standalone
+      && local.deployment_target.environmentTier == "production"
+      && local.deployment_target_inputs_exact
+      && var.deploy_mode == "normal"
+      && var.image_signature_preflight_prover_image_uri == var.prover_image_uri
+      && var.image_signature_verifier_base_prover_image_uri == null
       && var.image_signature_verifier_selected_authority == null
+      && var.image_signature_verifier_reconciled_function_version == null
+      && var.image_signature_verifier_reconciliation_desired_json == null
+      && var.image_signature_verifier_reconciliation_desired_sha256 == null
     )
     : (
-      var.deploy_mode == "rollback"
+      var.image_signature_preflight_prover_image_uri != null
       ? (
-        var.image_signature_verifier_base_prover_image_uri != null
-        && var.image_signature_verifier_selected_authority != null
-      )
-      : (
         var.image_signature_verifier_base_prover_image_uri == null
         && var.image_signature_verifier_selected_authority == null
+        && var.image_signature_verifier_reconciled_function_version != null
+        && var.image_signature_verifier_reconciliation_desired_json != null
+        && var.image_signature_verifier_reconciliation_desired_sha256 != null
+      )
+      : (
+        var.deploy_mode == "rollback"
+        ? (
+          var.image_signature_verifier_base_prover_image_uri != null
+          && var.image_signature_verifier_selected_authority != null
+          && var.image_signature_verifier_reconciled_function_version == null
+          && var.image_signature_verifier_reconciliation_desired_json == null
+          && var.image_signature_verifier_reconciliation_desired_sha256 == null
+        )
+        : (
+          var.image_signature_verifier_base_prover_image_uri == null
+          && var.image_signature_verifier_selected_authority == null
+          && var.image_signature_verifier_reconciled_function_version != null
+          && var.image_signature_verifier_reconciliation_desired_json != null
+          && var.image_signature_verifier_reconciliation_desired_sha256 != null
+        )
       )
     )
   )
@@ -135,7 +159,7 @@ locals {
   }
   image_signature_verifier_current_authority = {
     function_arn       = aws_lambda_function.image_signature_verifier.arn
-    function_version   = aws_lambda_function.image_signature_verifier.version
+    function_version   = local.image_signature_verifier_alias_function_version
     architecture       = one(aws_lambda_function.image_signature_verifier.architectures)
     runtime            = aws_lambda_function.image_signature_verifier.runtime
     timeout_seconds    = aws_lambda_function.image_signature_verifier.timeout
@@ -157,17 +181,32 @@ locals {
     ? local.image_signature_verifier_current_authority
     : var.image_signature_verifier_selected_authority
   )
-  image_signature_verifier_alias_function_version = (
-    var.image_signature_verifier_selected_authority == null
-    ? aws_lambda_function.image_signature_verifier.version
-    : var.image_signature_verifier_selected_authority.function_version
-  )
+
 }
 
 resource "terraform_data" "image_signature_verifier_permissions_boundary_authority" {
   input = {
     arn           = data.aws_iam_policy.image_signature_verifier_permissions_boundary.arn
     policy_sha256 = local.image_signature_verifier_permissions_boundary_policy_sha256
+  }
+}
+
+resource "terraform_data" "image_signature_verifier_reconciliation_authority" {
+  input = local.image_signature_verifier_initialization ? null : {
+    desired_json              = var.image_signature_verifier_reconciliation_desired_json
+    desired_sha256            = var.image_signature_verifier_reconciliation_desired_sha256
+    expected_function_version = var.image_signature_verifier_reconciled_function_version
+  }
+
+  lifecycle {
+    precondition {
+      condition = (
+        var.image_signature_verifier_reconciliation_desired_json == null
+        ? var.image_signature_verifier_reconciliation_desired_sha256 == null
+        : sha256(var.image_signature_verifier_reconciliation_desired_json) == var.image_signature_verifier_reconciliation_desired_sha256
+      )
+      error_message = "The verifier reconciliation authority hash must bind the exact reviewed desired JSON."
+    }
   }
 }
 
@@ -183,7 +222,7 @@ resource "aws_lambda_function" "image_signature_verifier" {
   source_code_hash  = var.lambda_artifacts["image_signature_verifier"].source_code_hash
   timeout           = var.image_signature_verifier_lambda_timeout_seconds
   memory_size       = 1024
-  publish           = true
+  publish           = local.image_signature_verifier_initialization
 
   ephemeral_storage {
     size = 1024
@@ -200,6 +239,30 @@ resource "aws_lambda_function" "image_signature_verifier" {
   }
 
   lifecycle {
+    # Isolated reconciliation owns mutable verifier code and configuration;
+    # the full App plan retains their exact desired authority in state and only selects qualified aliases.
+    ignore_changes = [
+      architectures,
+      dead_letter_config,
+      environment,
+      ephemeral_storage,
+      handler,
+      kms_key_arn,
+      layers,
+      logging_config,
+      memory_size,
+      publish,
+      role,
+      runtime,
+      s3_bucket,
+      s3_key,
+      s3_object_version,
+      source_code_hash,
+      timeout,
+      tracing_config,
+      vpc_config,
+    ]
+
     precondition {
       condition     = data.aws_caller_identity.current.account_id == var.aws_account_id
       error_message = "AWS caller account must match aws_account_id before mutating the verifier."
@@ -246,8 +309,10 @@ resource "aws_lambda_function" "image_signature_verifier" {
 resource "aws_lambda_alias" "image_signature_verifier_preflight" {
   name             = "preflight"
   description      = "Qualified non-accepting cryptographic verifier preflight"
-  function_name    = aws_lambda_function.image_signature_verifier.function_name
+  function_name    = local.image_signature_verifier_name
   function_version = local.image_signature_verifier_alias_function_version
+
+  depends_on = [terraform_data.image_signature_verifier_reconciliation_authority]
 }
 
 resource "aws_lambda_alias" "image_signature_verifier_runtime" {

@@ -19,7 +19,7 @@ import { getApiErrorCode, readJsonRecord } from '@stark-ballot/test-support/test
 import {
   localRuntimeProfile,
   targetRuntimeProfile,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 
@@ -50,8 +50,11 @@ type CommandLike = {
 class FakeDynamoRateLimitDocumentClient {
   readonly commands: string[] = [];
   readonly inputs: Record<string, unknown>[] = [];
+  private readonly failWrites: boolean;
 
-  constructor(private readonly failWrites = false) {}
+  constructor(failWrites = false) {
+    this.failWrites = failWrites;
+  }
 
   send(command: CommandLike): Promise<Record<string, unknown>> {
     this.commands.push(command.constructor.name);

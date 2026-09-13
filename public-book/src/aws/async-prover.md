@@ -1,264 +1,136 @@
 # 非同期プローバー
 
-このページは、AWS runtime で STARK 証明生成を HTTP リクエストから分離する非同期プローバー経路を説明します。
-対象は `RUNTIME_PROFILE=target-aws-async` の経路です。
+集計要求が受け付けられてから、実際に計算が始まるまでには待ち時間があります。キューの再配送で同じ要求が届くことも、その間に利用者が取り消すこともあります。非同期プローバーは、作業が届いたという理由だけでは起動せず、保存済みの集計状態を確認してから計算へ進みます。
 
-STARK 証明生成はブラウザ操作や API Gateway / Lambda の短い応答時間より長くかかります。
-そのため、`POST /api/sessions/:sessionId/finalizations` は作業を受理してすぐ返し、証明生成は SQS、Step Functions、ECS Fargate に委ねます。
-ブラウザは capability token 付きの current finalization API をポーリングし、完了後に bundle / report を取得します（[Bundle / report delivery](#bundle--report-delivery)。`public` の分類は [公開境界](../verification/public-boundary.md) の定義に従います）。
+<a id="finalize-受付"></a>
 
-## 実行リソースと mode 境界
+## 集計要求を受け付ける
 
-target の prover task は ARM64 Linux の CPU-only ECS Fargate task で、現行 IaC
-default は 16 vCPU / 32 GiB です。`target-aws-async` profile は production proof
-evidence と async finalization だけを許可し、mock / development receipt や同期
-execution を選べません。
+`POST /api/sessions/:sessionId/finalizations` は、URL のセッションと capability を照合し、Turnstile、レート制限、集計開始の前提条件を確認します。AWS の非同期経路では、次の順で作業を登録します。
 
-local/test profile は同じ target topology を模倣するものではありません。
-`local-demo` と `static-mock-e2e` は mock evidence、
-`local-proof-development` は development-only receipt、
-`local-proof-production` は production proof をそれぞれ同期実行します。profile
-全体の対応表は [AWS runtime 境界 > Semantic runtime profiles](runtime-boundary.md#semantic-runtime-profiles)
-を参照してください。
+1. zkVM 入力を構築し、集計状態を `pending` として保存する。
+2. 非公開 S3 の `sessions/{sessionId}/{finalizationId}/input.json` に入力を保存する。
+3. 正しい S3 キーを含む作業メッセージを SQS へ送る。
+4. `202 Accepted` と、`pending` の `FinalizationResource` を返す。
 
-この分離により、短い Web/API request lifecycle は work acceptance と status
-取得に集中し、数分規模・高 resource の proof lifecycle は queue、retry、
-capacity control、artifact publication を独立して扱えます。CPU/GPU や task
-resource を変更する場合は、この非同期境界を保ったまま proof-time と cost の
-evidence を取り直す必要があります。
+応答には状態取得 URL を含めません。クライアントは既知の `GET /api/sessions/:sessionId/finalizations/current` を capability 付きで呼び出します。
 
-## 全体像
+<a id="dispatch-処理"></a>
 
-```mermaid
-flowchart TB
-  API["POST /api/sessions/:sessionId/finalizations<br/>capability protected"] --> S3IN["Private S3<br/>input.json"]
-  API --> SQS["SQS<br/>prover work queue"]
-  SQS --> DISPATCH["proof-dispatcher Lambda"]
-  DISPATCH --> SFN["Step Functions<br/>finalization state machine"]
-  SFN --> SIG["image-signature-verifier Lambda<br/>runtime alias"]
-  SIG --> CHECK{"cryptographic result<br/>VERIFIED?"}
-  CHECK -->|Yes| SEM["DynamoDB<br/>prover semaphore"]
-  JANITOR["semaphore-janitor Lambda<br/>compensating cleanup"] -.-> SEM
-  SEM --> STARTED["finalization-writer Lambda<br/>running admitted"]
-  STARTED --> ECS["ECS Fargate task<br/>zkVM host"]
-  CHECK -->|No| CALLBACK_FAIL["finalization-writer Lambda<br/>failed"]
-  ECS --> S3OUT["Private S3<br/>bundle.zip + sibling artifacts"]
-  ECS --> CALLBACK_OK["finalization-writer Lambda<br/>succeeded / timeout / failed"]
-  CALLBACK_OK --> DDB["DynamoDB<br/>session finalization state"]
-  CALLBACK_FAIL --> DDB
-  DDB --> STATUS["GET /api/sessions/:sessionId/finalizations/current<br/>capability protected"]
-  S3OUT --> DOWNLOAD["GET .../:finalizationId/artifacts/bundle<br/>GET .../:finalizationId/artifacts/report<br/>capability protected"]
-```
+## キューから作業を起動する
 
-主要な責務は次のとおりです。
+`proof-dispatcher` は SQS メッセージを一件ずつ読みます。まずメッセージの形、`recordType`、セッションと集計の識別子を検証し、入力、出力先、バンドルの S3 キーが同じ集計の正規の配置であることを確認します。必要な AWS 設定が欠けていても開始できません。
 
-| コンポーネント             | 責務                                                                                                                                  |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| API handler                | セッション capability、Turnstile、rate limit、finalize 前提条件を検証し、`input.json` を private S3 に保存して非同期 work item を作る |
-| SQS work queue             | finalize 要求を durable な dispatch 単位として保持し、dispatcher の再試行と DLQ 移動を担う                                            |
-| proof-dispatcher Lambda    | work item、artifact key、session の `pending` state を検証し、Step Functions execution を開始する                                     |
-| Step Functions             | cryptographic image verifier、prover semaphore、ECS Fargate `runTask.sync`、成功、失敗、timeout の callback を順序づける              |
-| image-signature-verifier   | 選択された digest-pinned prover image を固定された trust policy と verifier asset で暗号学的に検証する                                |
-| prover semaphore           | DynamoDB の単一 lock item で `RunProver` への同時進入数を制限し、capacity 待ちを Step Functions 内に閉じ込める                        |
-| semaphore-janitor Lambda   | terminal execution event と定期 sweep を使い、通常の release 経路で残った semaphore owner を補償的に解放する                          |
-| ECS Fargate task           | zkVM host を実行し、公開可能 artifact と private sibling artifact を private S3 に保存する                                            |
-| finalization-writer Lambda | callback payload と S3 bundle key を検証し、DynamoDB の session finalization state を更新する                                         |
-| bundle/report API          | capability 保護の bundle / report 配信（[Bundle / report delivery](#bundle--report-delivery)）                                        |
+次に、現在の集計レコードを読みます。該当するレコードがない場合や、メッセージの `finalizationId` が現在の `pending` と一致しない場合は、古い作業として破棄します。取消後に再配送された要求が、新しい計算を始めるのを防ぐためです。一方、壊れたメッセージ、キーの不整合、一時的な AWS 呼び出し失敗は再試行し、解消しなければ DLQ へ移します。
 
-## Finalize 受付
+条件を満たすと `StartExecution` で Step Functions を開始します。dispatcher は入力ファイルを保存し直さず、この時点では状態を `running` にも変えません。計算資源の空きがまだ分からないからです。
 
-`POST /api/sessions/:sessionId/finalizations` は session-scoped な操作であり、path の `sessionId` と `X-Session-Capability` の検証を通過した場合だけ処理されます（契約は [API リファレンス > セッション capability](../api/endpoints.md#セッション-capability)）。
+<a id="dynamodb-recovery-phase-と-quiesce"></a>
 
-非同期モードでは、API handler は同期的に証明を作らず、次の処理を行います。
-
-1. セッションが finalize 可能な状態か検証する。
-2. zkVM 入力を構築し、finalization state を `pending` として保存する。
-3. target AWS runtime では `sessions/{sessionId}/{finalizationId}/input.json` に zkVM 入力を保存する。
-4. SQS work queue に、正準 S3 key を含む prover work message を送る。
-5. `202 Accepted` と `pending` の `FinalizationResource` を返す。現行 resource は status URL を含まない。
-
-返却後のクライアントのポーリングと status の判定境界は [Client polling と判定境界](#client-polling-と判定境界) を参照してください。
-
-## Dispatch 処理
-
-`proof-dispatcher` Lambda は SQS message を 1 件ずつ処理します。
-SQS は長時間の証明生成を直接抱えるのではなく、Step Functions execution を開始するための durable dispatch queue です。
-
-dispatcher は次を検証します。
-
-- strict な message shape と `recordType`、session ID、finalization ID
-- `input.json`、output prefix、`bundle.zip` の S3 key が session / finalization scope の正準 layout に一致すること
-- AWS runtime に必要な環境設定が存在すること
-
-検証後、dispatcher は Step Functions を `StartExecution` で開始します。
-dispatcher は `input.json` を保存せず、`StartExecution` 成功だけで finalization state を `running` にもしません（`running` へ遷移する条件は [Step Functions](#step-functions)）。
-
-session の current finalization record が存在しない、または message の `finalizationId` に対する `pending` state ではない場合、dispatcher は stale work として drop します。
-message shape や artifact key の不整合、または一時的な AWS 呼び出し失敗は SQS retry / DLQ の対象です。
-
-### DynamoDB recovery phase と quiesce
-
-DynamoDB recovery の phase 定義と切替契約は [Terraform](terraform.md) を参照してください。
-quiesced phase では新規の public session admission と prover / verification work queue の SQS event-source mapping が無効になるため、未消費の prover work は SQS に残り、finalization state は `pending` のままになることがあります。
-event-source consumption を再開するのは active phase だけです。
+develop 専用のアプリ復旧経路で[休止段階](terraform.md#dynamodb-recovery-selection)へ入った場合は、新規セッションの作成に加えて、プローバーと検証の SQS event-source mapping を停止します。未消費の要求はキューに残り、集計も `pending` のまま残り得ます。キュー消費を再開するのは active の段階だけです。
 
 ## Step Functions
 
-Step Functions state machine は、証明生成の順序と callback を管理します。
+Step Functions は、起動前の確認と計算の後始末を順序付けます。
 
 ```mermaid
-stateDiagram-v2
-  [*] --> VerifyImageSignature
-  VerifyImageSignature --> CheckImageSignature
-  VerifyImageSignature --> RecordSignatureInvocationFailure: invocation error
-  RecordSignatureInvocationFailure --> CheckImageSignature: normalized rejection
-  CheckImageSignature --> AcquireProverSlot: VERIFIED + cryptographic
-  CheckImageSignature --> CallbackSignatureFailed: other result
-  AcquireProverSlot --> MarkProverStarted: slot acquired
-  AcquireProverSlot --> CallbackCapacityWaitFailed: capacity wait exhausted
-  MarkProverStarted --> RunProver: admitted
-  MarkProverStarted --> ProverStartSuperseded: stale/cancelled
-  RunProver --> ReleaseAfterSuccess: success
-  RunProver --> ReleaseAfterTimeout: timeout
-  RunProver --> ReleaseAfterFailure: task error
-  ReleaseAfterSuccess --> CallbackSucceeded
-  ReleaseAfterTimeout --> CallbackTimedOut
-  ReleaseAfterFailure --> CallbackFailed
-  CallbackSucceeded --> [*]
-  CallbackTimedOut --> [*]
-  CallbackSignatureFailed --> [*]
-  CallbackFailed --> [*]
-  CallbackCapacityWaitFailed --> [*]
-  ProverStartSuperseded --> [*]
+flowchart TD
+  S["コンテナの署名を検証"] -->|成功| C["同時実行枠を取得"]
+  C --> G["現在も開始できる集計か確認"]
+  G -->|開始を許可| P["Fargateで証明生成"]
+  G -->|取消・別の集計へ移行済み| R["枠を解放して終了"]
+  P --> F["枠を解放"]
+  F --> W["成功・失敗・時間切れを保存"]
 ```
 
-`VerifyImageSignature` は `image-signature-verifier` Lambda の qualified `runtime` alias を呼び出し、ECS で実行する digest-pinned prover image を暗号学的に検証します。
-固定された trust root と verifier asset を使った検証結果が `result = VERIFIED` かつ `mode = cryptographic` の場合だけ semaphore 取得に進みます。
-それ以外（署名未完了、profile 不整合、trust policy 不整合、検証失敗、timeout、verifier error）は rejected result として fail-closed に扱います。
-Lambda invocation 自体が bounded retry 後も失敗した場合は `RecordSignatureInvocationFailure` が cryptographic rejection に正規化し、`CallbackSignatureFailed` に進みます。
-signing status の readiness と暗号学的検証の区別を含む考え方は [イメージ署名](image-signing.md) を参照してください。
+### 署名を確かめてから資源を確保する
 
-`AcquireProverSlot` は DynamoDB-backed semaphore で `RunProver` への同時進入数を制限します。
-capacity 競合は Step Functions 内で待機 / retry され、この間の user-visible finalization state は `pending` のままです。
-slot 取得後、`MarkProverStarted` が `finalization-writer` Lambda を呼び、store guard を通過した場合だけ `running` と `startedAt` を記録します。
-この guard により、cancel 済みまたは superseded された execution は `RunProver` に進まず slot を解放して終了します。
+最初の `VerifyImageSignature` は、`image-signature-verifier` Lambda の `runtime` alias を呼びます。対象は、デプロイ時に内容のダイジェストで固定したプローバーイメージです。`result = VERIFIED` と `mode = cryptographic` の両方がそろった場合だけ、同時実行枠の取得へ進みます。
 
-`RunProver` は ECS Fargate task を `ecs:runTask.sync` で起動します。
-Step Functions は task の完了を待ち、slot を解放したうえで成功、timeout、その他の失敗を `finalization-writer` Lambda に callback します。
+署名処理中、署名プロファイルの不一致、検証資産や信頼ポリシーの不整合、暗号学的検証の失敗、時間切れはすべて起動を止めます。Lambda 呼び出し自体が回数を制限した再試行後も失敗すると、`RecordSignatureInvocationFailure` が拒否結果へ変換し、`CallbackSignatureFailed` で失敗を記録します。[イメージ署名](image-signing.md)が説明するように、署名処理の完了表示だけではこの条件を満たしません。
 
-通常の slot 解放は state machine 内の `ReleaseAfterSuccess` / `ReleaseAfterTimeout` / `ReleaseAfterFailure` が担います。
-`semaphore-janitor` Lambda はその補償経路です。
-Step Functions の terminal status event で owner 解放を試み、さらに 30 分ごとの sweep で prover task timeout に 15 分を加えた期間より古い owner を確認します。
-sweep は Step Functions execution がまだ `RUNNING` なら owner を保持し、terminal または存在しない execution だけを条件付き更新で解放します。
+### 待っている間の取消を見落とさない
 
-## ECS Fargate task
+`AcquireProverSlot` は DynamoDB の semaphore で、`RunProver` へ同時に進める数を制限します。枠が埋まっている間は Step Functions 内で待機・再試行し、利用者へは `pending` を返します。待機の上限に達すれば容量待ちの失敗を記録します。
 
-ECS Fargate task は一回限りの証明生成 job です。
-ブラウザや外部利用者に直接公開される endpoint ではありません。
+枠を取れた後、`MarkProverStarted` が `finalization-writer` を呼び、ストアの更新条件をもう一度確認します。ここで開始を許可した場合だけ `running` と `startedAt` を保存します。待機中に取り消されたり、別の集計へ置き換わったりしていれば、枠を返して終了し、タスクを起動しません。
 
-task には Step Functions から次のような session 固有の入力が渡されます。
+`RunProver` は `ecs:runTask.sync` で Fargate タスクを起動して完了を待ちます。正常終了、時間切れ、その他の失敗に応じて枠を解放し、writer に結果を通知します。`running` は開始が許可された状態なので、タスク開始の再試行中も含みます。
 
-| 環境変数                                | 説明                                     |
-| --------------------------------------- | ---------------------------------------- |
-| `INPUT_S3_BUCKET` / `INPUT_S3_KEY`      | API handler が保存した zkVM 入力の場所   |
-| `OUTPUT_S3_BUCKET` / `OUTPUT_S3_PREFIX` | bundle と sibling artifact の保存先      |
-| `EXPECTED_IMAGE_ID`                     | 実行する guest image と照合する Image ID |
+### 解放し損ねた枠を回収する
 
-コンテナの entrypoint は次の順序で処理します。
+通常の解放は state machine の成功・時間切れ・失敗経路が担います。`semaphore-janitor` は、その後始末が完了しなかった場合を補います。
 
-1. private S3 から `input.json` を取得する。
-2. 入力 JSON の必須フィールドを検証する。
-3. zkVM host binary を実行する。
-4. host output から `journal.json` を構築する。
-5. `public-input.json`、`election-manifest.json`、`close-statement.json` を構築する。
-6. `journal.json` と公開監査アーティファクト の method version、input commitment、選挙情報が一致することを検証する。
-7. `receipt.json`、`journal.json`、`public-input.json`、`election-manifest.json`、`close-statement.json` だけを含む `bundle.zip` を作る。
-8. `bundle.zip` と sibling artifacts を private S3 にアップロードする。
+janitor は Step Functions の終了イベントで所有者の解放を試み、さらに30分ごとの確認で「タスクの時間制限＋15分」より古い所有者を調べます。古いというだけでは削除しません。対応する実行が `RUNNING` または `PENDING_REDRIVE` なら保持し、終了済みか存在しないことを確認できた実行だけを条件付き更新で解放します。
 
-処理が非ゼロ終了した場合、entrypoint は `failure-marker.json` を best-effort で保存します（契約の詳細は [Artifact 境界](#artifact-境界)）。
+<a id="ecs-fargate-task"></a>
 
-`target-aws-async` と prover container は production proof evidence だけを許可します。container entrypoint は retired development-mode variable を host process に渡さず、development receipt を成功証明として扱いません。
+## コンテナ内で証明を生成する
 
-## Artifact 境界
+プローバーは [16 vCPU / 32 GiB を既定とする一回限りのタスク](design-and-services.md)です。Step Functions から、入力の `INPUT_S3_BUCKET` / `INPUT_S3_KEY`、出力の `OUTPUT_S3_BUCKET` / `OUTPUT_S3_PREFIX`、期待する `EXPECTED_IMAGE_ID` を受け取ります。
 
-非同期プローバーの S3 bucket は private proof artifact storage です。
-ブラウザは S3 に直接アクセスしません。
+コンテナの entrypoint は S3 から入力を取得し、必須フィールドを確認して zkVM host を実行します。続いて Rust の `prover-artifacts` が非公開入力と host 出力を厳密に読み、`journal.json` と公開監査用の `public-input.json`、`election-manifest.json`、`close-statement.json` を作ります。
 
-公開可能 member と除外 artifact の普遍的なポリシーは [公開境界](../verification/public-boundary.md) を、モード別の bundle allowlist と S3 レイアウトは [バンドル構造](../verification/bundle-structure.md) を参照してください。
-mode 非依存の保護 4 アーティファクトの除外は、非同期モードでも [公開境界 > bundle.zip に入れないファイル](../verification/public-boundary.md#bundlezip-に入れないファイル) と同一です。
-そのうえで、非同期経路に固有の点は次のとおりです。
+ファイルを書けただけでは配布しません。同じ Rust ツールで読み直し、ジャーナルと公開監査ファイルの `methodVersion`、入力コミットメント、選挙情報の一致を確認します。その後、次の五つだけを ZIP にして、個別の関連ファイルとともに非公開 S3 へアップロードします。
 
-- `included-bitmap.json` と `seen-bitmap.json` は、生成された場合に `bundle.zip` 外の sibling object として同じ finalization prefix に保存されます。S3 object の存在だけでは利用可能とせず、callback が内容を検証して finalization に admit した結果を artifact availability に反映します。
-- `verification.json` は finalize callback 時点で常に存在する artifact ではなく、後続の verification run が report を保存した後にのみ、`/api/sessions/:sessionId/finalizations/:finalizationId/artifacts/report` の capability 保護 API から取得できます。
-- `failure-marker.json` は非同期経路だけに現れる private diagnostic です。契約は次のとおりです。
+```text
+receipt.json
+journal.json
+public-input.json
+election-manifest.json
+close-statement.json
+```
+
+公開監査ファイルと正規化したハッシュの計算は `zkvm/host/src/artifacts.rs` が担当します。shell はプロセス起動、ファイル、ZIP、S3 と配布対象の制限を担当します。AWS 用プロファイルとこのコンテナは本物の STARK 証拠だけを許可し、開発用レシートを成功証明にできません。
+
+<a id="artifact-境界"></a>
+
+## 生成したファイルを公開用と内部用に分ける
+
+一回の集計に属するファイルでも、すべてを ZIP に入れません。`input.json` など、[公開しないファイル](../verification/public-boundary.md)を除外します。形式と配置は[バンドル構造](../verification/bundle-structure.md)にあります。
+
+生成したビットマップは ZIP の外の同じ集計用接頭辞へ保存します。S3 に存在するだけで利用可能とは宣言せず、writer が内容を検証し、集計結果と一緒に保存できたことをもって利用可能にします。`verification.json` はこの段階ではまだなく、後続の検証作業で保存した後にレポート取得 API から配信します。
 
 ### failure-marker.json の契約
 
-`failure-marker.json` は、prover が非ゼロ終了した場合に entrypoint が作る、`category` だけを持つ小さな private sibling object です。
+コンテナが非ゼロ終了した場合、entrypoint は可能なら `failure-marker.json` を保存します。これは画面へ生のエラーを出さずに、障害の種類を writer へ伝えるための非公開ファイルです。
 
-- `category` の値は `configuration`、`input`、`prover_execution`、`infrastructure_interruption`、`artifact`、`upload`、`timeout`、`unknown` の閉じた集合に制限され、raw error、session ID、artifact path、image authority、credential は含めません。
-- 同じ finalization scope の private S3 prefix へ create-only で保存し、既存 marker と異なる内容を上書きしません。
-- `finalization-writer` は消費前に marker を契約と照合し、認識できる category があるときだけ failure detail に保存します。
-- marker が存在しない、または契約に一致しない場合は、raw error を公開せず generic な task failure として扱います。
-- 公開 bundle や report には含まれず、ブラウザ向け download endpoint からも配信されません。
+内容は `category` だけで、値は `configuration`、`input`、`prover_execution`、`infrastructure_interruption`、`artifact`、`upload`、`timeout`、`unknown` に限定します。生のエラー、識別子、保存先、イメージ情報、認証情報は入れません。
 
-## Callback と session state
+同じ集計の S3 接頭辞に新規作成のみを許可し、既存の異なる内容を上書きしません。writer は形と値を検証できたときだけ障害詳細へ取り込みます。存在しない場合や不正な場合は、一般的なタスク失敗として扱います。公開 ZIP、レポート、ブラウザ向けダウンロードには含めません。
 
-`finalization-writer` Lambda は Step Functions から受け取った callback を session state に反映します。
+<a id="callback-と-session-state"></a>
 
-成功 callback では、writer は S3 上の `bundle.zip` key が `sessions/{sessionId}/{finalizationId}/bundle.zip` の正準 layout と一致することを確認します。
-その後、bundle から receipt、journal、公開監査アーティファクトを復元し、存在する sibling bitmap artifact を
-[bitmap Merkle 契約](../protocol/bitmap-merkle.md)に照らして検証します。terminal result と bitmap availability、
-利用可能と宣言する sidecar は一つの transaction で保存し、commit 前の失敗では `succeeded` を公開せず bounded callback retry に委ねます。
+## 結果の通知と保存を確定する
 
-失敗 callback では、署名検証失敗、ECS task 失敗、timeout などの理由を finalization state に保存します。
-`PROVER_TASK_FAILED` の場合、writer は許可された finalization scope の `failure-marker.json` を契約に従って消費します（詳細は [Artifact 境界](#artifact-境界)）。
-callback delivery 自体が失敗した場合は Step Functions の bounded retry / failure state に従います。
+成功通知を受けた `finalization-writer` は、まずバンドルのキーが `sessions/{sessionId}/{finalizationId}/bundle.zip` と一致することを確認します。バンドルからレシート、ジャーナル、公開監査ファイルを復元し、存在する個別ビットマップを[ビットマップの契約](../protocol/bitmap-merkle.md)で検証します。
 
-## Client polling と判定境界
+復元が一時的に失敗した場合は、Step Functions が回数を制限して通知を再試行します。一時的ではない復元失敗は `FINALIZATION_BUNDLE_RESTORE_FAILED` として記録し、集計を `failed` にします。
 
-クライアントは `GET /api/sessions/:sessionId/finalizations/current` を capability 付きで呼び出し、current `FinalizationResource` の進捗を確認します。
+復元できた結果とビットマップの利用可否、利用可能と宣言する付随データは、一つのトランザクションで保存します。この保存が失敗しても `succeeded` は公開せず、通知が再試行された場合に保存をやり直します。
 
-```mermaid
-stateDiagram-v2
-  [*] --> pending: POST .../finalizations accepted
-  pending --> running: semaphore slot acquired / MarkProverStarted admitted
-  pending --> failed: signature rejection / capacity wait or start failure
-  running --> succeeded: callback persisted result
-  running --> failed: callback persisted error
-  running --> timeout: timeout callback persisted
-  succeeded --> [*]
-  failed --> [*]
-  timeout --> [*]
-```
+失敗通知では署名、タスク、時間切れなどの理由を保存します。`PROVER_TASK_FAILED` の場合は、同じ集計の `failure-marker.json` を上記の条件で読み取ります。通知自体の配信失敗も Step Functions の再試行上限と失敗状態に従います。
 
-| ステータス  | 説明                                                                                                           |
-| ----------- | -------------------------------------------------------------------------------------------------------------- |
-| `pending`   | finalize request は受理済みで、SQS dispatch、Step Functions setup、または semaphore capacity wait を待っている |
-| `running`   | semaphore slot 取得後に prover 開始が admitted され、ECS task または task-start retry が進行中                 |
-| `succeeded` | bundle の復元後、terminal result と bitmap availability、存在する admitted sidecar が原子的に保存された        |
-| `failed`    | 署名検証失敗、prover task 失敗、artifact 復元失敗などで fail-closed に保存された                               |
-| `timeout`   | ECS task timeout が callback として保存された                                                                  |
+<a id="client-polling-と判定境界"></a>
 
-status response は finalization の進捗を示すものです。
-検証 UI の最終的な「Verified」判定は、bundle、receipt、journal、公開監査アーティファクト、必要な検証チェックを別途評価して決まります。
+## ブラウザが完了を待つ
 
-## Bundle / report delivery
+`GET /api/sessions/:sessionId/finalizations/current` は、現在の集計について次の進捗を返します。
 
-通常の browser / CLI 経路では、bundle と report は capability 保護 API から取得します（endpoint 一覧とアクセスポリシーは [公開境界 > bundle と report の取得経路](../verification/public-boundary.md#bundle-と-report-の取得経路)、wire 契約は [API リファレンス > Artifact 取得 API](../api/endpoints.md#artifact-取得-api)）。
+| 状態        | 何が起きているか                                                     |
+| ----------- | -------------------------------------------------------------------- |
+| `pending`   | 受付済み。配送、実行準備、同時実行枠を待っている                     |
+| `running`   | 枠を取得し、現在の集計として開始を許可した。タスク開始の再試行も含む |
+| `succeeded` | バンドルを復元・確認し、結果とビットマップ利用可否を原子的に保存した |
+| `failed`    | 署名、容量待ち、タスク、証拠の復元などの失敗を保存した               |
+| `timeout`   | タスクの時間切れを保存した                                           |
 
-非同期 / S3 実行に固有の挙動は次のとおりです。
+`succeeded` は証明生成の完了です。画面の「Verified」は、これからレシート、ジャーナル、投票と掲示板の証拠を評価して決まります。
 
-- 大きい `bundle.zip` は bundle endpoint の range response で配信できます。
-- S3 key が正準 layout と一致しない場合や、許可された finalization scope に属さない場合、API は fail-closed に扱います。
-- raw S3 URL や presigned URL は通常の browser / CLI contract ではありません。
+<a id="bundle--report-delivery"></a>
 
-## 関連する章
+## 証拠をダウンロードする
 
-- [AWS runtime 境界](runtime-boundary.md)：AWS 章全体の runtime 境界
-- [バンドル構造](../verification/bundle-structure.md)：`bundle.zip` と private artifact の境界
-- [可観測性設計](observability.md)：queue、Step Functions、ECS、writer を横断する相関と検出
-- [イメージ署名](image-signing.md)：Step Functions 内の署名確認
-- [Image ID](../zkvm/image-id.md)：prover image と guest Image ID の対応
+バンドルとレポートは capability で保護された API から取得します。大きい `bundle.zip` は Range 応答で分割取得できます。API は集計の識別子と S3 キーを照合し、別の集計のファイルや正規の配置でないファイルを返しません。直接の S3 URL や署名付き URL は通常のブラウザ・CLI の取得契約ではありません。
 
-<!-- source: packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/finalizations.ts, packages/runtime-config/src/env/runtimeProfile.ts, apps/api/src/server/api/handlers/finalize.ts, apps/api/src/server/api/handlers/currentFinalization.ts, apps/api/src/server/api/handlers/verificationBundles.ts, packages/application/src/finalize/usecases/finalize-async.ts, packages/aws-adapters/src/finalize/async-prover-artifacts.ts, infra/docker/entrypoint.sh, infra/docker/prover-failure-marker-contract.json, infra/image-signature-verifier, infra/lambdas/image-signature-verifier, infra/lambdas/proof-dispatcher, infra/lambdas/finalization-writer, infra/lambdas/semaphore-janitor, infra/terraform/app -->
+<!-- source: packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/finalizations.ts, packages/runtime-config/src/env/runtimeProfile.ts, packages/application/src/finalize/usecases/finalize-async.ts, packages/aws-adapters/src/finalize/async-prover-artifacts.ts, infra/docker/entrypoint.sh, zkvm/host/src/artifacts.rs, infra/docker/prover-failure-marker-contract.json, infra/lambdas/proof-dispatcher, infra/lambdas/finalization-writer, infra/lambdas/semaphore-janitor, infra/terraform/app/step_functions.tf -->

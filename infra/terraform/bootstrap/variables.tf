@@ -83,12 +83,17 @@ variable "state_backend_key" {
 }
 
 variable "state_kms_key_id" {
-  description = "Existing or adopted KMS key ID for Terraform state encryption."
+  description = "Exact existing state KMS key ID; explicit null is allowed only for initial main backend creation with every pipeline disabled."
   type        = string
 
   validation {
-    condition     = can(regex("^[0-9a-f-]{36}$", var.state_kms_key_id))
-    error_message = "state_kms_key_id must be a KMS key UUID."
+    condition = var.state_kms_key_id == null ? (
+      var.deployment_environment == "main"
+      && !var.enable_development_pipeline
+      && !var.enable_development_app_pipeline
+      && !var.enable_development_foundation_pipeline
+    ) : can(regex("^[0-9a-f-]{36}$", var.state_kms_key_id))
+    error_message = "state_kms_key_id must be the state KMS key UUID, or explicit null for initial main backend creation with every pipeline disabled."
   }
 }
 
@@ -109,9 +114,9 @@ variable "backend_principal_arns" {
   validation {
     condition = length(var.backend_principal_arns) > 0 && alltrue([
       for arn in var.backend_principal_arns :
-      can(regex("^arn:aws(-[a-z]+)?:iam::[0-9]{12}:role/.+$", arn))
+      can(regex("^arn:aws:iam::${var.aws_account_id}:role/[A-Za-z0-9+=,.@_/-]+$", arn))
     ])
-    error_message = "backend_principal_arns must contain at least one IAM role ARN."
+    error_message = "backend_principal_arns must contain only IAM role ARNs from the selected account, with at least one principal."
   }
 }
 
@@ -192,9 +197,21 @@ variable "development_app_cloudfront_acm_certificate_arn" {
   validation {
     condition = (
       var.development_app_cloudfront_acm_certificate_arn == null
-      || can(regex("^arn:aws:acm:us-east-1:[0-9]{12}:certificate/[A-Za-z0-9-]+$", var.development_app_cloudfront_acm_certificate_arn))
+      || can(regex("^arn:aws:acm:us-east-1:${var.aws_account_id}:certificate/[A-Za-z0-9-]+$", var.development_app_cloudfront_acm_certificate_arn))
     )
-    error_message = "development_app_cloudfront_acm_certificate_arn must be a us-east-1 ACM certificate ARN when set."
+    error_message = "development_app_cloudfront_acm_certificate_arn must be a same-account us-east-1 ACM certificate ARN when set."
+  }
+
+  validation {
+    condition = (
+      var.deployment_environment != "main"
+      || !var.enable_development_app_pipeline
+      || (
+        var.development_app_cloudfront_acm_certificate_arn != null
+        && lower(var.development_app_public_hostname) != "develop.stark-ballot-sim.hwatanabe.dev"
+      )
+    )
+    error_message = "Production App control requires an explicit public hostname and same-account us-east-1 ACM certificate."
   }
 }
 

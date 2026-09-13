@@ -21,7 +21,9 @@ Laws:
 
 Evidence:
 
-- exact vectors in `zkvm/methods/guest/src/compatibility_test.rs`
+- exact generated vectors in
+  `docs/formal/generated-vectors/input-commitment-cases.json`,
+  consumed by `zkvm/contract-core/src/encoding.rs`
 - generative laws in `zkvm/methods/guest/src/property_tests.rs`
 
 ### RFC 6962 inclusion-proof folding
@@ -39,6 +41,10 @@ Laws:
 Evidence:
 
 - focused example tests in `zkvm/contract-core/src/inclusion_proof.rs`
+- deterministic TypeScript-generated fixture
+  `zkvm/contract-core/testdata/rfc6962-ts-golden-vectors.json`, with freshness
+  ownership in `scripts/tests/rfc6962-golden-vectors.ts` and exact Rust serde
+  admission
 - generative laws in `zkvm/methods/guest/src/property_tests.rs`
 
 ### Bitmap root helpers
@@ -54,7 +60,15 @@ Laws:
 
 Evidence:
 
-- exact vectors in `zkvm/methods/guest/src/compatibility_test.rs`
+- exact generated vectors in `docs/formal/generated-vectors/bitmap-cases.json`,
+  consumed by `zkvm/contract-core/src/bitmap.rs`
+- Rust-owned artifact projection in
+  `zkvm/contract-core/testdata/current-bitmap-artifacts-sentinel.json`, admitted
+  by `packages/zkvm-contract/src/zkvm/bitmap-artifacts.test.ts`
+- deterministic TypeScript-generated root/proof fixture
+  `zkvm/contract-core/testdata/bitmap-ts-golden-vectors.json`, exact-admitted by
+  TypeScript and Rust and freshness-owned by
+  `scripts/tests/bitmap-golden-vectors.ts`
 - generative laws in `zkvm/methods/guest/src/property_tests.rs`
 
 ## Explicitly Out Of Shared Core

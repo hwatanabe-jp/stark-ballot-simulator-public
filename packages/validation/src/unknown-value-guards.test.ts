@@ -143,7 +143,7 @@ describe('unknown-value guards', () => {
 
     expect(requireRecord(record)).toBe(record);
     expect(requireRecord(arrayRecord, 'array')).toBe(arrayRecord);
-    expect(() => requireRecord(null)).toThrowError('Expected value to be a record');
-    expect(() => requireRecord(undefined, 'response payload')).toThrowError('Expected response payload to be a record');
+    expect(() => requireRecord(null)).toThrow('Expected value to be a record');
+    expect(() => requireRecord(undefined, 'response payload')).toThrow('Expected response payload to be a record');
   });
 });

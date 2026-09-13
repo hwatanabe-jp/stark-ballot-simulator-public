@@ -78,12 +78,18 @@ full-bulletin や private bitmap sidecar を public anonymous surface として�
 `POST /sessions/:sessionId/finalizations` の canonical UI field は
 `turnstileToken`。API request schema は `cf-turnstile-response` と `cfTurnstileResponse` を受理しない。
 本番での必須条件と bypass 可否は route admission control と runtime config に従う。
+セッション作成の profile ごとの受付条件と主要応答は
+[POST `/api/sessions`](#post-apisessions) にまとめる。
 
 ### 値と共通型
 
 - `ScenarioId`: `S0 | S1 | S2 | S3 | S4 | S5`
 - `VoteChoice`: `A | B | C | D | E`
-- 時刻: epoch milliseconds
+- 時刻: epoch milliseconds。時刻、duration、tree size、vote index は非負の safe integer
+  （最大 `Number.MAX_SAFE_INTEGER`）。journal とその count/tally projection はより狭い
+  `uint32` domain（`0..4294967295`）を使い、journal の `treeSize` は正数。
+- 整数 query/path 値は leading zero、符号、小数、指数表記のない10進文字列を受理し、
+  safe integer と確認してから number に変換する。`0` の可否と追加上限は endpoint ごとに定める。
 - `VerificationStatus`: `success | failed | dev_mode | not_run | running`
 - `VerificationStepStatus`: `success | failed | running | not_run | pending`
 - 通常の 32-byte hex: `0x` prefix 付き canonical value を返す。bitmap raw material は endpoint 個別仕様を使う。
@@ -111,27 +117,38 @@ type InclusionProof = {
 type VerificationStep = {
   id: 'cast_as_intended' | 'recorded_as_cast' | 'counted_as_recorded' | 'stark_verification';
   status: VerificationStepStatus;
-  inputs?: string[];
+  inputs: string[];
   error?: string;
 };
 
-type VerificationCheck = {
+type VerificationCheckBase = {
   id: VerificationCheckId;
-  status: VerificationStepStatus;
   evidence: 'local' | 'public' | 'zk' | 'demo';
   inputs: string[];
-  noteKey?:
-    | 'pages.verify.stepsCard.notes.myVoteIncluded.notPresented'
-    | 'pages.verify.stepsCard.notes.myVoteIncluded.presentedButInvalid'
-    | 'pages.verify.stepsCard.notes.myVoteIncluded.excluded'
-    | 'pages.verify.stepsCard.notes.myVoteIncluded.missingReceipt'
-    | 'pages.verify.stepsCard.notes.myVoteIncluded.proofUnavailable';
   derivedFrom?: VerificationCheckId;
 };
+
+type VerificationCheck = VerificationCheckBase &
+  (
+    | { status: VerificationStepStatus; noteKey?: never }
+    | { status: 'failed' | 'not_run'; noteKey: VerificationCheckNoteKey }
+  );
+
+type VerificationCheckNoteKey =
+  | 'pages.verify.stepsCard.notes.myVoteIncluded.notPresented'
+  | 'pages.verify.stepsCard.notes.myVoteIncluded.presentedButInvalid'
+  | 'pages.verify.stepsCard.notes.myVoteIncluded.excluded'
+  | 'pages.verify.stepsCard.notes.myVoteIncluded.missingReceipt'
+  | 'pages.verify.stepsCard.notes.myVoteIncluded.proofUnavailable';
 ```
 
-現行 handler は `VerificationStep.inputs` を生成するが、public response schema では `inputs` と `error` は optional。
-`noteKey` は `counted_my_vote_included` などの explainability 表示に使う公開 i18n key である。
+`Tally.totalVotes` は A–E の合計と一致する。`counts`、`totalVotes`、`tamperedCount` は
+`uint32`。共通 `Tally` の `tamperedCount` は optional だが、finalization と verification の
+`presentation.tally` では必須である。
+
+`VerificationStep.inputs` は必須。`error` は failed step にだけ付けられる、省略可能な
+空白だけではない文字列。
+`noteKey` は `failed | not_run` check の説明用公開 i18n key である。
 
 `VerificationCheckId` は次の 22 件。
 
@@ -155,9 +172,9 @@ required check が `failed`, `not_run`, `pending`, `running` の場合、完全�
 次は API authority ではない。
 
 - `proofBundleStatus`: authenticated bundle の UI download state から導出
-- `knowledgePanel.new`: UI animation state
+- knowledge item の `isNew` / `addedAt`: browser 内の更新 metadata（表示アニメーションには使用しない）
 - verification step/check の表示順と段階表示
-- 集計/検証中の時間ベース補間
+- 集計中の時間ベース補間
 
 verification observation POST も verdict authority ではない。browser-local cast checks を bounded
 telemetry として server に伝えるだけで、送信成功/失敗によって UI の検証結果を変更しない。
@@ -188,7 +205,7 @@ type FinalizationQueue = {
 - internal prover/verification SQS message は numeric generation field を持たず、closed discriminator
   `recordType: "prover-work"` または `recordType: "verification-work"` を使う。
 
-### Verification artifact authority
+### Verification artifact authority と admission
 
 - finalization resource では `result.authority.journal`、verification resource では optional include の
   `journal.value` が proof-bound public journal の canonical authority。
@@ -197,14 +214,40 @@ type FinalizationQueue = {
   `inputCommitment` は journal からの response projection/mirror。
 - persisted input-side authority は `publicInputArtifact`。private `input.json` を browser API で返さない。
 - host claim は `result.authority.imageId` または `proofAuthority.imageId`、`journal.imageId` は
-  comparison metadata、verifier 後の proved identity は
-  `result.presentation.verificationReport.receipt_image_id` または
-  `verifierResult.report.receipt_image_id`。
+  comparison metadata。`result.presentation.verificationReport` または `verifierResult.report` が
+  production success（`status="success"`, `dev_mode_receipt=false`）で、`expected_image_id` と
+  `receipt_image_id` が一致する場合に、その `receipt_image_id` を proved identity と扱う。
+  failed / dev-mode report の ImageID や report のない status だけでは production proof を示さない。
 - `missingSlots` は guest に提示されなかった bulletin slot 数。
 - `invalidPresentedSlots` は提示済み in-range slot のうち未計上の slot 数。
 - `rejectedRecords` は reject された record 数であり、slot partition ではない。
 - `excludedSlots = missingSlots + invalidPresentedSlots` を fail-closed 判定に使う。
 - `excludedSlots > 0` は成功 verdict を許可しない。
+
+finalization / verification response schema は object shape に加えて、次の相互整合性を
+admission 時に検証する。矛盾する値を補正して成功 resource にしない。
+
+- journal の count/slot partition と tally 合計、journal とその response mirror、存在する
+  ImageID 同士を照合する。finalization の election manifest と close statement は同時に
+  存在または省略し、存在時は自身の hash/digest と journal authority に整合する必要がある。
+- report は terminal status と一致し、`not_run | running` に付けない。report の
+  `expected_image_id` は host claim と一致し、success report は一致する
+  `receipt_image_id` と `dev_mode_receipt=false` を持つ。failed report は ImageID mismatch
+  自体を失敗証拠として保持できる。public report projection は private path を含まず、full
+  report artifact の配布は下記の protected endpoint が担う。
+- verification は全22 checks と全4 steps を canonical な順序・metadata・inputs で返す。
+  公開証拠から評価できる check status、derived check とその source、stage status と
+  presentation policy を相互照合する。`fullyVerifiedLabelEligible=true` には required
+  checks の全成功、整合した proof/voter evidence、dev-mode や missing evidence の不在、
+  `ready` な verified display が必要で、STARK status 単独では許可しない。
+- voter evidence の ID、commitment、cast index/root、input commitment と proof authority の
+  範囲・値を照合する。finalization の available voter evidence は CT inclusion proof 自体も
+  検証し、verification resource も公開証拠に反する inclusion-success claim を拒否する。
+- `scenarioId` / `scenarios`、claimed tally、tampered count、tamper summary、検出結果を
+  journal の集計・除外情報と照合する。教育用の説明も矛盾した組み合わせを受理しない。
+
+正確な admission 条件は `packages/api-contract/src/schemas/{finalizations,verification}.ts` と
+`packages/verification/src/verification/verification-presentation-policy.ts` が所有する。
 
 ### Bot privacy と scenario evidence
 
@@ -244,7 +287,26 @@ type FinalizationQueue = {
 }
 ```
 
-body は schema 上省略可能。runtime admission が Turnstile を要求する場合は token が必要。
+body は schema 上省略可能だが、受付条件は解決済み runtime profile によって決まる。
+
+| Runtime profile / target              | セッション作成の受付条件                                                |
+| ------------------------------------- | ----------------------------------------------------------------------- |
+| local profiles                        | Turnstile bypass を許可し、token なしで作成可能                         |
+| `target-aws-async` / develop          | origin 検証済みの operator-gated 経路で作成可能。Turnstile token は不要 |
+| `target-aws-async` / main             | 公開作成を受け付ける。server-side Turnstile 検証が必須で bypass は不可  |
+| `target-aws-async-quiesced` / develop | 新規作成を受け付けず、origin 検証後も `404 SESSION_NOT_FOUND`           |
+
+target API は各 route の処理に先立ち、CloudFront の origin 検証 header
+`X-Stark-Ballot-Origin-Verify` をサーバー側の期待値と照合する。欠落・不一致は
+`403 SAME_ORIGIN_REQUIRED`。これは CloudFront から API への経路検証であり、browser が
+送る session capability ではない。また、STH endpoint が別途行う `Origin` と
+`Sec-Fetch-Site` の same-origin 検証とも別の条件である。
+
+main の作成要求では `turnstileToken` を server-side Siteverify に送り、成功応答、
+`action="session"`、設定された許可 hostname との一致を確認する。token 欠落、challenge
+失敗、action または hostname の不一致は `403 CAPTCHA_FAILED` となり、セッションを作成しない。
+これらの admission に加え、request schema、rate limit、セッション容量制限を通過すると
+以下の `200` 応答を返す。
 
 **Wire response 200**
 
@@ -409,6 +471,8 @@ path の `sessionId` が authority であり、認証には `X-Session-Capabilit
           "tamperedCount": 0
         },
         "verifiedTally": [13, 12, 14, 11, 14],
+        "tamperDetected": false,
+        "scenarios": [],
         "bulletinRoot": "0x...",
         "missingSlots": 0,
         "invalidPresentedSlots": 0,
@@ -421,7 +485,16 @@ path の `sessionId` が authority であり、認証には `X-Session-Capabilit
         "includedBitmapRoot": "0x...",
         "inputCommitment": "0x...",
         "seenIndicesCount": 64,
-        "verificationStatus": "success"
+        "verificationStatus": "success",
+        "verificationReport": {
+          "status": "success",
+          "verifier_version": "example",
+          "verified_at": "2024-10-27T03:33:20Z",
+          "duration_ms": 100,
+          "expected_image_id": "0x...",
+          "receipt_image_id": "0x...",
+          "dev_mode_receipt": false
+        }
       },
       "voterEvidence": {
         "state": "available",
@@ -430,15 +503,16 @@ path の `sessionId` が authority であり、認証には `X-Session-Capabilit
           "commitment": "0x...",
           "bulletinIndex": 0,
           "bulletinRootAtCast": "0x...",
-          "castAtMs": 1730000000000
+          "castAtMs": 1730000000000,
+          "inputCommitment": "0x..."
         },
         "userVote": {
           "commitment": "0x...",
           "voteId": "uuid",
           "proof": {
             "leafIndex": 0,
-            "treeSize": 64,
-            "merklePath": ["0x..."],
+            "treeSize": 1,
+            "merklePath": [],
             "bulletinRootAtCast": "0x..."
           }
         }
@@ -460,6 +534,16 @@ resource は lifecycle fields、`runtimeDiagnostics`、成功時の `result` に
 `result` は proof-bound `authority`、derived `presentation`、discriminated
 `voterEvidence`、`artifactAvailability` の四 partition であり、古い flat result shape は受理しない。
 `journal` は current public journal 全体である。
+この例の UUID/hex は説明用 placeholder。cast proof は user vote だけがある tree size 1 の
+snapshot、journal はその後の64票の final tree を表す。
+
+- `presentation.scenarios` は S0 なら `[]`、それ以外は S1–S5 のいずれか一つ。
+- `voterEvidence.state="available"` は journal と一致する `voteReceipt.inputCommitment` を
+  必須とする。`verification-gated` branch は receipt/proof を含まない。
+- `artifactAvailability.report` は public report の存在と一致する。failed status では sanitizer
+  が public report を省略しても protected artifact が available の場合がある。
+- `seenBitmap="available"` は `includedBitmap="available"` を必要とする。bundle と bitmap の
+  配布可否はそれぞれの artifact availability で判断する。
 
 ### POST `/api/sessions/:sessionId/finalizations/:finalizationId/cancel`
 
@@ -592,7 +676,7 @@ resource も web admission で `reason="invalid_artifact"` の `corrupt` に畳�
     "proofAuthority": {
       "electionId": "uuid",
       "electionConfigHash": "0x...",
-      "logId": "string",
+      "logId": "0x...",
       "bulletinRoot": "0x...",
       "imageId": "0x...",
       "verifiedTally": [13, 12, 14, 11, 14],
@@ -684,13 +768,18 @@ resource も web admission で `reason="invalid_artifact"` の `corrupt` に畳�
 }
 ```
 
-- `verification.checks` は現行 22 check をすべて返す。
+- 実際の response は全22 checks と全4 steps を返す。上記配列は構造の説明用抜粋であり、
+  このままでは complete inventory の admission を通過しない。
 - server projection では Cast-as-Intended は client-side authority のため `not_run`。
 - browser は dependency-free な shared local-cast evaluator で local vote opening を評価し、
   server checks に overlay して shared presentation policy を再評価する。
 - `userVote.vote` と `userVote.random` は返さない。
 - exact proof がない場合は `voterEvidence.availability="unavailable"` と reason を返し、関連 check
   を fail closed にする。
+- available branch の `voteReceipt.inputCommitment` は必須。unavailable branch の
+  `reason="vote_id_unavailable"` は `userVote.commitment` のみ、
+  `reason="exact_proof_unavailable"` はそれに加えて `userVote.voteId` を必須とし、receipt/proof
+  を含まない。
 - `proofAuthority`, `presentation`, `verifierResult`, `verification`, `voterEvidence`, `journal` は
   available branch の required group。flat compatibility field は受理しない。
 
@@ -827,7 +916,7 @@ content と privacy boundary は「Bundle と report の公開境界」に従う
 }
 ```
 
-- `offset` は non-negative integer。
+- `offset` は共通の整数 wire 規則に従う non-negative safe integer。
 - `limit` は positive integer、最大 1000。
 - paging 指定時だけ envelope の `meta.page` に
   `{ "nextOffset": 20 | null, "hasMore": true | false }` を返す。
@@ -872,6 +961,7 @@ exact CT material がない場合の public error code は `VERIFICATION_FAILED`
 
 - `X-Session-Capability`
 
+両 query は共通の整数 wire 規則に従い、
 `0 <= fromTreeSize <= toTreeSize <= currentTreeSize` を要求する。
 
 **Wire response 200**
@@ -902,7 +992,8 @@ normalized `rootAtFromTreeSize`, `rootAtToTreeSize`, `proofNodes` を使う。
 
 **Path**
 
-- `voteIndex`: authenticated session user の `userVoteIndex` と同じ値だけを許可
+- `voteIndex`: 共通の整数 wire 規則に従う non-negative safe integer。
+  authenticated session user の `userVoteIndex` と同じ値だけを許可
 - `kind`: required `included | seen`
 
 任意 index の inspection endpoint ではない。32-byte chunk は隣接する最大 255 vote の bit を含みうるため、

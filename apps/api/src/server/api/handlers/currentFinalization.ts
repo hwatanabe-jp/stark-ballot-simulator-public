@@ -4,7 +4,7 @@ import type {
 } from '@stark-ballot/application/finalize/finalization-store';
 import { deriveFinalizationProgress } from '@stark-ballot/application/finalize/finalization-progress';
 import type { FinalizationState } from '@stark-ballot/application/finalize/finalization-types';
-import type { ApiContextStore, ApiHandlerArguments, SessionAdmittedContext } from '../context';
+import type { ApiContextStore, ApiHandlerArguments, RouteBoundResponse, SessionAdmittedContext } from '../context';
 import { respondWithRoute } from '../utils/responseSchema';
 import { currentFinalizationRoute } from '@stark-ballot/api-contract/routes';
 import { buildFinalizationQueueInfo } from '../utils/finalizationQueueInfo';
@@ -23,6 +23,7 @@ import type {
 } from '../../composition/finalizationDependencies';
 import { projectFinalizationResultForPublicResponse } from '../utils/finalizationResultProjection';
 import { admitPersistedFinalizationBitmapData } from '@stark-ballot/application/finalize/finalization-bitmap-admission';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 
 type FinalizationRuntimeReadModel = FinalizationState & AwsFinalizationRuntimeMetadata;
 
@@ -154,7 +155,7 @@ function buildFailedRuntimeState(
 
 async function persistFailedState(params: {
   store: ApiContextStore;
-  sessionId: string;
+  sessionId: SessionId;
   state: FinalizationRuntimeReadModel & { status: 'pending' | 'running' };
   failedAtMs: number;
   error: FinalizationFailedPayload['error'];
@@ -199,7 +200,7 @@ async function persistFailedState(params: {
 
 async function persistTimedOutState(params: {
   store: ApiContextStore;
-  sessionId: string;
+  sessionId: SessionId;
   state: FinalizationRuntimeReadModel & { status: 'running' };
   timeoutAtMs: number;
 }): Promise<FinalizationRuntimeReadModel | null> {
@@ -241,7 +242,7 @@ async function persistTimedOutState(params: {
 
 async function reconcilePendingFinalizationState(params: {
   store: ApiContextStore;
-  sessionId: string;
+  sessionId: SessionId;
   state: FinalizationRuntimeReadModel & { status: 'pending' };
   stateMachineArn: string;
   describeFinalizationExecution: FinalizationDependencies['describeFinalizationExecution'];
@@ -333,7 +334,7 @@ async function reconcilePendingFinalizationState(params: {
 
 async function reconcileRunningFinalizationState(params: {
   store: ApiContextStore;
-  sessionId: string;
+  sessionId: SessionId;
   state: FinalizationRuntimeReadModel & { status: 'running' };
   describeFinalizationExecution: FinalizationDependencies['describeFinalizationExecution'];
 }): Promise<{
@@ -399,7 +400,7 @@ export async function getCurrentFinalizationHandler({
   SessionAdmittedContext & {
     finalizationDependencies: Pick<FinalizationDependencies, 'describeFinalizationExecution'>;
   }
->): Promise<Response> {
+>): Promise<RouteBoundResponse<typeof currentFinalizationRoute>> {
   const { sessionId, session, store, runtimeProfile } = context;
   const asyncEnabled = runtimeProfile.finalization.mode === 'async';
   const targetAsyncExternal = asyncEnabled && runtimeProfile.external.kind === 'aws' ? runtimeProfile.external : null;

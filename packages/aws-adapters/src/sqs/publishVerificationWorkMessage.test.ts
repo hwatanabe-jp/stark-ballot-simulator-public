@@ -1,7 +1,9 @@
 import { SendMessageCommand } from '@aws-sdk/client-sqs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
-import { targetRuntimeProfile } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { targetRuntimeProfile } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 
 const emitCanonicalEventMock = vi.hoisted(() => vi.fn());
 const defaultSqsClientMock = vi.hoisted(() => ({
@@ -51,8 +53,8 @@ describe('publishVerificationWorkMessage', () => {
     defaultSqsClientMock.send.mockResolvedValue({ MessageId: 'default-verification-message' });
 
     await publishVerificationWorkMessage(profile, {
-      sessionId: '550e8400-e29b-41d4-a716-446655440000',
-      finalizationId: 'exec-default-client',
+      sessionId: asSessionId('550e8400-e29b-41d4-a716-446655440000'),
+      finalizationId: asFinalizationId('exec-default-client'),
       queuedAtMs: 1_700_000_000_000,
       bundleKey: 'sessions/550e8400-e29b-41d4-a716-446655440000/exec-default-client/bundle.zip',
       expectedImageId: `0x${'1'.repeat(64)}`,
@@ -66,8 +68,8 @@ describe('publishVerificationWorkMessage', () => {
     setVerificationSqsClient({ send } as never);
 
     await publishVerificationWorkMessage(profile, {
-      sessionId: '550e8400-e29b-41d4-a716-446655440000',
-      finalizationId: 'exec-standard-queue',
+      sessionId: asSessionId('550e8400-e29b-41d4-a716-446655440000'),
+      finalizationId: asFinalizationId('exec-standard-queue'),
       queuedAtMs: 1_700_000_000_000,
       bundleKey: 'sessions/550e8400-e29b-41d4-a716-446655440000/exec-standard-queue/bundle.zip',
       expectedImageId: `0x${'1'.repeat(64)}`,
@@ -103,8 +105,8 @@ describe('publishVerificationWorkMessage', () => {
 
     await expect(
       publishVerificationWorkMessage(profile, {
-        sessionId: '550e8400-e29b-41d4-a716-446655440000',
-        finalizationId: 'exec-failed-queue',
+        sessionId: asSessionId('550e8400-e29b-41d4-a716-446655440000'),
+        finalizationId: asFinalizationId('exec-failed-queue'),
         queuedAtMs: 1_700_000_000_000,
         bundleKey: 'sessions/550e8400-e29b-41d4-a716-446655440000/exec-failed-queue/bundle.zip',
         expectedImageId: `0x${'1'.repeat(64)}`,
@@ -126,8 +128,8 @@ describe('publishVerificationWorkMessage', () => {
 
     await expect(
       publishVerificationWorkMessage(profile, {
-        sessionId: '550e8400-e29b-41d4-a716-446655440000',
-        finalizationId: 'exec-invalid-message-id',
+        sessionId: asSessionId('550e8400-e29b-41d4-a716-446655440000'),
+        finalizationId: asFinalizationId('exec-invalid-message-id'),
         queuedAtMs: 1_700_000_000_000,
         bundleKey: 'sessions/550e8400-e29b-41d4-a716-446655440000/exec-invalid-message-id/bundle.zip',
         expectedImageId: `0x${'1'.repeat(64)}`,

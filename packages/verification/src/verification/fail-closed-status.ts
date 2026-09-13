@@ -15,6 +15,7 @@ import type {
   VerificationResult,
   VerificationStatus,
 } from '@stark-ballot/verification/shared/types';
+import { VERIFICATION_STATUS_VALUES } from '@stark-ballot/verification/shared/types';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 interface FinalizationTallyStatusCarrier {
@@ -47,6 +48,7 @@ interface FailClosedVerificationStatusInput {
   totalExpected?: number;
   treeSize?: number;
   journalHasLegacyCountAliases?: boolean;
+  journalAdmissionFailed?: boolean;
   claimedImageId?: string;
   comparisonImageId?: string;
   verificationReport?: {
@@ -56,8 +58,6 @@ interface FailClosedVerificationStatusInput {
 }
 
 const TERMINAL_SUCCESS_STATUSES = new Set<VerificationStatus>(['success', 'dev_mode']);
-const VERIFICATION_STATUS_VALUES: VerificationStatus[] = ['success', 'failed', 'dev_mode', 'not_run', 'running'];
-
 function toVerificationStatus(value: unknown): VerificationStatus | undefined {
   return typeof value === 'string' && VERIFICATION_STATUS_VALUES.includes(value as VerificationStatus)
     ? (value as VerificationStatus)
@@ -65,7 +65,7 @@ function toVerificationStatus(value: unknown): VerificationStatus | undefined {
 }
 
 function hasCountedExclusions(input: FailClosedVerificationStatusInput): boolean {
-  if (input.journalHasLegacyCountAliases) {
+  if (input.journalHasLegacyCountAliases || input.journalAdmissionFailed) {
     return true;
   }
 
@@ -195,10 +195,7 @@ export function sanitizeFinalizationResultVerificationStatus<T extends Finalizat
 
   return {
     ...result,
-    verificationResult: {
-      ...result.verificationResult,
-      status: nextStatus,
-    },
+    verificationResult: { status: 'failed' },
   };
 }
 
@@ -279,6 +276,7 @@ export function sanitizeFinalizationPayloadVerificationStatus<T extends object>(
       verificationReport: parseVerificationReportFromRecord(record, verificationResult),
     }),
     journalHasLegacyCountAliases: hasLegacyJournalCountAliases(journalCandidate),
+    journalAdmissionFailed: journalCandidate !== undefined && journal === undefined,
   });
 
   if (!nextStatus) {

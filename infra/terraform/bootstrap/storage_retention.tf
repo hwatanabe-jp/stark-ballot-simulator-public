@@ -6,7 +6,6 @@ locals {
       foundation_pipeline_artifact_days   = 90
       app_pipeline_artifact_days          = 30
       app_pipeline_cache_days             = 30
-      app_accepted_authority_days         = 180
       bootstrap_codebuild_log_days        = 30
       foundation_codebuild_log_days       = 365
       app_codebuild_log_days              = 180
@@ -20,7 +19,6 @@ locals {
       foundation_pipeline_artifact_days   = 90
       app_pipeline_artifact_days          = 90
       app_pipeline_cache_days             = 30
-      app_accepted_authority_days         = 365
       bootstrap_codebuild_log_days        = 365
       foundation_codebuild_log_days       = 365
       app_codebuild_log_days              = 365

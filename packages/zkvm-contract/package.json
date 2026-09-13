@@ -2,18 +2,15 @@
   "name": "@stark-ballot/zkvm-contract",
   "private": true,
   "type": "module",
-  "scripts": {
-    "lint": "pnpm --dir ../.. exec eslint packages/zkvm-contract",
-    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/zkvm-contract",
-    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
-  },
   "exports": {
     ".": "./src/index.ts",
     "./zkvm/bitmap": "./src/zkvm/bitmap.ts",
     "./zkvm/bitmap-artifacts": "./src/zkvm/bitmap-artifacts.ts",
     "./zkvm/bitmap-core": "./src/zkvm/bitmap-core.ts",
+    "./zkvm/bitmap-golden-vectors": "./src/zkvm/bitmap-golden-vectors.ts",
     "./zkvm/contract-constants": "./src/zkvm/contract-constants.ts",
     "./zkvm/election-config": "./src/zkvm/election-config.ts",
+    "./zkvm/formal-vectors": "./src/zkvm/formal-vectors.ts",
     "./zkvm/guards": "./src/zkvm/guards.ts",
     "./zkvm/hex": "./src/zkvm/hex.ts",
     "./zkvm/host-io": "./src/zkvm/host-io.ts",
@@ -21,10 +18,16 @@
     "./zkvm/journal-guards": "./src/zkvm/journal-guards.ts",
     "./zkvm/log-id": "./src/zkvm/log-id.ts",
     "./zkvm/public-journal": "./src/zkvm/public-journal.ts",
+    "./zkvm/semantic-contract": "./src/zkvm/semantic-contract.ts",
     "./zkvm/types": "./src/zkvm/types.ts",
     "./zkvm/validated-domain": "./src/zkvm/validated-domain.ts",
     "./zkvm/wire-numeric-preflight": "./src/zkvm/wire-numeric-preflight.ts",
     "./zkvm/work-budget": "./src/zkvm/work-budget.ts"
+  },
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec oxlint packages/zkvm-contract",
+    "test": "pnpm --dir ../.. exec vitest run --config vitest.config.ts --project @stark-ballot/zkvm-contract",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@noble/hashes": "catalog:crypto-testing"

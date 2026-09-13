@@ -161,6 +161,12 @@ function scanContent(filePath: string, content: string): Finding[] {
 
 function scanImportSpecifier(filePath: string, specifier: string): Finding[] {
   const findings: Finding[] = [];
+  if (specifier === 'storybook' || specifier.startsWith('storybook/') || specifier.startsWith('@storybook/')) {
+    findings.push({ file: filePath, reason: 'Storybook dependency import' });
+  }
+  if (/\.stories(?:\.[cm]?[jt]sx?)?$/u.test(specifier) || /(?:^|\/)\.storybook(?:\/|$)/u.test(specifier)) {
+    findings.push({ file: filePath, reason: 'Storybook source import' });
+  }
   if (/^next\/(?:navigation|link|dynamic|font|headers|server)$/.test(specifier)) {
     findings.push({ file: filePath, reason: 'Next runtime import' });
   }
@@ -179,6 +185,9 @@ function scanImportSpecifier(filePath: string, specifier: string): Finding[] {
   if (isNodeAdapterSpecifier(specifier)) {
     findings.push({ file: filePath, reason: 'Node adapter package import' });
   }
+  if (isPrivateZkvmSemanticDescriptorSpecifier(specifier)) {
+    findings.push({ file: filePath, reason: 'private zkVM semantic descriptor import' });
+  }
   if (specifier.startsWith('@aws-sdk/')) {
     findings.push({ file: filePath, reason: 'AWS SDK import' });
   }
@@ -195,6 +204,15 @@ function scanImportSpecifier(filePath: string, specifier: string): Finding[] {
     findings.push({ file: filePath, reason: 'Node builtin import' });
   }
   return findings;
+}
+
+function isPrivateZkvmSemanticDescriptorSpecifier(specifier: string): boolean {
+  const withoutSourceExtension = specifier.replace(/\.(?:js|ts)$/u, '');
+  return (
+    withoutSourceExtension === '@stark-ballot/zkvm-contract/zkvm/semantic-contract' ||
+    ((withoutSourceExtension.startsWith('./') || withoutSourceExtension.startsWith('../')) &&
+      withoutSourceExtension.endsWith('/semantic-contract'))
+  );
 }
 
 function isNodeBuiltinSpecifier(specifier: string): boolean {

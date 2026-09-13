@@ -1,11 +1,11 @@
-import type { ApiHandlerArguments, SessionIdentityContext } from '../context';
+import type { ApiHandlerArguments, RouteBoundResponse, SessionIdentityContext } from '../context';
 import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
-import { errorResponse } from '../../http/response';
 import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 import type { FinalizationLifecycleStore } from '@stark-ballot/application/finalize/finalization-store';
 import { BOT_COUNT } from '@stark-ballot/domain/shared/constants';
 import { progressRoute } from '@stark-ballot/api-contract/routes';
-import { respondWithRoute } from '../utils/responseSchema';
+import { respondWithRoute, respondWithRouteError } from '../utils/responseSchema';
 import { deriveBotCountFromVotes } from '@stark-ballot/domain/bulletin/ctSessionState';
 
 interface ProgressSnapshot {
@@ -23,7 +23,7 @@ const normalizeBotCount = (value: number | undefined): number => {
 
 async function resolveProgressSnapshot(
   store: VoteStore & FinalizationLifecycleStore,
-  sessionId: string,
+  sessionId: SessionId,
 ): Promise<ProgressSnapshot | null> {
   const [voting, finalization] = await Promise.all([
     store.getVotingRecord(sessionId),
@@ -50,10 +50,12 @@ async function resolveProgressSnapshot(
  */
 export async function getProgressHandler({
   context,
-}: ApiHandlerArguments<typeof progressRoute, SessionIdentityContext>): Promise<Response> {
+}: ApiHandlerArguments<typeof progressRoute, SessionIdentityContext>): Promise<
+  RouteBoundResponse<typeof progressRoute>
+> {
   const session = await resolveProgressSnapshot(context.store, context.sessionId);
   if (!session) {
-    return errorResponse(ErrorCode.SESSION_NOT_FOUND);
+    return respondWithRouteError(progressRoute, { code: ErrorCode.SESSION_NOT_FOUND, status: 404 });
   }
 
   const count = normalizeBotCount(session.botCount);

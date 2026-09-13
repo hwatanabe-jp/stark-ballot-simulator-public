@@ -528,9 +528,18 @@ mod tests {
     use super::*;
     use alloc::string::{String, ToString};
     use contract_core::{
-        compute_merkle_root, hash_internal, hash_leaf, VoteWithProof, MAX_GUEST_TOTAL_PATH_NODES,
+        compute_merkle_root, hash_internal, hash_leaf, VoteWithProof,
+        INPUT_COMMITMENT_FORMAT_VERSION, MAX_GUEST_SERIALIZED_INPUT_BYTES,
+        MAX_GUEST_TOTAL_EXPECTED, MAX_GUEST_TOTAL_PATH_NODES, VERIFIED_TALLY_WIDTH,
     };
     use serde::Deserialize;
+
+    mod formal_vector_test_support {
+        include!("../../../contract-core/src/formal_vector_test_support.rs");
+    }
+    use formal_vector_test_support::{
+        admit_current_formal_vector, FormalVectorEnvelope, FormalVectorModeledBounds,
+    };
 
     #[test]
     fn test_verify_and_tally_empty_votes() {
@@ -645,7 +654,7 @@ mod tests {
     }
 
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct FormalGuestCase {
         name: String,
         tree_size: u32,
@@ -663,8 +672,10 @@ mod tests {
     }
 
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct FormalGuestVote {
+        #[serde(rename = "id")]
+        _id: String,
         index: u32,
         choice: u8,
         random_byte: u8,
@@ -674,7 +685,7 @@ mod tests {
     }
 
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct FormalGuestOutcome {
         accepted: bool,
         reason: Option<String>,
@@ -687,10 +698,40 @@ mod tests {
     const FORMAL_GUEST_VECTOR_ELECTION_ID: [u8; 16] = [0x42u8; 16];
 
     fn formal_guest_cases() -> Vec<FormalGuestCase> {
-        serde_json::from_str(include_str!(
-            "../../../../docs/formal/generated-vectors/guest-model-cases.json"
-        ))
-        .expect("formal guest model vectors should parse")
+        let envelope: FormalVectorEnvelope<FormalGuestCase> = admit_current_formal_vector(
+            include_str!("../../../../docs/formal/generated-vectors/guest-model-cases.json"),
+            "guest-model-cases",
+        )
+        .expect("formal guest model vectors should admit");
+        assert_formal_vector_bounds(&envelope.modeled_bounds);
+        envelope.payload
+    }
+
+    fn assert_formal_vector_bounds(bounds: &FormalVectorModeledBounds) {
+        assert_eq!(
+            bounds.input_commitment.format_version,
+            INPUT_COMMITMENT_FORMAT_VERSION
+        );
+        assert_eq!(bounds.input_commitment.u16_max, u32::from(u16::MAX));
+        assert_eq!(bounds.input_commitment.u32_max, u64::from(u32::MAX));
+        assert_eq!(bounds.guest.method_version, CURRENT_METHOD_VERSION);
+        assert_eq!(bounds.guest.tree_size_max, MAX_GUEST_TREE_SIZE);
+        assert_eq!(bounds.guest.total_expected_max, MAX_GUEST_TOTAL_EXPECTED);
+        assert_eq!(bounds.guest.vote_count_max, MAX_GUEST_VOTE_COUNT);
+        assert_eq!(
+            bounds.guest.merkle_path_nodes_per_record_max,
+            MAX_GUEST_MERKLE_PATH_NODES_PER_RECORD
+        );
+        assert_eq!(
+            bounds.guest.total_merkle_path_nodes_max,
+            MAX_GUEST_TOTAL_PATH_NODES
+        );
+        assert_eq!(
+            bounds.guest.serialized_input_bytes_max,
+            MAX_GUEST_SERIALIZED_INPUT_BYTES
+        );
+        assert_eq!(bounds.guest.tally_width, VERIFIED_TALLY_WIDTH);
+        assert_eq!(bounds.guest.tally_bucket_max, MAX_FORMAL_GUEST_TALLY_BUCKET);
     }
 
     fn reason_name(reason: RejectionReason) -> &'static str {

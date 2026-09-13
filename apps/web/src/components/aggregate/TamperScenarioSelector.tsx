@@ -2,6 +2,7 @@
 
 import { useTranslation } from '@stark-ballot/web/hooks';
 import { RadioGroup } from '@stark-ballot/web/components/ui/RadioGroup';
+import './AggregationViews.css';
 
 /**
  * Scenario ID type
@@ -79,11 +80,12 @@ export function TamperScenarioSelector({
 
   return (
     <RadioGroup
+      className="tamper-scenarios"
       name="tamper-scenario"
       label={t('pages.aggregate.scenarios.title')}
       options={options}
       value={value ?? ''}
-      onChange={(next) => onChange(next as ScenarioId)}
+      onChange={onChange}
       disabled={disabled}
     />
   );

@@ -25,6 +25,8 @@ import {
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { emitCanonicalEvent, type FinalizationUpdateOutcome } from '@stark-ballot/diagnostics/canonicalEvents';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
+import { parseSessionId } from '@stark-ballot/domain/types/identifiers';
+import { parseFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import { RuntimeConfigValidationError, bootstrapLambdaRuntime } from '../runtimeBootstrap.js';
 
 type DirectCallbackResponse = {
@@ -62,16 +64,18 @@ function resolveSafeDirectUpdateCorrelation(rawEvent: unknown): FinalizationUpda
   const candidate = getRecordProperty(rawEvent, 'payload') ?? rawEvent;
   const sessionId = getStringProperty(candidate, 'sessionId');
   const finalizationId = getStringProperty(candidate, 'finalizationId');
+  const admittedSessionId = parseSessionId(sessionId);
+  const admittedFinalizationId = parseFinalizationId(finalizationId);
   if (
-    !sessionId ||
-    !finalizationId ||
-    finalizationId.length > 128 ||
-    !isSafeVerifierSegment(sessionId) ||
-    !isSafeVerifierSegment(finalizationId)
+    !admittedSessionId ||
+    !admittedFinalizationId ||
+    admittedFinalizationId.length > 128 ||
+    !isSafeVerifierSegment(admittedSessionId) ||
+    !isSafeVerifierSegment(admittedFinalizationId)
   ) {
     return undefined;
   }
-  return { sessionId, finalizationId };
+  return { sessionId: admittedSessionId, finalizationId: admittedFinalizationId };
 }
 
 function classifyDirectUpdateFailure(error: unknown): FinalizationUpdateOutcome {

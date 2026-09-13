@@ -5,12 +5,12 @@ import type {
   FinalizationState,
 } from '@stark-ballot/application/finalize/finalization-types';
 import type { SessionReadModel } from '@stark-ballot/application/session/session-read-model';
-import type { MockVoteStore } from '../../__tests__/support/mockVoteStore';
+import type { MockVoteStore } from '../../test-support/mockVoteStore';
 import {
   CurrentFinalizationResponseSchema,
   type CurrentFinalizationResponse,
 } from '@stark-ballot/api-contract/schemas/finalizations';
-import { createMockVoteStore } from '../../__tests__/support/mockVoteStore';
+import { createMockVoteStore } from '../../test-support/mockVoteStore';
 import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
@@ -18,13 +18,15 @@ import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sess
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import type { SessionIdentityRecord, SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import {
   localRuntimeProfile,
   targetRuntimeProfile,
   targetRuntimeProfileEnv,
-} from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+} from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { resolveRuntimeProfile, type ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { getCurrentFinalizationHandler } from './currentFinalization';
 
@@ -42,8 +44,8 @@ vi.mock('@stark-ballot/diagnostics/canonicalEvents', () => ({
 }));
 
 const capabilitySecret = 'session-status-handler-secret-0123456789abcdef';
-const sessionId = 'session-status-1';
-const finalizationId = 'exec-status-1';
+const sessionId = asSessionId('session-status-1');
+const finalizationId = asFinalizationId('exec-status-1');
 const fixedNow = 1_730_000_000_000;
 const logId = `0x${'2'.repeat(64)}`;
 const scenarioContext: FinalizationScenarioContext = {
@@ -57,6 +59,15 @@ const scenarioContext: FinalizationScenarioContext = {
     userRecountChoice: null,
   },
 };
+
+function buildSucceededScenarioContext(journal: ReturnType<typeof createTestJournal>): FinalizationScenarioContext {
+  const [A, B, C, D, E] = journal.verifiedTally;
+  return {
+    ...scenarioContext,
+    claimedCounts: { A, B, C, D, E },
+    claimedTotalVotes: journal.validVotes,
+  };
+}
 
 type TargetRuntimeProfile = Extract<ResolvedRuntimeProfile, { readonly target: { readonly kind: 'aws' } }>;
 type ReconciliationState = Exclude<FinalizationState, { status: 'succeeded' }>;
@@ -282,14 +293,17 @@ describe('getCurrentFinalizationHandler finalization reconciliation', () => {
   it('projects bitmap availability from the admitted finalization sidecar', async () => {
     const journal = createTestJournal({ totalExpected: 1, validVotes: 1 });
     journal.includedBitmapRoot = computeIncludedBitmapRoot([true]);
+    journal.seenBitmapRoot = journal.includedBitmapRoot;
+    const succeededScenarioContext = buildSucceededScenarioContext(journal);
     const authority = buildFinalizationResultFromJournal({
       journal,
       imageId: `0x${'1'.repeat(64)}`,
+      scenarioContext: succeededScenarioContext,
     });
     const succeeded: FinalizationRecord = {
       sessionId,
       finalizationId,
-      scenarioContext,
+      scenarioContext: succeededScenarioContext,
       state: {
         status: 'succeeded',
         finalizationId,
@@ -330,14 +344,17 @@ describe('getCurrentFinalizationHandler finalization reconciliation', () => {
   ])('keeps bitmap unavailable when persisted sidecar %s does not match the journal', async (_label, mismatch) => {
     const journal = createTestJournal({ totalExpected: 1, validVotes: 1 });
     journal.includedBitmapRoot = computeIncludedBitmapRoot([true]);
+    journal.seenBitmapRoot = journal.includedBitmapRoot;
+    const succeededScenarioContext = buildSucceededScenarioContext(journal);
     const authority = buildFinalizationResultFromJournal({
       journal,
       imageId: `0x${'1'.repeat(64)}`,
+      scenarioContext: succeededScenarioContext,
     });
     const succeeded: FinalizationRecord = {
       sessionId,
       finalizationId,
-      scenarioContext,
+      scenarioContext: succeededScenarioContext,
       state: {
         status: 'succeeded',
         finalizationId,

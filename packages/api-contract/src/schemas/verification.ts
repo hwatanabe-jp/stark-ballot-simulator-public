@@ -1,21 +1,45 @@
+import { hasCoherentPublicTamperScenarioProjection } from '@stark-ballot/verification/scenario-projection';
 import {
   VERIFICATION_CHECK_IDS,
   VERIFICATION_CHECK_NOTE_KEY_VALUES,
   VERIFICATION_EVIDENCE_VALUES,
 } from '@stark-ballot/verification/checks';
-import { PUBLIC_VERIFICATION_ERROR_MESSAGES } from '@stark-ballot/verification/public-result';
+import {
+  publicVerificationErrorSchema,
+  publicVerificationReportSchema,
+  publicVerificationResultSchema,
+} from '@stark-ballot/verification/public-result';
+import {
+  closeStatementArtifactSchema,
+  electionManifestArtifactSchema,
+} from '@stark-ballot/verification/public-audit-artifacts';
 import {
   VERIFICATION_DISPLAY_READINESS_VALUES,
   VERIFICATION_DISPLAY_SOURCE_VALUES,
   VERIFICATION_DISPLAY_STATUS_VALUES,
   VERIFICATION_SUMMARY_STATUS_VALUES,
   VERIFICATION_SUMMARY_TONE_VALUES,
+  hasCanonicalVerificationCheckEvidence,
+  hasCoherentAvailableVoterEvidence,
+  hasCoherentFullyVerifiedPresentationEvidence,
+  hasCoherentPublicFactDerivedCheckStatuses,
+  hasCoherentPublicPresentationPolicy,
+  hasCoherentPublicVerifierChecks,
+  hasCoherentVerificationReportExpectedImageId,
 } from '@stark-ballot/verification/presentation-policy';
+import { hasCanonicalVerificationSteps } from '@stark-ballot/verification/steps';
+import { VERIFICATION_STATUS_VALUES } from '@stark-ballot/verification/shared/types';
+import { normalizeHexString } from '@stark-ballot/zkvm-contract/zkvm/hex';
+import {
+  hasCoherentCurrentZkVMJournalSemantics,
+  hasCoherentZkVMVoteSlotPartition,
+} from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import {
   CURRENT_METHOD_VERSION,
   type CurrentZkVMJournal as CanonicalCurrentZkVMJournal,
 } from '@stark-ballot/zkvm-contract/zkvm/types';
-import { s, type Infer, type SchemaTypeAny } from '@stark-ballot/validation/schema';
+import { s, type Infer, type AnySchema } from '@stark-ballot/validation/schema';
+import { documentOpenApiRefinement } from '@stark-ballot/validation/schema-openapi';
 import {
   apiResponseSchema,
   durationMsSchema,
@@ -27,7 +51,7 @@ import {
   scenarioIdSchema,
   sessionIdSchema,
   tallySchema,
-  timestampMsSchema,
+  tallyWithRequiredTamperedCountSchema,
   uint32Schema,
   voteChoiceSchema,
 } from './primitives';
@@ -46,7 +70,6 @@ export const VERIFICATION_OBSERVATION_CAST_CHECK_IDS = [
 
 export const VERIFICATION_OBSERVATION_CAST_STATUS_VALUES = ['success', 'failed', 'not_run'] as const;
 
-const VERIFICATION_STATUS_VALUES = ['success', 'failed', 'dev_mode', 'not_run', 'running'] as const;
 const VERIFICATION_STEP_IDS = [
   'cast_as_intended',
   'recorded_as_cast',
@@ -60,30 +83,12 @@ export const verificationEvidenceSchema = s.enum(VERIFICATION_EVIDENCE_VALUES);
 export const verificationCheckIdSchema = s.enum(VERIFICATION_CHECK_IDS);
 export const verificationCheckNoteKeySchema = s.enum(VERIFICATION_CHECK_NOTE_KEY_VALUES);
 
-const publicVerificationErrorSchema = s.enum(PUBLIC_VERIFICATION_ERROR_MESSAGES);
+export { publicVerificationErrorSchema, publicVerificationReportSchema, publicVerificationResultSchema };
 
-// These snake_case fields are the governed verifier-service report protocol.
-// `receipt_image_id` is omitted when the report has no observation, null when
-// the verifier explicitly reports no embedded ImageID, and a string when one
-// was observed.
-export const publicVerificationReportSchema = publicObject({
-  status: verificationStatusSchema,
-  verifier_version: s.string().optional(),
-  verified_at: s.string().optional(),
-  duration_ms: durationMsSchema.optional(),
-  expected_image_id: s.string().optional(),
-  receipt_image_id: s.string().nullable().optional(),
-  dev_mode_receipt: s.boolean().optional(),
-  errors: s.array(publicVerificationErrorSchema).optional(),
-});
-
-export const publicVerificationResultSchema = publicObject({
-  status: verificationStatusSchema,
-  report: publicVerificationReportSchema.optional(),
-});
+const currentElectionIdSchema = s.string().uuid();
 
 const currentZkvmJournalShape = {
-  electionId: s.string().min(1),
+  electionId: currentElectionIdSchema,
   electionConfigHash: hex32Schema,
   bulletinRoot: hex32Schema,
   treeSize: positiveUint32Schema,
@@ -103,27 +108,21 @@ const currentZkvmJournalShape = {
   inputCommitment: hex32Schema,
   methodVersion: s.literal(CURRENT_METHOD_VERSION),
   imageId: hex32Schema.optional(),
-} satisfies { [TKey in keyof CanonicalCurrentZkVMJournal]: SchemaTypeAny };
+} satisfies { [TKey in keyof CanonicalCurrentZkVMJournal]: AnySchema };
 
-export const currentZkvmJournalSchema = publicObject(currentZkvmJournalShape);
-
-export const electionManifestSchema = publicObject({
-  electionId: s.string().min(1),
-  totalExpected: s.number().int().nonnegative(),
-  choices: s.array(s.string()),
-  version: s.string().min(1),
-  botCount: s.number().int().nonnegative(),
-  merkleTreeDepth: s.number().int().nonnegative(),
-  electionConfigHash: hex32Schema,
+export const currentZkvmJournalSchema = publicObject(currentZkvmJournalShape).superRefine((journal, context) => {
+  if (!hasCoherentCurrentZkVMJournalSemantics(journal)) {
+    context.addIssue({ message: 'Current journal count fields are incoherent' });
+  }
 });
+documentOpenApiRefinement(
+  currentZkvmJournalSchema,
+  'Journal count, slot-partition, bitmap, and tree-size fields satisfy the current zkVM journal invariants.',
+);
 
-export const closeStatementSchema = publicObject({
-  logId: hex32Schema,
-  treeSize: s.number().int().nonnegative(),
-  timestamp: timestampMsSchema,
-  bulletinRoot: hex32Schema,
-  sthDigest: hex32Schema,
-});
+export const electionManifestSchema = electionManifestArtifactSchema;
+
+export const closeStatementSchema = closeStatementArtifactSchema;
 
 const receiptMetadataSchema = publicObject({
   isFake: s.boolean().optional(),
@@ -139,18 +138,28 @@ export const receiptSchema = publicObject({
 export const verificationStepSchema = publicObject({
   id: s.enum(VERIFICATION_STEP_IDS),
   status: s.enum(VERIFICATION_STEP_STATUS_VALUES),
-  inputs: s.array(s.string()).optional(),
-  error: s.string().optional(),
+  inputs: s.array(s.string()),
+  error: s.string().min(1).optional(),
 });
 
-export const verificationCheckSchema = publicObject({
+const verificationCheckBaseShape = {
   id: verificationCheckIdSchema,
-  status: s.enum(VERIFICATION_STEP_STATUS_VALUES),
   evidence: verificationEvidenceSchema,
   inputs: s.array(s.string()),
-  noteKey: verificationCheckNoteKeySchema.optional(),
   derivedFrom: verificationCheckIdSchema.optional(),
-});
+} as const;
+
+export const verificationCheckSchema = s.union([
+  publicObject({
+    ...verificationCheckBaseShape,
+    status: s.enum(VERIFICATION_STEP_STATUS_VALUES),
+  }),
+  publicObject({
+    ...verificationCheckBaseShape,
+    status: s.enum(['failed', 'not_run'] as const),
+    noteKey: verificationCheckNoteKeySchema,
+  }),
+]);
 
 export const botVotesSummarySchema = publicObject({
   total: s.number().int().nonnegative().optional(),
@@ -212,9 +221,9 @@ export const VerificationObservationRequestSchema = publicObject({
 });
 
 export const verificationProofAuthoritySchema = publicObject({
-  electionId: s.string().min(1),
+  electionId: currentElectionIdSchema,
   electionConfigHash: hex32Schema,
-  logId: s.string().min(1),
+  logId: hex32Schema,
   bulletinRoot: publicProofSummaryBaseShape.bulletinRoot,
   imageId: publicProofSummaryBaseShape.imageId,
   verifiedTally: publicProofSummaryBaseShape.verifiedTally,
@@ -225,49 +234,218 @@ export const verificationProofAuthoritySchema = publicObject({
   treeSize: publicProofSummaryBaseShape.treeSize,
   excludedSlots: publicProofSummaryBaseShape.excludedSlots,
   sthDigest: publicProofSummaryBaseShape.sthDigest,
-  seenBitmapRoot: publicProofSummaryBaseShape.seenBitmapRoot,
+  seenBitmapRoot: hex32Schema,
   includedBitmapRoot: publicProofSummaryBaseShape.includedBitmapRoot,
   inputCommitment: publicProofSummaryBaseShape.inputCommitment,
   seenIndicesCount: publicProofSummaryBaseShape.seenIndicesCount,
+}).superRefine((proof, context) => {
+  if (!hasCoherentZkVMVoteSlotPartition(proof)) {
+    context.addIssue({ message: 'Verification proof authority partition is incoherent' });
+  }
+});
+documentOpenApiRefinement(
+  verificationProofAuthoritySchema,
+  'Proof-authority counts form a coherent zkVM vote-slot partition.',
+);
+
+type CurrentJournalProofAuthoritySharedField = keyof Infer<typeof currentZkvmJournalSchema> &
+  keyof Infer<typeof verificationProofAuthoritySchema>;
+
+export const VERIFICATION_JOURNAL_PROOF_AUTHORITY_SHARED_FIELDS = [
+  'electionId',
+  'electionConfigHash',
+  'bulletinRoot',
+  'verifiedTally',
+  'missingSlots',
+  'invalidPresentedSlots',
+  'rejectedRecords',
+  'totalExpected',
+  'treeSize',
+  'sthDigest',
+  'seenBitmapRoot',
+  'includedBitmapRoot',
+  'excludedSlots',
+  'inputCommitment',
+  'seenIndicesCount',
+  'imageId',
+] as const satisfies readonly CurrentJournalProofAuthoritySharedField[];
+
+type AssertNever<TValue extends never> = TValue;
+type VerificationJournalProofAuthoritySharedFieldCoverage = AssertNever<
+  Exclude<CurrentJournalProofAuthoritySharedField, (typeof VERIFICATION_JOURNAL_PROOF_AUTHORITY_SHARED_FIELDS)[number]>
+>;
+
+function hasCoherentIncludedJournalProofAuthority(
+  journal: Infer<typeof currentZkvmJournalSchema>,
+  proofAuthority: Infer<typeof verificationProofAuthoritySchema>,
+  ..._coverage: [VerificationJournalProofAuthoritySharedFieldCoverage] extends [never] ? [] : [never]
+): boolean {
+  void _coverage;
+  return VERIFICATION_JOURNAL_PROOF_AUTHORITY_SHARED_FIELDS.every((field) => {
+    const journalValue = journal[field];
+    const proofValue = proofAuthority[field];
+    switch (field) {
+      case 'imageId':
+        return (
+          journalValue === undefined ||
+          (typeof journalValue === 'string' &&
+            typeof proofValue === 'string' &&
+            normalizeHexString(journalValue) === normalizeHexString(proofValue))
+        );
+      case 'electionConfigHash':
+      case 'bulletinRoot':
+      case 'sthDigest':
+      case 'seenBitmapRoot':
+      case 'includedBitmapRoot':
+      case 'inputCommitment':
+        return (
+          typeof journalValue === 'string' &&
+          typeof proofValue === 'string' &&
+          normalizeHexString(journalValue) === normalizeHexString(proofValue)
+        );
+      case 'verifiedTally':
+        return (
+          Array.isArray(journalValue) &&
+          Array.isArray(proofValue) &&
+          journalValue.every((value, index) => value === proofValue[index])
+        );
+      case 'electionId':
+      case 'missingSlots':
+      case 'invalidPresentedSlots':
+      case 'rejectedRecords':
+      case 'totalExpected':
+      case 'treeSize':
+      case 'excludedSlots':
+      case 'seenIndicesCount':
+        return journalValue === proofValue;
+    }
+  });
+}
+
+const verificationSummarySchema = publicObject({
+  status: s.enum(VERIFICATION_SUMMARY_STATUS_VALUES),
+  tone: s.enum(VERIFICATION_SUMMARY_TONE_VALUES),
+  messageKey: s.string().min(1).optional(),
+}).nullable();
+
+const verificationStageStatusesSchema = publicObject({
+  cast_as_intended: s.enum(VERIFICATION_STEP_STATUS_VALUES),
+  recorded_as_cast: s.enum(VERIFICATION_STEP_STATUS_VALUES),
+  counted_as_recorded: s.enum(VERIFICATION_STEP_STATUS_VALUES),
+  stark_verification: s.enum(VERIFICATION_STEP_STATUS_VALUES),
 });
 
+const verificationDisplaySchema = publicObject({
+  readiness: s.enum(VERIFICATION_DISPLAY_READINESS_VALUES),
+  source: s.enum(VERIFICATION_DISPLAY_SOURCE_VALUES).nullable(),
+  status: s.enum(VERIFICATION_DISPLAY_STATUS_VALUES).nullable(),
+  renderedStatus: s.enum(VERIFICATION_DISPLAY_STATUS_VALUES).nullable(),
+}).superRefine((display, context) => {
+  const expectedStatusBySource = {
+    hard_failure: 'failed',
+    pending: 'warning',
+    unavailable: 'warning',
+    corrupt: 'failed',
+  } as const;
+
+  if (display.readiness === 'ready') {
+    if (display.renderedStatus !== display.status) {
+      context.addIssue({ message: 'Ready verification display must render its resolved status' });
+    }
+  } else if (display.renderedStatus !== null) {
+    context.addIssue({ message: 'Non-ready verification display cannot render a terminal status' });
+  }
+
+  if ((display.source === null) !== (display.status === null)) {
+    context.addIssue({ message: 'Verification display source and status must be present together' });
+  }
+  if (display.source === 'explicit_server_failure' && display.status === 'verified') {
+    context.addIssue({ message: 'Explicit server failure cannot resolve to verified' });
+  }
+  if (
+    display.source === 'hard_failure' ||
+    display.source === 'pending' ||
+    display.source === 'unavailable' ||
+    display.source === 'corrupt'
+  ) {
+    if (display.status !== expectedStatusBySource[display.source]) {
+      context.addIssue({ message: 'Verification display status contradicts its source' });
+    }
+  }
+});
+documentOpenApiRefinement(
+  verificationDisplaySchema,
+  'Readiness, source, status, and renderedStatus are mutually coherent; non-ready displays are never terminal.',
+);
+
+const ineligibleVerificationPresentationPolicySchema = publicObject({
+  summary: verificationSummarySchema,
+  stageStatuses: verificationStageStatusesSchema,
+  evidenceFullyVerified: s.boolean(),
+  fullyVerifiedLabelEligible: s.literal(false),
+  display: verificationDisplaySchema,
+  publishedTallyMismatch: s.boolean(),
+  devModeEvidence: s.boolean(),
+  missingEvidence: s.boolean(),
+  explanationKey: s.string().min(1).optional(),
+}).superRefine((policy, context) => {
+  if (
+    policy.display.readiness === 'ready' &&
+    policy.display.source === 'summary' &&
+    policy.display.status === 'verified' &&
+    policy.display.renderedStatus === 'verified'
+  ) {
+    context.addIssue({ message: 'Ineligible verification policy must contain a negative eligibility fact' });
+  }
+});
+documentOpenApiRefinement(
+  ineligibleVerificationPresentationPolicySchema,
+  'An ineligible policy cannot resolve to the fully verified display state.',
+);
+
+const fullyVerifiedPresentationPolicySchema = publicObject({
+  summary: publicObject({
+    status: s.literal('fully_verified'),
+    tone: s.literal('verified'),
+  }),
+  stageStatuses: publicObject({
+    cast_as_intended: s.literal('success'),
+    recorded_as_cast: s.literal('success'),
+    counted_as_recorded: s.literal('success'),
+    stark_verification: s.literal('success'),
+  }),
+  evidenceFullyVerified: s.literal(true),
+  fullyVerifiedLabelEligible: s.literal(true),
+  display: publicObject({
+    readiness: s.literal('ready'),
+    source: s.literal('summary'),
+    status: s.literal('verified'),
+    renderedStatus: s.literal('verified'),
+  }),
+  publishedTallyMismatch: s.literal(false),
+  devModeEvidence: s.literal(false),
+  missingEvidence: s.literal(false),
+});
+
+const verificationPresentationPolicySchema = s.union([
+  fullyVerifiedPresentationPolicySchema,
+  ineligibleVerificationPresentationPolicySchema,
+]);
+
 export const verificationPresentationSchema = publicObject({
-  tally: publicProofSummaryBaseShape.tally,
+  tally: tallyWithRequiredTamperedCountSchema,
   scenarioId: scenarioIdSchema,
-  tamperDetected: publicProofSummarySchema.shape.tamperDetected,
+  tamperDetected: s.boolean(),
   botVotesSummary: botVotesSummarySchema.optional(),
   tamperSummary: publicProofSummaryBaseShape.tamperSummary,
-  policy: publicObject({
-    summary: publicObject({
-      status: s.enum(VERIFICATION_SUMMARY_STATUS_VALUES),
-      tone: s.enum(VERIFICATION_SUMMARY_TONE_VALUES),
-      messageKey: s.string().min(1).optional(),
-    }).nullable(),
-    stageStatuses: publicObject({
-      cast_as_intended: s.enum(VERIFICATION_STEP_STATUS_VALUES),
-      recorded_as_cast: s.enum(VERIFICATION_STEP_STATUS_VALUES),
-      counted_as_recorded: s.enum(VERIFICATION_STEP_STATUS_VALUES),
-      stark_verification: s.enum(VERIFICATION_STEP_STATUS_VALUES),
-    }),
-    evidenceFullyVerified: s.boolean(),
-    fullyVerifiedLabelEligible: s.boolean(),
-    display: publicObject({
-      readiness: s.enum(VERIFICATION_DISPLAY_READINESS_VALUES),
-      source: s.enum(VERIFICATION_DISPLAY_SOURCE_VALUES).nullable(),
-      status: s.enum(VERIFICATION_DISPLAY_STATUS_VALUES).nullable(),
-      renderedStatus: s.enum(VERIFICATION_DISPLAY_STATUS_VALUES).nullable(),
-    }),
-    publishedTallyMismatch: s.boolean(),
-    devModeEvidence: s.boolean(),
-    missingEvidence: s.boolean(),
-    explanationKey: s.string().min(1).optional(),
-  }),
+  policy: verificationPresentationPolicySchema,
 });
 
 const verificationAvailableVoterEvidenceSchema = publicObject({
   availability: s.literal('available'),
   voteReceipt: voteReceiptSchema.extend({
     voteId: s.string().min(1),
+    inputCommitment: hex32Schema,
   }),
   userVote: publicObject({
     commitment: hex32Schema,
@@ -276,14 +454,31 @@ const verificationAvailableVoterEvidenceSchema = publicObject({
   }),
 });
 
-const verificationUnavailableVoterEvidenceSchema = publicObject({
+const verificationUnavailableVoterEvidenceBaseShape = {
   availability: s.literal('unavailable'),
-  reason: s.enum(['vote_id_unavailable', 'exact_proof_unavailable']),
   userVote: publicObject({
     commitment: hex32Schema,
-    voteId: s.string().min(1).optional(),
+  }),
+} as const;
+
+const verificationVoteIdUnavailableVoterEvidenceSchema = publicObject({
+  ...verificationUnavailableVoterEvidenceBaseShape,
+  reason: s.literal('vote_id_unavailable'),
+});
+
+const verificationExactProofUnavailableVoterEvidenceSchema = publicObject({
+  ...verificationUnavailableVoterEvidenceBaseShape,
+  reason: s.literal('exact_proof_unavailable'),
+  userVote: publicObject({
+    commitment: hex32Schema,
+    voteId: s.string().min(1),
   }),
 });
+
+const verificationUnavailableVoterEvidenceSchema = s.union([
+  verificationVoteIdUnavailableVoterEvidenceSchema,
+  verificationExactProofUnavailableVoterEvidenceSchema,
+]);
 
 export const verificationVoterEvidenceSchema = s.union([
   verificationAvailableVoterEvidenceSchema,
@@ -314,7 +509,127 @@ export const availableVerificationResourceSchema = publicObject({
   verification: verificationChecksAndStepsSchema,
   voterEvidence: verificationVoterEvidenceSchema,
   journal: verificationJournalRepresentationSchema,
+}).superRefine((resource, context) => {
+  const verificationReport = resource.verifierResult.report;
+  const devModeEvidence =
+    resource.verifierResult.status === 'dev_mode' || verificationReport?.dev_mode_receipt === true;
+  if (!hasCanonicalVerificationCheckEvidence(resource.verification.checks, devModeEvidence)) {
+    context.addIssue({ message: 'Verification check inventory contradicts the canonical registry' });
+  }
+  if (
+    !hasCoherentPublicFactDerivedCheckStatuses({
+      checks: resource.verification.checks,
+      verificationStatus: resource.verifierResult.status,
+      voterEvidence: resource.voterEvidence,
+      proof: resource.proofAuthority,
+      presentation: {
+        counts: resource.presentation.tally.counts,
+        totalVotes: resource.presentation.tally.totalVotes,
+      },
+    })
+  ) {
+    context.addIssue({ message: 'Verification checks contradict their complete public evidence' });
+  }
+  if (
+    !hasCoherentPublicVerifierChecks({
+      checks: resource.verification.checks,
+      verifierResult: resource.verifierResult,
+    })
+  ) {
+    context.addIssue({ message: 'Verifier status contradicts its public STARK checks' });
+  }
+  if (
+    !hasCoherentPublicPresentationPolicy({
+      checks: resource.verification.checks,
+      policy: resource.presentation.policy,
+      proof: resource.proofAuthority,
+      verificationStatus: resource.verifierResult.status,
+      verificationReportStatus: verificationReport?.status,
+      devModeEvidence,
+    })
+  ) {
+    context.addIssue({ message: 'Presentation policy contradicts its admitted verification evidence' });
+  }
+  if (!hasCanonicalVerificationSteps(resource.verification.steps)) {
+    context.addIssue({ message: 'Verification step inventory contradicts the canonical projection' });
+  }
+  if (!hasCoherentVerificationReportExpectedImageId(verificationReport, resource.proofAuthority.imageId)) {
+    context.addIssue({ message: 'Verifier report expected ImageID contradicts proof authority' });
+  }
+  if (
+    resource.voterEvidence.availability === 'available' &&
+    !hasCoherentAvailableVoterEvidence({
+      voterEvidence: resource.voterEvidence,
+      proofAuthority: resource.proofAuthority,
+    })
+  ) {
+    context.addIssue({ message: 'Available voter evidence contains contradictory identity or range facts' });
+  }
+  if (
+    !hasCoherentPublicTamperScenarioProjection({
+      scenarioId: resource.presentation.scenarioId,
+      tamperDetected: resource.presentation.tamperDetected,
+      tamperedCount: resource.presentation.tally.tamperedCount,
+      proof: resource.proofAuthority,
+      counts: resource.presentation.tally.counts,
+      tamperSummary: resource.presentation.tamperSummary,
+      botVotesSummary: resource.presentation.botVotesSummary,
+    })
+  ) {
+    context.addIssue({ message: 'Presentation tamper facts contradict its scenario or detection result' });
+  }
+  if (resource.presentation.policy.fullyVerifiedLabelEligible === true) {
+    if (
+      !hasCoherentFullyVerifiedPresentationEvidence({
+        checks: resource.verification.checks,
+        stageStatuses: resource.presentation.policy.stageStatuses,
+        scenarioId: resource.presentation.scenarioId,
+        verificationStatus: resource.verifierResult.status,
+        verificationReport,
+        proof: {
+          imageId: resource.proofAuthority.imageId,
+          bulletinRoot: resource.proofAuthority.bulletinRoot,
+          inputCommitment: resource.proofAuthority.inputCommitment,
+          seenBitmapRoot: resource.proofAuthority.seenBitmapRoot,
+          includedBitmapRoot: resource.proofAuthority.includedBitmapRoot,
+          verifiedTally: resource.proofAuthority.verifiedTally,
+          missingSlots: resource.proofAuthority.missingSlots,
+          invalidPresentedSlots: resource.proofAuthority.invalidPresentedSlots,
+          rejectedRecords: resource.proofAuthority.rejectedRecords,
+          excludedSlots: resource.proofAuthority.excludedSlots,
+          totalExpected: resource.proofAuthority.totalExpected,
+          treeSize: resource.proofAuthority.treeSize,
+          seenIndicesCount: resource.proofAuthority.seenIndicesCount,
+        },
+        presentation: {
+          counts: resource.presentation.tally.counts,
+          totalVotes: resource.presentation.tally.totalVotes,
+          tamperedCount: resource.presentation.tally.tamperedCount,
+          tamperDetected: resource.presentation.tamperDetected,
+          tamperSummary: resource.presentation.tamperSummary,
+        },
+        voterEvidence: resource.voterEvidence,
+      })
+    ) {
+      context.addIssue({ message: 'Fully verified presentation contradicts admitted verification evidence' });
+    }
+  }
+  for (const step of resource.verification.steps) {
+    if (resource.presentation.policy.stageStatuses[step.id] !== step.status) {
+      context.addIssue({ message: 'Verification step status contradicts presentation stage status' });
+    }
+  }
+  if (
+    resource.journal.representation === 'included' &&
+    !hasCoherentIncludedJournalProofAuthority(resource.journal.value, resource.proofAuthority)
+  ) {
+    context.addIssue({ message: 'Included journal contradicts proof authority' });
+  }
 });
+documentOpenApiRefinement(
+  availableVerificationResourceSchema,
+  'The complete public resource has coherent canonical checks, proof authority, voter evidence, journal, tamper facts, verifier result, and fail-closed presentation policy.',
+);
 
 const unavailableVerificationResourceSchema = publicObject({
   availability: s.literal('unavailable'),
@@ -364,12 +679,7 @@ export type PublicVerificationCheckNoteKey = Infer<typeof verificationCheckNoteK
 export type VerificationObservationCastCheckId = (typeof VERIFICATION_OBSERVATION_CAST_CHECK_IDS)[number];
 export type VerificationObservationCastStatus = Infer<typeof verificationObservationCastStatusSchema>;
 export type VerificationStatus = Infer<typeof verificationStatusSchema>;
-export type PublicVerificationErrorMessage = Infer<typeof publicVerificationErrorSchema>;
-export type PublicVerificationReport = Infer<typeof publicVerificationReportSchema>;
-export type PublicVerificationResult = Infer<typeof publicVerificationResultSchema>;
 export type CurrentZkVMJournal = Infer<typeof currentZkvmJournalSchema>;
-export type ElectionManifest = Infer<typeof electionManifestSchema>;
-export type CloseStatement = Infer<typeof closeStatementSchema>;
 export type Receipt = Infer<typeof receiptSchema>;
 export type VerificationStep = Infer<typeof verificationStepSchema>;
 export type VerificationCheck = Infer<typeof verificationCheckSchema>;

@@ -1,5 +1,5 @@
 {
-  "extends": "./tooling/tsconfig/node-web.json",
+  "extends": "./tooling/tsconfig/node.json",
   "compilerOptions": {
     "allowJs": true,
     "checkJs": true,

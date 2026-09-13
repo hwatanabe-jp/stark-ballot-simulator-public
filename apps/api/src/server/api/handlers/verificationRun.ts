@@ -1,17 +1,19 @@
-import type { ApiHandlerArguments, SessionAdmittedContext } from '../context';
-import type { FinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-types';
+import type { ApiHandlerArguments, RouteBoundResponse, SessionFinalizationAdmittedContext } from '../context';
+import type {
+  FinalizationId,
+  FinalizationResultAuthority,
+} from '@stark-ballot/application/finalize/finalization-types';
 import type { FinalizationResultRecord } from '@stark-ballot/application/finalize/finalization-record';
 import type { AwsVerificationDeliveryMetadataInput } from '@stark-ballot/aws-adapters/finalize/finalizationDeliveryMetadataStore';
 import type { VerificationResult, VerificationStatus } from '@stark-ballot/verification/shared/types';
 import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
-import { errorResponse } from '../../http/response';
 import { resolveExpectedImageId } from '@stark-ballot/verification/image-id';
 import { loadPublicImageIdMapping } from '@stark-ballot/node-adapters/image-id-mapping';
 import { publishVerificationWorkMessage } from '@stark-ballot/aws-adapters/sqs/publishVerificationWorkMessage';
 import { recordFinalizeRateLimit, type FinalizeRateLimitContext } from '../middleware/rateLimit';
 import type { VerificationRunResponse } from '@stark-ballot/api-contract/schemas/verification';
 import { runVerificationRoute } from '@stark-ballot/api-contract/routes';
-import { respondWithRoute } from '../utils/responseSchema';
+import { respondWithRoute, respondWithRouteError } from '../utils/responseSchema';
 import { resolveTrustedLocalBundleReference } from '../adapters/trustedLocalBundleReference';
 import { isSupportedJournalMethodVersion } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import { invokeVerifierService } from '@stark-ballot/node-adapters/verifier-service-client';
@@ -23,11 +25,14 @@ import {
 } from '@stark-ballot/aws-adapters/finalize/finalizationLocatorAuthority';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 
 const ESTIMATED_VERIFICATION_DURATION_MS = 4000;
 const VERIFIER_INVOCATION_FAILURE_DETAILS = 'Verifier runner invocation failed';
 
-function verificationRunResponse(body: Omit<VerificationRunResponse, 'meta'>): Response {
+function verificationRunResponse(
+  body: Omit<VerificationRunResponse, 'meta'>,
+): RouteBoundResponse<typeof runVerificationRoute> {
   return respondWithRoute(runVerificationRoute, {
     status: 200,
     content: 'json',
@@ -35,23 +40,31 @@ function verificationRunResponse(body: Omit<VerificationRunResponse, 'meta'>): R
   });
 }
 
+function internalError(details: string): RouteBoundResponse<typeof runVerificationRoute> {
+  return respondWithRouteError(runVerificationRoute, {
+    code: ErrorCode.INTERNAL_ERROR,
+    status: 500,
+    details: { details },
+  });
+}
+
 type VerificationBundleReference =
   | {
       mode: 's3_bundle';
-      finalizationId: string;
+      finalizationId: FinalizationId;
       bundleKey: string;
       bundlePath: string;
       reportPath: string;
     }
   | {
       mode: 'local_bundle';
-      finalizationId: string;
+      finalizationId: FinalizationId;
       bundlePath: string;
       reportPath: string;
     };
 
 function resolveBundleReferences(
-  sessionId: string,
+  sessionId: SessionId,
   finalizationResult: FinalizationResultRecord,
   deliveryMetadata: AwsVerificationDeliveryMetadataInput | undefined,
   runtimeProfile: ResolvedRuntimeProfile,
@@ -99,7 +112,7 @@ function resolveBundleReferences(
 
   return {
     mode: 'local_bundle',
-    finalizationId: localBundle.finalizationId,
+    finalizationId,
     bundlePath: localBundle.bundlePath,
     reportPath: localBundle.reportPath,
   };
@@ -142,25 +155,35 @@ function resolveVerificationMethodVersion(finalizationResult: FinalizationResult
   return undefined;
 }
 
-type VerificationRunContext = SessionAdmittedContext & {
+type VerificationRunContext = SessionFinalizationAdmittedContext & {
   finalizeRateLimit: FinalizeRateLimitContext;
 };
 
 export async function runVerificationHandler({
-  input,
   context,
-}: ApiHandlerArguments<typeof runVerificationRoute, VerificationRunContext>): Promise<Response> {
-  const { session, sessionId, store, finalizeRateLimit: rateLimitContext, runtimeProfile } = context;
+}: ApiHandlerArguments<typeof runVerificationRoute, VerificationRunContext>): Promise<
+  RouteBoundResponse<typeof runVerificationRoute>
+> {
+  const {
+    session,
+    sessionId,
+    finalizationId: requestedFinalizationId,
+    store,
+    finalizeRateLimit: rateLimitContext,
+    runtimeProfile,
+  } = context;
   const { clientIp: resolvedClientIp, rateLimiter, shouldRecord } = rateLimitContext;
   const finalizationRecord = session.finalization;
   if (finalizationRecord?.state.status !== 'succeeded' || !finalizationRecord.finalizationResult) {
-    return errorResponse(ErrorCode.SESSION_NOT_FINALIZED);
+    return respondWithRouteError(runVerificationRoute, { code: ErrorCode.SESSION_NOT_FINALIZED, status: 400 });
   }
   const finalizationResult = finalizationRecord.finalizationResult;
   const finalizationId = finalizationResult.finalizationId;
-  if (input.params.finalizationId !== finalizationId) {
-    return errorResponse(ErrorCode.INVALID_REQUEST, {
-      details: 'Requested finalization does not match the current finalization',
+  if (requestedFinalizationId !== finalizationId) {
+    return respondWithRouteError(runVerificationRoute, {
+      code: ErrorCode.INVALID_REQUEST,
+      status: 400,
+      details: { details: 'Requested finalization does not match the current finalization' },
     });
   }
   const [verificationRecord, deliveryMetadata] = await Promise.all([
@@ -183,16 +206,12 @@ export async function runVerificationHandler({
   const targetAwsExternal = runtimeProfile.external.kind === 'aws' ? runtimeProfile.external : null;
   const bundleReference = resolveBundleReferences(sessionId, finalizationResult, deliveryMetadata, runtimeProfile);
   if (!bundleReference) {
-    return errorResponse(ErrorCode.INTERNAL_ERROR, {
-      details: 'Authoritative verification bundle locator missing',
-    });
+    return internalError('Authoritative verification bundle locator missing');
   }
 
   const methodVersion = resolveVerificationMethodVersion(finalizationResult);
   if (methodVersion === undefined) {
-    return errorResponse(ErrorCode.INTERNAL_ERROR, {
-      details: 'Unsupported or missing journal method version',
-    });
+    return internalError('Unsupported or missing journal method version');
   }
   let expectedImageId: string;
   try {
@@ -206,9 +225,7 @@ export async function runVerificationHandler({
       loadImageIdMapping: loadPublicImageIdMapping,
     });
   } catch (error) {
-    return errorResponse(ErrorCode.INTERNAL_ERROR, {
-      details: error instanceof Error ? error.message : 'Failed to resolve expected ImageID',
-    });
+    return internalError(error instanceof Error ? error.message : 'Failed to resolve expected ImageID');
   }
 
   const { finalizationId: bundleFinalizationId, bundlePath, reportPath } = bundleReference;
@@ -233,9 +250,7 @@ export async function runVerificationHandler({
           },
           error,
         );
-        return errorResponse(ErrorCode.INTERNAL_ERROR, {
-          details: 'Verifier queue enqueue failed',
-        });
+        return internalError('Verifier queue enqueue failed');
       }
       try {
         await store.recordAwsVerificationDeliveryMetadata(sessionId, bundleFinalizationId, {
@@ -264,7 +279,7 @@ export async function runVerificationHandler({
   }
 
   try {
-    await store.markVerificationRunning(sessionId, bundleFinalizationId, currentVerificationResult?.report);
+    await store.markVerificationRunning(sessionId, bundleFinalizationId);
   } catch (error) {
     if (isDynamoConditionalWriteConflict(error)) {
       const concurrentRecord = await store.getVerificationResultRecord(sessionId, bundleFinalizationId);
@@ -287,9 +302,7 @@ export async function runVerificationHandler({
       },
       error,
     );
-    return errorResponse(ErrorCode.INTERNAL_ERROR, {
-      details: 'Verifier state update failed',
-    });
+    return internalError('Verifier state update failed');
   }
 
   if (targetAwsExternal && bundleReference.mode === 's3_bundle') {
@@ -312,9 +325,7 @@ export async function runVerificationHandler({
         },
         error,
       );
-      return errorResponse(ErrorCode.INTERNAL_ERROR, {
-        details: 'Verifier queue enqueue failed',
-      });
+      return internalError('Verifier queue enqueue failed');
     }
     try {
       await store.recordAwsVerificationDeliveryMetadata(sessionId, bundleFinalizationId, {
@@ -345,9 +356,7 @@ export async function runVerificationHandler({
 
   if (bundleReference.mode !== 'local_bundle') {
     await store.rollbackVerificationResult(sessionId, bundleFinalizationId);
-    return errorResponse(ErrorCode.INTERNAL_ERROR, {
-      details: 'Runtime profile does not admit synchronous S3 verification',
-    });
+    return internalError('Runtime profile does not admit synchronous S3 verification');
   }
 
   let completedVerificationResult: VerificationResult;
@@ -358,10 +367,17 @@ export async function runVerificationHandler({
       reportPath,
     });
 
-    completedVerificationResult = {
-      status: invocation.status,
-      report: invocation.report,
-    };
+    switch (invocation.status) {
+      case 'success':
+        completedVerificationResult = { status: 'success', report: invocation.report };
+        break;
+      case 'dev_mode':
+        completedVerificationResult = { status: 'dev_mode', report: invocation.report };
+        break;
+      case 'failed':
+        completedVerificationResult = { status: 'failed', report: invocation.report };
+        break;
+    }
   } catch (error) {
     await store.rollbackVerificationResult(sessionId, bundleFinalizationId);
     logger.error('[VerificationRun] Verifier invocation failed', {
@@ -370,9 +386,7 @@ export async function runVerificationHandler({
       bundleMode: bundleReference.mode,
       error_kind: error instanceof Error ? 'error' : 'unknown',
     });
-    return errorResponse(ErrorCode.INTERNAL_ERROR, {
-      details: VERIFIER_INVOCATION_FAILURE_DETAILS,
-    });
+    return internalError(VERIFIER_INVOCATION_FAILURE_DETAILS);
   }
 
   await store.completeVerificationResult(sessionId, bundleFinalizationId, completedVerificationResult);

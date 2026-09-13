@@ -4,12 +4,15 @@ import {
   TARGET_PROOF_ARTIFACT_PREFIX,
 } from '@stark-ballot/aws-adapters/finalize/artifact-key-layout';
 import type { AwsVerificationDeliveryMetadataInput } from '@stark-ballot/aws-adapters/finalize/finalizationDeliveryMetadataStore';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
+import { parseFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
 
 type ArtifactFileName = 'bundle.zip' | 'verification.json';
 
 export interface FinalizationArtifactKeyIdentity {
-  sessionId: string;
-  finalizationId: string;
+  sessionId: SessionId;
+  finalizationId: FinalizationId;
 }
 
 function resolveArtifactKeyIdentity(
@@ -31,11 +34,12 @@ function resolveArtifactKeyIdentity(
   if (!sessionId || !finalizationId) {
     return null;
   }
-  if (!isSafeVerifierSegment(sessionId) || !isSafeVerifierSegment(finalizationId)) {
+  const admittedFinalizationId = parseFinalizationId(finalizationId);
+  if (!isSafeVerifierSegment(sessionId) || !admittedFinalizationId) {
     return null;
   }
 
-  return { sessionId, finalizationId };
+  return { sessionId: asSessionId(sessionId), finalizationId: admittedFinalizationId };
 }
 
 export function resolveBundleKeyIdentity(key: string): FinalizationArtifactKeyIdentity | null {
@@ -48,8 +52,8 @@ export function resolveReportKeyIdentity(key: string): FinalizationArtifactKeyId
 
 function matchesCanonicalArtifactKey(
   key: string,
-  sessionId: string,
-  finalizationId: string,
+  sessionId: SessionId,
+  finalizationId: FinalizationId,
   artifact: ArtifactFileName,
 ): boolean {
   const expectedKeys = buildFinalizationArtifactS3Keys(sessionId, finalizationId);
@@ -57,8 +61,8 @@ function matchesCanonicalArtifactKey(
 }
 
 export function hasConsistentFinalizationLocatorAuthority(
-  sessionId: string,
-  finalizationId: string,
+  sessionId: SessionId,
+  finalizationId: FinalizationId,
   deliveryMetadata?: AwsVerificationDeliveryMetadataInput,
 ): boolean {
   if (!isSafeVerifierSegment(sessionId) || !isSafeVerifierSegment(finalizationId)) {

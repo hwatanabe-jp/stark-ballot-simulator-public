@@ -21,25 +21,32 @@
 - 検証開始の導線は `/result` の「検証」ボタンです。
 - `/verify` は path の exact `sessionId` / `finalizationId` と session capability を使って
   `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` を実行し、strict response
-  schema を通過した server-validated data だけを表示に使います。
+  schema と取得対象の `finalizationId` の一致を確認した data だけを表示に使います。schema は
+  canonical checks の順序・metadata と steps、公開 evidence から再評価できる check status、
+  report / journal / tally / voter evidence / scenario / policy の相互整合を検証します。
+  不整合や未知の形は `corrupt` とし、成功表示へ project しません。数値境界を含む詳細は
+  [API 契約](../api-contract.md) と [検証フロー](../../verification/README.md) を参照してください。
 - `/result` からの検証要求を示す session authority がなく、STARK status も `not_run` の直接アクセスは
   block します。画面は error alert と `/result` へ戻るボタンを表示します。
 - 継続 authority がある場合、または STARK がすでに開始・完了している場合は、開始ボタンを出さずに
   verification sequence を自動開始します。
 - verification resource の `verification.checks` は、重複や欠落のない22 checks の inventory と
-  Recorded、Counted、STARK の結果の authority です。browser は exact inventory の admission 後、
-  保存済みの receipt、choice、random を使って Cast-as-Intended の4 checks を再計算し、その4 status
-  をすべて local result で置き換えます。重い検証を browser で再実装しません。
+  Recorded、Counted、STARK の結果の authority です。server の Cast-as-Intended 4 checks は
+  `not_run` です。browser は resource の admission 後、保存済みの receipt、choice、random を
+  使ってその4 checks を再計算し、すべて local result で置き換えます。STARK receipt の検証は
+  server が担当します。
 - verification 開始前は `user.voteReceipt` と `user.merklePath` を knowledge panel に公開しません。
-  sequence 開始後、検証に使う evidence として反映します。
+  sequence 開始後、STARK の実待機が解決してから、取得した evidence を同じ session の knowledge
+  として反映します。待機中に session が無効になった場合は公開しません。
 
 ## Unified Verification Card と表示シーケンス
 
 画面は title、subtitle、`UnifiedVerificationCard`、knowledge panel、footer で構成します。
-`UnifiedVerificationCard` は Verification Steps、Result Summary、Download CTA を1つの card 内に
-表示します。
+`UnifiedVerificationCard` は先頭に Result Summary と Download CTA を配置し、その下に4 category の
+Verification Steps を表示します。小項目は番号、label、evidence、status の対応が読み取れる行で
+揃えます。
 
-S3 と S4 のときだけ「私の検証」「ボット検証」の tabs を表示します。現行では「私の検証」のみ有効で、
+S3 と S4 のときだけ「私の検証」「ボット検証」の tabs を表示します。「私の検証」が有効で、
 「ボット検証」は disabled placeholder です。
 
 sequence は次の順で進みます。
@@ -47,26 +54,31 @@ sequence は次の順で進みます。
 1. STARK status が `not_run` の場合は同じ finalization-scoped verification resource へ `POST` を一度要求します。
 2. STARK status が `not_run` または `running` の間は同じ resource を `GET` で poll し、terminal status
    (`success`、`failed`、`dev_mode`) または timeout を待ちます。
-3. card は項目表示前に「検証準備中」を表示します。STARK 解決後も通常は約2秒表示を続けます。
-4. Cast-as-Intended、Recorded-as-Cast、Counted-as-Recorded、STARK Verification を上から順に
-   表示し、各 category の status を順次確定します。
-5. sequence 完了後、Result Summary と Download CTA を表示します。pending または running の
-   check が残る間は最終 summary を表示しません。
+3. 実待機中は card に「検証準備中」を表示します。見た目のための固定待機時間は加えません。
+4. 解決した payload から Cast-as-Intended、Recorded-as-Cast、Counted-as-Recorded、
+   STARK Verification の status を求め、4 category と sequence 完了を一括反映します。
+   category ごとの疑似的な running 表示や段階表示の遅延は加えません。
+5. sequence 完了後、card 先頭に Result Summary と Download CTA を表示します。pending または
+   running の check が残る間は最終 summary を表示しません。画面離脱や verification authority の
+   invalidation が発生した実行は、stale な evidence の公開や sequence 完了へ進みません。
 
-server resource の `verification.steps[].status` は server checks から導出されます。browser は
-Cast overlay 後の checks に shared presentation policy を再適用し、runtime 上 required となる checks
-から表示用の `verificationSteps[].status`、最終 verdict、表示 eligibility を導出します。一方、card の
+server resource の `verification.steps[].status` は server checks から導出され、wire policy の
+stage status との一致も admission で確認します。browser は wire policy を表示 authority として
+引き継がず、Cast overlay 後の checks に shared presentation policy を再適用します。runtime 上
+required となる checks から表示用の `verificationSteps[].status`、最終 verdict、表示 eligibility を
+導出し、画面の開始・完了状態も使って render readiness を判定します。一方、card の
 category header status と `successCount/totalCount` は、optional を含むその category の表示項目すべてを
 card 内で集計します。この表示集計を最終 verdict の判定に使いません。
 
 ZK evidence に依存する項目は STARK gate を適用します。すでに `failed` の項目は gate が `pending`
 でも失敗を維持し、それ以外は STARK 成功前に `pending` とします。STARK gate が失敗した場合は、
-失敗していなかった依存項目も `failed` として表示します。category と項目には短い slide/fade
-transition を使います。
+失敗していなかった依存項目も `failed` として表示します。category と項目は slide、fade、flash を
+伴わず表示します。
 
-sequence 完了後、knowledge key を持つ小項目を click すると、対応する knowledge panel 項目を
-枠線と pulse で highlight します。前回の highlight を解除して最新の click を優先し、2.5秒後に
-解除します。
+sequence 完了後、対応する既存 knowledge 値が実在し、route の表示許可にも含まれる小項目を
+選択すると、同じ値をその行の直下に表示します。選択は別の項目を選ぶか同じ項目を再び選んで
+解除するまで持続します。時間経過による解除や knowledge panel の自動 pulse は使いません。
+表示対象は実在する許可済みの値だけで、空欄や未取得の evidence を補って表示しません。
 
 UI copy は `apps/web/src/i18n/translations/en.ts` と `ja.ts` で同期します。test や page object は
 翻訳文字列ではなく、次の stable `data-testid` を使います。
@@ -142,10 +154,11 @@ hard-failure signal です。
 - `counted_expected_vs_tree_size`
 - `counted_election_manifest_consistent`
 - `counted_close_statement_consistent`
-- `counted_my_vote_included`
-- `counted_input_commitment_match`
-- `stark_image_id_match`
 - `stark_receipt_verify`
+
+`counted_my_vote_included`、`counted_input_commitment_match`、`stark_image_id_match` も required で、
+失敗は fully verified を block します。`stark_image_id_match` と `stark_receipt_verify` の失敗は
+explicit proof failure としても判定します。
 
 `stark_receipt_verify` は required ですが、単独で `Verified` にする十分条件ではありません。
 `excludedSlots > 0`、treeSize の不一致、または ImageID の不一致は成功を block します。
@@ -156,6 +169,12 @@ summary semantics は `deriveVerificationSummary()`、stage と最終表示 elig
 `deriveVerificationPresentationPolicy()` です。22 checks に加えて、
 `missingSlots`、`invalidPresentedSlots`、`rejectedRecords`、`excludedSlots`、STH source 設定、
 dev-mode evidence を context として使います。
+
+`VerifiedPresentation` は shared policy 内の非公開 witness を持つ branch です。required checks
+の成功、hard failure と明示的な server failure の不在、`fully_verified` summary、全4 stage の
+成功、non-demo evidence、`ready` な verified display が揃ったときだけ policy が生成します。
+wire 上の成功 field や boolean をコピーしてこの branch を構築することはできません。web は
+再導出した policy の `fullyVerifiedLabelEligible` が true の場合だけ `Verified` を表示します。
 
 - required check の欠落、`not_run`、unknown check は `missing_evidence`
 - required check の `pending` / `running` は `in_progress`
@@ -241,7 +260,7 @@ raw S3 URL、S3 redirect、presigned URL、任意の cross-origin URL を UI con
 Download CTA は bundle を保存し、report candidate がある場合は同じ操作で protected report も
 取得します。
 
-## Journal と legacy exclusion
+## Journal と exclusion authority
 
 通常の `/verify` 画面は finalization-scoped verification `GET` を journal 本体なしで呼び出します。
 同じ resource に `?include=journal` を指定した response contract は次のとおりです。
@@ -251,9 +270,8 @@ Download CTA は bundle を保存し、report candidate がある場合は同じ
 
 現行 journal は `methodVersion=14` で、`seenBitmapRoot` を必須 field として含みます。
 current exclusion authority は `missingSlots`、`invalidPresentedSlots`、`rejectedRecords`、
-`excludedSlots` です。public response に legacy `excludedCount`、`missingIndices`、
-`invalidIndices`、`countedIndices` を戻しません。
-
-canonical journal が clean な場合、stale top-level の legacy count aliases は authority として
-採用せず無視します。一方、journal-shaped payload 内に legacy count alias が1つでも存在すれば、
-値が0でも current journal として受理せず fail closed にします。
+`excludedSlots` です。public resource と included journal は exact schema で admission し、
+legacy `excludedCount`、`missingIndices`、`invalidIndices`、`countedIndices` などの未登録 field は
+値が0でも拒否します。canonical journal があっても top-level alias を無視して受理する経路は
+ありません。included journal と `proofAuthority` の重複する事実も照合し、不整合を補正せず
+fail closed にします。

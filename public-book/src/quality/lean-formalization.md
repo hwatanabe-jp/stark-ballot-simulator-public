@@ -1,120 +1,82 @@
 # Lean による形式化
 
-本プロジェクトでは Lean 4 を使い、`Verified` 表示の fail-closed 条件、journal count の整合性、input commitment の canonical encoding、LSB-first bitmap packing、抽象 guest tally model の不変条件を形式化しています。
+「完全成功と判定したなら、必須チェックはすべて成功している」。これは、いくつかのテストケースだけでなく、判定規則そのものについて確かめたい性質です。
 
-Lean は実装を直接証明しません。
-代わりに、抽象モデル上で不変条件を証明し、そこから生成した generated vectors、formal report、formal audit を TypeScript / Rust のテストと CI に接続します。
-この接続により、モデルと実装の対応付けを継続的に検査します。
-Lean が扱わない範囲は末尾の [証明していないこと](#証明していないこと) を参照してください。
+Lean 4 では判定規則を数学的なモデルとして定義し、このような性質を証明します。証明の対象はそのモデルです。実際に動く TypeScript や Rust との対応は、モデルから作ったテストケースを使って別に確認します。
 
-## Lean で定義しているもの
+## 票が抜けていないことを式で表す
 
-| Lean module                | 主な定義                                                                                                  | 役割                                                   |
-| -------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| `Basic.lean`               | `CheckStatus`, `SummaryStatus`, `SummaryTone`, `CheckId`, `CheckCategory`, `CheckRole`, `Criticality`     | 検証チェックと summary model の基礎型                  |
-| `JournalCounts.lean`       | `missingSlotsOf`, `invalidPresentedSlotsOf`, `excludedSlotsOf`                                            | zkVM journal の count 分解を `Nat` モデルで表す        |
-| `VerificationSummary.lean` | `checkDefinitions`, `isRequiredCheck`, `canFullyVerify`, `deriveSummaryModel`                             | `/verify` の最終判定に関わる fail-closed model         |
-| `InputCommitment.lean`     | `CommitmentVote`, `InputCommitmentCase`, canonical order, `u16LE`, `u32LE`, preimage encoding             | input commitment の byte layout と順序安定性をモデル化 |
-| `Bitmap.lean`              | `packedByteCount`, `packedAddress`, `byteValueAt`, `packBits`                                             | LSB-first bitmap packing と bit address をモデル化     |
-| `GuestModel.lean`          | `RejectReason`, `GuestVote`, `CandidateTally`, `GuestState`, `classifyVote`, `processVotes`, guest bounds | zkVM guest の抽象 tally / rejection state machine      |
+掲示板の各位置は、「有効票として採用された」「提示されたが採用されなかった」「提示されなかった」の三つに分かれます。[ゲストプログラム](../zkvm/guest-program.md) の票数を、Lean では自然数のモデルで表します。
 
-`GuestModel.lean` は `zkvm/methods/guest/src/main.rs` を行単位で翻訳したものではありません。
-外部的に重要な処理順序を抽象 state machine として表します。
-具体的には、インデックス範囲、重複 index、選択肢、コミットメント、重複 commitment、包含証明、集計反映の順序をモデル化します。
+```text
+validVotes ≤ seenIndicesCount ≤ treeSize
+missingSlots = treeSize - seenIndicesCount
+invalidPresentedSlots = seenIndicesCount - validVotes
+excludedSlots = missingSlots + invalidPresentedSlots
+```
 
-## Lean で証明していること
+この関係から、`excludedSlots = 0` なら、未提示の位置も、提示されたのに採用されなかった位置もなく、`validVotes = seenIndicesCount = treeSize` と示せます。B の一票を入力から抜いた S1 なら `missingSlots` が増えるので、この条件を満たせません。
 
-| 領域                 | 代表 theorem                                                                                                                               | 主張                                                                                                                                                 |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Journal count        | `excluded_zero_implies_no_slot_loss`, `slot_partition_total`                                                                               | `excludedSlots = 0` なら missing / invalid presented が 0 になり、slot loss がない                                                                   |
-| Verification summary | `fully_verified_implies_all_required_success`, `fully_verified_implies_no_unknown_checks`, `fully_verified_implies_required_roles_success` | `fully_verified` は required check 成功、unknown check 不在、重要 role 成功を要求する                                                                |
-| Input commitment     | `canonical_vote_order_total`, `canonical_encoding_permutation_invariant`                                                                   | vote の入力順序に依存しない canonical encoding が定義されている                                                                                      |
-| Bitmap               | `pack_bits_length`, `pack_bits_get_bit`                                                                                                    | LSB-first packing の byte 数と bit 取得がモデル通りになる                                                                                            |
-| Guest model          | `accepted_votes_count_tally`, `valid_votes_count_accepted`, `processVotes_fold_invariant`                                                  | 抽象 guest fold が tally / validVotes / seen index の不変条件を保つ                                                                                  |
-| Guest completeness   | `zero_exclusion_guest_model_complete`                                                                                                      | `excludedSlots = 0` が guest model 上で missing / invalid presented の不存在につながる                                                               |
-| Bounded counts       | `no_overflow_under_guest_bounds`                                                                                                           | `treeSize` と vote count の上限から seen / valid / rejected / tally bucket が Rust `u32` に収まり、各 tally bucket が 1,000,000 以下になることを導く |
+ゲストのモデルは、単に数を置くだけでなく、票を一件ずつ処理します。範囲外・重複インデックスを拒否し、初めて現れた位置を提示済みにした後、選択肢、コミットメント、包含証明を調べ、採用した票を加算します。この処理順序の下で、見た位置が重複せず範囲内にあり、採用数が提示位置数を超えないことを証明します。
 
-これらは抽象モデル上の主張であり、実装との対応は次節の generated vectors とテストで検査します。
+## 証明している性質
+
+| 領域               | 主張                                                                     | 代表的な定理                                                                              |
+| ------------------ | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| ジャーナル         | 上記の計数関係の下で、除外ゼロなら採用数・提示位置数・全位置数が一致する | `slot_partition_total`、`excluded_zero_implies_no_slot_loss`                              |
+| 最終判定           | 完全成功なら必須チェックが成功し、未知のチェックがない                   | `fully_verified_implies_all_required_success`、`fully_verified_implies_no_unknown_checks` |
+| 入力コミットメント | 票を並べ替えても、定めた順序で同じ符号化になる                           | `canonical_encoding_permutation_invariant`                                                |
+| ビットマップ       | 下位ビットから詰めた長さと、取り出すビットが定義に一致する               | `pack_bits_length`、`pack_bits_get_bit`                                                   |
+| ゲスト集計         | 票を順に処理しても、候補別集計と採用数の関係が保たれる                   | `processVotes_fold_invariant`、`accepted_votes_count_tally`                               |
+| 完全性             | ゲストモデルの除外ゼロから、未提示・不採用位置がないと導ける             | `zero_exclusion_guest_model_complete`                                                     |
+| 整数の上限         | 入力上限の下で、各カウンターが Rust の `u32` に収まる                    | `no_overflow_under_guest_bounds`                                                          |
+
+整数の証明では、`treeSize` と提示レコード数がそれぞれ 1,000,000 以下であることを仮定します。候補ごとの得票数も 1,000,000 以下になることは、その仮定から導かれる結論です。Rust の集計経路も入力上限を検査し、加算時のオーバーフローを拒否します。
+
+モデルは `formal/StarkBallotFormal/` の `JournalCounts.lean`、`VerificationSummary.lean`、`InputCommitment.lean`、`Bitmap.lean`、`GuestModel.lean` にあります。チェックの型などは `Basic.lean` が定義します。
 
 ## 実装との接続
 
-```mermaid
-flowchart LR
-  L["Lean models<br/>formal/StarkBallotFormal/*.lean"]
-  T["Theorems<br/>形式的な不変条件"]
-  R["formal-report.json<br/>主張と前提"]
-  V["generated-vectors/*.json<br/>実装対応付けケース"]
-  A["formal-audit.json<br/>theorem hash / dependency / hygiene"]
-  TS["TypeScript tests<br/>Vitest"]
-  RS["Rust vector tests<br/>cargo test"]
-  FCI["formal CI<br/>pnpm formal:verify"]
-  RCI["Rust tests workflow<br/>cargo test"]
+モデルで正しいと示した規則と、実装した規則が違っていれば、モデルの証明だけではバグを防げません。そこで Lean から入力と期待結果の組を生成し、同じ入力を TypeScript・Rust に与えます。
 
-  L --> T
-  T --> R
-  L --> V
-  T --> A
-  V --> TS
-  V --> RS
-  R --> FCI
-  V --> FCI
-  A --> FCI
-  TS --> FCI
-  RS --> RCI
+```mermaid
+flowchart TB
+  M["Lean のモデル"] --> P["性質の証明"]
+  M --> V["入力と期待結果を生成"]
+  V --> T["TypeScript と照合"]
+  V --> R["Rust と照合"]
 ```
 
-| generated vector                  | 消費先                           | 目的                                                                   |
-| --------------------------------- | -------------------------------- | ---------------------------------------------------------------------- |
-| `verification-summary-cases.json` | TypeScript summary tests         | Lean summary model と `deriveVerificationSummary` の対応               |
-| `verification-display-cases.json` | shared presentation-policy test  | UI が `verified` を誤表示しないことの drift guard                      |
-| `check-definitions.json`          | TypeScript check-definition test | check ID / category / role / criticality / required 条件の drift guard |
-| `input-commitment-cases.json`     | TypeScript / Rust tests          | canonical order と pre-hash bytes の対応                               |
-| `bitmap-cases.json`               | TypeScript / Rust tests          | LSB-first packing と bitmap behavior の対応                            |
-| `guest-model-cases.json`          | Rust guest tests                 | 抽象 guest model と Rust guest inspection surface の対応               |
+生成するファイルは次の六つです。保存先は `docs/formal/generated-vectors/` です。
 
-`pnpm formal:verify` は Lean build、formal report、generated vectors、audit の freshness、TypeScript の vector-consuming tests、生成 JSON の format check をまとめて実行します。
-Rust 側の vector-consuming tests は `docs/formal/generated-vectors/**` の変更で起動する Rust tests workflow の `cargo test` によって検査します。
-公開 repository snapshot の release workflow でも export 前に Lean workspace を build して `pnpm formal:verify` を実行します。
-そのため、formal artifact が古い、または formal verification が失敗する状態では公開 snapshot を生成できません。
+| ファイル                          | 照合先                                              |
+| --------------------------------- | --------------------------------------------------- |
+| `verification-summary-cases.json` | TypeScript の最終判定                               |
+| `verification-display-cases.json` | TypeScript の共有表示ルール                         |
+| `check-definitions.json`          | チェック ID・分類・役割・必須条件                   |
+| `input-commitment-cases.json`     | TypeScript と Rust の票の順序・ハッシュ前のバイト列 |
+| `bitmap-cases.json`               | TypeScript と Rust のビット配置・関連処理           |
+| `guest-model-cases.json`          | 本番ゲストと処理を共有する Rust の検査経路          |
 
-この接続により、Lean model と実装のどちらが変わっても、追従していない drift を CI 上で検出できます。
+生成元は `formal/Scripts/EmitTestVectors.lean` です。各ファイルの種類、フィールド、モデル上限と実装定数の一致、内容の SHA-256 を消費側で調べ、古い値や別種のデータを受け入れないようにしています。内容のハッシュは、自身のハッシュ欄を除き、キー順を再帰的に揃えた空白なし JSON から計算します。
 
-## 対応付けを支える成果物
+この照合が確認するのは生成ケースの対応です。Rust ゲスト全体や画面描画全体を形式的に証明したことにはなりません。また、SHA-256、RISC Zero、コンパイラーや実行環境の正しさは、このモデルから導く結論ではなく前提です。
 
-前掲の generated vectors と vector-consuming tests に加えて、次の audit artifact と検査を組み込んでいます。
+## 証明と生成物を点検する
 
-- theorem statement hash と generated-vector hash
-- `#print axioms` に基づく theorem dependency audit
-- proof hygiene scan
-- `treeSize <= 1,000,000` と vote count `<= 1,000,000` の explicit guest input bounds、およびそこから導く candidate tally bucket `<= 1,000,000`
+`docs/formal/formal-report.json` に主張と前提を、`formal-audit.json` に定理のハッシュ、公理への依存、証明の点検結果、保存した生成ファイル全体のハッシュを記録します。ファイル全体のハッシュと、前節の JSON 内容のハッシュは計算対象が違います。
 
-## 実行コマンド
+証明に未完成を許す `sorry` や、手書きのプロジェクト固有公理はありません。定理の依存は `#print axioms` で調べます。ビットを取り出す `pack_bits_get_bit` では有限の組み合わせを `native_decide` で計算しており、その生成された判定用公理も依存先として記録します。
 
-| コマンド                    | 目的                                                                      |
-| --------------------------- | ------------------------------------------------------------------------- |
-| `pnpm formal:build`         | Lean workspace を build する                                              |
-| `pnpm formal:report`        | `formal-report.json` を再生成する                                         |
-| `pnpm formal:report:check`  | report が最新か確認する                                                   |
-| `pnpm formal:vectors`       | Lean から generated vectors を再生成する                                  |
-| `pnpm formal:vectors:check` | generated vectors が最新か確認する                                        |
-| `pnpm formal:audit`         | theorem statement / dependency / proof hygiene audit を生成する           |
-| `pnpm formal:audit:check`   | audit artifact が最新か確認する                                           |
-| `pnpm formal:test:ts`       | Lean vector を消費する TypeScript tests を実行する                        |
-| `pnpm formal:verify`        | build、report、vectors、audit、TS tests、format checks をまとめて検証する |
+| コマンド                                            | 行うこと                                       |
+| --------------------------------------------------- | ---------------------------------------------- |
+| `pnpm formal:build`                                 | Lean のビルド                                  |
+| `pnpm formal:report` / `pnpm formal:report:check`   | 主張・前提の出力 / 最新性確認                  |
+| `pnpm formal:vectors` / `pnpm formal:vectors:check` | テストケースの出力 / 最新性確認                |
+| `pnpm formal:audit` / `pnpm formal:audit:check`     | 証明・生成物の点検記録の出力 / 最新性確認      |
+| `pnpm formal:test:ts`                               | TypeScript と生成ケースの照合                  |
+| `pnpm formal:verify`                                | 上記の検査と生成 JSON の整形確認をまとめて実行 |
 
-## 証明していないこと
+Rust の生成ケース照合は Rust テストのワークフローで実行します。公開ソースを作る前にも Lean をビルドして `pnpm formal:verify` を実行するため、生成物が古い状態や照合に失敗する状態では公開処理を進められません。
 
-Lean は次を証明しません。
-
-- SHA-256 の衝突困難性
-- RISC Zero receipt soundness
-- Rust compiler / TypeScript runtime / browser runtime の完全な正しさ
-- AWS runtime behavior
-- React rendering 全体の正しさ
-- 本番選挙システムとしての安全性
-- zkVM guest Rust 実装全体の line-by-line verification
-
-したがって、主張は「投票システム全体を形式検証した」ではありません。
-選択した安全モデルを Lean で証明し、generated vectors と CI drift guard によって TypeScript / Rust 実装との対応を検査しています。
-
-<!-- source: formal/StarkBallotFormal/*.lean, formal/Scripts/EmitFormalReport.lean, formal/Scripts/EmitTestVectors.lean, formal/README.md, docs/formal/README.md, docs/formal/formal-report.json, docs/formal/formal-audit.json, docs/formal/generated-vectors/, package.json -->
+<!-- source: formal/StarkBallotFormal/*.lean, formal/Scripts/EmitFormalReport.lean, formal/Scripts/EmitTestVectors.lean, formal/README.md, docs/formal/README.md, docs/formal/formal-report.json, docs/formal/formal-audit.json, docs/formal/generated-vectors/, packages/zkvm-contract/src/zkvm/formal-vectors.ts, zkvm/contract-core/src/formal_vector_test_support.rs, zkvm/methods/guest/src/tally.rs, scripts/formal/audit-formal.ts, package.json -->

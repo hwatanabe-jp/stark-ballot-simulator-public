@@ -1,20 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { SimpleBulletinBoard } from './simple-bulletin-board';
-import type { RootSnapshot, StoredVoteRecord, VoteData } from '../../types/sessionRecords';
+import type { PreparedVote, RootSnapshot, StoredVoteRecord } from '../../types/sessionRecords';
 import { stageCtVoteWrites, type CtVoteWriteAuthority } from './stagedCtVoteWrite';
+import { asSessionId } from '../../types/identifiers';
 
 const LOG_ID = `0x${'ab'.repeat(32)}`;
 const EXISTING_VOTE_ID = '00000000-0000-4000-8000-000000000001';
 const FIRST_NEW_VOTE_ID = '00000000-0000-4000-8000-000000000002';
 const SECOND_NEW_VOTE_ID = '00000000-0000-4000-8000-000000000003';
 
-function buildVote(voteId: string, commitmentNibble: string): VoteData {
+function buildVote(voteId: string, commitmentNibble: string): PreparedVote {
   return {
     voteId,
     vote: 'A',
     rand: `0x${'11'.repeat(32)}`,
     commit: `0x${commitmentNibble.repeat(64)}`,
-    path: [],
+    timestamp: 50,
   };
 }
 
@@ -40,7 +41,7 @@ function buildAuthority() {
   };
 
   return {
-    sessionId: 'session-stage',
+    sessionId: asSessionId('session-stage'),
     votes: new Map([[0, storedVote]]),
     bulletin,
     bulletinRootHistory: rootHistory,

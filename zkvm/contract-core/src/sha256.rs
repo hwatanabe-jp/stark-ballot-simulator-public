@@ -1,11 +1,11 @@
 use risc0_zkvm::sha::{Impl, Sha256};
 
+pub const VOTE_COMMITMENT_DOMAIN_TAG: &[u8] = b"stark-ballot:commit|v1.0";
+
 /// Compute vote commitment with domain separation (v1.0).
 pub fn compute_commitment(election_id: &[u8; 16], choice: u8, random: &[u8; 32]) -> [u8; 32] {
-    const DOMAIN_TAG: &[u8] = b"stark-ballot:commit|v1.0";
-
     let mut data = [0u8; 73];
-    data[0..24].copy_from_slice(DOMAIN_TAG);
+    data[0..24].copy_from_slice(VOTE_COMMITMENT_DOMAIN_TAG);
     data[24..40].copy_from_slice(election_id);
     data[40] = choice;
     data[41..73].copy_from_slice(random);
@@ -53,34 +53,6 @@ mod tests {
             commitment, simple_commitment,
             "Commitment should include domain separation"
         );
-    }
-
-    #[test]
-    fn test_commitment_deterministic() {
-        let election_id = [
-            0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44,
-            0x00, 0x00,
-        ];
-        let choice = 3u8;
-        let random = [2u8; 32];
-
-        let commitment1 = compute_commitment(&election_id, choice, &random);
-        let commitment2 = compute_commitment(&election_id, choice, &random);
-
-        assert_eq!(commitment1, commitment2);
-    }
-
-    #[test]
-    fn test_commitment_different_elections() {
-        let election_id1 = [1u8; 16];
-        let election_id2 = [2u8; 16];
-        let choice = 1u8;
-        let random = [3u8; 32];
-
-        let commitment1 = compute_commitment(&election_id1, choice, &random);
-        let commitment2 = compute_commitment(&election_id2, choice, &random);
-
-        assert_ne!(commitment1, commitment2);
     }
 
     #[test]

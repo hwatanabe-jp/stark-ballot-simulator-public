@@ -1,9 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@stark-ballot/web/components/ui/Button';
 import { Badge } from '@stark-ballot/web/components/ui/Badge';
 import { Infographic } from '@stark-ballot/web/components/home';
+import { InfographicProblemSolution } from '@stark-ballot/web/components/home/InfographicProblemSolution';
+import { HomeIllustration } from '@stark-ballot/web/components/home/HomeIllustration';
+import '@stark-ballot/web/components/home/Home.css';
 import { useTranslation } from '@stark-ballot/web/hooks';
 import { initializeSession } from '@stark-ballot/web/session';
 import { clearKnowledge, mergeKnowledgeFromApi } from '@stark-ballot/web/knowledge';
@@ -17,34 +20,25 @@ export default function HomePage(): React.ReactElement {
   const router = useAppRouter();
   const { t } = useTranslation();
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [errorKey, setErrorKey] = useState<
+    'errors.sessionLimitExceeded' | 'errors.captchaFailed' | 'errors.generic' | null
+  >(null);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const sessionRequestControllerRef = useRef<AbortController | null>(null);
   const requireSessionTurnstile = isBrowserTurnstileRequiredForAction('session');
 
+  useEffect(() => () => sessionRequestControllerRef.current?.abort(), []);
+
   const handleStart = async () => {
+    if (sessionRequestControllerRef.current || (requireSessionTurnstile && !turnstileToken)) return;
+    const controller = new AbortController();
+    sessionRequestControllerRef.current = controller;
     setIsLoading(true);
-    setError(null);
+    setErrorKey(null);
 
     try {
-      // Create session on server
-      let session;
-      try {
-        session = await createSession(turnstileToken ? { turnstileToken } : {});
-      } catch (requestError) {
-        const errorCode = resolveApiClientErrorCode(requestError);
-        if (errorCode === 'SESSION_LIMIT_EXCEEDED') {
-          setError(t('errors.sessionLimitExceeded'));
-          setIsLoading(false);
-          return;
-        }
-        if (errorCode === 'CAPTCHA_FAILED') {
-          setError(t('errors.captchaFailed'));
-          setTurnstileToken(null);
-          setIsLoading(false);
-          return;
-        }
-        throw requestError;
-      }
+      const session = await createSession(turnstileToken ? { turnstileToken } : {}, { signal: controller.signal });
+      if (controller.signal.aborted) return;
 
       const { sessionId, electionId, capabilityToken, electionConfigHash, logId } = session;
 
@@ -60,47 +54,41 @@ export default function HomePage(): React.ReactElement {
       });
 
       // Save session data to the knowledge store.
-      mergeKnowledgeFromApi('session', { ...session });
+      mergeKnowledgeFromApi(session);
 
       // Navigate to vote page
       router.push('/vote');
     } catch (err) {
-      console.error('Session creation error:', err);
-      setError(t('errors.generic'));
+      if (controller.signal.aborted) return;
+      const errorCode = resolveApiClientErrorCode(err);
+      if (errorCode === 'SESSION_LIMIT_EXCEEDED') {
+        setErrorKey('errors.sessionLimitExceeded');
+      } else if (errorCode === 'CAPTCHA_FAILED') {
+        setErrorKey('errors.captchaFailed');
+        setTurnstileToken(null);
+      } else {
+        console.error('Session creation error:', err);
+        setErrorKey('errors.generic');
+      }
+      sessionRequestControllerRef.current = null;
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="w-full">
-      <section className="w-full px-4 md:px-6 pbs-4 pbe-12">
-        {/* Title + Description (centered, narrow) */}
-        <div className="max-w-2xl mx-auto text-center">
-          {/* Title with Noto Serif JP */}
-          <h1 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold text-ink-900 mb-6 tracking-[var(--tracking-display)] leading-[var(--leading-display)]">
-            {t('pages.home.welcome')}
-          </h1>
-
-          {/* Description */}
-          <p className="font-primary text-lg text-text-secondary leading-relaxed max-w-xl mx-auto">
-            {t('pages.home.description')}
-          </p>
+    <div className="home-page">
+      <div className="home-hero">
+        <div className="home-introduction">
+          <h1>{t('infographic.problemSolution.heading')}</h1>
+          <p>{t('pages.home.description')}</p>
         </div>
-
-        {/* Infographic (centered, compact) */}
-        <div className="max-w-3xl mx-auto mt-10">
-          <Infographic />
-        </div>
-
-        {/* CTA (centered, narrow) */}
-        <div className="max-w-2xl mx-auto mt-10 text-center">
+        <HomeIllustration />
+        <div className="home-start">
           {requireSessionTurnstile && (
-            <div className="max-w-sm mx-auto mb-6">
+            <div className="home-turnstile">
               <TurnstileWidget onTokenChange={setTurnstileToken} action="session" disabled={isLoading} />
             </div>
           )}
-
-          {/* CTA Button with vermillion stamp style */}
           <Button
             variant="verify"
             onClick={() => {
@@ -108,21 +96,20 @@ export default function HomePage(): React.ReactElement {
             }}
             disabled={isLoading || (requireSessionTurnstile && !turnstileToken)}
             loading={isLoading}
-            className="px-10 py-4 text-lg"
           >
             {isLoading ? t('common.loading') : t('common.start')}
           </Button>
-
-          {/* Error Display */}
-          {error && (
-            <div className="mt-6 animate-fade-in">
+          {errorKey && (
+            <div className="home-error">
               <Badge variant="error" size="medium">
-                {error}
+                {t(errorKey)}
               </Badge>
             </div>
           )}
         </div>
-      </section>
+      </div>
+      <InfographicProblemSolution />
+      <Infographic />
     </div>
   );
 }

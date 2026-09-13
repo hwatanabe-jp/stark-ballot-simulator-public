@@ -27,21 +27,9 @@ resource "aws_codepipeline" "development_toolchain_release" {
   }
 
   variable {
-    name          = "ExistingToolchainArtifactKey"
+    name          = "ExistingToolchainRecordKey"
     default_value = "__NOT_APPLICABLE__"
-    description   = "Retained immutable Toolchain artifact record key when ToolchainSelection is existing."
-  }
-
-  variable {
-    name          = "ExistingToolchainArtifactVersionId"
-    default_value = "__NOT_APPLICABLE__"
-    description   = "Retained immutable Toolchain artifact record S3 VersionId when ToolchainSelection is existing."
-  }
-
-  variable {
-    name          = "ExistingToolchainArtifactSha256"
-    default_value = "__NOT_APPLICABLE__"
-    description   = "Retained immutable Toolchain artifact record body checksum when ToolchainSelection is existing."
+    description   = "Retained immutable Toolchain candidate ledger record key when ToolchainSelection is existing."
   }
 
   stage {
@@ -79,7 +67,7 @@ resource "aws_codepipeline" "development_toolchain_release" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve the candidate action for the selected mode after verifying its control source and parameters. build creates a new image from this execution's exact source revision; existing performs retained-artifact resolution by exact key, VersionId, and body SHA-256 with no Docker build, image push, ECR mutation, or new scan. Promotion reissues the validated image authority as a current semantic record while preserving its original build provenance. This approval is required in both modes because the shared candidate project is privileged. Promotion to the accepted toolchain channel still requires ApproveToolchainPromotion after candidate evidence exists."
+        CustomData = "Approve the candidate action for the selected mode after verifying its control source and parameters. build creates a new image from this execution's exact source revision; existing performs retained-artifact resolution through one exact candidate ledger record key with no Docker build, image push, ECR mutation, or new scan. Promotion reissues the validated image authority as a current semantic record while preserving its original build provenance. This approval is required in both modes because the shared candidate project is privileged. Promotion to the accepted toolchain channel still requires ApproveToolchainPromotion after candidate evidence exists."
       }
     }
   }
@@ -124,18 +112,8 @@ resource "aws_codepipeline" "development_toolchain_release" {
             type  = "PLAINTEXT"
           },
           {
-            name  = "EXISTING_TOOLCHAIN_ARTIFACT_KEY"
-            value = "#{variables.ExistingToolchainArtifactKey}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "EXISTING_TOOLCHAIN_ARTIFACT_VERSION_ID"
-            value = "#{variables.ExistingToolchainArtifactVersionId}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "EXISTING_TOOLCHAIN_ARTIFACT_SHA256"
-            value = "#{variables.ExistingToolchainArtifactSha256}"
+            name  = "EXISTING_TOOLCHAIN_RECORD_KEY"
+            value = "#{variables.ExistingToolchainRecordKey}"
             type  = "PLAINTEXT"
           },
         ])
@@ -156,7 +134,7 @@ resource "aws_codepipeline" "development_toolchain_release" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve only after reviewing ToolchainCandidateOutput/image-info.json. Confirm selection mode and control source; for build, confirm candidate source; for existing, confirm original source plus exact artifact key, VersionId, and body SHA-256. In both modes confirm the digest-pinned image and warn-only scan result. Toolchain findings are accepted and non-blocking for this PoC; no waiver, remediation, signature, or signature-verification review is required. This promotes only the selected Toolchain authority, not Prover or App."
+        CustomData = "Approve only after reviewing ToolchainCandidateOutput/image-info.json. Confirm selection mode and control source; for build, confirm candidate source; for existing, confirm original source plus the exact candidate ledger record key. In both modes confirm the digest-pinned image and warn-only scan result. Toolchain findings are accepted and non-blocking for this PoC; no waiver, remediation, signature, or signature-verification review is required. This promotes only the selected Toolchain authority, not Prover or App."
       }
     }
   }
@@ -201,18 +179,8 @@ resource "aws_codepipeline" "development_toolchain_release" {
             type  = "PLAINTEXT"
           },
           {
-            name  = "EXISTING_TOOLCHAIN_ARTIFACT_KEY"
-            value = "#{variables.ExistingToolchainArtifactKey}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "EXISTING_TOOLCHAIN_ARTIFACT_VERSION_ID"
-            value = "#{variables.ExistingToolchainArtifactVersionId}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "EXISTING_TOOLCHAIN_ARTIFACT_SHA256"
-            value = "#{variables.ExistingToolchainArtifactSha256}"
+            name  = "EXISTING_TOOLCHAIN_RECORD_KEY"
+            value = "#{variables.ExistingToolchainRecordKey}"
             type  = "PLAINTEXT"
           },
         ])

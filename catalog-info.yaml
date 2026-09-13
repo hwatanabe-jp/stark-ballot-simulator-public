@@ -1,0 +1,152 @@
+apiVersion: backstage.io/v1alpha1
+kind: User
+metadata:
+  name: hwatanabe-jp
+  namespace: default
+  description: Maintainer of STARK Ballot Simulator.
+  annotations:
+    github.com/user-login: hwatanabe-jp
+  tags:
+    - guest-visible
+spec:
+  memberOf: []
+---
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: stark-ballot-simulator
+  namespace: default
+  description: Portfolio/demo system for end-to-end verifiable voting with fail-closed verification presentation.
+  annotations:
+    backstage.io/techdocs-ref: dir:./techdocs
+    github.com/project-slug: hwatanabe-jp/stark-ballot-simulator-public
+  tags:
+    - guest-visible
+spec:
+  owner: user:default/hwatanabe-jp
+  type: product
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: web
+  namespace: default
+  description: Vite and React browser interface for voting, results, and verification.
+  annotations:
+    github.com/project-slug: hwatanabe-jp/stark-ballot-simulator-public
+  tags:
+    - guest-visible
+spec:
+  type: website
+  lifecycle: experimental
+  owner: user:default/hwatanabe-jp
+  system: system:default/stark-ballot-simulator
+  consumesApis:
+    - api:default/stark-ballot-api
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: api
+  namespace: default
+  description: Hono API for session, vote, finalization, artifact, and verification flows.
+  annotations:
+    github.com/project-slug: hwatanabe-jp/stark-ballot-simulator-public
+  tags:
+    - guest-visible
+spec:
+  type: service
+  lifecycle: experimental
+  owner: user:default/hwatanabe-jp
+  system: system:default/stark-ballot-simulator
+  providesApis:
+    - api:default/stark-ballot-api
+  dependsOn:
+    - component:default/prover
+    - component:default/release-ledger
+    - component:default/verifier-service
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: prover
+  namespace: default
+  description: RISC Zero host and asynchronous prover runtime that generate tally proof artifacts.
+  annotations:
+    github.com/project-slug: hwatanabe-jp/stark-ballot-simulator-public
+  tags:
+    - guest-visible
+spec:
+  type: service
+  lifecycle: experimental
+  owner: user:default/hwatanabe-jp
+  system: system:default/stark-ballot-simulator
+  dependsOn:
+    - component:default/release-ledger
+    - component:default/zkvm-guest
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: release-ledger
+  namespace: default
+  description: Content-addressed candidate and release authority with create-only records and compare-and-swap accepted pointers.
+  annotations:
+    github.com/project-slug: hwatanabe-jp/stark-ballot-simulator-public
+  tags:
+    - guest-visible
+spec:
+  type: library
+  lifecycle: experimental
+  owner: user:default/hwatanabe-jp
+  system: system:default/stark-ballot-simulator
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: verifier-service
+  namespace: default
+  description: Standalone Rust receipt verifier used locally and by the verification worker.
+  annotations:
+    github.com/project-slug: hwatanabe-jp/stark-ballot-simulator-public
+  tags:
+    - guest-visible
+spec:
+  type: service
+  lifecycle: experimental
+  owner: user:default/hwatanabe-jp
+  system: system:default/stark-ballot-simulator
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: zkvm-guest
+  namespace: default
+  description: RISC Zero guest method that validates admitted vote evidence and emits the tally journal.
+  annotations:
+    github.com/project-slug: hwatanabe-jp/stark-ballot-simulator-public
+  tags:
+    - guest-visible
+spec:
+  type: library
+  lifecycle: experimental
+  owner: user:default/hwatanabe-jp
+  system: system:default/stark-ballot-simulator
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: stark-ballot-api
+  namespace: default
+  description: Generated guest-safe reference for the current Hono routes; protected operations still require documented credentials.
+  annotations:
+    github.com/project-slug: hwatanabe-jp/stark-ballot-simulator-public
+  tags:
+    - guest-visible
+spec:
+  type: openapi
+  lifecycle: experimental
+  owner: user:default/hwatanabe-jp
+  system: system:default/stark-ballot-simulator
+  definition:
+    $text: ./openapi/stark-ballot-api.openapi.json

@@ -18,7 +18,8 @@
       "sthDigest": "0x1111111111111111111111111111111111111111111111111111111111111111",
       "includedBitmapRoot": "0x2222222222222222222222222222222222222222222222222222222222222222",
       "inputCommitment": "0x3333333333333333333333333333333333333333333333333333333333333333",
-      "seenIndicesCount": 63
+      "seenIndicesCount": 63,
+      "seenBitmapRoot": "0x2222222222222222222222222222222222222222222222222222222222222222"
     },
     "presentation": {
       "tally": {
@@ -47,14 +48,14 @@
       },
       "policy": {
         "summary": {
-          "status": "votes_excluded",
+          "status": "votes_excluded_unknown",
           "tone": "failed",
-          "messageKey": "pages.verify.resultSummary.votesMissingSub"
+          "messageKey": "pages.verify.resultSummary.votesMissingUnknownUserSub"
         },
         "stageStatuses": {
-          "cast_as_intended": "success",
-          "recorded_as_cast": "failed",
-          "counted_as_recorded": "success",
+          "cast_as_intended": "not_run",
+          "recorded_as_cast": "success",
+          "counted_as_recorded": "failed",
           "stark_verification": "not_run"
         },
         "evidenceFullyVerified": false,
@@ -68,35 +69,183 @@
         "publishedTallyMismatch": false,
         "devModeEvidence": false,
         "missingEvidence": false,
-        "explanationKey": "pages.verify.resultSummary.votesMissingSub"
+        "explanationKey": "pages.verify.resultSummary.votesMissingUnknownUserSub"
       }
     },
     "verifierResult": {
-      "status": "not_run",
-      "report": {
-        "status": "not_run",
-        "duration_ms": 0,
-        "errors": []
-      }
+      "status": "not_run"
     },
     "verification": {
-      "checks": [],
-      "steps": [
+      "checks": [
         {
-          "id": "cast_as_intended",
-          "status": "success",
-          "inputs": ["electionId", "user.choice", "user.random", "user.commitment", "user.voteId"]
+          "id": "cast_receipt_present",
+          "status": "not_run",
+          "evidence": "local",
+          "inputs": ["user.voteId", "user.commitment"]
         },
         {
-          "id": "recorded_as_cast",
-          "status": "failed",
-          "error": "Missing bot votes",
+          "id": "cast_choice_range",
+          "status": "not_run",
+          "evidence": "local",
+          "inputs": ["user.choice"]
+        },
+        {
+          "id": "cast_random_format",
+          "status": "not_run",
+          "evidence": "local",
+          "inputs": ["user.random"]
+        },
+        {
+          "id": "cast_commitment_match",
+          "status": "not_run",
+          "evidence": "local",
+          "inputs": ["electionId", "user.choice", "user.random", "user.commitment"]
+        },
+        {
+          "id": "recorded_commitment_in_bulletin",
+          "status": "success",
+          "evidence": "public",
+          "inputs": ["user.commitment", "user.voteReceipt", "user.merklePath"],
+          "derivedFrom": "recorded_inclusion_proof"
+        },
+        {
+          "id": "recorded_index_in_range",
+          "status": "success",
+          "evidence": "public",
+          "inputs": ["user.voteReceipt", "treeSize"]
+        },
+        {
+          "id": "recorded_root_at_cast_consistent",
+          "status": "success",
+          "evidence": "public",
+          "inputs": ["user.voteReceipt", "user.merklePath", "bulletinRoot", "treeSize"],
+          "derivedFrom": "recorded_consistency_proof"
+        },
+        {
+          "id": "recorded_inclusion_proof",
+          "status": "success",
+          "evidence": "public",
+          "inputs": ["user.commitment", "user.voteReceipt", "user.merklePath"]
+        },
+        {
+          "id": "recorded_consistency_proof",
+          "status": "success",
+          "evidence": "public",
           "inputs": ["user.voteReceipt", "user.merklePath", "bulletinRoot", "treeSize"]
         },
         {
-          "id": "counted_as_recorded",
+          "id": "recorded_sth_third_party",
           "status": "success",
-          "inputs": ["tally.counts", "tally.totalVotes", "sthDigest", "includedBitmapRoot", "inputCommitment"]
+          "evidence": "public",
+          "inputs": ["sthDigest"]
+        },
+        {
+          "id": "counted_input_sanity",
+          "status": "success",
+          "evidence": "public",
+          "inputs": ["proofBundleStatus", "bulletinRoot", "treeSize"]
+        },
+        {
+          "id": "counted_unique_indices",
+          "status": "success",
+          "evidence": "public",
+          "inputs": ["proofBundleStatus"]
+        },
+        {
+          "id": "counted_unique_commitments",
+          "status": "success",
+          "evidence": "public",
+          "inputs": ["proofBundleStatus"]
+        },
+        {
+          "id": "counted_tally_consistent",
+          "status": "not_run",
+          "evidence": "zk",
+          "inputs": ["tally.counts", "tally.totalVotes"]
+        },
+        {
+          "id": "counted_missing_indices_zero",
+          "status": "failed",
+          "evidence": "zk",
+          "inputs": ["missingSlots", "invalidPresentedSlots"]
+        },
+        {
+          "id": "counted_expected_vs_tree_size",
+          "status": "not_run",
+          "evidence": "zk",
+          "inputs": ["totalExpected", "treeSize"]
+        },
+        {
+          "id": "counted_election_manifest_consistent",
+          "status": "not_run",
+          "evidence": "public",
+          "inputs": ["electionManifest", "electionId", "electionConfigHash", "proofBundleStatus"]
+        },
+        {
+          "id": "counted_close_statement_consistent",
+          "status": "not_run",
+          "evidence": "public",
+          "inputs": ["closeStatement", "logId", "timestamp", "sthDigest", "bulletinRoot", "treeSize"]
+        },
+        {
+          "id": "counted_my_vote_included",
+          "status": "not_run",
+          "evidence": "zk",
+          "inputs": ["includedBitmapRoot", "user.voteReceipt"]
+        },
+        {
+          "id": "counted_input_commitment_match",
+          "status": "not_run",
+          "evidence": "public",
+          "inputs": ["proofBundleStatus", "inputCommitment"]
+        },
+        {
+          "id": "stark_image_id_match",
+          "status": "not_run",
+          "evidence": "zk",
+          "inputs": ["imageId"]
+        },
+        {
+          "id": "stark_receipt_verify",
+          "status": "not_run",
+          "evidence": "zk",
+          "inputs": ["proofBundleStatus"]
+        }
+      ],
+      "steps": [
+        {
+          "id": "cast_as_intended",
+          "status": "not_run",
+          "inputs": ["user.voteId", "user.commitment", "user.choice", "user.random", "electionId"]
+        },
+        {
+          "id": "recorded_as_cast",
+          "status": "success",
+          "inputs": ["user.commitment", "user.voteReceipt", "user.merklePath", "treeSize", "bulletinRoot", "sthDigest"]
+        },
+        {
+          "id": "counted_as_recorded",
+          "status": "failed",
+          "inputs": [
+            "proofBundleStatus",
+            "bulletinRoot",
+            "treeSize",
+            "tally.counts",
+            "tally.totalVotes",
+            "missingSlots",
+            "invalidPresentedSlots",
+            "totalExpected",
+            "electionManifest",
+            "electionId",
+            "electionConfigHash",
+            "closeStatement",
+            "logId",
+            "timestamp",
+            "sthDigest",
+            "includedBitmapRoot",
+            "user.voteReceipt",
+            "inputCommitment"
+          ]
         },
         {
           "id": "stark_verification",
@@ -111,7 +260,7 @@
         "voteId": "00000000-0000-4000-8000-000000000001",
         "commitment": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
         "bulletinIndex": 0,
-        "bulletinRootAtCast": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "bulletinRootAtCast": "0x2a3fd21a0812f5f78a88c1d5cdce5d8e366a85095830629b5fb674c593cbf3cc",
         "castAtMs": 1730000000000,
         "inputCommitment": "0x3333333333333333333333333333333333333333333333333333333333333333"
       },
@@ -120,12 +269,9 @@
         "voteId": "00000000-0000-4000-8000-000000000001",
         "proof": {
           "leafIndex": 0,
-          "treeSize": 64,
-          "merklePath": [
-            "0x1111111111111111111111111111111111111111111111111111111111111111",
-            "0x2222222222222222222222222222222222222222222222222222222222222222"
-          ],
-          "bulletinRootAtCast": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          "treeSize": 1,
+          "merklePath": [],
+          "bulletinRootAtCast": "0x2a3fd21a0812f5f78a88c1d5cdce5d8e366a85095830629b5fb674c593cbf3cc"
         }
       }
     },

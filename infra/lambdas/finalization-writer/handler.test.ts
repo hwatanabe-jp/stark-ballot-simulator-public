@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RuntimeConfigValidationError } from '@stark-ballot/runtime-config/env/configValidationError';
-import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/__tests__/runtimeProfileFixtures';
+import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { TransientBundleRestoreError } from '@stark-ballot/aws-adapters/aws/bundle-restore';
+import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
+import { asSessionId } from '@stark-ballot/domain/types/identifiers';
 
 const emitCanonicalEventMock = vi.hoisted(() => vi.fn());
 
@@ -19,7 +21,6 @@ vi.mock('@stark-ballot/runtime-config/env/validate', () => ({
 }));
 
 vi.mock('@stark-ballot/runtime-config/env/observability', () => ({
-  collectInvalidTargetObservabilityEnvNames: vi.fn(() => []),
   validateTargetObservabilityEnv: vi.fn(),
 }));
 
@@ -191,8 +192,8 @@ describe('target finalization-writer handler', () => {
   });
 
   it('marks successful prover callbacks failed when durable bundle restoration fails', async () => {
-    const sessionId = '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b';
-    const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
+    const sessionId = asSessionId('2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b');
+    const finalizationId = asFinalizationId('01HVN5WA1CEH94868G90QGJ7HX');
     const queuedAtMs = 1_700_000_000_000;
     const failedPayload = {
       sessionId,
@@ -263,8 +264,8 @@ describe('target finalization-writer handler', () => {
   });
 
   it('rethrows transient bundle restoration failures for the Step Functions retry path', async () => {
-    const sessionId = '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b';
-    const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
+    const sessionId = asSessionId('2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b');
+    const finalizationId = asFinalizationId('01HVN5WA1CEH94868G90QGJ7HX');
     const privateDetail = 's3://private-bucket/sessions/private-session/bundle.zip';
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     vi.mocked(artifactsModule.buildFinalizationResultFromS3Bundle).mockRejectedValue(new TransientBundleRestoreError());
@@ -312,8 +313,8 @@ describe('target finalization-writer handler', () => {
   });
 
   it('rejects store update failures instead of returning an error payload', async () => {
-    const sessionId = '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b';
-    const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
+    const sessionId = asSessionId('2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b');
+    const finalizationId = asFinalizationId('01HVN5WA1CEH94868G90QGJ7HX');
     vi.mocked(admissionModule.parseFinalizationStateUpdatePayload).mockReturnValue({
       sessionId,
       finalizationId,
@@ -511,8 +512,8 @@ describe('target finalization-writer handler', () => {
   });
 
   it('preserves Step Functions timeout identity for timed-out callbacks', async () => {
-    const sessionId = '2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b';
-    const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
+    const sessionId = asSessionId('2d8a4d02-1a56-4e8a-98f1-e8eb7a482a4b');
+    const finalizationId = asFinalizationId('01HVN5WA1CEH94868G90QGJ7HX');
     const timeoutAtIso = '2026-06-12T00:00:00.000Z';
     const timeoutPayload = {
       sessionId,

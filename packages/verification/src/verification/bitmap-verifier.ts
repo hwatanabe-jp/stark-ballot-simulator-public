@@ -26,8 +26,8 @@ import {
 import {
   calculateBitmapBitOffset,
   calculateBitmapLeafIndex,
-  extractBitFromChunkHex,
-} from '@stark-ballot/zkvm-contract/zkvm/bitmap';
+  extractBitFromBitmapChunkHex,
+} from '@stark-ballot/zkvm-contract/zkvm/bitmap-core';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 /**
@@ -91,7 +91,7 @@ export function calculateBitOffsetClient(bitIndex: number): number {
  * @returns The bit value (true = 1, false = 0)
  */
 export function extractBitFromChunk(chunkHex: string, bitOffset: number): boolean {
-  return extractBitFromChunkHex(chunkHex, bitOffset);
+  return extractBitFromBitmapChunkHex(chunkHex, bitOffset);
 }
 
 /**

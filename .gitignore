@@ -41,6 +41,7 @@ zkvm/test-data/test-integration.json
 # Test coverage
 coverage/
 .nyc_output/
+.vitest/
 
 # Package manager logs
 npm-debug.log*

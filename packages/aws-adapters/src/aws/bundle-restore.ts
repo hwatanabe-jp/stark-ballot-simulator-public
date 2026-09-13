@@ -16,8 +16,9 @@ import { readZipEntriesFromBuffer } from '@stark-ballot/node-adapters/zip';
 import {
   parseIncludedBitmapArtifact,
   type IncludedBitmapArtifact,
-} from '@stark-ballot/verification/included-bitmap-artifact';
-import { parseSeenBitmapArtifact, type SeenBitmapArtifact } from '@stark-ballot/verification/seen-bitmap-artifact';
+  parseSeenBitmapArtifact,
+  type SeenBitmapArtifact,
+} from '@stark-ballot/zkvm-contract/zkvm/bitmap-artifacts';
 import {
   parseSupportedPublicInputArtifact,
   type SupportedPublicInputArtifact,

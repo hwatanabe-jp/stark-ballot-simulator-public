@@ -63,7 +63,10 @@ export interface OpsLedgerResult {
 }
 
 type OpsLedgerEventType =
-  'alarm_state_changed' | 'ecs_task_stopped' | 'pipeline_execution_changed' | 'deployment_accepted';
+  | 'alarm_state_changed'
+  | 'ecs_task_stopped'
+  | 'pipeline_execution_changed'
+  | 'deployment_accepted';
 
 interface NormalizedOpsLedgerEvent {
   ts: string;

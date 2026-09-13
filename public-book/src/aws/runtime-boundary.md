@@ -1,110 +1,53 @@
 <a id="aws-runtime-boundary"></a>
 
-# AWS runtime 境界
+# ブラウザから AWS へ入る
 
-このページは、AWS 章で前提にする公開仕様上の runtime 境界を定義します。
-ここでいう runtime は、ブラウザから投票、集計、検証を実行するための target 構成です。
-扱わない範囲は末尾の [このページで扱わないもの](#このページで扱わないもの) にまとめます。
+本番環境（main）では、利用者はページを開くときも投票するときも同じ公開ホスト名へ接続し、Cloudflare を経由して CloudFront へ入ります。CloudFront は静的ファイルを S3 から配信し、`/api/*` の要求を API Gateway へ転送します。S3 への読み取りは CloudFront の OAC（Origin Access Control）で許可し、バケットを直接公開しません。ブラウザは保存先のバケットや内部のワーカーを選びません。
 
-## Semantic runtime profiles
+```mermaid
+flowchart TB
+  B["ブラウザ"] --> F["Cloudflare"]
+  F -->|本番の入口認証| C["CloudFront"]
+  C -->|ページ・静的ファイル| S["非公開S3"]
+  C -->|/api/*| G["API Gateway"]
+  G --> A["public-api Lambda"]
+```
 
-server は `RUNTIME_PROFILE`、browser build は `VITE_RUNTIME_PROFILE` で実行意図を
-一度だけ選びます。server resolver は adapter construction より前に profile を解決し、
-store、proof evidence、finalization、artifact backend、rate limit、Turnstile posture
-の混在を拒否します。
+拡張子のない画面URLは `index.html` へ解決し、その後の画面遷移を React Router が処理します。API Gateway の先では、Hono がルート定義に従ってハンドラーを呼び出します。外部向けのパスと応答形式は `packages/api-contract/src/routes/inventory.ts` が定義し、`apps/api/src/server/api/routes/definitions.ts` が実行環境へ接続します。
 
-| Profile                     | Store  | Proof evidence | Finalization | Artifact | 主な用途                                      |
-| --------------------------- | ------ | -------------- | ------------ | -------- | --------------------------------------------- |
-| `local-demo`                | memory | mock           | sync         | local    | Vite browser mock API と高速 UI 開発          |
-| `static-mock-e2e`           | file   | mock           | sync         | local    | production-build static Hono / Playwright E2E |
-| `local-proof-development`   | memory | development    | sync         | local    | Rust host 接続を使う fake receipt smoke       |
-| `local-proof-production`    | memory | production     | sync         | local    | local production STARK proof                  |
-| `target-aws-async`          | Dynamo | production     | async        | S3       | Lambda/SQS/Step Functions/ECS target runtime  |
-| `target-aws-async-quiesced` | Dynamo | production     | async        | S3       | develop recovery 時の public admission 封鎖   |
+## 入口の許可と一票の許可
 
-target profile は production proof、DynamoDB、S3、async orchestration、Dynamo
-rate limit、bypass 不可を一体として選びます。quiesced profile は develop recovery
-専用で browser public projection には公開しません。secret 値と外部 resource identifier
-は profile 名に埋め込まず、target runtime の参照入力として別に検証します。
+本番の経路には二つの認証があります。CloudFront は、ページ・静的ファイル・API のいずれでも、公開ホスト名と Cloudflare が付ける専用トークンを確認し、入口の迂回を拒否します。トークンはハッシュで照合し、転送前に取り除きます。さらに CloudFront は API へ専用の origin-verification header を付け、API はその値が欠落・不一致なら拒否します。API Gateway の直接URLも、この確認を通過しなければ利用できません。
 
-## 公開仕様として扱う境界
+利用者の IP も、この認証済み経路を前提に扱います。CloudFront は単一の `CF-Connecting-IP` があり、形式条件を満たすことを確認します。API は `TRUSTED_PROXY=cloudflare` でその値を有効な IPv4 / IPv6 アドレスとして検証し、欠落・不正な値を別の転送ヘッダーやプロキシの IP で補いません。
 
-### Frontend
+main では公開セッションの作成時に、サーバーで Turnstile を検証します。token がない場合、検証に失敗した場合、用途やホスト名が一致しない場合は作成しません。
 
-ブラウザアプリケーションは Vite / React Router で生成された静的 frontend です。
-ビルド成果物は CloudFront から配信され、origin は private S3 bucket です。
-S3 frontend origin は直接公開せず、CloudFront が静的 asset と browser route fallback の入口になります。
+開発環境（develop）は Cloudflare を経由せず、CloudFront の署名付き Cookie で運用者向けに入口を制限します。対象はページ、静的ファイル、`/api`、`/api/*` です。CloudFront へ登録するのは公開鍵だけで、署名用の秘密鍵は KMS 内に残ります。この Cookie による制限は main にはありません。
 
-ブラウザからの API 呼び出しは、通常 same-origin の `/api/*` として CloudFront に送られます。
-CloudFront は静的 asset を S3 origin へ、`/api/*` を API Gateway origin へ routing します。
-これにより、frontend と API の公開入口は同じ origin 上に投影されます。
+どちらの環境でも、特定のセッションを操作する権限は別に確かめます。セッションに属する API は、URL の `sessionId` と `X-Session-Capability` を照合します。入口を通過しても、別の人のセッションを操作できるわけではありません。各ルートでは、必要な capability、Turnstile、レート制限、入力検証を定められた順序で適用します。
 
-Develop target では、静的 frontend と API の両方を含む CloudFront behavior を operator / tester 向けの signed-cookie gate で保護します。
-署名用の秘密鍵は KMS 内で管理し、対応する公開鍵だけを CloudFront trusted key group に登録します。
-この gate は環境全体への入口を制限するもので、session-scoped な capability token の代わりにはなりません。
+証拠のダウンロードにも同じセッション権限が必要です。「公開可能なバンドル」は再配布できる内容の分類であり、保存バケットを誰でも読めるという意味ではありません。ブラウザと CLI は capability で保護された API から取得し、S3 の直接URLや署名付きURLを通常の取得経路にしません。具体的な配布条件は[公開境界](../verification/public-boundary.md)に定義しています。
 
-### API
+## 実行環境を一組で選ぶ
 
-API Gateway は `/api/*` を受け取り、Lambda 上の Hono runtime adapter に渡します。
-実際の wire-level API surface は `packages/api-contract/src/routes/inventory.ts` が正準です。
-`apps/api/src/server/api/routes/definitions.ts` はその contract を runtime mode 別に投影し、Hono は
-contract で定義された route と handler を AWS runtime に接続します。
+ローカルで画面を試すときに本物の証明生成を待つ必要はありません。ただし、模擬証拠を AWS の証明と取り違えないように、保存方式や証明方式を独立したフラグで混ぜず、実行プロファイルを一つ選びます。
 
-Target runtime では、CloudFront が API origin への転送時に origin-verification header を付与し、Hono はその値が欠落または不一致のリクエストを拒否します。
-したがって、API Gateway の直接 URL は通常の browser / CLI contract ではなく、認可された CloudFront origin path が外側の admission boundary です。
+サーバーは `RUNTIME_PROFILE`、ブラウザのビルドは `VITE_RUNTIME_PROFILE` を使います。サーバーはアダプターを作る前に選択を解決し、保存先、証明方式、集計方式、証拠配信、レート制限、Turnstile の設定を一組として検証・固定します。
 
-その内側で、session-scoped な現行 route は path の `sessionId` と `X-Session-Capability` を照合します（対象 route と header の契約は [API リファレンス > セッション capability](../api/endpoints.md#セッション-capability)）。
+<a id="semantic-runtime-profiles"></a>
 
-### Data store
+| プロファイル                | 保存先   | 証明の種類         | 集計・証拠保存                                             |
+| --------------------------- | -------- | ------------------ | ---------------------------------------------------------- |
+| `local-demo`                | メモリ   | 模擬証拠           | 同期・ローカル。ブラウザの模擬APIで画面を試す              |
+| `static-mock-e2e`           | ファイル | 模擬証拠           | 同期・ローカル。静的ビルドと Hono で E2E を行う            |
+| `local-proof-development`   | メモリ   | 開発用の偽レシート | 同期・ローカル。Rust host との接続を確かめる               |
+| `local-proof-production`    | メモリ   | 本物の STARK 証明  | 同期・ローカル                                             |
+| `target-aws-async`          | DynamoDB | 本物の STARK 証明  | 非同期・S3                                                 |
+| `target-aws-async-quiesced` | DynamoDB | 本物の STARK 証明  | 非同期・S3。develop の復旧時に新規公開セッションを拒否する |
 
-DynamoDB は session、vote、finalization state、verification run state、rate-limit state、prover semaphore state などの runtime state を保持します。
-ブラウザが DynamoDB に直接アクセスする経路はありません。
-API Lambda と worker Lambda が、それぞれの IAM role に基づく最小権限で DynamoDB を読み書きします。
+AWS 用プロファイルは DynamoDB、S3、非同期処理、DynamoDB のレート制限、Turnstile の迂回禁止をまとめて選びます。模擬証拠や開発用レシートへ切り替えることはできません。休止用の `target-aws-async-quiesced` はサーバー専用で、ブラウザには対応する値を公開しません。復旧時のキュー消費停止は、さらに[Terraform の復旧段階](terraform.md#dynamodb-recovery-selection)で制御します。
 
-### Async prover
+AWS のデプロイ先は `RUNTIME_DEPLOYMENT_ENV=develop|main` で指定し、アカウント、リージョン、テーブル、キューなどの識別子を別途検証します。秘密値はプロファイルへ直接渡さず、許可された参照先から解決します。参照を解決する処理も、最初に確定したアカウント・リージョン・環境に固定されます。
 
-長時間かかる STARK 証明生成は、非同期 runtime に分離されます。
-非同期モードの `POST /api/sessions/:sessionId/finalizations` は work item を SQS に登録します。
-Step Functions は署名確認や concurrency semaphore などの gate を通過した場合だけ ECS Fargate task を起動し、zkVM host が証明と公開監査用 artifact を生成します。
-生成結果は finalization-writer Lambda が finalization record に反映し、ブラウザは
-`GET /api/sessions/:sessionId/finalizations/current` を capability 付きでポーリングします。
-パイプラインの詳細は [非同期プローバー](async-prover.md) を参照してください。
-
-### Verification worker
-
-Target runtime の `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification` は、
-path と session capability、current succeeded finalization、finalization-scoped な bundle locator、
-expected Image ID を確認したうえで verification work を durable queue に登録します。
-`verification-worker` Lambda は private S3 bucket から `bundle.zip` を取得して
-`verifier-service` で STARK レシートを検証します。検証結果は
-`sessionId` と `finalizationId` で scope された verification result record に、S3 の
-bundle/report locator は分離された AWS delivery metadata に保存されます。
-ブラウザは通常の API flow から検証状態を取得し、worker や S3 に直接アクセスしません（検証内容は [検証サービス](../zkvm/verifier-service.md) を参照）。
-
-### Proof artifacts
-
-Proof artifact storage は private S3 bucket です。
-保護対象 artifact を public `bundle.zip` に含めない分類と除外リストは、[公開境界](../verification/public-boundary.md) に従います。
-`bundle.zip` と report（`verification.json`）の通常配信は capability 保護 API 経由で、raw S3 URL や presigned URL は通常の browser / CLI contract ではありません（取得経路とアクセスポリシーは [公開境界 > bundle と report の取得経路](../verification/public-boundary.md#bundle-と-report-の取得経路)）。
-
-## このページで扱わないもの
-
-この runtime boundary は公開仕様としての責務分担に限定します。
-次の情報は扱いません。
-
-- AWS account ID、具体的な ARN、bucket 名、secret 名
-- secret / config handoff の手順や証跡
-- post-merge Plan 02 / Plan 03 の完了条件や blocking status
-- production DNS cutover の進捗
-- CodePipeline / CodeBuild の詳細な承認証跡
-- legacy AWS account deletion の状態
-
-## 関連する章
-
-- [現行構成とサービス一覧](design-and-services.md)：AWS service ごとの責務
-- [トポロジー](topology.md)：CloudFront、API Gateway、Lambda、DynamoDB、S3、SQS、Step Functions、ECS の通信経路
-- [非同期プローバー](async-prover.md)：SQS / Step Functions / ECS Fargate による証明生成
-- [可観測性設計](observability.md)：runtime を横断する構造化ログ、検出、相関、通知境界
-- [バンドル構造](../verification/bundle-structure.md)：`bundle.zip` と private artifact の境界
-
-<!-- source: packages/runtime-config/src/env/runtimeProfile.ts, packages/api-contract/src/routes/inventory.ts, apps/api/src/server/api/handlers/verificationRun.ts, apps/api/src/server/api/handlers/verificationBundles.ts, infra/lambdas/verification-worker/handler.ts, public-book/src/aws/async-prover.md, public-book/src/verification/bundle-structure.md -->
+<!-- source: packages/runtime-config/src/env/runtimeProfile.ts, packages/runtime-config/src/env/public-runtime-config.ts, packages/api-contract/src/routes/inventory.ts, apps/api/src/server/api/routes/definitions.ts, apps/api/src/server/api/security/turnstile.ts, infra/terraform/app/frontend_static.tf, infra/terraform/app/frontend-viewer-request.test.ts, infra/terraform/app/target_lambdas.tf -->

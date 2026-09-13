@@ -22,12 +22,82 @@ locals {
   foundation_image_signing_authority_objects_arn = (
     "arn:aws:s3:::${local.manifest_bucket_name}/${local.foundation_image_signing_authority_prefix}/*"
   )
-  foundation_app_networking_publisher_role_arn = (
-    "arn:aws:iam::${var.aws_account_id}:role/${local.foundation_lane_authority.names.terraformSmokeRole}"
-  )
-  foundation_image_signing_authority_publisher_role_arn = (
-    "arn:aws:iam::${var.aws_account_id}:role/${local.foundation_lane_authority.names.terraformSmokeRole}"
-  )
+  release_authority_publisher_restrictions = {
+    toolchain_candidates = {
+      sid = "DenyToolchainCandidateWritesOutsidePublisher"
+      object_arns = [
+        "arn:aws:s3:::${local.manifest_bucket_name}/${local.deployment_shared_names.toolchainArtifactPrefix}/candidates/*",
+      ]
+      publisher_role_arns = [
+        "arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.toolchainCandidateRole}",
+      ]
+    }
+    toolchain_releases = {
+      sid = "DenyToolchainReleaseWritesOutsidePublisher"
+      object_arns = [
+        "arn:aws:s3:::${local.manifest_bucket_name}/${local.deployment_shared_names.toolchainArtifactPrefix}/releases/*",
+      ]
+      publisher_role_arns = [
+        "arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.toolchainPointerRole}",
+      ]
+    }
+    prover_candidates = {
+      sid = "DenyProverCandidateWritesOutsidePublisher"
+      object_arns = [
+        "arn:aws:s3:::${local.manifest_bucket_name}/${local.deployment_shared_names.proverReleasePrefix}/candidates/*",
+      ]
+      publisher_role_arns = [
+        "arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.proverCandidateRole}",
+      ]
+    }
+    prover_releases = {
+      sid = "DenyProverReleaseWritesOutsidePublisher"
+      object_arns = [
+        "arn:aws:s3:::${local.manifest_bucket_name}/${local.deployment_shared_names.proverReleasePrefix}/releases/*",
+      ]
+      publisher_role_arns = [
+        "arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.proverPointerRole}",
+      ]
+    }
+    candidate_records = {
+      sid = "DenyCandidateRecordWritesOutsidePublishers"
+      object_arns = [
+        "arn:aws:s3:::${local.manifest_bucket_name}/candidates/*",
+      ]
+      publisher_role_arns = [
+        "arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.toolchainCandidateRole}",
+        "arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.proverCandidateRole}",
+      ]
+    }
+    promotion_records = {
+      sid = "DenyPromotionRecordWritesOutsidePublishers"
+      object_arns = [
+        "arn:aws:s3:::${local.manifest_bucket_name}/promotions/*",
+      ]
+      publisher_role_arns = [
+        "arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.toolchainPointerRole}",
+        "arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.proverPointerRole}",
+      ]
+    }
+    toolchain_pointer = {
+      sid = "DenyToolchainPointerWritesOutsidePublisher"
+      object_arns = [
+        "arn:aws:s3:::${local.manifest_bucket_name}/${local.deployment_shared_names.toolchainAcceptedPointerKey}",
+      ]
+      publisher_role_arns = [
+        "arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.toolchainPointerRole}",
+      ]
+    }
+    prover_pointer = {
+      sid = "DenyProverPointerWritesOutsidePublisher"
+      object_arns = [
+        "arn:aws:s3:::${local.manifest_bucket_name}/${local.deployment_shared_names.proverAcceptedPointerKey}",
+      ]
+      publisher_role_arns = [
+        "arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.proverPointerRole}",
+      ]
+    }
+  }
   ecr_signing_repository_filters = [
     local.prover_repository_name,
   ]

@@ -7,7 +7,7 @@ import type {
   VerificationStepId,
 } from '../pages';
 
-export interface TestScenario {
+interface TestScenario {
   name: string;
   scenarioId: TamperScenario;
   userChoice: 'A' | 'B' | 'C' | 'D' | 'E';
@@ -213,7 +213,7 @@ Test Results:
 `;
 
   for (const result of results) {
-    const status = result.passed ? '✅ PASS' : '❌ FAIL';
+    const status = result.passed ? 'PASS' : 'FAIL';
     report += `\n${status} | ${result.scenario} (${(result.duration / 1000).toFixed(2)}s)`;
 
     if (result.errors && result.errors.length > 0) {

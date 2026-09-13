@@ -1,7 +1,17 @@
+import type * as ESTree from 'oxc-parser';
+import {
+  forEachChild,
+  isExported,
+  isNode,
+  isStaticMember,
+  nodeText,
+  parseSource,
+  staticText,
+  topLevelDeclarations,
+} from '../../source-analysis/source';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import ts from 'typescript';
-import type { SchemaTypeAny } from '@stark-ballot/validation/schema';
+import type { AnySchema } from '@stark-ballot/validation/schema';
 import { fingerprintSchemaSemantics, SCHEMA_SEMANTIC_ALGORITHM } from '../schema-semantic-fingerprint';
 import type { BaselineApiRouteContract } from '../typed-route-baseline-projection';
 import {
@@ -36,7 +46,7 @@ export interface TypedMountedRoute {
 
 export interface SchemaSourceModule {
   source: string;
-  sourceFile: ts.SourceFile;
+  sourceFile: ESTree.Program;
 }
 
 export interface PublicContractPayload {
@@ -66,30 +76,30 @@ export function normalizeRouteContracts(
 }
 
 export function parseTypedMountedRouteKeys(honoSource: string): string[] {
-  const sourceFile = ts.createSourceFile(
-    'apps/api/src/server/api/routes/hono.ts',
-    honoSource,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
+  const sourceFile = parseSource('apps/api/src/server/api/routes/hono.ts', honoSource);
   const routeKeys: string[] = [];
 
-  function visit(node: ts.Node): void {
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+  function visit(node: ESTree.Node): void {
+    if (isNode(node, 'CallExpression') && isNode(node.callee, 'Identifier')) {
       const routeArgumentIndex =
-        node.expression.text === 'mountRoute' ? 3 : node.expression.text === 'mountArtifactRoute' ? 0 : undefined;
+        staticText(node.callee) === 'mountRoute'
+          ? 3
+          : staticText(node.callee) === 'mountArtifactRoute' ||
+              staticText(node.callee) === 'defineRouteHandler' ||
+              staticText(node.callee) === 'defineRawRouteHandler'
+            ? 0
+            : undefined;
       const routeArgument = routeArgumentIndex === undefined ? undefined : node.arguments[routeArgumentIndex];
       if (
         routeArgument &&
-        ts.isPropertyAccessExpression(routeArgument) &&
-        ts.isIdentifier(routeArgument.expression) &&
-        routeArgument.expression.text === 'API_ROUTES'
+        isStaticMember(routeArgument) &&
+        isNode(routeArgument.object, 'Identifier') &&
+        staticText(routeArgument.object) === 'API_ROUTES'
       ) {
-        routeKeys.push(routeArgument.name.text);
+        routeKeys.push(staticText(routeArgument.property));
       }
     }
-    ts.forEachChild(node, visit);
+    forEachChild(node, visit);
   }
   visit(sourceFile);
 
@@ -172,23 +182,25 @@ export function buildMountedRoutes(
   });
 }
 
-function isExported(statement: ts.Node): boolean {
-  return Boolean(ts.getCombinedModifierFlags(statement as ts.Declaration) & ts.ModifierFlags.Export);
-}
-
-export function exportedSchemaDeclarations(module: SchemaSourceModule): Array<{ name: string; source: string }> {
-  const declarations: Array<{ name: string; source: string }> = [];
-  for (const statement of module.sourceFile.statements) {
-    if (!ts.isVariableStatement(statement) || !isExported(statement)) {
+export function exportedSchemaDeclarations(module: SchemaSourceModule): Array<{
+  name: string;
+  source: string;
+}> {
+  const declarations: Array<{
+    name: string;
+    source: string;
+  }> = [];
+  for (const statement of topLevelDeclarations(module.sourceFile)) {
+    if (!isNode(statement, 'VariableDeclaration') || !isExported(statement)) {
       continue;
     }
-    for (const declaration of statement.declarationList.declarations) {
-      if (!ts.isIdentifier(declaration.name) || !/^[A-Z][A-Za-z0-9_]*Schema$/u.test(declaration.name.text)) {
+    for (const declaration of statement.declarations) {
+      if (!isNode(declaration.id, 'Identifier') || !/^[A-Z][A-Za-z0-9_]*Schema$/u.test(staticText(declaration.id))) {
         continue;
       }
       declarations.push({
-        name: declaration.name.text,
-        source: declaration.getText(module.sourceFile).replace(/\s+/gu, ' ').trim(),
+        name: staticText(declaration.id),
+        source: nodeText(declaration).replace(/\s+/gu, ' ').trim(),
       });
     }
   }
@@ -219,7 +231,7 @@ export function buildSchemaSemanticSnapshot(schemaModule: Record<string, unknown
     Object.entries(schemaModule)
       .filter(([name]) => /^[A-Z][A-Za-z0-9_]*Schema$/u.test(name))
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([name, schema]) => [name, fingerprintSchemaSemantics(schema as SchemaTypeAny).fingerprint]),
+      .map(([name, schema]) => [name, fingerprintSchemaSemantics(schema as AnySchema).fingerprint]),
   );
   return {
     algorithm: SCHEMA_SEMANTIC_ALGORITHM,

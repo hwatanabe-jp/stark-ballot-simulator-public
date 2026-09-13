@@ -4,13 +4,9 @@
  * This module implements RFC 6962 consistency proof verification to ensure
  * the append-only property of the bulletin board and prevent split-view attacks.
  *
- * Critical requirements from final-design.md:
- * 1. Consistency proof must pass before showing "Verified" status
- * 2. excludedSlots > 0 must always fail closed; missing/invalid refine the explanation
- * 3. totalExpected vs treeSize mismatches must fail closed
+ * Consistency proof must pass before showing "Verified" status.
  */
 
-import type { ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { normalizeHexString } from '@stark-ballot/crypto-primitives';
 import type { AdmittedConsistencyProof } from './consistency-proof-types';
 import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
@@ -26,24 +22,6 @@ export interface ConsistencyVerificationResult {
     oldRoot?: string;
     newRoot?: string;
     proofNodes?: string[];
-  };
-}
-
-/**
- * Result of completeness check
- */
-export interface CompletenessResult {
-  isComplete: boolean;
-  error?: string;
-  warning?: string;
-  severity?: 'critical' | 'warning' | 'info';
-  details?: {
-    missingSlots?: number;
-    invalidPresentedSlots?: number;
-    validVotes?: number;
-    totalExpected?: number;
-    treeSize?: number;
-    excludedSlots?: number;
   };
 }
 
@@ -153,109 +131,4 @@ export function verifyConsistencyProof(
       },
     };
   }
-}
-
-/**
- * Check the completeness of the voting tally
- *
- * According to the current journal contract:
- * - `excludedSlots > 0` MUST be treated as a fail-closed verification failure
- * - `missingSlots` explains unpresented bulletin slots
- * - `invalidPresentedSlots` explains presented slot failures
- * - UI must show "Verification Failed" or "Incomplete Tally" in red
- * - This prevents "subset-only counted receipts" from appearing valid
- *
- * @param journal - zkVM journal containing voting statistics
- * @returns Completeness check result
- */
-export function checkCompleteness(journal: ZkVMJournal): CompletenessResult {
-  const missingSlots = journal.missingSlots;
-  const invalidPresentedSlots = journal.invalidPresentedSlots;
-  const validVotes = journal.validVotes;
-  const excludedSlots = journal.excludedSlots;
-  const rejectedRecords = journal.rejectedRecords;
-  const result: CompletenessResult = {
-    isComplete: true,
-    details: {
-      missingSlots,
-      invalidPresentedSlots,
-      validVotes,
-      totalExpected: journal.totalExpected,
-      treeSize: journal.treeSize,
-      excludedSlots,
-    },
-  };
-
-  const invalidFields: string[] = [];
-  if (!isValidCount(excludedSlots)) {
-    invalidFields.push('excludedSlots');
-  }
-  if (!isValidCount(missingSlots)) {
-    invalidFields.push('missingSlots');
-  }
-  if (!isValidCount(invalidPresentedSlots)) {
-    invalidFields.push('invalidPresentedSlots');
-  }
-  if (!isValidCount(journal.totalExpected)) {
-    invalidFields.push('totalExpected');
-  }
-  if (!isValidCount(journal.treeSize)) {
-    invalidFields.push('treeSize');
-  }
-  if (invalidFields.length > 0) {
-    result.isComplete = false;
-    result.error = `Invalid zkVM journal: ${invalidFields.join(', ')} is missing or invalid.`;
-    result.severity = 'critical';
-    return result;
-  }
-
-  if (excludedSlots > 0) {
-    result.isComplete = false;
-    const parts: string[] = [];
-    if (missingSlots > 0) {
-      parts.push(`${missingSlots} unpresented slots`);
-    }
-    if (invalidPresentedSlots > 0) {
-      parts.push(`${invalidPresentedSlots} presented slots failed counting`);
-    }
-    const detail = parts.length > 0 ? ` (${parts.join('; ')})` : '';
-    result.error =
-      `Conservative exclusion signal detected: excludedSlots=${excludedSlots}${detail}. ` +
-      `This is a critical failure - the tally cannot be considered complete.`;
-    result.severity = 'critical';
-    return result;
-  }
-
-  // Check for totalExpected vs treeSize mismatch (silent exclusion detection)
-  if (journal.totalExpected !== journal.treeSize) {
-    const diff = journal.totalExpected - journal.treeSize;
-    result.isComplete = false;
-    result.severity = 'critical';
-    result.error =
-      diff > 0
-        ? // Expected more votes than actually recorded.
-          `Expected ${journal.totalExpected} votes but tree only has ${journal.treeSize}. ` +
-          `${diff} votes may be missing or were never cast.`
-        : // More votes recorded than expected.
-          `Tree has ${journal.treeSize} votes but only expected ${journal.totalExpected}. ` +
-          `${Math.abs(diff)} extra votes were recorded.`;
-    return result;
-  }
-
-  // Check for rejected records that do not necessarily add slot-based exclusions
-  if (rejectedRecords > 0) {
-    const message = `${rejectedRecords} presented records failed verification.`;
-    if (result.warning) {
-      result.warning += ` Additionally, ${message}`;
-    } else {
-      result.warning = message;
-    }
-    result.severity = result.severity || 'warning';
-  }
-
-  return result;
-}
-
-function isValidCount(value: number | undefined): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }

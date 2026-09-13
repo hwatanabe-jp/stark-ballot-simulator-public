@@ -1,0 +1,18 @@
+{
+  "acceptedAt": "2026-08-14T01:04:05.000Z",
+  "deploymentId": "dep_dddddddddddddddddddddddddddddddd",
+  "deploymentMode": "normal",
+  "planDisposition": "changed",
+  "prover": {
+    "imageDigestPrefix": "sha256:eeeeeeeeeeee",
+    "imageId": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "methodVersion": 14
+  },
+  "smokeOutcome": "passed",
+  "source": {
+    "commitUrl": "https://github.com/hwatanabe-jp/stark-ballot-simulator/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "shortSha": "aaaaaaaaaaaa"
+  },
+  "staleAfter": "2026-09-13T01:04:05.000Z",
+  "updatedAt": "2026-08-14T01:04:05.000Z"
+}

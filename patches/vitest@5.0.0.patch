@@ -1,0 +1,43 @@
+diff --git a/config.d.ts b/config.d.ts
+--- a/config.d.ts
++++ b/config.d.ts
+@@ -1,3 +1,3 @@
+-// ensure `@vitest/expect` provides `chai` types
+-import type {} from '@vitest/expect'
++// ensure the bundled expect declarations provide chai types
++import type {} from './dist/index.js'
+ export * from './dist/config.js'
+diff --git a/browser/context.d.ts b/browser/context.d.ts
+--- a/browser/context.d.ts
++++ b/browser/context.d.ts
+@@ -5,3 +5,9 @@
+ // @ts-ignore -- @vitest/browser-preview might not be installed
+ export * from '@vitest/browser-preview/context'
+ export { BrowserCommands, CDPSession, FsOptions } from 'vitest/internal/browser'
++
++export type BrowserTraceEntryKind = 'action' | 'expect' | 'mark' | 'lifecycle'
++export interface MarkOptions {
++  stack?: string
++  kind?: BrowserTraceEntryKind
++}
+diff --git a/dist/chunks/plugin.d.BbcoZhuj.d.ts b/dist/chunks/plugin.d.BbcoZhuj.d.ts
+--- a/dist/chunks/plugin.d.BbcoZhuj.d.ts
++++ b/dist/chunks/plugin.d.BbcoZhuj.d.ts
+@@ -3318,7 +3318,7 @@
+ 	*
+ 	* @experimental
+ 	*/
+-	provider?: string;
++	provider?: string | undefined;
+ 	/**
+ 	* Disable warnings when a benchmark accesses module export getters too many times.
+ 	* @default false
+@@ -3611,7 +3611,7 @@
+ 	* Specifies the memory limit for `worker_thread` or `child_process` before they are recycled.
+ 	* If you see memory leaks, try to tinker this value.
+ 	*/
+-	vmMemoryLimit?: string | number;
++	vmMemoryLimit?: string | number | undefined;
+ 	/**
+ 	* Pool used to run tests in.
+ 	*

@@ -1,26 +1,17 @@
 import { parseContentRange } from '@stark-ballot/api-contract/http/content-range';
 import { API_ROUTES, buildApiRouteUrl } from '@stark-ballot/api-contract/routes';
-import type {
-  CurrentFinalizationBitmapProofParams,
-  BitmapProofResponse,
-  InputCommitmentResponse,
-} from '@stark-ballot/api-contract/schemas/artifacts';
 import type { SessionIdentity } from '@stark-ballot/web/session';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
-import { isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import {
+  parseVerifierServiceWireReport,
+  type VerifierServiceWireReport,
+} from '@stark-ballot/verification/verifier-service-report';
 import {
   readResponseJsonSafely,
   resolveVerificationClientApiError,
 } from '@stark-ballot/web/verification/client-api-errors';
 import { apiFetch } from './apiFetch';
-import {
-  admitJsonRouteResponse,
-  buildPathSessionHeaders,
-  requestJsonRoute,
-  resolveWebApiUrl,
-  type ApiClientRequestOptions,
-  type ApiSessionIdentity,
-} from './client';
+import { buildPathSessionHeaders, resolveWebApiUrl, type ApiSessionIdentity } from './client';
 
 export type BundleSource = 'authenticated-endpoint';
 
@@ -67,75 +58,6 @@ export function buildAuthenticatedReportDownloadUrl(sessionId: string, finalizat
   );
 }
 
-export interface BitmapProofRequestOptions extends ApiClientRequestOptions {
-  ifNoneMatch?: string;
-}
-
-export type BitmapProofResult =
-  | {
-      status: 200;
-      data: BitmapProofResponse['data'];
-      etag: string | null;
-    }
-  | {
-      status: 304;
-      etag: string | null;
-    };
-
-export async function getBitmapProof(
-  identity: ApiSessionIdentity,
-  request: Pick<CurrentFinalizationBitmapProofParams, 'kind' | 'voteIndex'>,
-  options: BitmapProofRequestOptions = {},
-): Promise<BitmapProofResult> {
-  const path = buildApiRouteUrl(API_ROUTES.currentFinalizationBitmapProof, {
-    params: {
-      sessionId: identity.sessionId,
-      kind: request.kind,
-      voteIndex: request.voteIndex,
-    },
-  });
-  const response = await apiFetch(resolveWebApiUrl(path, options.baseUrl), {
-    method: API_ROUTES.currentFinalizationBitmapProof.method,
-    headers: {
-      ...buildPathSessionHeaders(identity),
-      ...(options.ifNoneMatch ? { 'If-None-Match': options.ifNoneMatch } : {}),
-    },
-    ...(options.signal ? { signal: options.signal } : {}),
-  });
-  const etag = response.headers.get('ETag');
-  if (response.status === 304) {
-    return { status: 304, etag };
-  }
-
-  const result = await admitJsonRouteResponse(API_ROUTES.currentFinalizationBitmapProof, response, 'bitmap proof');
-  if (result.status !== 200) {
-    throw new Error('Invalid bitmap proof response status');
-  }
-  return {
-    status: 200,
-    data: result.body.data,
-    etag,
-  };
-}
-
-export async function getInputCommitment(
-  identity: ApiSessionIdentity,
-  options: ApiClientRequestOptions = {},
-): Promise<InputCommitmentResponse['data']> {
-  const result = await requestJsonRoute(
-    API_ROUTES.currentFinalizationInputCommitment,
-    buildApiRouteUrl(API_ROUTES.currentFinalizationInputCommitment, {
-      params: { sessionId: identity.sessionId },
-    }),
-    'input commitment',
-    {
-      ...options,
-      headers: buildPathSessionHeaders(identity),
-    },
-  );
-  return result.body.data;
-}
-
 export async function downloadBundle(candidate: DownloadCandidate, options: ArtifactDownloadOptions): Promise<void> {
   assertTrustedAuthenticatedDownloadCandidate(candidate);
   const blob = await fetchBundleBlob(candidate.url, options);
@@ -145,7 +67,7 @@ export async function downloadBundle(candidate: DownloadCandidate, options: Arti
 export async function fetchVerificationReport(
   candidate: ReportCandidate,
   options: ArtifactDownloadOptions,
-): Promise<Record<string, unknown>> {
+): Promise<VerifierServiceWireReport> {
   assertTrustedAuthenticatedReportCandidate(candidate);
   const response = await apiFetch(candidate.url, {
     headers: buildPathSessionHeaders(options.identity),
@@ -156,10 +78,11 @@ export async function fetchVerificationReport(
   }
 
   const rawBody = await readVerificationReportJsonWithLimit(response);
-  if (!isRecord(rawBody)) {
+  try {
+    return parseVerifierServiceWireReport(rawBody);
+  } catch {
     throw new Error('Invalid verification report response');
   }
-  return rawBody;
 }
 
 async function fetchBundleBlob(url: string, options: ArtifactDownloadOptions): Promise<Blob> {

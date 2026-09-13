@@ -9,6 +9,13 @@ data "aws_iam_policy_document" "foundation_codebuild_common" {
   }
 
   statement {
+    sid       = "ReadExactSourcePathProjectConfiguration"
+    effect    = "Allow"
+    actions   = ["codebuild:BatchGetProjects"]
+    resources = [for project in values(local.source_path_foundation_start_build_projects) : project.project_arn]
+  }
+
+  statement {
     sid    = "WriteFoundationCodeBuildLogs"
     effect = "Allow"
 
@@ -17,8 +24,8 @@ data "aws_iam_policy_document" "foundation_codebuild_common" {
       "logs:PutLogEvents",
     ]
     resources = [
-      for log_group in module.foundation_pipeline_codebuild_log_groups.log_groups :
-      "${log_group.arn}:*"
+      for log_group_arn in local.foundation_bootstrap_managed_codebuild_log_group_arns :
+      "${log_group_arn}:*"
     ]
   }
 
@@ -58,6 +65,13 @@ data "aws_iam_policy_document" "foundation_terraform_plan" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
   source_policy_documents = [data.aws_iam_policy_document.foundation_codebuild_common[0].json]
+
+  statement {
+    sid       = "ReadFoundationPlanActionExecutions"
+    effect    = "Allow"
+    actions   = ["codepipeline:ListActionExecutions"]
+    resources = [local.foundation_pipeline_arn]
+  }
 
   statement {
     sid       = "ReadFoundationStateBackend"
@@ -227,4 +241,39 @@ resource "aws_iam_role_policy" "foundation_terraform_plan" {
   name   = "${local.foundation_terraform_plan_role_name}-policy"
   role   = aws_iam_role.foundation_terraform_plan[0].id
   policy = data.aws_iam_policy_document.foundation_terraform_plan[0].json
+}
+
+data "aws_iam_policy_document" "foundation_terraform_plan_pipeline_state" {
+  count = local.foundation_pipeline_enabled ? 1 : 0
+
+  statement {
+    sid       = "ReadFoundationPipelineStateForPlan"
+    effect    = "Allow"
+    actions   = ["codepipeline:GetPipelineState"]
+    resources = [local.foundation_pipeline_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "foundation_terraform_plan_pipeline_state" {
+  count = local.foundation_pipeline_enabled ? 1 : 0
+
+  name   = "${local.foundation_terraform_plan_role_name}-pipeline-state"
+  role   = aws_iam_role.foundation_terraform_plan[0].id
+  policy = data.aws_iam_policy_document.foundation_terraform_plan_pipeline_state[0].json
+}
+
+check "foundation_terraform_plan_inline_policy_size" {
+  assert {
+    condition = (
+      !local.foundation_pipeline_enabled
+      || try(
+        length(jsonencode(jsondecode(data.aws_iam_policy_document.foundation_terraform_plan[0].json)))
+        + length(
+          jsonencode(jsondecode(data.aws_iam_policy_document.foundation_terraform_plan_pipeline_state[0].json))
+        ) <= 10240,
+        false,
+      )
+    )
+    error_message = "The Foundation Terraform Plan aggregate inline policies must remain within IAM's 10,240-character role-policy quota."
+  }
 }

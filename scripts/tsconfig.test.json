@@ -1,12 +1,15 @@
 {
-  "extends": "../tooling/tsconfig/test-node-web.json",
+  "extends": "../tooling/tsconfig/test-node.json",
+  "compilerOptions": {
+    "allowJs": true
+  },
   "include": [
     "**/*.test.ts",
     "**/*.test.tsx",
     "**/*.spec.ts",
     "**/*.spec.tsx",
-    "**/__tests__/**/*.ts",
-    "**/__tests__/**/*.tsx"
+    "**/test-support/**/*.ts",
+    "**/test-support/**/*.tsx"
   ],
   "exclude": ["node_modules", "**/node_modules/**"]
 }

@@ -11,6 +11,12 @@ inventory, approval records, and historical working notes. Its generated
 `docs/PUBLIC_REPOSITORY.md` records the source revision and documentation
 footprint of that snapshot.
 
+The thin Backstage-facing overview is intentionally outside this tree at
+[`techdocs/docs/`](../techdocs/docs/index.md), where its MkDocs configuration
+cannot discover private documentation. The catalog API entity reads the
+deterministic [OpenAPI reference](../openapi/stark-ballot-api.openapi.json);
+neither artifact replaces the normative Public Specs or runtime validators.
+
 ## 15-Minute Review Path
 
 1. [Verification pipeline](./verification/README.md) — the fail-closed checks,
@@ -21,7 +27,7 @@ footprint of that snapshot.
    application and proof pipeline.
 4. [zkVM decision records](./zkvm/decisions/README.md) — why the current proof
    contract and trust boundaries look the way they do.
-5. [Transparent Trust UI](./ui/design-spec-transparent-trust.md) — how the
+5. [UI design specification](./ui/design-spec-transparent-trust.md) — how the
    verification model is presented without overstating assurance.
 
 For a runnable review, continue with the [CLI guide](./guides/cli.md) or the
@@ -29,18 +35,18 @@ root `README.md` mock quick start.
 
 ## Documentation Map
 
-| Area                                         | Purpose                                                                            | Primary language         |
-| -------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------ |
-| [Verification](./verification/README.md)     | Verification checks, summary semantics, bundle delivery, and hard-failure rules    | 🇯🇵 Japanese              |
-| [Formal](./formal/README.md)                 | Lean models, audit output, and generated implementation vectors                    | 🇬🇧 English               |
-| [Architecture](./architecture/README.md)     | System boundaries, AWS topology, Hono ownership, and repository context            | 🇬🇧 English / 🇯🇵 Japanese |
-| [Guides](./guides/)                          | Local setup, CLI operation, and STARK verification testing                         | 🇬🇧 English / 🇯🇵 Japanese |
-| [Infrastructure](./infrastructure/README.md) | Terraform ownership, release lanes, toolchain images, and cloud security routing   | 🇬🇧 English / 🇯🇵 Japanese |
-| [Runbooks](./runbooks/README.md)             | Read-only-first runtime diagnosis, logging, and security response                  | 🇬🇧 English / 🇯🇵 Japanese |
-| [UI](./ui/README.md)                         | Visual system, UI-facing API vocabulary, page behavior, and lifecycle presentation | 🇯🇵 Japanese              |
-| [zkVM](./zkvm/README.md)                     | Proof design, journal/reference material, mock behavior, and decision records      | 🇬🇧 English / 🇯🇵 Japanese |
-| [Roadmap](./roadmap.md)                      | Current forward-looking priorities                                                 | 🇬🇧 English               |
-| [Licenses](./licenses/)                      | Generated dependency-license and metadata artifacts                                | Machine-generated        |
+| Area                                         | Purpose                                                                            | Primary language   |
+| -------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------ |
+| [Verification](./verification/README.md)     | Verification checks, summary semantics, bundle delivery, and hard-failure rules    | Japanese           |
+| [Formal](./formal/README.md)                 | Lean models, audit output, and generated implementation vectors                    | English            |
+| [Architecture](./architecture/README.md)     | System boundaries, AWS topology, Hono ownership, and repository context            | English / Japanese |
+| [Guides](./guides/)                          | Local setup, CLI operation, and STARK verification testing                         | English / Japanese |
+| [Infrastructure](./infrastructure/README.md) | Terraform ownership, release lanes, toolchain images, and cloud security routing   | English / Japanese |
+| [Runbooks](./runbooks/README.md)             | Read-only-first runtime diagnosis, logging, and security response                  | English / Japanese |
+| [UI](./ui/README.md)                         | Visual system, UI-facing API vocabulary, page behavior, and lifecycle presentation | Japanese           |
+| [zkVM](./zkvm/README.md)                     | Proof design, journal/reference material, mock behavior, and decision records      | English / Japanese |
+| [Roadmap](./roadmap.md)                      | Current forward-looking priorities                                                 | English            |
+| [Licenses](./licenses/)                      | Generated dependency-license and metadata artifacts                                | Machine-generated  |
 
 ## How to Read the Evidence
 

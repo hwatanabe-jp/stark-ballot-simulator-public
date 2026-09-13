@@ -13,11 +13,11 @@
         "imageId": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "journal": {
           "electionId": "550e8400-e29b-41d4-a716-446655440000",
-          "electionConfigHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "electionConfigHash": "0x5ec60925929f78d3cc3cdf73a71913ffc0cf02c1a5d8106bd9a2750dbc10e1fe",
           "bulletinRoot": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
           "treeSize": 64,
           "totalExpected": 64,
-          "sthDigest": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "sthDigest": "0x42c48eee22fadab1b27c96a532010e2768fa3cb070849e1bce7fe83d4e5953df",
           "verifiedTally": [13, 12, 14, 11, 14],
           "totalVotes": 64,
           "validVotes": 64,
@@ -26,7 +26,7 @@
           "missingSlots": 0,
           "invalidPresentedSlots": 0,
           "rejectedRecords": 0,
-          "seenBitmapRoot": "0x5555555555555555555555555555555555555555555555555555555555555555",
+          "seenBitmapRoot": "0x2222222222222222222222222222222222222222222222222222222222222222",
           "includedBitmapRoot": "0x2222222222222222222222222222222222222222222222222222222222222222",
           "excludedSlots": 0,
           "inputCommitment": "0x3333333333333333333333333333333333333333333333333333333333333333",
@@ -48,14 +48,14 @@
           "version": "v1.0",
           "botCount": 63,
           "merkleTreeDepth": 6,
-          "electionConfigHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          "electionConfigHash": "0x5ec60925929f78d3cc3cdf73a71913ffc0cf02c1a5d8106bd9a2750dbc10e1fe"
         },
         "closeStatement": {
           "logId": "0x6666666666666666666666666666666666666666666666666666666666666666",
           "treeSize": 64,
           "timestamp": 1730000245000,
           "bulletinRoot": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-          "sthDigest": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          "sthDigest": "0x42c48eee22fadab1b27c96a532010e2768fa3cb070849e1bce7fe83d4e5953df"
         }
       },
       "presentation": {
@@ -80,8 +80,8 @@
         "totalExpected": 64,
         "treeSize": 64,
         "excludedSlots": 0,
-        "sthDigest": "0x1111111111111111111111111111111111111111111111111111111111111111",
-        "seenBitmapRoot": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "sthDigest": "0x42c48eee22fadab1b27c96a532010e2768fa3cb070849e1bce7fe83d4e5953df",
+        "seenBitmapRoot": "0x2222222222222222222222222222222222222222222222222222222222222222",
         "includedBitmapRoot": "0x2222222222222222222222222222222222222222222222222222222222222222",
         "inputCommitment": "0x3333333333333333333333333333333333333333333333333333333333333333",
         "seenIndicesCount": 64,
@@ -93,8 +93,7 @@
           "duration_ms": 1234,
           "expected_image_id": "0x4444444444444444444444444444444444444444444444444444444444444444",
           "receipt_image_id": "0x4444444444444444444444444444444444444444444444444444444444444444",
-          "dev_mode_receipt": false,
-          "errors": []
+          "dev_mode_receipt": false
         },
         "tamperSummary": {
           "ignoredVotes": 0,
@@ -109,7 +108,7 @@
           "voteId": "00000000-0000-4000-8000-000000000001",
           "commitment": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
           "bulletinIndex": 0,
-          "bulletinRootAtCast": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "bulletinRootAtCast": "0x2a3fd21a0812f5f78a88c1d5cdce5d8e366a85095830629b5fb674c593cbf3cc",
           "castAtMs": 1730000000000,
           "inputCommitment": "0x3333333333333333333333333333333333333333333333333333333333333333"
         },
@@ -118,12 +117,9 @@
           "voteId": "00000000-0000-4000-8000-000000000001",
           "proof": {
             "leafIndex": 0,
-            "merklePath": [
-              "0x1111111111111111111111111111111111111111111111111111111111111111",
-              "0x2222222222222222222222222222222222222222222222222222222222222222"
-            ],
-            "treeSize": 64,
-            "bulletinRootAtCast": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            "merklePath": [],
+            "treeSize": 1,
+            "bulletinRootAtCast": "0x2a3fd21a0812f5f78a88c1d5cdce5d8e366a85095830629b5fb674c593cbf3cc"
           }
         },
         "receiptPublication": {

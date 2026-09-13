@@ -1,19 +1,12 @@
 import type { FinalizationRecord } from './finalization-record';
 import type { FinalizationBitmapData, FinalizationBitmapDisposition } from './finalization-types';
+import type { FinalizationBitmapRecord } from './finalization-store';
+import { finalizationBitmapDataCodec } from './finalization-storage';
 import { isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
 
 const AVAILABLE_DISPOSITION_KEYS = new Set(['availability', 'data']);
 const UNAVAILABLE_DISPOSITION_KEYS = new Set(['availability']);
-const BITMAP_DATA_KEYS = new Set([
-  'includedBitmap',
-  'includedBitmapRoot',
-  'seenBitmap',
-  'seenBitmapRoot',
-  'treeSize',
-  'finalizedAtMs',
-]);
-const REQUIRED_BITMAP_DATA_KEYS = new Set(['includedBitmap', 'includedBitmapRoot', 'treeSize', 'finalizedAtMs']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -21,18 +14,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
   return Object.keys(value).every((key) => allowed.has(key));
-}
-
-function hasAllKeys(value: Record<string, unknown>, required: ReadonlySet<string>): boolean {
-  return Array.from(required).every((key) => Object.hasOwn(value, key));
-}
-
-function isBooleanArray(value: unknown): value is boolean[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === 'boolean');
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function normalizeHex32(value: unknown): string | null {
@@ -59,15 +40,10 @@ function sameBitmapData(left: FinalizationBitmapData, right: FinalizationBitmapD
   );
 }
 
-export type PersistedFinalizationBitmapData = FinalizationBitmapData & {
-  sessionId: string;
-  finalizationId: string;
-};
-
 export function admitPersistedFinalizationBitmapData(
   record: Extract<FinalizationRecord, { state: { status: 'succeeded' } }>,
-  candidate: PersistedFinalizationBitmapData | null | undefined,
-): PersistedFinalizationBitmapData | undefined {
+  candidate: unknown,
+): FinalizationBitmapRecord | undefined {
   if (
     !isRecord(candidate) ||
     candidate['sessionId'] !== record.sessionId ||
@@ -81,7 +57,7 @@ export function admitPersistedFinalizationBitmapData(
     void _finalizationId;
     const admitted = admitFinalizationBitmapDisposition(record, {
       availability: 'available',
-      data: data as unknown as FinalizationBitmapData,
+      data,
     });
     if (admitted.availability !== 'available') {
       return undefined;
@@ -98,9 +74,8 @@ export function admitPersistedFinalizationBitmapData(
 
 export function admitFinalizationBitmapDisposition(
   record: Extract<FinalizationRecord, { state: { status: 'succeeded' } }>,
-  disposition: FinalizationBitmapDisposition,
+  value: unknown,
 ): FinalizationBitmapDisposition {
-  const value: unknown = disposition;
   if (!isRecord(value)) {
     throw new Error('Invalid finalization bitmap evidence');
   }
@@ -108,7 +83,7 @@ export function admitFinalizationBitmapDisposition(
     if (!hasOnlyKeys(value, UNAVAILABLE_DISPOSITION_KEYS)) {
       throw new Error('Invalid finalization bitmap evidence');
     }
-    if (record.finalizationResult.bitmapData !== undefined) {
+    if (record.finalizationResult.artifacts.bitmap.availability === 'available') {
       throw new Error('Successful finalization bitmap disposition contradicts embedded evidence');
     }
     return { availability: 'unavailable' };
@@ -117,26 +92,17 @@ export function admitFinalizationBitmapDisposition(
     throw new Error('Invalid finalization bitmap evidence');
   }
 
-  const data = value['data'];
-  if (
-    !isRecord(data) ||
-    !hasOnlyKeys(data, BITMAP_DATA_KEYS) ||
-    !hasAllKeys(data, REQUIRED_BITMAP_DATA_KEYS) ||
-    !isBooleanArray(data['includedBitmap']) ||
-    !isNonNegativeSafeInteger(data['treeSize']) ||
-    !isNonNegativeSafeInteger(data['finalizedAtMs']) ||
-    Object.hasOwn(data, 'seenBitmap') !== Object.hasOwn(data, 'seenBitmapRoot') ||
-    (Object.hasOwn(data, 'seenBitmap') && !isBooleanArray(data['seenBitmap']))
-  ) {
+  const data = finalizationBitmapDataCodec.decode(value['data']);
+  if (!data) {
     throw new Error('Invalid finalization bitmap evidence');
   }
-  const includedBitmap = data['includedBitmap'];
-  const treeSize = data['treeSize'];
-  const finalizedAtMs = data['finalizedAtMs'];
-  const seenBitmap = data['seenBitmap'] as boolean[] | undefined;
+  const includedBitmap = data.includedBitmap;
+  const treeSize = data.treeSize;
+  const finalizedAtMs = data.finalizedAtMs;
+  const seenBitmap = data.seenBitmap;
   const journal = record.finalizationResult.journal;
   const journalIncludedRoot = normalizeHex32(journal.includedBitmapRoot);
-  const includedRoot = normalizeHex32(data['includedBitmapRoot']);
+  const includedRoot = normalizeHex32(data.includedBitmapRoot);
   const computedIncludedRoot = normalizeHex32(computeIncludedBitmapRoot(includedBitmap));
   if (
     !journalIncludedRoot ||
@@ -151,7 +117,7 @@ export function admitFinalizationBitmapDisposition(
   let seenRoot: string | undefined;
   if (seenBitmap !== undefined) {
     const journalSeenRoot = journal.seenBitmapRoot ? normalizeHex32(journal.seenBitmapRoot) : null;
-    seenRoot = normalizeHex32(data['seenBitmapRoot']) ?? undefined;
+    seenRoot = normalizeHex32(data.seenBitmapRoot) ?? undefined;
     if (
       seenBitmap.length !== journal.treeSize ||
       !journalSeenRoot ||
@@ -170,7 +136,8 @@ export function admitFinalizationBitmapDisposition(
     ...(seenBitmap && seenRoot ? { seenBitmap: [...seenBitmap], seenBitmapRoot: seenRoot } : {}),
   };
 
-  if (record.finalizationResult.bitmapData && !sameBitmapData(record.finalizationResult.bitmapData, admittedData)) {
+  const embeddedBitmap = record.finalizationResult.artifacts.bitmap;
+  if (embeddedBitmap.availability === 'available' && !sameBitmapData(embeddedBitmap.data, admittedData)) {
     throw new Error('Successful finalization bitmap evidence does not match its semantic record');
   }
 

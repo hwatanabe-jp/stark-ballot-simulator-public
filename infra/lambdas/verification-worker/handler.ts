@@ -21,9 +21,15 @@ import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashKeyPrefixForLogging, hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { SAFE_VERIFIER_SEGMENT_PATTERN } from '@stark-ballot/validation/safe-verifier-segment';
 import { resolvePublicBundlePolicy } from '@stark-ballot/verification/public-bundle-manifest';
-import type { VerificationFailureCategory, VerificationStatus } from '@stark-ballot/verification/shared/types';
+import type {
+  VerificationFailureCategory,
+  VerificationResult,
+  VerificationStatus,
+} from '@stark-ballot/verification/shared/types';
 import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
 import { uploadVerificationBundleToS3 } from './verificationBundleS3Upload.js';
 import { RuntimeConfigValidationError, bootstrapLambdaRuntime } from '../runtimeBootstrap.js';
 
@@ -33,11 +39,12 @@ const MAX_VERIFIER_STDERR_DIAGNOSTIC_BYTES = 4 * 1024;
 const VERIFIER_STDERR_DIAGNOSTIC_CATEGORIES = new Set(['none', 'present', 'truncated']);
 const ASYNC_PUBLIC_BUNDLE_POLICY = resolvePublicBundlePolicy('async');
 let resolvedRuntimeProfile: ResolvedRuntimeProfile | undefined;
+type InfrastructureVerificationFailureCategory = Exclude<VerificationFailureCategory, 'none'>;
 
 class VerificationInfrastructureError extends Error {
-  readonly failureCategory: VerificationFailureCategory;
+  readonly failureCategory: InfrastructureVerificationFailureCategory;
 
-  constructor(failureCategory: VerificationFailureCategory) {
+  constructor(failureCategory: InfrastructureVerificationFailureCategory) {
     super('Verification infrastructure stage failed');
     this.name = 'VerificationInfrastructureError';
     this.failureCategory = failureCategory;
@@ -52,7 +59,7 @@ function readErrorIdentity(error: unknown): ReadonlySet<string> {
   return new Set([candidate.name, candidate.code].filter((value): value is string => typeof value === 'string'));
 }
 
-function classifyS3Failure(error: unknown): VerificationFailureCategory {
+function classifyS3Failure(error: unknown): InfrastructureVerificationFailureCategory {
   const identities = readErrorIdentity(error);
   if (identities.has('AccessDenied') || identities.has('Forbidden')) {
     return 's3_denied';
@@ -71,7 +78,7 @@ function classifyS3Failure(error: unknown): VerificationFailureCategory {
   return 'unknown';
 }
 
-function classifyVerifierFailure(error: unknown): VerificationFailureCategory {
+function classifyVerifierFailure(error: unknown): InfrastructureVerificationFailureCategory {
   const identities = readErrorIdentity(error);
   if (
     identities.has('TimeoutError') ||
@@ -85,11 +92,13 @@ function classifyVerifierFailure(error: unknown): VerificationFailureCategory {
   return 'verifier_crash';
 }
 
-function infrastructureFailure(failureCategory: VerificationFailureCategory): VerificationInfrastructureError {
+function infrastructureFailure(
+  failureCategory: InfrastructureVerificationFailureCategory,
+): VerificationInfrastructureError {
   return new VerificationInfrastructureError(failureCategory);
 }
 
-function resolveInfrastructureFailureCategory(error: unknown): VerificationFailureCategory {
+function resolveInfrastructureFailureCategory(error: unknown): InfrastructureVerificationFailureCategory {
   return error instanceof VerificationInfrastructureError ? error.failureCategory : 'unknown';
 }
 
@@ -282,12 +291,10 @@ async function runVerificationPayload(
       }
     }
 
-    return {
-      status: 'success',
+    const commonResponse = {
+      status: 'success' as const,
       sessionId: input.sessionId,
       finalizationId: input.finalizationId,
-      verifierStatus: invocation.status,
-      verificationReport: invocation.report,
       ...(s3Result
         ? {
             s3: omitUndefinedProperties({
@@ -298,6 +305,16 @@ async function runVerificationPayload(
           }
         : {}),
     };
+    switch (invocation.status) {
+      case 'success':
+        return { ...commonResponse, verifierStatus: 'success', verificationReport: invocation.report };
+      case 'dev_mode':
+        return { ...commonResponse, verifierStatus: 'dev_mode', verificationReport: invocation.report };
+      case 'failed':
+        return { ...commonResponse, verifierStatus: 'failed', verificationReport: invocation.report };
+      default:
+        throw new Error('Verifier service returned an unsupported status');
+    }
   } catch (error) {
     logger.error(
       '[VerificationWorker] Verifier service execution failed',
@@ -356,12 +373,6 @@ function validateVerificationWorkerConfig(profile: ResolvedRuntimeProfile): void
   }
 }
 
-function toVerificationStatus(value: string): VerificationStatus {
-  return value === 'success' || value === 'failed' || value === 'dev_mode' || value === 'not_run' || value === 'running'
-    ? value
-    : 'failed';
-}
-
 function isTerminalVerificationStatus(status: VerificationStatus | undefined): boolean {
   return status === 'success' || status === 'failed' || status === 'dev_mode';
 }
@@ -378,10 +389,10 @@ function parseApproximateReceiveCount(record: SqsRecord): number {
 async function persistTerminalFailureAfterRetryExhaustion(
   store: ReturnType<typeof getGlobalStore>,
   message: {
-    sessionId: string;
-    finalizationId: string;
+    sessionId: SessionId;
+    finalizationId: FinalizationId;
   },
-  failureCategory: VerificationFailureCategory,
+  failureCategory: InfrastructureVerificationFailureCategory,
 ): Promise<void> {
   await store.completeVerificationResult(message.sessionId, message.finalizationId, {
     status: 'failed',
@@ -391,8 +402,8 @@ async function persistTerminalFailureAfterRetryExhaustion(
 
 async function resolveVerificationWorkDisposition(
   store: ReturnType<typeof getGlobalStore>,
-  sessionId: string,
-  finalizationId: string,
+  sessionId: SessionId,
+  finalizationId: FinalizationId,
 ): Promise<VerificationWorkDisposition> {
   const currentFinalization = await store.getCurrentFinalizationRecord(sessionId);
   if (!currentFinalization) {
@@ -475,11 +486,27 @@ async function handleSqsEvent(profile: ResolvedRuntimeProfile, rawEvent: SqsEven
         ...(response.s3?.reportKey ? { s3ReportKey: response.s3.reportKey } : {}),
         ...(response.s3?.uploadedAtMs ? { s3UploadedAtMs: response.s3.uploadedAtMs } : {}),
       });
-      await store.completeVerificationResult(message.sessionId, message.finalizationId, {
-        status: toVerificationStatus(response.verifierStatus),
-        report: response.verificationReport,
-        failureCategory: 'none',
-      });
+      let completedVerificationResult: VerificationResult;
+      switch (response.verifierStatus) {
+        case 'success':
+          completedVerificationResult = {
+            status: 'success',
+            report: response.verificationReport,
+            failureCategory: 'none',
+          };
+          break;
+        case 'dev_mode':
+          completedVerificationResult = {
+            status: 'dev_mode',
+            report: response.verificationReport,
+            failureCategory: 'none',
+          };
+          break;
+        case 'failed':
+          completedVerificationResult = { status: 'failed', report: response.verificationReport };
+          break;
+      }
+      await store.completeVerificationResult(message.sessionId, message.finalizationId, completedVerificationResult);
     } catch (error) {
       logger.error('[VerificationWorker] SQS verification work failed', { itemIdentifier }, error);
       if (parseApproximateReceiveCount(record) >= VERIFICATION_WORK_MAX_RECEIVE_COUNT) {

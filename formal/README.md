@@ -78,11 +78,8 @@ Committed formal claims should satisfy:
 
 Lean may depend on standard-library axioms where expected. The important rule is
 that the public claim stays inspectable and does not overstate what was proved.
-`pnpm formal:audit` runs the dependency check for the theorem set listed in
+`pnpm formal:audit` invokes `#print axioms` for the theorem set listed in
 `formal-report.json` and records stable dependency summaries in
-`docs/formal/formal-audit.json`.
-That audit invokes `#print axioms` for the current theorem set and records the
-result in
 [`docs/formal/formal-audit.json`](../docs/formal/formal-audit.json).
 Keep that audit artifact as the source of truth instead of hand-maintaining
 per-theorem axiom tables in this README.
@@ -118,12 +115,14 @@ in-range seen indices together with `validVotes <= seenIndices.length`. Those
 invariants imply the seen-index count cannot exceed `treeSize`; the
 zero-exclusion completeness theorem is stated directly over `processVotes`.
 
-Guest correspondence uses explicit bounds: `treeSize <= 1,000,000`, presented
-vote count `<= 1,000,000`, and each candidate tally bucket `<= 1,000,000`. Rust
-rejects inputs beyond those bounds through the checked validation-and-tally path
-shared by `guest_main` and the guest-vector tests. Under those accepted-input
-bounds, Lean proves that modeled seen, valid, rejected, and per-candidate tally
-bucket counts remain within the Rust `u32` domain.
+The Lean guest correspondence theorem assumes two input bounds:
+`treeSize <= 1,000,000` and presented vote count `<= 1,000,000`. Under these
+assumptions, Lean proves that modeled seen, valid, rejected, and per-candidate
+tally bucket counts remain within the Rust `u32` domain. It also proves each
+candidate tally bucket `<= 1,000,000` as a consequence of the fold invariants;
+that bucket bound is not an additional input assumption. Rust enforces the
+tree-size and vote-count bounds through the validation-and-tally path shared by
+`guest_main` and the guest-vector tests, and uses checked counter increments.
 
 ## Generated Artifacts
 
@@ -145,6 +144,29 @@ docs/formal/
 The stable formal artifacts live under the public `docs/formal/` area. Keep
 `docs/README.md`, the emitters, scripts, tests, and workflow filters aligned if
 that contract changes.
+
+`Scripts/EmitTestVectors.lean` owns the contents of the six generated-vector
+files. `pnpm formal:vectors` formats its emitted JSON with the shared Oxfmt
+configuration before retaining it. `pnpm formal:vectors:check` applies that
+same formatting to newly emitted comparison files before comparing their bytes
+with the committed files. The emitter produces an unnumbered exact-current envelope:
+the current discriminator, the path-bound vector kind, modeled runtime bounds,
+the kind-specific payload, and a canonical SHA-256 fingerprint. The fingerprint
+covers the recursively key-sorted, whitespace-free envelope body without the
+fingerprint field itself. Consumers reject unknown or missing keys, a wrong
+discriminator or kind, metadata that differs from current TypeScript/Rust
+constants, and content whose fingerprint is stale. Retired shapes have no
+fallback reader.
+
+This bridge does not turn Lean into a runtime-code generator. The Lean models
+and emitter stay independent of the TypeScript and Rust implementations;
+runtime admission and constant-equality assertions make disagreement visible in
+tests. `Scripts/EmitFormalReport.lean` separately owns the exhaustive
+generated-vector path-to-kind registry included in the stable report, and the
+formal audit hashes the committed bytes of those registered files. The audit
+writer also uses the shared formatting helper. `pnpm formal:verify` checks
+Oxfmt formatting for the report, audit, and vectors in addition to their
+respective freshness checks.
 
 Freshness checks generate comparison vectors and temporary `#print axioms`
 sources in self-cleaning directories under the operating system's temporary
@@ -180,7 +202,7 @@ curl https://elan.lean-lang.org/elan-init.sh -sSf | sh
 source "$HOME/.elan/env"
 ```
 
-The workspace currently pins Lean `v4.32.2`, the latest stable release
+The workspace currently pins Lean `v4.33.1`, the latest stable release
 published when this workspace was last refreshed. Refresh that pin deliberately in a
 small change, because Lean does not promise strong backwards compatibility
 between all versions.

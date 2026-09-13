@@ -1,6 +1,5 @@
-export { BasePage } from './BasePage';
 export { HomePage } from './HomePage';
-export { VotePage, type VoteChoice } from './VotePage';
+export { VotePage } from './VotePage';
 export { AggregatePage, type TamperScenario } from './AggregatePage';
 export { ResultPage } from './ResultPage';
 export {

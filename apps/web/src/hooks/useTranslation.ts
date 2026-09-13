@@ -1,27 +1,21 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback } from 'react';
 import { useLanguage } from './useLanguage';
-import { t, getTranslations } from '@stark-ballot/web/i18n';
+import { t, type TranslationKey, type TranslationParams } from '@stark-ballot/web/i18n';
 
 export type UseTranslationResult = {
-  t: (key: Parameters<typeof t>[1], params?: Parameters<typeof t>[2]) => string;
-  translations: ReturnType<typeof getTranslations>;
+  t: (key: TranslationKey, params?: TranslationParams) => string;
   language: ReturnType<typeof useLanguage>['language'];
 };
 
 export function useTranslation(): UseTranslationResult {
   const { language } = useLanguage();
   const translate = useCallback(
-    (key: Parameters<typeof t>[1], params?: Parameters<typeof t>[2]) => t(language, key, params),
+    (key: TranslationKey, params?: TranslationParams) => t(language, key, params),
     [language],
   );
-  const translations = useMemo(() => getTranslations(language), [language]);
 
-  return useMemo(
-    () => ({
-      t: translate,
-      translations,
-      language,
-    }),
-    [language, translate, translations],
-  );
+  return {
+    t: translate,
+    language,
+  };
 }

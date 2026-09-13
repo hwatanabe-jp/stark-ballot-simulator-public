@@ -2,6 +2,7 @@ import StarkBallotFormal.Bitmap
 import StarkBallotFormal.GuestModel
 import StarkBallotFormal.InputCommitment
 import StarkBallotFormal.VerificationSummary
+import Lean.Data.Json
 
 namespace Scripts.EmitTestVectors
 
@@ -358,11 +359,157 @@ def hexDigit (value : Nat) : String :=
 def byteHex (value : Nat) : String :=
   hexDigit ((value / 16) % 16) ++ hexDigit (value % 16)
 
+def rotateRight32 (value : UInt32) (amount : Nat) : UInt32 :=
+  if amount = 0 then
+    value
+  else
+    (value >>> UInt32.ofNat amount) ||| (value <<< UInt32.ofNat (32 - amount))
+
+def sha256Choose (x y z : UInt32) : UInt32 :=
+  (x &&& y) ^^^ ((~~~x) &&& z)
+
+def sha256Majority (x y z : UInt32) : UInt32 :=
+  (x &&& y) ^^^ (x &&& z) ^^^ (y &&& z)
+
+def sha256BigSigma0 (value : UInt32) : UInt32 :=
+  rotateRight32 value 2 ^^^ rotateRight32 value 13 ^^^ rotateRight32 value 22
+
+def sha256BigSigma1 (value : UInt32) : UInt32 :=
+  rotateRight32 value 6 ^^^ rotateRight32 value 11 ^^^ rotateRight32 value 25
+
+def sha256SmallSigma0 (value : UInt32) : UInt32 :=
+  rotateRight32 value 7 ^^^ rotateRight32 value 18 ^^^ (value >>> UInt32.ofNat 3)
+
+def sha256SmallSigma1 (value : UInt32) : UInt32 :=
+  rotateRight32 value 17 ^^^ rotateRight32 value 19 ^^^ (value >>> UInt32.ofNat 10)
+
+def sha256RoundConstants : Array UInt32 := #[
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+  0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+  0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+  0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+  0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+  0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+  0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+  0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+  0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+]
+
+structure Sha256State where
+  a : UInt32
+  b : UInt32
+  c : UInt32
+  d : UInt32
+  e : UInt32
+  f : UInt32
+  g : UInt32
+  h : UInt32
+
+def sha256InitialState : Sha256State := {
+  a := 0x6a09e667
+  b := 0xbb67ae85
+  c := 0x3c6ef372
+  d := 0xa54ff53a
+  e := 0x510e527f
+  f := 0x9b05688c
+  g := 0x1f83d9ab
+  h := 0x5be0cd19
+}
+
+def sha256WordAt (chunk : List UInt8) (wordIndex : Nat) : UInt32 :=
+  let byteIndex := wordIndex * 4
+  let byte0 := UInt32.ofNat chunk[byteIndex]!.toNat
+  let byte1 := UInt32.ofNat chunk[byteIndex + 1]!.toNat
+  let byte2 := UInt32.ofNat chunk[byteIndex + 2]!.toNat
+  let byte3 := UInt32.ofNat chunk[byteIndex + 3]!.toNat
+  (byte0 <<< UInt32.ofNat 24) |||
+    (byte1 <<< UInt32.ofNat 16) |||
+    (byte2 <<< UInt32.ofNat 8) |||
+    byte3
+
+def sha256Schedule (chunk : List UInt8) : Array UInt32 :=
+  (List.range 64).foldl (fun words index =>
+    if index < 16 then
+      words.push (sha256WordAt chunk index)
+    else
+      words.push (
+        sha256SmallSigma1 words[index - 2]! +
+          words[index - 7]! +
+          sha256SmallSigma0 words[index - 15]! +
+          words[index - 16]!
+      )
+  ) #[]
+
+def sha256Compress (state : Sha256State) (chunk : List UInt8) : Sha256State :=
+  let schedule := sha256Schedule chunk
+  let compressed := (List.range 64).foldl (fun working index =>
+    let temporary1 := working.h +
+      sha256BigSigma1 working.e +
+      sha256Choose working.e working.f working.g +
+      sha256RoundConstants[index]! +
+      schedule[index]!
+    let temporary2 := sha256BigSigma0 working.a + sha256Majority working.a working.b working.c
+    {
+      a := temporary1 + temporary2
+      b := working.a
+      c := working.b
+      d := working.c
+      e := working.d + temporary1
+      f := working.e
+      g := working.f
+      h := working.g
+    }
+  ) state
+  {
+    a := state.a + compressed.a
+    b := state.b + compressed.b
+    c := state.c + compressed.c
+    d := state.d + compressed.d
+    e := state.e + compressed.e
+    f := state.f + compressed.f
+    g := state.g + compressed.g
+    h := state.h + compressed.h
+  }
+
+def sha256PaddedBytes (value : String) : List UInt8 :=
+  let bytes := value.toUTF8.data.toList
+  let bitLength := bytes.length * 8
+  let withMarker := bytes ++ [UInt8.ofNat 0x80]
+  let zeroPaddingLength := (56 + 64 - (withMarker.length % 64)) % 64
+  let lengthBytes := (List.range 8).reverse.map (fun byteIndex =>
+    UInt8.ofNat ((bitLength / (2 ^ (byteIndex * 8))) % 256))
+  withMarker ++ List.replicate zeroPaddingLength 0 ++ lengthBytes
+
+def sha256WordHex (value : UInt32) : String :=
+  String.intercalate "" ((List.range 4).reverse.map (fun byteIndex =>
+    byteHex ((value.toNat / (2 ^ (byteIndex * 8))) % 256)))
+
+def sha256Hex (value : String) : String :=
+  let bytes := sha256PaddedBytes value
+  let chunkCount := bytes.length / 64
+  let chunks := (List.range chunkCount).map (fun chunkIndex =>
+    (bytes.drop (chunkIndex * 64)).take 64)
+  let state := chunks.foldl sha256Compress sha256InitialState
+  String.intercalate "" [
+    sha256WordHex state.a,
+    sha256WordHex state.b,
+    sha256WordHex state.c,
+    sha256WordHex state.d,
+    sha256WordHex state.e,
+    sha256WordHex state.f,
+    sha256WordHex state.g,
+    sha256WordHex state.h
+  ]
+
 def bytesHex (bytes : List Nat) : String :=
   String.intercalate "" (bytes.map byteHex)
-
-def hex32 (byte : Nat) : String :=
-  "0x" ++ bytesHex (List.replicate 32 byte)
 
 def bytesRange (start count : Nat) : List Nat :=
   (List.range count).map (fun offset => (start + offset) % 256)
@@ -736,23 +883,77 @@ def guestModelCases : List GuestModelCase := [
 def renderJsonArray (items : List String) : String :=
   "[\n" ++ String.intercalate ",\n" items ++ "\n]\n"
 
+def formalVectorEnvelopeType : String :=
+  "stark-ballot.formal-vector.current"
+
+def formalGuestCurrentMethodVersion : Nat := 14
+def formalGuestMaxTotalExpected : Nat := formalGuestMaxTreeSize
+def formalGuestMaxMerklePathNodesPerRecord : Nat := u16Max
+def formalGuestMaxTotalMerklePathNodes : Nat := 1000000
+def formalGuestMaxSerializedInputBytes : Nat := 64 * 1024 * 1024
+def formalGuestTallyWidth : Nat := 5
+
+def modeledBoundsJson : String :=
+  "{\n" ++ jsonObjectBody [
+    "    \"inputCommitment\": {\n" ++ jsonObjectBody [
+      "      \"formatVersion\": " ++ jsonNat inputCommitmentFormatVersion,
+      "      \"u16Max\": " ++ jsonNat u16Max,
+      "      \"u32Max\": " ++ jsonNat u32Max
+    ] ++ "\n    }",
+    "    \"guest\": {\n" ++ jsonObjectBody [
+      "      \"methodVersion\": " ++ jsonNat formalGuestCurrentMethodVersion,
+      "      \"treeSizeMax\": " ++ jsonNat formalGuestMaxTreeSize,
+      "      \"totalExpectedMax\": " ++ jsonNat formalGuestMaxTotalExpected,
+      "      \"voteCountMax\": " ++ jsonNat formalGuestMaxVoteCount,
+      "      \"merklePathNodesPerRecordMax\": " ++ jsonNat formalGuestMaxMerklePathNodesPerRecord,
+      "      \"totalMerklePathNodesMax\": " ++ jsonNat formalGuestMaxTotalMerklePathNodes,
+      "      \"serializedInputBytesMax\": " ++ jsonNat formalGuestMaxSerializedInputBytes,
+      "      \"tallyWidth\": " ++ jsonNat formalGuestTallyWidth,
+      "      \"tallyBucketMax\": " ++ jsonNat formalGuestMaxTallyBucket
+    ] ++ "\n    }"
+  ] ++ "\n  }"
+
+def canonicalJson (value : String) : String :=
+  match Lean.Json.parse value with
+  | .ok parsed => Lean.Json.compress parsed
+  | .error error => panic! s!"generated formal vector JSON is invalid: {error}"
+
+def formalVectorBodyJson (kind payloadJson : String) : String :=
+  "{\n" ++ jsonObjectBody [
+    "  \"envelopeType\": " ++ jsonString formalVectorEnvelopeType,
+    "  \"kind\": " ++ jsonString kind,
+    "  \"modeledBounds\": " ++ modeledBoundsJson,
+    "  \"payload\": " ++ payloadJson.trimAsciiEnd.toString
+  ] ++ "\n}"
+
+def renderFormalVectorEnvelope (kind payloadJson : String) : String :=
+  let bodyJson := formalVectorBodyJson kind payloadJson
+  let fingerprint := sha256Hex (canonicalJson bodyJson)
+  "{\n" ++ jsonObjectBody [
+    "  \"envelopeType\": " ++ jsonString formalVectorEnvelopeType,
+    "  \"kind\": " ++ jsonString kind,
+    "  \"modeledBounds\": " ++ modeledBoundsJson,
+    "  \"payload\": " ++ payloadJson.trimAsciiEnd.toString,
+    "  \"canonicalSha256\": " ++ jsonString fingerprint
+  ] ++ "\n}\n"
+
 def summaryCasesJson : String :=
-  renderJsonArray (summaryCases.map renderSummaryCase)
+  renderFormalVectorEnvelope "verification-summary-cases" (renderJsonArray (summaryCases.map renderSummaryCase))
 
 def displayCasesJson : String :=
-  renderJsonArray (displayCases.map renderDisplayCase)
+  renderFormalVectorEnvelope "verification-display-cases" (renderJsonArray (displayCases.map renderDisplayCase))
 
 def inputCommitmentCasesJson : String :=
-  renderJsonArray (inputCommitmentCases.map renderInputCase)
+  renderFormalVectorEnvelope "input-commitment-cases" (renderJsonArray (inputCommitmentCases.map renderInputCase))
 
 def bitmapCasesJson : String :=
-  renderJsonArray (bitmapCases.map renderBitmapCase)
+  renderFormalVectorEnvelope "bitmap-cases" (renderJsonArray (bitmapCases.map renderBitmapCase))
 
 def checkDefinitionsJson : String :=
-  renderJsonArray (checkDefinitions.map renderCheckDefinition)
+  renderFormalVectorEnvelope "check-definitions" (renderJsonArray (checkDefinitions.map renderCheckDefinition))
 
 def guestModelCasesJson : String :=
-  renderJsonArray (guestModelCases.map renderGuestModelCase)
+  renderFormalVectorEnvelope "guest-model-cases" (renderJsonArray (guestModelCases.map renderGuestModelCase))
 
 def generatedVectorsDir : IO System.FilePath := do
   let appPath ← IO.FS.realPath (← IO.appPath)

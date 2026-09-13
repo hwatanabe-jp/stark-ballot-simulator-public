@@ -27,24 +27,18 @@ resource "aws_codebuild_project" "foundation_image_signing_authority_resolver" {
       value = var.aws_region
     }
 
-    environment_variable {
-      name  = "FOUNDATION_SIGNING_AUTHORITY_BUCKET"
-      value = local.foundation_release_manifest_bucket_name
-    }
   }
 
   logs_config {
     cloudwatch_logs {
       group_name  = module.foundation_pipeline_codebuild_log_groups.log_groups[local.foundation_image_signing_authority_resolver_project_name].name
-      stream_name = "foundation-signing-authority"
+      stream_name = "foundation-consumer-authority"
     }
   }
 
   source {
-    type = "CODEPIPELINE"
-    buildspec = templatefile("${path.module}/buildspec-foundation-signing-authority-resolver.yml.tftpl", {
-      entrypoint_sha256 = filesha256("${path.module}/foundation-pipeline-scripts/resolve-foundation-signing-authority.sh")
-    })
+    type      = "CODEPIPELINE"
+    buildspec = "infra/terraform/bootstrap/buildspec-foundation-signing-authority-resolver.yml"
   }
 
   tags = merge(local.common_tags, {

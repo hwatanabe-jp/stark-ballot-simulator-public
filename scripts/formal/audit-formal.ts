@@ -5,18 +5,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { readdirSync, statSync } from 'node:fs';
-import { format, resolveConfig, type Options } from 'prettier';
+import { formatSource } from '../formatting/format-source';
+import { parseFormalReport, type FormalReport } from './formal-report-admission';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
     throw new Error(`Expected ${label} to be defined`);
   }
   return value;
-}
-
-interface FormalReport {
-  theorems: Array<{ name: string; source: string; claim: string }>;
-  generatedVectorArtifacts: string[];
 }
 
 interface TheoremAuditEntry {
@@ -63,7 +59,6 @@ const allowedCoreAxioms = ['propext', 'Quot.sound', 'Classical.choice'];
 const allowedNativeDecideSources = ['formal/StarkBallotFormal/Bitmap.lean'];
 const allowedNativeDecideDependencyPrefixes = ['StarkBallotFormal.byteValueAt_get_bit._native.native_decide.'];
 const forbiddenLeanTokens = ['sorry', 'axiom', 'admit', 'unsafe'];
-let prettierOptions: Options | null = null;
 
 function sha256(text: string): string {
   return createHash('sha256').update(text).digest('hex');
@@ -143,11 +138,12 @@ function extractTheoremStatement(theorem: { name: string; source: string }): str
   return source.slice(start, proofStart).trim().replace(/\s+/g, ' ');
 }
 
-function readJson<T>(relativePath: string): T {
-  return JSON.parse(readFileSync(path.join(repoRoot, relativePath), 'utf8')) as T;
+function readFormalReport(relativePath: string): FormalReport {
+  const input: unknown = JSON.parse(readFileSync(path.join(repoRoot, relativePath), 'utf8'));
+  return parseFormalReport(input);
 }
 
-function assertUniqueTheoremNames(theorems: Array<{ name: string }>): void {
+function assertUniqueTheoremNames(theorems: readonly { name: string }[]): void {
   const seen = new Set<string>();
   for (const theorem of theorems) {
     if (seen.has(theorem.name)) {
@@ -159,8 +155,8 @@ function assertUniqueTheoremNames(theorems: Array<{ name: string }>): void {
 
 function assertAuditEntriesMatchReport(
   label: string,
-  reportTheorems: Array<{ name: string }>,
-  entries: Array<{ name: string }>,
+  reportTheorems: readonly { name: string }[],
+  entries: readonly { name: string }[],
 ): void {
   const expectedNames = new Set(reportTheorems.map((theorem) => theorem.name));
   const actualNames = new Set<string>();
@@ -208,7 +204,9 @@ function parsePrintAxiomsOutput(output: string): Map<string, string[]> {
   return dependenciesByName;
 }
 
-function collectTheoremDependencies(theorems: Array<{ name: string; source: string }>): TheoremDependencyAuditEntry[] {
+function collectTheoremDependencies(
+  theorems: readonly { name: string; source: string }[],
+): TheoremDependencyAuditEntry[] {
   const tempDir = mkdtempSync(path.join(tmpdir(), 'stark-ballot-formal-axioms-'));
   const tempLeanPath = path.join(tempDir, 'PrintAxioms.lean');
 
@@ -269,7 +267,7 @@ function collectTheoremDependencies(theorems: Array<{ name: string; source: stri
 }
 
 function buildAudit(): FormalAudit {
-  const report = readJson<FormalReport>(reportPath);
+  const report = readFormalReport(reportPath);
   assertUniqueTheoremNames(report.theorems);
   const leanFiles = listLeanFiles(formalDir);
   assertProofHygiene(leanFiles);
@@ -306,13 +304,13 @@ function buildAudit(): FormalAudit {
     },
     theoremStatements,
     theoremDependencies,
-    generatedVectorArtifacts: report.generatedVectorArtifacts.map((artifactPath) => {
-      const absolutePath = path.join(repoRoot, artifactPath);
+    generatedVectorArtifacts: report.generatedVectorArtifacts.map((artifact) => {
+      const absolutePath = path.join(repoRoot, artifact.path);
       if (!existsSync(absolutePath)) {
-        throw new Error(`formal report references missing vector artifact: ${artifactPath}`);
+        throw new Error(`formal report references missing vector artifact: ${artifact.path}`);
       }
       return {
-        path: artifactPath,
+        path: artifact.path,
         sha256: sha256(readFileSync(absolutePath, 'utf8')),
       };
     }),
@@ -320,12 +318,7 @@ function buildAudit(): FormalAudit {
 }
 
 async function stableJson(value: unknown): Promise<string> {
-  prettierOptions ??= (await resolveConfig(path.join(repoRoot, 'package.json'))) ?? {};
-  return await format(JSON.stringify(value), {
-    ...prettierOptions,
-    filepath: path.join(repoRoot, auditPath),
-    parser: 'json',
-  });
+  return await formatSource(path.join(repoRoot, auditPath), JSON.stringify(value));
 }
 
 async function main(): Promise<void> {

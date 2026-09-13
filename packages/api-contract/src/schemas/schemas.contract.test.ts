@@ -1,14 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  getSchemaDescriptor,
   s,
   type ArraySchema,
-  type DefaultSchema,
   type EffectsSchema,
-  type IntersectionSchema,
   type NullableSchema,
   type ObjectSchema,
   type OptionalSchema,
-  type SchemaTypeAny,
+  type AnySchema,
   type UnionSchema,
 } from '@stark-ballot/validation/schema';
 import {
@@ -21,6 +20,7 @@ import {
   CurrentFinalizationResponseSchema,
   StandardErrorResponseSchema,
   VerificationResourceResponseSchema,
+  currentZkvmJournalSchema,
   VerificationObservationResponseSchema,
   VerificationRunResponseSchema,
   BulletinResponseSchema,
@@ -30,20 +30,7 @@ import {
   SthResponseSchema,
   InputCommitmentResponseSchema,
   PUBLIC_VERIFICATION_CHECK_NOTE_KEY_VALUES,
-  type BitmapProofResponse,
-  type BulletinProofResponse,
-  type BulletinResponse,
-  type ConsistencyProofResponse,
-  type FinalizationResponse,
-  type CurrentFinalizationResponse,
-  type ProgressResponse,
-  type SessionResponse,
-  type SthResponse,
-  type InputCommitmentResponse,
-  type VerificationRunResponse,
-  type VerificationObservationResponse,
-  type VerificationResourceResponse,
-  type VoteResponse,
+  verificationCheckSchema,
 } from './index';
 import { TARGET_API_ROUTE_CONTRACTS } from '@stark-ballot/api-contract/routes';
 import sessionFixture from './fixtures/json/session.post.json';
@@ -123,87 +110,16 @@ type SchemaCase = {
   fixtures: unknown[];
 };
 
-type AnySchema = SchemaTypeAny;
 type AnyObjectSchema = ObjectSchema;
 type AnyUnionSchema = UnionSchema;
 type AnyArraySchema = ArraySchema;
-type AnyIntersectionSchema = IntersectionSchema;
-type AnyDiscriminatedUnionSchema = UnionSchema;
 
 const isObjectSchema = (schema: AnySchema): schema is AnyObjectSchema =>
-  Object.prototype.isPrototypeOf.call(s.ObjectSchema.prototype, schema);
+  getSchemaDescriptor(schema).kind === 'ObjectSchema';
 const isArraySchema = (schema: AnySchema): schema is AnyArraySchema =>
-  Object.prototype.isPrototypeOf.call(s.ArraySchema.prototype, schema);
+  getSchemaDescriptor(schema).kind === 'ArraySchema';
 const isUnionSchema = (schema: AnySchema): schema is AnyUnionSchema =>
-  Object.prototype.isPrototypeOf.call(s.UnionSchema.prototype, schema);
-const isIntersectionSchema = (schema: AnySchema): schema is AnyIntersectionSchema =>
-  Object.prototype.isPrototypeOf.call(s.IntersectionSchema.prototype, schema);
-type HasStringIndex<T> = string extends keyof T ? true : false;
-type HasKey<T, K extends PropertyKey> = K extends keyof T ? true : false;
-type ConcreteResponseTypeChecks = [
-  HasStringIndex<SessionResponse>,
-  HasStringIndex<VoteResponse>,
-  HasStringIndex<ProgressResponse>,
-  HasStringIndex<FinalizationResponse>,
-  HasStringIndex<FinalizationResponse['data']>,
-  HasStringIndex<CurrentFinalizationResponse>,
-  HasStringIndex<NonNullable<CurrentFinalizationResponse['data']>>,
-  HasStringIndex<VerificationResourceResponse>,
-  HasStringIndex<VerificationResourceResponse['data']>,
-  HasStringIndex<VerificationRunResponse>,
-  HasStringIndex<VerificationObservationResponse>,
-  HasStringIndex<BulletinResponse>,
-  HasStringIndex<BulletinProofResponse>,
-  HasStringIndex<ConsistencyProofResponse>,
-  HasStringIndex<BitmapProofResponse>,
-  HasStringIndex<SthResponse>,
-  HasStringIndex<InputCommitmentResponse>,
-];
-const concreteResponseTypeChecks: ConcreteResponseTypeChecks = [
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-];
-
-type PublicResponseBoundaryKeyChecks = [
-  HasKey<VerificationResourceResponse['data'], 'electionManifest'>,
-  HasKey<VerificationResourceResponse['data'], 'closeStatement'>,
-  HasKey<VerificationResourceResponse['data'], 'bitmapProofSource'>,
-  HasKey<VerificationResourceResponse['data'], 'scenarios'>,
-  HasKey<VerificationResourceResponse['data'], 'verificationResult'>,
-  HasKey<FinalizationResponse['data'], 'electionManifest'>,
-  HasKey<FinalizationResponse['data'], 'closeStatement'>,
-  HasKey<FinalizationResponse['data'], 'bitmapProofSource'>,
-  HasKey<FinalizationResponse['data'], 'scenarios'>,
-  HasKey<FinalizationResponse['data'], 'verificationResult'>,
-];
-const publicResponseBoundaryKeyChecks: PublicResponseBoundaryKeyChecks = [
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-  false,
-];
-
+  getSchemaDescriptor(schema).kind === 'UnionSchema';
 const HEX32_NORMALIZED = /^0x[0-9a-f]{64}$/;
 const HEX_A = `0x${'a'.repeat(64)}`;
 const HEX_B = `0x${'b'.repeat(64)}`;
@@ -526,62 +442,75 @@ const SCHEMA_CASES: SchemaCase[] = [
 ];
 
 const OPTIONAL_COVERAGE_EXCEPTIONS: Record<string, string[]> = {
-  FinalizationResponse: [],
-  CurrentFinalizationResponse: ['data.result.presentation.verificationReport.errors[]'],
+  FinalizationResponse: [
+    'data.result.presentation.verificationReport',
+    'data.result.presentation.verificationReport.errors',
+    'data.result.presentation.verificationReport.errors[]',
+  ],
+  CurrentFinalizationResponse: [
+    'data.result.presentation.verificationReport',
+    'data.result.presentation.verificationReport.errors',
+    'data.result.presentation.verificationReport.errors[]',
+  ],
   VerificationResourceResponse: [
     'data.journal.value.imageId',
+    'data.verifierResult.report',
     'data.verifierResult.report.dev_mode_receipt',
+    'data.verifierResult.report.duration_ms',
+    'data.verifierResult.report.errors',
+    'data.verifierResult.report.errors[]',
     'data.verifierResult.report.expected_image_id',
     'data.verifierResult.report.receipt_image_id',
+    'data.verifierResult.report.status',
     'data.verifierResult.report.verified_at',
     'data.verifierResult.report.verifier_version',
   ],
 };
 
-const getInnerType = (schema: OptionalSchema | NullableSchema | DefaultSchema): AnySchema => schema._def.innerType;
-
-const getEffectSchema = (schema: EffectsSchema): AnySchema => schema._def.schema;
-
-const getArrayItem = (schema: AnyArraySchema): AnySchema => schema._def.type;
-
-const getObjectShape = (schema: AnyObjectSchema): Record<string, AnySchema> => schema.shape;
-
-const getUnionOptions = (schema: AnyUnionSchema): readonly AnySchema[] => schema._def.options;
-
-const getIntersectionMembers = (schema: AnyIntersectionSchema): [AnySchema, AnySchema] => [
-  schema._def.left,
-  schema._def.right,
-];
-
-const buildUnionSchema = (options: AnySchema[]): AnySchema => {
-  if (options.length === 0) {
-    throw new Error('Expected at least one union option');
+const getInnerType = (schema: OptionalSchema | NullableSchema): AnySchema => {
+  const descriptor = getSchemaDescriptor(schema);
+  if (descriptor.kind !== 'OptionalSchema' && descriptor.kind !== 'NullableSchema') {
+    throw new Error(`Expected wrapped schema descriptor, received ${descriptor.kind}`);
   }
-  if (options.length === 1) {
-    return strictDefined(options[0]);
-  }
-  return s.union(options as unknown as [SchemaTypeAny, SchemaTypeAny, ...SchemaTypeAny[]]);
+  return descriptor.inner;
 };
 
-const getDiscriminatedOptions = (schema: AnyDiscriminatedUnionSchema): Iterable<AnySchema> => {
-  const rawOptions = (schema as unknown as { _def?: { options?: unknown } })._def?.options;
-  if (rawOptions instanceof Map) {
-    return rawOptions.values() as Iterable<AnySchema>;
+const getEffectSchema = (schema: EffectsSchema): AnySchema => {
+  const descriptor = getSchemaDescriptor(schema);
+  if (descriptor.kind !== 'EffectsSchema') {
+    throw new Error(`Expected effects schema descriptor, received ${descriptor.kind}`);
   }
-  if (Array.isArray(rawOptions)) {
-    return rawOptions as AnySchema[];
+  return descriptor.inner;
+};
+
+const getArrayItem = (schema: AnyArraySchema): AnySchema => {
+  const descriptor = getSchemaDescriptor(schema);
+  if (descriptor.kind !== 'ArraySchema') {
+    throw new Error(`Expected array schema descriptor, received ${descriptor.kind}`);
   }
-  return [];
+  return descriptor.item;
+};
+
+const getObjectShape = (schema: AnyObjectSchema): Readonly<Record<string, AnySchema>> => {
+  const descriptor = getSchemaDescriptor(schema);
+  if (descriptor.kind !== 'ObjectSchema') {
+    throw new Error(`Expected object schema descriptor, received ${descriptor.kind}`);
+  }
+  return descriptor.shape;
+};
+
+const getUnionOptions = (schema: AnyUnionSchema): readonly AnySchema[] => {
+  const descriptor = getSchemaDescriptor(schema);
+  if (descriptor.kind !== 'UnionSchema') {
+    throw new Error(`Expected union schema descriptor, received ${descriptor.kind}`);
+  }
+  return descriptor.options;
 };
 
 const unwrapSchema = (schema: AnySchema): AnySchema => {
   let current: AnySchema = schema;
   for (;;) {
-    if (
-      current instanceof s.OptionalSchema ||
-      current instanceof s.NullableSchema ||
-      current instanceof s.DefaultSchema
-    ) {
+    if (current instanceof s.OptionalSchema || current instanceof s.NullableSchema) {
       current = getInnerType(current);
       continue;
     }
@@ -594,15 +523,14 @@ const unwrapSchema = (schema: AnySchema): AnySchema => {
 };
 
 const hasHex32Description = (schema: AnySchema): boolean => {
-  const described = schema as { description?: string; _def?: { description?: string } };
-  return described.description === 'hex32' || described._def?.description === 'hex32';
+  return schema.description === 'hex32';
 };
 
 const isHex32Schema = (schema: AnySchema): boolean => {
   if (hasHex32Description(schema)) {
     return true;
   }
-  if (schema instanceof s.OptionalSchema || schema instanceof s.NullableSchema || schema instanceof s.DefaultSchema) {
+  if (schema instanceof s.OptionalSchema || schema instanceof s.NullableSchema) {
     return isHex32Schema(getInnerType(schema));
   }
   if (schema instanceof s.EffectsSchema) {
@@ -627,13 +555,6 @@ const collectHex32Paths = (schema: AnySchema, base: string[] = []): HexPath[] =>
   }
   if (isUnionSchema(unwrapped)) {
     return getUnionOptions(unwrapped).flatMap((option) => collectHex32Paths(option, base));
-  }
-  if (isIntersectionSchema(unwrapped)) {
-    const [left, right] = getIntersectionMembers(unwrapped);
-    return [...collectHex32Paths(left, base), ...collectHex32Paths(right, base)];
-  }
-  if (unwrapped instanceof s.DiscriminatedUnionSchema) {
-    return Array.from(getDiscriminatedOptions(unwrapped)).flatMap((option) => collectHex32Paths(option, base));
   }
   return [];
 };
@@ -694,7 +615,7 @@ const collectLeafPathsWithOptionality = (
   base: string[] = [],
   parentOptional = false,
 ): LeafPathInfo[] => {
-  if (schema instanceof s.OptionalSchema || schema instanceof s.DefaultSchema) {
+  if (schema instanceof s.OptionalSchema) {
     return collectLeafPathsWithOptionality(getInnerType(schema), base, true);
   }
   if (schema instanceof s.NullableSchema) {
@@ -718,18 +639,6 @@ const collectLeafPathsWithOptionality = (
   if (isUnionSchema(schema)) {
     return getUnionOptions(schema).flatMap((option) => collectLeafPathsWithOptionality(option, base, parentOptional));
   }
-  if (isIntersectionSchema(schema)) {
-    const [left, right] = getIntersectionMembers(schema);
-    return [
-      ...collectLeafPathsWithOptionality(left, base, parentOptional),
-      ...collectLeafPathsWithOptionality(right, base, parentOptional),
-    ];
-  }
-  if (schema instanceof s.DiscriminatedUnionSchema) {
-    return Array.from(getDiscriminatedOptions(schema)).flatMap((option) =>
-      collectLeafPathsWithOptionality(option, base, parentOptional),
-    );
-  }
   return [{ path: formatPath(base), optional: parentOptional }];
 };
 
@@ -746,57 +655,6 @@ const collectLeafValuePaths = (value: unknown, base: string[] = []): string[] =>
   return [formatPath(base)];
 };
 
-const mergeStrictObjectSchemas = (leftSchema: AnyObjectSchema, rightSchema: AnyObjectSchema): AnyObjectSchema => {
-  const leftShape = getObjectShape(leftSchema);
-  const rightShape = getObjectShape(rightSchema);
-  const mergedShape: Record<string, AnySchema> = {};
-  const keys = new Set([...Object.keys(leftShape), ...Object.keys(rightShape)]);
-
-  for (const key of keys) {
-    const hasLeftField = Object.hasOwn(leftShape, key);
-    const hasRightField = Object.hasOwn(rightShape, key);
-    if (hasLeftField && hasRightField) {
-      const leftField = strictDefined(leftShape[key]);
-      const rightField = strictDefined(rightShape[key]);
-      mergedShape[key] = s.intersection(makeDeepStrict(leftField), makeDeepStrict(rightField));
-      continue;
-    }
-    mergedShape[key] = makeDeepStrict(hasLeftField ? strictDefined(leftShape[key]) : strictDefined(rightShape[key]));
-  }
-
-  return s.object(mergedShape).strict();
-};
-
-const makeDeepStrictIntersection = (left: AnySchema, right: AnySchema): AnySchema => {
-  const leftUnwrapped = unwrapSchema(left);
-  const rightUnwrapped = unwrapSchema(right);
-
-  if (isObjectSchema(leftUnwrapped) && isObjectSchema(rightUnwrapped)) {
-    return mergeStrictObjectSchemas(leftUnwrapped, rightUnwrapped);
-  }
-  if (isObjectSchema(leftUnwrapped) && isUnionSchema(rightUnwrapped)) {
-    const options = getUnionOptions(rightUnwrapped).map((option) => makeDeepStrictIntersection(left, option));
-    return buildUnionSchema(options);
-  }
-  if (isUnionSchema(leftUnwrapped) && isObjectSchema(rightUnwrapped)) {
-    const options = getUnionOptions(leftUnwrapped).map((option) => makeDeepStrictIntersection(option, right));
-    return buildUnionSchema(options);
-  }
-  if (isObjectSchema(leftUnwrapped) && rightUnwrapped instanceof s.DiscriminatedUnionSchema) {
-    const options = Array.from(getDiscriminatedOptions(rightUnwrapped)).map((option) =>
-      makeDeepStrictIntersection(left, option),
-    );
-    return buildUnionSchema(options);
-  }
-  if (leftUnwrapped instanceof s.DiscriminatedUnionSchema && isObjectSchema(rightUnwrapped)) {
-    const options = Array.from(getDiscriminatedOptions(leftUnwrapped)).map((option) =>
-      makeDeepStrictIntersection(option, right),
-    );
-    return buildUnionSchema(options);
-  }
-  return s.intersection(makeDeepStrict(left), makeDeepStrict(right));
-};
-
 const makeDeepStrict = (schema: AnySchema): AnySchema => {
   if (schema instanceof s.OptionalSchema) {
     return makeDeepStrict(getInnerType(schema)).optional();
@@ -804,19 +662,11 @@ const makeDeepStrict = (schema: AnySchema): AnySchema => {
   if (schema instanceof s.NullableSchema) {
     return makeDeepStrict(getInnerType(schema)).nullable();
   }
-  if (schema instanceof s.DefaultSchema) {
-    const inner = makeDeepStrict(getInnerType(schema));
-    return inner.default(schema._def.defaultValue());
-  }
   if (schema instanceof s.EffectsSchema) {
     return schema;
   }
   if (isArraySchema(schema)) {
     return s.array(makeDeepStrict(getArrayItem(schema)));
-  }
-  if (isIntersectionSchema(schema)) {
-    const [left, right] = getIntersectionMembers(schema);
-    return makeDeepStrictIntersection(left, right);
   }
   if (isObjectSchema(schema)) {
     const shape = getObjectShape(schema);
@@ -826,11 +676,14 @@ const makeDeepStrict = (schema: AnySchema): AnySchema => {
     }
     const base = s.object(strictShape);
     let next: AnyObjectSchema = base;
-    const def = schema._def;
-    if (!(def.catchall instanceof s.NeverSchema)) {
-      next = next.catchall(makeDeepStrict(def.catchall));
+    const descriptor = getSchemaDescriptor(schema);
+    if (descriptor.kind !== 'ObjectSchema') {
+      throw new Error(`Expected object schema descriptor, received ${descriptor.kind}`);
     }
-    if (def.unknownKeys === 'passthrough') {
+    if (!(descriptor.catchall instanceof s.NeverSchema)) {
+      next = next.catchall(makeDeepStrict(descriptor.catchall));
+    }
+    if (descriptor.unknownKeys === 'passthrough') {
       next = next.passthrough();
     } else {
       next = next.strict();
@@ -985,6 +838,28 @@ describe('api response schemas', () => {
     expect(FinalizationResponseSchema.safeParse(finalizeSyncFixture).success).toBe(true);
   });
 
+  it('rejects a finalization presentation whose report contradicts its verification status', () => {
+    expect(
+      FinalizationResponseSchema.safeParse({
+        ...finalizeSyncFixture,
+        data: {
+          ...finalizeSyncFixture.data,
+          result: {
+            ...finalizeSyncFixture.data.result,
+            presentation: {
+              ...finalizeSyncFixture.data.result.presentation,
+              verificationStatus: 'success',
+              verificationReport: {
+                status: 'failed',
+                errors: ['Verification failed'],
+              },
+            },
+          },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it.each([
     ['treeSize', 0],
     ['totalExpected', -1],
@@ -1005,6 +880,41 @@ describe('api response schemas', () => {
       FinalizationResponseSchema.safeParse(
         finalizeSyncWithJournalField('verifiedTally', [CURRENT_JOURNAL_UINT32_MAX + 1, 0, 0, 0, 0]),
       ).success,
+    ).toBe(false);
+  });
+
+  it.each([
+    ['totalVotes', 63],
+    ['validVotes', 63],
+    ['invalidVotes', 1],
+    ['seenIndicesCount', 63],
+    ['missingSlots', 1],
+    ['invalidPresentedSlots', 1],
+    ['rejectedRecords', 1],
+    ['excludedSlots', 1],
+    ['verifiedTally', [14, 12, 14, 11, 14]],
+  ] as const)('rejects a current journal whose %s contradicts its count algebra', (field, value) => {
+    expect(
+      currentZkvmJournalSchema.safeParse({
+        ...finalizeSyncFixture.data.result.authority.journal,
+        [field]: value,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a current journal with fewer rejected records than invalid presented slots', () => {
+    expect(
+      currentZkvmJournalSchema.safeParse({
+        ...finalizeSyncFixture.data.result.authority.journal,
+        verifiedTally: [12, 12, 14, 11, 14],
+        totalVotes: 63,
+        validVotes: 63,
+        invalidVotes: 0,
+        seenIndicesCount: 64,
+        invalidPresentedSlots: 1,
+        rejectedRecords: 0,
+        excludedSlots: 1,
+      }).success,
     ).toBe(false);
   });
 
@@ -1389,11 +1299,11 @@ describe('api response schemas', () => {
 
   it.each([
     ['S0', verifyS0Fixture, false, 0, 0, 'missing_evidence', false],
-    ['S1', verifyS1Fixture, true, 1, 1, 'user_vote_excluded', false],
-    ['S2', verifyS2Fixture, true, 0, 0, 'published_tally_mismatch', true],
-    ['S3', verifyS3Fixture, true, 1, 1, 'votes_excluded', false],
-    ['S4', verifyS4Fixture, true, 0, 0, 'published_tally_mismatch', true],
-    ['S5', verifyS5Fixture, true, 4, 4, 'votes_excluded', false],
+    ['S1', verifyS1Fixture, true, 1, 1, 'votes_excluded_unknown', false],
+    ['S2', verifyS2Fixture, true, 0, 0, 'missing_evidence', false],
+    ['S3', verifyS3Fixture, true, 1, 1, 'votes_excluded_unknown', false],
+    ['S4', verifyS4Fixture, true, 0, 0, 'missing_evidence', false],
+    ['S5', verifyS5Fixture, true, 4, 4, 'votes_excluded_unknown', false],
   ] as const)(
     'validates grouped %s verification fixture without changing its fail-closed outcome',
     (scenarioId, fixture, tamperDetected, missingSlots, excludedSlots, summaryStatus, publishedTallyMismatch) => {
@@ -1429,63 +1339,45 @@ describe('api response schemas', () => {
     const baseCheck = strictDefined(verifyS0Fixture.data.verification.checks[0], 'verification check fixture');
 
     for (const noteKey of PUBLIC_VERIFICATION_CHECK_NOTE_KEY_VALUES) {
-      const result = VerificationResourceResponseSchema.safeParse({
-        ...verifyS0Fixture,
-        data: {
-          ...verifyS0Fixture.data,
-          verification: {
-            ...verifyS0Fixture.data.verification,
-            checks: [
-              {
-                ...baseCheck,
-                noteKey,
-              },
-            ],
-          },
-        },
+      const result = verificationCheckSchema.safeParse({
+        ...baseCheck,
+        status: 'not_run',
+        noteKey,
       });
 
       expect(result.success).toBe(true);
     }
   });
 
+  it.each(['success', 'pending', 'running'] as const)('rejects a verification check note on %s status', (status) => {
+    const baseCheck = strictDefined(verifyS0Fixture.data.verification.checks[0], 'verification check fixture');
+
+    const result = verificationCheckSchema.safeParse({
+      ...baseCheck,
+      status,
+      noteKey: strictDefined(PUBLIC_VERIFICATION_CHECK_NOTE_KEY_VALUES[0], 'verification check note key'),
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('rejects unknown verification check note keys and extra check fields', () => {
     const baseCheck = strictDefined(verifyS0Fixture.data.verification.checks[0], 'verification check fixture');
 
     expect(
-      VerificationResourceResponseSchema.safeParse({
-        ...verifyS0Fixture,
-        data: {
-          ...verifyS0Fixture.data,
-          verification: {
-            ...verifyS0Fixture.data.verification,
-            checks: [
-              {
-                ...baseCheck,
-                noteKey: 'pages.verify.stepsCard.notes.myVoteIncluded.future',
-              },
-            ],
-          },
-        },
+      verificationCheckSchema.safeParse({
+        ...baseCheck,
+        status: 'not_run',
+        noteKey: 'pages.verify.stepsCard.notes.myVoteIncluded.future',
       }).success,
     ).toBe(false);
 
     expect(
-      VerificationResourceResponseSchema.safeParse({
-        ...verifyS0Fixture,
-        data: {
-          ...verifyS0Fixture.data,
-          verification: {
-            ...verifyS0Fixture.data.verification,
-            checks: [
-              {
-                ...baseCheck,
-                noteKey: strictDefined(PUBLIC_VERIFICATION_CHECK_NOTE_KEY_VALUES[0], 'verification check note key'),
-                debugShape: true,
-              },
-            ],
-          },
-        },
+      verificationCheckSchema.safeParse({
+        ...baseCheck,
+        status: 'not_run',
+        noteKey: strictDefined(PUBLIC_VERIFICATION_CHECK_NOTE_KEY_VALUES[0], 'verification check note key'),
+        debugShape: true,
       }).success,
     ).toBe(false);
   });
@@ -1527,9 +1419,9 @@ describe('api response schemas', () => {
       data: {
         ...verifyS0Fixture.data,
         verifierResult: {
-          ...verifyS0Fixture.data.verifierResult,
+          status: 'failed',
           report: {
-            ...verifyS0Fixture.data.verifierResult.report,
+            status: 'failed',
             errors: ['failed to read /tmp/verifier-work/input.json'],
           },
         },
@@ -1650,43 +1542,6 @@ describe('api response schemas', () => {
       }
     }
     expect(failures).toEqual([]);
-  });
-
-  it('keeps exported schema-derived response types concrete', () => {
-    expect(concreteResponseTypeChecks).toEqual([
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-    ]);
-  });
-
-  it('keeps retired public/private boundary fields out of exported response data types', () => {
-    expect(publicResponseBoundaryKeyChecks).toEqual([
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-    ]);
   });
 
   it('covers every active public JSON response schema with public-boundary fixtures', () => {

@@ -1,13 +1,17 @@
 import type { VerificationResultStore } from '@stark-ballot/application/finalize/finalization-result-store';
+import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
 import type { FinalizationStore } from '@stark-ballot/application/finalize/finalization-store';
 import type { SessionReadModel } from '@stark-ballot/application/session/session-read-model';
-import type { RouteInput, RouteLike } from '@stark-ballot/api-contract/routes';
+import type { ApplicationVoteStore } from '@stark-ballot/application/session/session-vote-store';
+import type { RouteInput, RouteLike, RouteOutput } from '@stark-ballot/api-contract/routes';
 import type { AwsFinalizationDeliveryMetadataStore } from '@stark-ballot/aws-adapters/finalize/finalizationDeliveryMetadataStore';
 import type { AwsFinalizationRuntimeMetadataStore } from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
-import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
-export type ApiContextStore = VoteStore &
+declare const routeResponseBrand: unique symbol;
+
+export type ApiContextStore = ApplicationVoteStore &
   FinalizationStore &
   VerificationResultStore &
   AwsFinalizationDeliveryMetadataStore &
@@ -29,12 +33,20 @@ export interface ApiHandlerContext {
 }
 
 export interface SessionAdmittedContext extends ApiHandlerContext {
-  sessionId: string;
+  sessionId: SessionId;
   session: SessionReadModel;
 }
 
 export interface SessionIdentityContext extends ApiHandlerContext {
-  sessionId: string;
+  sessionId: SessionId;
+}
+
+export interface SessionFinalizationAdmittedContext extends SessionAdmittedContext {
+  finalizationId: FinalizationId;
+}
+
+export interface SessionFinalizationIdentityContext extends SessionIdentityContext {
+  finalizationId: FinalizationId;
 }
 
 export interface ClientRateLimitedContext extends ApiHandlerContext {
@@ -46,6 +58,19 @@ export interface ApiHandlerArguments<TRoute extends RouteLike, TContext extends 
   context: TContext;
 }
 
+/** A response admitted against the exact route that produced it. */
+export type RouteBoundResponse<TRoute extends RouteLike> = Response & {
+  readonly [routeResponseBrand]: {
+    readonly routeId: TRoute['routeId'];
+    readonly output: RouteOutput<TRoute>;
+  };
+};
+
 export type ApiHandler<TRoute extends RouteLike, TContext extends ApiHandlerContext = ApiHandlerContext> = (
+  arguments_: ApiHandlerArguments<TRoute, TContext>,
+) => Promise<RouteBoundResponse<TRoute>> | RouteBoundResponse<TRoute>;
+
+/** Dedicated escape for artifact and conditional handlers with raw wire behavior. */
+export type RawApiHandler<TRoute extends RouteLike, TContext extends ApiHandlerContext = ApiHandlerContext> = (
   arguments_: ApiHandlerArguments<TRoute, TContext>,
 ) => Promise<Response> | Response;

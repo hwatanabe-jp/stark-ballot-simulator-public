@@ -24,9 +24,10 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/build/zkvm/target \
     cd zkvm \
-    && cargo build --quiet --release --bin host --features production \
+    && cargo build --quiet --release --bin host --bin prover-artifacts --features production \
     && mkdir -p /build/dist \
     && cp target/release/host /build/dist/host \
+    && cp target/release/prover-artifacts /build/dist/prover-artifacts \
     && rm -rf /root/.risc0/tmp/*
 
 #################################################
@@ -71,16 +72,19 @@ RUN /usr/sbin/groupadd --gid 10001 prover \
 COPY --from=build /root/.cargo/bin/r0vm /opt/risc0/bin/r0vm
 COPY --from=build /root/.risc0/settings.toml /opt/risc0/settings.toml
 
-# Copy host binary (test-data excluded for production, input from S3)
+# Copy checked Rust binaries (test-data excluded for production, input from S3)
 COPY --from=build /build/dist/host /opt/zkvm/bin/host
+COPY --from=build /build/dist/prover-artifacts /opt/zkvm/bin/prover-artifacts
 
 # Provide entrypoint script for orchestration
 COPY infra/docker/entrypoint.sh /opt/zkvm/bin/entrypoint.sh
 COPY packages/verification/src/verification/public-bundle-manifest.json /opt/zkvm/share/public-bundle-manifest.json
-RUN chmod 0555 /opt/risc0/bin/r0vm /opt/zkvm/bin/entrypoint.sh /opt/zkvm/bin/host \
-    && chmod 0444 /opt/risc0/settings.toml /opt/zkvm/share/public-bundle-manifest.json
+COPY zkvm/contract-core/src/current-zkvm-semantic-contract.json /opt/zkvm/share/current-zkvm-semantic-contract.json
+RUN chmod 0555 /opt/risc0/bin/r0vm /opt/zkvm/bin/entrypoint.sh /opt/zkvm/bin/host /opt/zkvm/bin/prover-artifacts \
+    && chmod 0444 /opt/risc0/settings.toml /opt/zkvm/share/public-bundle-manifest.json /opt/zkvm/share/current-zkvm-semantic-contract.json
 
 ENV HOST_BIN=/opt/zkvm/bin/host \
+    PROVER_ARTIFACT_TOOL_BIN=/opt/zkvm/bin/prover-artifacts \
     PUBLIC_BUNDLE_MANIFEST_PATH=/opt/zkvm/share/public-bundle-manifest.json \
     INPUT_PATH= \
     INPUT_S3_BUCKET= \

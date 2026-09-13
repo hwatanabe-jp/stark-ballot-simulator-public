@@ -3,23 +3,19 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { format, resolveConfig, type Options } from 'prettier';
-
-interface FormalReport {
-  generatedVectorArtifacts: string[];
-}
+import { formatSource } from '../formatting/format-source';
+import { parseFormalReport } from './formal-report-admission';
 
 const repoRoot = process.cwd();
 const tempDir = mkdtempSync(path.join(tmpdir(), 'stark-ballot-formal-vectors-'));
-let prettierOptions: Options | null = null;
 
-function readJson<T>(relativePath: string): T {
-  return JSON.parse(readFileSync(path.join(repoRoot, relativePath), 'utf8')) as T;
+function readFormalReport(relativePath: string) {
+  const input: unknown = JSON.parse(readFileSync(path.join(repoRoot, relativePath), 'utf8'));
+  return parseFormalReport(input);
 }
 
 async function formattedJson(filePath: string): Promise<string> {
-  prettierOptions ??= (await resolveConfig(path.join(repoRoot, 'package.json'))) ?? {};
-  return await format(readFileSync(filePath, 'utf8'), { ...prettierOptions, filepath: filePath, parser: 'json' });
+  return await formatSource(filePath, readFileSync(filePath, 'utf8'));
 }
 
 async function main(): Promise<void> {
@@ -29,17 +25,17 @@ async function main(): Promise<void> {
       stdio: 'inherit',
     });
 
-    const report = readJson<FormalReport>('docs/formal/formal-report.json');
+    const report = readFormalReport('docs/formal/formal-report.json');
     const staleArtifacts: string[] = [];
 
     for (const artifact of report.generatedVectorArtifacts) {
-      const committedPath = path.join(repoRoot, artifact);
-      const generatedPath = path.join(tempDir, path.basename(artifact));
+      const committedPath = path.join(repoRoot, artifact.path);
+      const generatedPath = path.join(tempDir, path.basename(artifact.path));
       const committedJson = readFileSync(committedPath, 'utf8');
       const expectedJson = await formattedJson(generatedPath);
 
       if (committedJson !== expectedJson) {
-        staleArtifacts.push(artifact);
+        staleArtifacts.push(artifact.path);
       }
     }
 

@@ -22,6 +22,18 @@ export interface PublicAuditArtifactResolution {
   issues: PublicAuditArtifactConsistencyIssue[];
 }
 
+/** Checks the public audit artifacts that can be correlated from journal authority alone. */
+export function hasConsistentPublicAuditArtifactsWithJournal(input: {
+  journal: ZkVMJournal;
+  electionManifest?: ElectionManifest | undefined;
+  closeStatement?: CloseStatement | undefined;
+}): boolean {
+  return (
+    resolveConsistentElectionManifest(input.electionManifest, input.journal, undefined).issues.length === 0 &&
+    resolveConsistentCloseStatement(input.closeStatement, input.journal, undefined).issues.length === 0
+  );
+}
+
 export function resolveConsistentPublicAuditArtifacts(input: {
   journal: ZkVMJournal;
   publicInputArtifact?: SupportedPublicInputArtifact;
@@ -247,10 +259,6 @@ function hasAuthoritativePublicInputContext(
     }
 
     return true;
-  }
-
-  if (provenance.source !== 'bundle') {
-    return false;
   }
 
   if (!authority.bundleKey || !provenance.bundleKey || provenance.bundleKey !== authority.bundleKey) {

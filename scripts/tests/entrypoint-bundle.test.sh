@@ -4,10 +4,8 @@ IFS=$'\n\t'
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENTRYPOINT_PATH="${ROOT_DIR}/infra/docker/entrypoint.sh"
-CURRENT_METHOD_VERSION="$(
-  sed -n "s/^CURRENT_METHOD_VERSION=\\([0-9][0-9]*\\)$/\\1/p" \
-    "$ENTRYPOINT_PATH"
-)"
+SEMANTIC_CONTRACT_PATH="${ROOT_DIR}/zkvm/contract-core/src/current-zkvm-semantic-contract.json"
+CURRENT_METHOD_VERSION="$(jq -er '.method.methodVersion | select(type == "number" and floor == .)' "$SEMANTIC_CONTRACT_PATH")"
 
 if [[ -z "$CURRENT_METHOD_VERSION" ]]; then
   echo "Failed to resolve current method version"
@@ -16,6 +14,9 @@ fi
 
 export CURRENT_METHOD_VERSION
 export PUBLIC_BUNDLE_MANIFEST_PATH="${ROOT_DIR}/packages/verification/src/verification/public-bundle-manifest.json"
+export PROVER_ARTIFACT_TOOL_BIN="${ROOT_DIR}/zkvm/target/debug/prover-artifacts"
+
+RISC0_SKIP_BUILD=1 cargo build --quiet --manifest-path "${ROOT_DIR}/zkvm/Cargo.toml" -p host --bin prover-artifacts
 
 export ENTRYPOINT_SKIP_MAIN=1
 
@@ -103,6 +104,26 @@ if grep -Eq "${tmp_dir}|private-input-canary" "$missing_input_log"; then
   cat "$missing_input_log"
   exit 1
 fi
+
+camel_case_input="${tmp_dir}/camel-case-input.json"
+cat >"$camel_case_input" <<'JSON'
+{
+  "electionId": [],
+  "electionConfigHash": [],
+  "bulletinRoot": [],
+  "treeSize": 1,
+  "logId": [],
+  "timestamp": 1,
+  "totalExpected": 1,
+  "votes": []
+}
+JSON
+camel_case_input_log="${tmp_dir}/camel-case-input.log"
+if (WORK_INPUT="$camel_case_input" validate_input_json) >"$camel_case_input_log" 2>&1; then
+  echo "entrypoint input admission should reject non-current camelCase fields"
+  exit 1
+fi
+grep -q 'Missing required field: election_id' "$camel_case_input_log"
 
 owner_error="${tmp_dir}/owner-error.txt"
 if (RUNTIME_PROFILE=target-aws-async INPUT_S3_BUCKET=proof-inputs AWS_ACCOUNT_ID='' validate_expected_bucket_owner) >"$owner_error" 2>&1; then
@@ -1243,6 +1264,25 @@ if validate_public_audit_artifacts \
   exit 1
 fi
 
+duplicate_index_journal_path="${tmp_dir}/duplicate-index-journal.json"
+duplicate_index_public_input_path="${tmp_dir}/duplicate-index-public-input.json"
+pnpm tsx "${ROOT_DIR}/scripts/tests/entrypoint-duplicate-index-fixture.ts" \
+  "$journal_path" \
+  "${output_dir}/public-input.json" \
+  "$duplicate_index_journal_path" \
+  "$duplicate_index_public_input_path"
+
+duplicate_index_log="${tmp_dir}/duplicate-index.log"
+if validate_public_audit_artifacts \
+  "$duplicate_index_journal_path" \
+  "$duplicate_index_public_input_path" \
+  "${output_dir}/election-manifest.json" \
+  "$close_statement_path" >"$duplicate_index_log" 2>&1; then
+  echo "validate_public_audit_artifacts should reject duplicate vote indices"
+  exit 1
+fi
+grep -q "duplicate vote index" "$duplicate_index_log"
+
 echo "ok"
 
 legacy_output_json="${output_dir}/legacy-output.json"
@@ -1296,17 +1336,23 @@ with open(missing_seen_path, "w", encoding="utf-8") as handle:
     json.dump(missing_seen, handle)
 PY
 
-if convert_output_to_journal "$legacy_output_json" "${tmp_dir}/legacy-journal.json"; then
+if convert_output_to_journal "$input_json" "$legacy_output_json" "${tmp_dir}/legacy-journal.json"; then
   echo "convert_output_to_journal should reject legacy snake_case output"
   exit 1
 fi
 
-if convert_output_to_journal "$unsupported_version_output_json" "${tmp_dir}/unsupported-journal.json"; then
+if convert_output_to_journal \
+  "$input_json" \
+  "$unsupported_version_output_json" \
+  "${tmp_dir}/unsupported-journal.json"; then
   echo "convert_output_to_journal should reject unsupported methodVersion output"
   exit 1
 fi
 
-if convert_output_to_journal "$missing_seen_bitmap_output_json" "${tmp_dir}/missing-seen-journal.json"; then
+if convert_output_to_journal \
+  "$input_json" \
+  "$missing_seen_bitmap_output_json" \
+  "${tmp_dir}/missing-seen-journal.json"; then
   echo "convert_output_to_journal should reject output without seenBitmapRoot"
   exit 1
 fi

@@ -18,10 +18,10 @@ export const LOCAL_CAST_CHECK_IDS = [
 export type LocalCastCheckId = (typeof LOCAL_CAST_CHECK_IDS)[number];
 export type LocalCastCheckStatus = 'success' | 'failed' | 'not_run';
 
-export interface LocalCastCheckResult {
-  status: LocalCastCheckStatus;
-  error?: string;
-}
+export type LocalCastCheckResult =
+  | Readonly<{ status: 'success' }>
+  | Readonly<{ status: 'not_run' }>
+  | Readonly<{ status: 'failed'; error?: string }>;
 
 export type LocalCastCheckResults = Readonly<Record<LocalCastCheckId, LocalCastCheckResult>>;
 export type LocalCastStatuses = Readonly<Record<LocalCastCheckId, LocalCastCheckStatus>>;

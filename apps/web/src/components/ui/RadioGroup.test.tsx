@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { RadioGroup } from './RadioGroup';
@@ -48,39 +48,18 @@ describe('RadioGroup', () => {
     expect(handleChange).toHaveBeenCalledTimes(1);
   });
 
-  it('should support custom className', () => {
-    render(<RadioGroup name="test" options={options} value="" onChange={() => {}} className="custom-class" />);
-
-    const container = screen.getByRole('radiogroup');
-    expect(container).toHaveClass('custom-class');
-  });
-
-  it('should support disabled state', () => {
-    render(<RadioGroup name="test" options={options} value="" onChange={() => {}} disabled />);
-
-    const radios = screen.getAllByRole('radio');
-    radios.forEach((radio) => {
-      expect(radio).toBeDisabled();
-    });
-  });
-
-  it('should not call onChange when disabled', async () => {
+  it('disables every option and prevents changes when disabled', async () => {
     const handleChange = vi.fn();
     const user = userEvent.setup();
 
     render(<RadioGroup name="test" options={options} value="A" onChange={handleChange} disabled />);
 
+    screen.getAllByRole('radio').forEach((radio) => {
+      expect(radio).toBeDisabled();
+    });
     await user.click(screen.getByLabelText('Option B'));
 
     expect(handleChange).not.toHaveBeenCalled();
-  });
-
-  it('should apply proper styling to selected option', () => {
-    render(<RadioGroup name="test" options={options} value="B" onChange={() => {}} />);
-
-    const selectedInput = screen.getByLabelText('Option B');
-    const selectedLabel = selectedInput.closest('label');
-    expect(selectedLabel).toHaveClass('bg-ink-50', 'border-ink-600');
   });
 
   it('should have proper ARIA attributes', () => {
@@ -102,15 +81,46 @@ describe('RadioGroup', () => {
     expect(screen.getByText('Description for B')).toBeInTheDocument();
   });
 
-  it('should have focus-visible styles for keyboard navigation', () => {
-    render(<RadioGroup name="test" options={options} value="" onChange={() => {}} />);
+  it('allows keyboard focus and selection with native radios', async () => {
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+    render(<RadioGroup name="test" options={options} value="" onChange={onChange} />);
+    await user.tab();
+    expect(screen.getByLabelText('Option A')).toHaveFocus();
+    await user.keyboard('[ArrowDown]');
+    expect(screen.getByLabelText('Option B')).toHaveFocus();
+    expect(onChange).toHaveBeenCalledWith('B');
+  });
 
-    const firstInput = screen.getByLabelText('Option A');
-    const firstLabel = firstInput.closest('label');
+  it('keeps labels and descriptions scoped to each instance in separate forms', () => {
+    render(
+      <>
+        <form>
+          <RadioGroup
+            name="choice"
+            label="First ballot"
+            options={[{ value: 'A', label: 'First choice', description: 'First description' }]}
+            value=""
+            onChange={() => {}}
+          />
+        </form>
+        <form>
+          <RadioGroup
+            name="choice"
+            label="Second ballot"
+            options={[{ value: 'A', label: 'Second choice', description: 'Second description' }]}
+            value=""
+            onChange={() => {}}
+          />
+        </form>
+      </>,
+    );
 
-    // Label should have has-[:focus-visible] classes for accessibility
-    expect(firstLabel).toHaveClass('has-[:focus-visible]:ring-2');
-    expect(firstLabel).toHaveClass('has-[:focus-visible]:ring-ink-500');
-    expect(firstLabel).toHaveClass('has-[:focus-visible]:ring-offset-2');
+    const first = within(screen.getByRole('radiogroup', { name: 'First ballot' })).getByRole('radio');
+    const second = within(screen.getByRole('radiogroup', { name: 'Second ballot' })).getByRole('radio');
+    expect(first).toHaveAccessibleName('First choice');
+    expect(first).toHaveAccessibleDescription('First description');
+    expect(second).toHaveAccessibleName('Second choice');
+    expect(second).toHaveAccessibleDescription('Second description');
   });
 });

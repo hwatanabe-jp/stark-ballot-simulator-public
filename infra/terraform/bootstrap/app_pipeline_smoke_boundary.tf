@@ -1,59 +1,23 @@
 data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
+  source_policy_documents = [data.aws_iam_policy_document.app_pipeline_clone_reference_source[0].json]
+
+  # Keep this exact-resource statement SID-free so the rendered managed policy
+  # remains below IAM's 6,144-character quota.
   statement {
-    sid    = "AppAcceptedBaselinePublisherGuardrail"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-      "s3:PutObject",
-    ]
-    resources = [
-      "arn:aws:s3:::${local.terraform_authority_bucket_name}/${local.terraform_baseline_prefix}/${local.app_lane_authority.stateIdentity}/executions/*",
-    ]
+    effect  = "Allow"
+    actions = ["codebuild:BatchGetProjects"]
+    resources = compact([
+      local.source_path_app_start_build_projects.app_smoke.project_arn,
+      local.app_static_fast_enabled ? local.source_path_static_fast_start_build_projects.app_static_fast_smoke_lite.project_arn : null,
+    ])
   }
 
   statement {
-    sid    = "AppAcceptedBaselineKmsGuardrail"
-    effect = "Allow"
-    actions = [
-      "kms:Decrypt",
-      "kms:DescribeKey",
-      "kms:Encrypt",
-      "kms:GenerateDataKey",
-    ]
-    resources = ["*"]
-
-    condition {
-      test     = "StringEquals"
-      variable = "aws:ResourceTag/AuthorityType"
-      values   = ["terraform-baseline"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "aws:ResourceTag/Project"
-      values   = [var.project_name]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "aws:ResourceTag/AccountAlias"
-      values   = [var.account_alias]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "aws:ResourceTag/Environment"
-      values   = [var.deployment_environment]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "aws:ResourceTag/StateScope"
-      values   = [var.state_scope]
-    }
+    effect    = "Allow"
+    actions   = ["sts:AssumeRole"]
+    resources = [local.app_acceptance_publisher_role_arn]
   }
 
   statement {
@@ -65,28 +29,50 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
       "s3:ListBucket",
       "s3:PutObject",
     ]
-    resources = [
+    resources = compact([
       local.app_retained_artifact_bucket_arn,
       "${local.app_retained_artifact_bucket_arn}/*",
       local.app_pipeline_execution_artifact_bucket_arn,
       "${local.app_pipeline_execution_artifact_bucket_arn}/*",
-      local.app_static_fast_execution_artifact_bucket_arn,
-      "${local.app_static_fast_execution_artifact_bucket_arn}/*",
+      local.app_static_fast_enabled ? local.app_static_fast_execution_artifact_bucket_arn : null,
+      local.app_static_fast_enabled ? "${local.app_static_fast_execution_artifact_bucket_arn}/*" : null,
+    ])
+  }
+
+  # The Smoke identity below this ceiling retains exact record/pointer
+  # families. Static-fast shares the boundary but receives no matching
+  # identity grant.
+  statement {
+    effect  = "Allow"
+    actions = ["s3:GetObjectVersion"]
+    resources = [
+      "${local.app_release_manifest_bucket_arn}/*",
+      local.app_foundation_acceptance_records_objects_arn,
     ]
   }
 
   statement {
-    sid    = "ReadImmutableReleaseAuthority"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-    ]
-    resources = [
-      local.app_deployment_record_objects_arn,
-      local.app_toolchain_artifact_records_objects_arn,
-      local.app_prover_release_records_objects_arn,
-    ]
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [var.aws_account_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${var.aws_region}.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:aws:s3:arn"
+      values   = [local.terraform_authority_bucket_arn]
+    }
   }
 
   statement {
@@ -132,17 +118,6 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
       local.app_codebuild_project_arn_pattern,
       local.app_pipeline_arn,
     ]
-  }
-
-  statement {
-    sid    = "AppSmokeSourceConnection"
-    effect = "Allow"
-
-    actions = [
-      "codeconnections:UseConnection",
-      "codestar-connections:UseConnection",
-    ]
-    resources = local.app_source_connection_arns
   }
 
   statement {

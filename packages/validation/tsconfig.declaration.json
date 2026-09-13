@@ -1,5 +1,0 @@
-{
-  "extends": "../../tooling/tsconfig/base.json",
-  "files": ["src/image-id-policy.d.ts"],
-  "include": []
-}

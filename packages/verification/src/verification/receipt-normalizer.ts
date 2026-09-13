@@ -13,7 +13,10 @@ export interface NormalizedExecutionReceipt {
   rawPayload: AdmittedReceiptPayload;
 }
 
-export function admitReceiptPayload(payload: Record<string, unknown>): AdmittedReceiptPayload {
+export function admitReceiptPayload(payload: unknown): AdmittedReceiptPayload {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new Error('Receipt payload must be an object');
+  }
   return payload as AdmittedReceiptPayload;
 }
 
@@ -94,7 +97,7 @@ function extractSealBase64(sealValue: unknown): string | undefined {
   }
 
   if (Array.isArray(sealValue)) {
-    return Buffer.from(sealValue as number[]).toString('base64');
+    return encodeBytesToBase64(sealValue);
   }
 
   return undefined;
@@ -108,16 +111,15 @@ type ReceiptFormat = {
 
 function encodeBytesToBase64(values: unknown[]): string {
   const bytes = new Uint8Array(values.length);
-  values.forEach((value, index) => {
-    if (!Number.isFinite(value)) {
+  for (const [index, value] of values.entries()) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
       throw new Error('Receipt bytes contain non-numeric value');
     }
-    const numeric = Number(value);
-    if (numeric < 0 || numeric > 255 || !Number.isInteger(numeric)) {
+    if (value < 0 || value > 255 || !Number.isInteger(value)) {
       throw new Error('Receipt bytes must be integers between 0 and 255');
     }
-    bytes[index] = numeric;
-  });
+    bytes[index] = value;
+  }
   return Buffer.from(bytes).toString('base64');
 }
 
@@ -211,7 +213,10 @@ function encodeSealWordsToBase64(values: unknown[]): string {
     if (!Number.isFinite(value)) {
       throw new Error('Receipt seal contains non-numeric value');
     }
-    view.setUint32(index * 4, Number(value) >>> 0, true);
+    if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+      throw new Error('Receipt seal words must be integers between 0 and 4294967295');
+    }
+    view.setUint32(index * 4, value, true);
   });
 
   return Buffer.from(new Uint8Array(buffer)).toString('base64');

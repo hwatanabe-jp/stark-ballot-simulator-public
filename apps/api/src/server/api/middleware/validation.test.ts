@@ -144,7 +144,7 @@ describe('parseJsonBody with VoteRequestSchema', () => {
       },
       body,
       duplex: 'half',
-    } as RequestInit & { duplex: 'half' });
+    });
 
     const result = await parseJsonBody(request, VoteRequestSchema);
 

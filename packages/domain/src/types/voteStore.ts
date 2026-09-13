@@ -1,18 +1,13 @@
-import type {
-  AddVoteResult,
-  SessionIdentityRecord,
-  SessionVotingRecord,
-  StoredVoteRecord,
-  VoteData,
-} from './sessionRecords';
+import type { SessionIdentityRecord, SessionVotingRecord, StoredVoteRecord } from './sessionRecords';
 import type { RecordVerificationObservationResult, VerificationObservationWrite } from './verificationObservation';
+import type { SessionId } from './identifiers';
 
 /**
  * Lightweight voting projection for polling endpoints. Finalization status is
  * projected by the application from its separately owned record.
  */
 export type SessionVotingSummary = {
-  sessionId: string;
+  sessionId: SessionId;
   botCount: number;
   userParticipation: SessionVotingRecord['userParticipation'];
 };
@@ -23,26 +18,22 @@ export interface SessionIdentityStore {
    */
   createSession(): Promise<SessionIdentityRecord>;
 
-  getSessionIdentity(sessionId: string): Promise<SessionIdentityRecord | null>;
+  getSessionIdentity(sessionId: SessionId): Promise<SessionIdentityRecord | null>;
 }
 
 export interface SessionVotingStore {
-  getVotingRecord(sessionId: string): Promise<SessionVotingRecord | null>;
+  getVotingRecord(sessionId: SessionId): Promise<SessionVotingRecord | null>;
 
-  getSessionVotingSummary?(sessionId: string): Promise<SessionVotingSummary | null>;
+  getSessionVotingSummary?(sessionId: SessionId): Promise<SessionVotingSummary | null>;
 
-  addVote(sessionId: string, voteData: VoteData): Promise<AddVoteResult>;
-
-  addBotVotes(sessionId: string, votes: VoteData[]): Promise<void>;
-
-  touchSession(sessionId: string): Promise<void>;
+  touchSession(sessionId: SessionId): Promise<void>;
 
   getActiveSessionCount(): Promise<number>;
 
-  getVoteById(sessionId: string, voteId: string): Promise<{ voteData: StoredVoteRecord; index: number } | null>;
+  getVoteById(sessionId: SessionId, voteId: string): Promise<{ voteData: StoredVoteRecord; index: number } | null>;
 
   getVoteByIdWithProof(
-    sessionId: string,
+    sessionId: SessionId,
     voteId: string,
   ): Promise<{
     voteData: StoredVoteRecord;
@@ -62,7 +53,7 @@ export interface SessionVotingStore {
 
 export interface VerificationObservationStore {
   recordVerificationObservation(
-    sessionId: string,
+    sessionId: SessionId,
     finalizationId: string,
     observation: VerificationObservationWrite,
   ): Promise<RecordVerificationObservationResult>;
